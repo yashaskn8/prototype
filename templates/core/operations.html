@@ -1,0 +1,31 @@
+{% extends 'core/base.html' %}
+{% block title %}Operations • Servy RAG{% endblock %}
+{% block content %}
+<h1 class="section-title mb-1">Operations & Configuration</h1>
+<div class="text-secondary mb-4">Schema coverage for the operational modules visible in Servy: SLA, zones, checklists, approvals, purchases, expenses, vouchers, returns, corporate identity, vocabulary, customisation and notifications.</div>
+
+<div class="row g-4">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">SLA Policies</h3></div><div class="card-body">{% for x in sla_policies %}<div class="mb-2"><strong>{{ x.name }}</strong><div class="small-muted">{{ x.priority }} • response {{ x.response_minutes }}m • resolution {{ x.resolution_minutes }}m</div></div>{% empty %}<div class="small-muted">No SLA policies.</div>{% endfor %}</div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Zones</h3></div><div class="card-body">{% for x in zones %}<div class="mb-2"><strong>{{ x.name }}</strong><div class="small-muted">{{ x.branch|default:'No branch' }}</div></div>{% empty %}<div class="small-muted">No zones.</div>{% endfor %}</div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Checklists</h3></div><div class="card-body">{% for x in checklists %}<div class="mb-2"><strong>{{ x.name }}</strong><div class="small-muted">{{ x.product|default:'General' }} • {{ x.items|length }} items</div></div>{% empty %}<div class="small-muted">No checklists.</div>{% endfor %}</div></div></div>
+</div>
+
+<div class="row g-4 mt-1">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Approvals</h3></div><div class="card-body">{% for x in approvals %}<div class="mb-2"><strong>{{ x.module }}</strong><div class="small-muted">{{ x.status }}{% if x.service_call %} • call {{ x.service_call.servy_id }}{% endif %}</div></div>{% empty %}<div class="small-muted">No approvals.</div>{% endfor %}</div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Local Purchases</h3></div><div class="card-body">{% for x in local_purchases %}<div class="mb-2"><strong>{{ x.part_description }}</strong> • ₹{{ x.amount }}<div class="small-muted">{{ x.status }}{% if x.service_call %} • call {{ x.service_call.servy_id }}{% endif %}</div></div>{% empty %}<div class="small-muted">No local purchases.</div>{% endfor %}</div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Expense Claims</h3></div><div class="card-body">{% for x in expense_claims %}<div class="mb-2"><strong>{{ x.category }}</strong> • ₹{{ x.amount }}<div class="small-muted">{{ x.status }}{% if x.service_call %} • call {{ x.service_call.servy_id }}{% endif %}</div></div>{% empty %}<div class="small-muted">No expense claims.</div>{% endfor %}</div></div></div>
+</div>
+
+<div class="row g-4 mt-1">
+  <div class="col-lg-6"><div class="card h-100"><div class="card-header"><h3 class="card-title">Voucher Claims</h3></div><div class="card-body">{% for x in voucher_claims %}<div class="mb-2"><strong>{{ x.reference|default:'Voucher' }}</strong> • ₹{{ x.amount }}<div class="small-muted">{{ x.purpose }} • {{ x.status }}</div></div>{% empty %}<div class="small-muted">No voucher claims.</div>{% endfor %}</div></div></div>
+  <div class="col-lg-6"><div class="card h-100"><div class="card-header"><h3 class="card-title">Returns</h3></div><div class="card-body">{% for x in returns %}<div class="mb-2"><strong>{{ x.inventory_item|default:'Inventory item' }}</strong> • {{ x.quantity }}<div class="small-muted">{{ x.reason }} • {{ x.status }}</div></div>{% empty %}<div class="small-muted">No returns.</div>{% endfor %}</div></div></div>
+</div>
+
+<div class="row g-4 mt-1">
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Corporate Identity</h3></div><div class="card-body">{% if corporate_identity %}<strong>{{ corporate_identity.company_name }}</strong><div class="small-muted">{{ corporate_identity.support_email }} • {{ corporate_identity.support_phone }}</div><div class="small-muted mt-2">Brand colour: {{ corporate_identity.primary_color }}</div>{% else %}<div class="small-muted">Not configured.</div>{% endif %}</div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Business Vocabulary</h3></div><div class="card-body">{% for x in business_vocabulary %}<div class="mb-2"><code>{{ x.key }}</code> → <strong>{{ x.display_value }}</strong></div>{% empty %}<div class="small-muted">No vocabulary overrides.</div>{% endfor %}</div></div></div>
+  <div class="col-lg-4"><div class="card h-100"><div class="card-header"><h3 class="card-title">Customisations</h3></div><div class="card-body">{% for x in customizations %}<div class="mb-2"><strong>{{ x.category }} / {{ x.key }}</strong><div class="small-muted">{{ x.value }}</div></div>{% empty %}<div class="small-muted">No customisations.</div>{% endfor %}</div></div></div>
+</div>
+
+<div class="row g-4 mt-1"><div class="col-lg-12"><div class="card"><div class="card-header"><h3 class="card-title">Email Notification Rules</h3></div><div class="card-body"><div class="row">{% for x in email_rules %}<div class="col-md-6 mb-2"><strong>{{ x.event }}</strong><div class="small-muted">{{ x.recipient_role|default:'configured recipients' }} • {% if x.is_enabled %}enabled{% else %}disabled{% endif %}</div></div>{% empty %}<div class="small-muted">No notification rules.</div>{% endfor %}</div></div></div></div></div>
+{% endblock %}

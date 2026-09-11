@@ -1,0 +1,19 @@
+{% extends 'core/base.html' %}
+{% block title %}Dashboard • Servy RAG{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
+  <div><h1 class="section-title mb-1">Servy AI Upgrade</h1><div class="text-secondary">Local, tenant-aware RAG layer across Knowledge Base and Call Register.</div></div>
+  <a href="{% url 'customer_portal' %}" class="btn btn-servy">Try customer self-service</a>
+</div>
+<div class="row g-3 mb-4">
+  <div class="col-md-6 col-xl"><div class="card stat-card"><div class="card-body"><div class="small text-secondary">Assets</div><div class="stat-value">{{ asset_count }}</div></div></div></div>
+  <div class="col-md-6 col-xl"><div class="card stat-card"><div class="card-body"><div class="small text-secondary">Call Register</div><div class="stat-value">{{ call_count }}</div></div></div></div>
+  <div class="col-md-6 col-xl"><div class="card stat-card"><div class="card-body"><div class="small text-secondary">Open / active calls</div><div class="stat-value">{{ open_calls }}</div></div></div></div>
+  <div class="col-md-6 col-xl"><div class="card stat-card"><div class="card-body"><div class="small text-secondary">Knowledge items</div><div class="stat-value">{{ kb_count }}</div></div></div></div>
+  <div class="col-md-6 col-xl"><div class="card stat-card"><div class="card-body"><div class="small text-secondary">AI questions today</div><div class="stat-value">{{ interactions_today }}</div><div class="small-muted">{{ escalations_today }} escalated</div></div></div></div>
+</div>
+<div class="row g-4">
+  <div class="col-xl-7"><div class="card"><div class="card-header"><h3 class="card-title">Recent calls</h3></div><div class="table-responsive"><table class="table table-vcenter mb-0"><thead><tr><th>Servy ID</th><th>Complaint</th><th>Customer</th><th>Asset</th><th>Status</th></tr></thead><tbody>{% for c in recent_calls %}<tr><td><strong>{{ c.servy_id }}</strong></td><td>{{ c.complaint_type }}</td><td>{{ c.customer.name }}</td><td>{{ c.asset.name|default:'—' }}</td><td><span class="badge badge-soft-info">{{ c.get_status_display }}</span></td></tr>{% empty %}<tr><td colspan="5" class="empty-state">Seed demo data to see calls.</td></tr>{% endfor %}</tbody></table></div></div></div>
+  <div class="col-xl-5"><div class="card"><div class="card-header"><h3 class="card-title">Recent RAG interactions</h3></div><div class="card-body">{% for i in recent_interactions %}<div class="pb-3 mb-3 border-bottom"><div class="fw-semibold">{{ i.customer.name }} • {{ i.asset.name|default:'No asset' }}</div><div class="text-secondary small">{{ i.question|truncatechars:100 }}</div>{% if i.resolved == True %}<span class="badge badge-soft-success mt-2">Resolved by KB</span>{% elif i.escalated_call %}<span class="badge badge-soft-warning mt-2">Escalated to #{{ i.escalated_call.servy_id }}</span>{% else %}<span class="badge bg-secondary-lt mt-2">Awaiting feedback</span>{% endif %}</div>{% empty %}<div class="empty-state">No RAG interactions yet.</div>{% endfor %}</div></div></div>
+</div>
+{% endblock %}

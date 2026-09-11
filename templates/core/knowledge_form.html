@@ -1,0 +1,14 @@
+{% extends 'core/base.html' %}
+{% block title %}New Knowledge Item • Servy RAG{% endblock %}
+{% block content %}
+<div class="row justify-content-center"><div class="col-xl-9"><div class="card"><div class="card-header"><div><h2 class="section-title mb-1">Create a new knowledge item</h2><div class="text-secondary">Capture manuals, customer documents, SOPs, external resources, and searchable metadata.</div></div></div><div class="card-body">
+<form method="post" enctype="multipart/form-data">{% csrf_token %}
+  {% if form.errors %}<div class="alert alert-danger">{{ form.errors }}</div>{% endif %}
+  <div class="alert bg-purple-lt text-purple"><strong>Smarter content setup:</strong> Product/asset metadata and tags are used before semantic retrieval, so the RAG system searches the right customer and product context first.</div>
+  <div class="row g-3">
+    {% for field in form %}<div class="{% if field.name == 'description' or field.name == 'content_text' or field.name == 'tags' %}col-12{% else %}col-md-6{% endif %}"><label class="form-label">{{ field.label }}{% if field.field.required %} *{% endif %}</label>{{ field }}{% if field.help_text %}<div class="small-muted mt-1">{{ field.help_text }}</div>{% endif %}</div>{% endfor %}
+  </div>
+  <div class="mt-4 d-flex gap-2 justify-content-end"><a href="{% url 'knowledge_base' %}" class="btn btn-white">Cancel</a><button class="btn btn-servy">Save & index</button></div>
+</form>
+</div></div></div></div>
+{% endblock %}

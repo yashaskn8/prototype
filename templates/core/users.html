@@ -1,0 +1,7 @@
+{% extends 'core/base.html' %}
+{% block title %}Users • Servy RAG{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-4"><div><h1 class="section-title mb-1">Users</h1><div class="text-secondary">Branch and role structure used for technician assignment and future access control.</div></div><span class="badge bg-purple-lt text-purple fs-5">{{ page_obj.paginator.count }} users</span></div>
+<form class="row g-2 mb-3" method="get"><div class="col-md-8"><input class="form-control" name="q" value="{{ q }}" placeholder="Search name, email or phone"></div><div class="col-md-3"><select class="form-select" name="role"><option value="">All roles</option>{% for value,label in roles %}<option value="{{ value }}" {% if role == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div class="col-md-1"><button class="btn btn-outline-servy w-100">Go</button></div></form>
+<div class="card"><div class="table-responsive"><table class="table table-vcenter mb-0"><thead><tr><th>Full Name</th><th>Email</th><th>Phone Number</th><th>Branch</th><th>Role</th><th>Last Login</th></tr></thead><tbody>{% for u in page_obj %}<tr><td class="fw-semibold">{{ u.full_name }}</td><td>{{ u.email|default:'—' }}</td><td>{{ u.phone|default:'—' }}</td><td>{{ u.branch.name|default:'—' }}</td><td>{{ u.get_role_display }}</td><td>{{ u.last_login_at|timesince|default:'—' }}</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

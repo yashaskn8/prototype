@@ -1,0 +1,7 @@
+{% extends 'core/base.html' %}
+{% block title %}Assets • Servy RAG{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-4"><div><h1 class="section-title mb-1">Assets</h1><div class="text-secondary">Brand → Product → Asset / model hierarchy used by RAG filtering.</div></div><span class="badge bg-purple-lt text-purple fs-5">{{ page_obj.paginator.count }} assets</span></div>
+<form class="mb-3" method="get"><div class="input-group"><input class="form-control" name="q" value="{{ q }}" placeholder="Search asset, code, model or product"><button class="btn btn-outline-servy">Search</button></div></form>
+<div class="card"><div class="table-responsive"><table class="table table-vcenter mb-0"><thead><tr><th>Name</th><th>Asset Code</th><th>Model Number</th><th>Brand</th><th>Product</th><th>Customer / Site</th></tr></thead><tbody>{% for a in page_obj %}<tr><td class="fw-semibold">{{ a.name }}</td><td>{{ a.asset_code }}</td><td>{{ a.model_number|default:'—' }}</td><td>{{ a.brand.name|default:'—' }}</td><td>{{ a.product.name|default:'—' }}</td><td>{{ a.customer.name|default:'—' }}{% if a.site %}<div class="small-muted">{{ a.site.name }}</div>{% endif %}</td></tr>{% empty %}<tr><td colspan="6" class="empty-state">No assets.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

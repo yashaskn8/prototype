@@ -1,0 +1,72 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{% block title %}Servy RAG Upgrade{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'vendor/bootstrap/bootstrap.min.css' %}">
+  <link rel="stylesheet" href="{% static 'core/css/servy.css' %}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+<header class="navbar navbar-expand-md navbar-light bg-white border-bottom sticky-top">
+  <div class="container-fluid px-3 px-lg-4">
+    <a class="navbar-brand d-flex align-items-center gap-2" href="{% url 'dashboard' %}"><span class="servy-logo">Servy</span><span class="badge bg-purple-lt text-purple">RAG Lab</span></a>
+    <div class="d-flex align-items-center gap-3 ms-auto">
+      {% if current_tenant and available_memberships|length > 1 and current_membership.role != 'customer' %}
+      <form method="post" action="{% url 'switch_tenant' %}" class="d-flex align-items-center gap-2">
+        {% csrf_token %}<input type="hidden" name="next" value="{{ request.path }}">
+        <span class="small text-secondary d-none d-md-inline">Tenant</span>
+        <select class="form-select form-select-sm" name="tenant_id" data-auto-submit>
+          {% for m in available_memberships %}<option value="{{ m.tenant_id }}" {% if m.tenant_id == current_tenant.id %}selected{% endif %}>{{ m.tenant.name }}</option>{% endfor %}
+        </select>
+      </form>
+      {% endif %}
+      {% if request.user.is_authenticated %}
+        <span class="small d-none d-md-inline"><strong>{{ request.user.username }}</strong> · {{ current_membership.get_role_display }}</span>
+        <form method="post" action="{% url 'logout' %}" class="m-0">{% csrf_token %}<button class="btn btn-sm btn-outline-secondary">Logout</button></form>
+      {% endif %}
+    </div>
+  </div>
+</header>
+<div class="container-fluid px-0">
+  <div class="row g-0 page-grid">
+    <aside class="col-lg-2 col-xl-2 sidebar p-2">
+      <nav class="nav flex-column pt-2">
+        {% if current_membership.role == 'customer' %}
+          <a class="nav-link {% if request.resolver_match.url_name == 'customer_portal' %}active{% endif %}" href="{% url 'customer_portal' %}"><span class="sidebar-icon">✦</span> Customer AI Support</a>
+        {% else %}
+          <a class="nav-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span class="sidebar-icon">▦</span> Dashboard</a>
+          {% if current_membership.role == 'admin' or current_membership.role == 'manager' or current_membership.role == 'technician' %}
+          <a class="nav-link {% if request.resolver_match.url_name == 'call_register' or request.resolver_match.url_name == 'call_detail' %}active{% endif %}" href="{% url 'call_register' %}"><span class="sidebar-icon">☎</span> Call Register</a>
+          <a class="nav-link {% if request.resolver_match.url_name == 'customer_portal' %}active{% endif %}" href="{% url 'customer_portal' %}"><span class="sidebar-icon">✦</span> Customer AI Support</a>
+          <a class="nav-link {% if request.resolver_match.url_name == 'rag_assistant' %}active{% endif %}" href="{% url 'rag_assistant' %}"><span class="sidebar-icon">🤖</span> Engineer Copilot</a>
+          {% endif %}
+          <a class="nav-link {% if request.resolver_match.url_name == 'projects' %}active{% endif %}" href="{% url 'projects' %}"><span class="sidebar-icon">▤</span> Projects</a>
+          <a class="nav-link {% if request.resolver_match.url_name == 'assets' %}active{% endif %}" href="{% url 'assets' %}"><span class="sidebar-icon">⚙</span> Assets</a>
+          <a class="nav-link {% if request.resolver_match.url_name == 'inventory' %}active{% endif %}" href="{% url 'inventory' %}"><span class="sidebar-icon">▣</span> Inventory</a>
+          <a class="nav-link {% if request.resolver_match.url_name == 'part_requests' %}active{% endif %}" href="{% url 'part_requests' %}"><span class="sidebar-icon">⇄</span> Part Requests</a>
+          {% if current_membership.role == 'admin' or current_membership.role == 'manager' or current_membership.role == 'technician' %}<a class="nav-link {% if request.resolver_match.url_name == 'operations' %}active{% endif %}" href="{% url 'operations' %}"><span class="sidebar-icon">◫</span> Operations</a>{% endif %}
+          {% if current_membership.role == 'admin' or current_membership.role == 'manager' or current_membership.role == 'technician' %}
+          <a class="nav-link {% if request.resolver_match.url_name == 'knowledge_base' or request.resolver_match.url_name == 'knowledge_upload' %}active{% endif %}" href="{% url 'knowledge_base' %}"><span class="sidebar-icon">📖</span> Knowledge Base</a>
+          {% endif %}
+          {% if current_membership.role == 'admin' or current_membership.role == 'manager' %}
+          <a class="nav-link {% if request.resolver_match.url_name == 'users' %}active{% endif %}" href="{% url 'users' %}"><span class="sidebar-icon">👤</span> Users</a>
+          {% endif %}
+        {% endif %}
+      </nav>
+    </aside>
+    <main class="col-lg-10 col-xl-10 page-wrapper p-3 p-lg-4">
+      {% if messages %}{% for message in messages %}<div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show" role="alert">{{ message }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>{% endfor %}{% endif %}
+      {% block content %}{% endblock %}
+      <footer class="pt-5 pb-2 text-center small text-secondary">Local Django prototype • no Docker required • zero paid APIs • local Bootstrap UI</footer>
+    </main>
+  </div>
+</div>
+<script src="{% static 'vendor/bootstrap/bootstrap.bundle.min.js' %}"></script>
+<script src="{% static 'core/js/servy.js' %}"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,169 @@
+{% extends 'core/base.html' %}
+{% block title %}Customer AI Support • Servy RAG{% endblock %}
+{% block content %}
+<div class="customer-hero mb-4">
+  <h1 class="mb-2">Resolve common issues before creating a service call</h1>
+  <p class="mb-0 opacity-75">
+    Choose your asset, describe the problem, and the local RAG system will use only approved non-confidential customer documentation.
+    If it does not solve the issue, one click creates a Call Register ticket with the attempted guidance attached.
+  </p>
+</div>
+
+<div class="row g-4">
+  <!-- Left Column: Support Form (Before Ticket Creation) -->
+  <div class="col-xl-5">
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">Tell us what happened</h3>
+      </div>
+      <div class="card-body">
+        <form method="post" id="customer-support-form">
+          {% csrf_token %}
+
+          <!-- Customer Identity (Derived Server-Side) -->
+          <div class="mb-3">
+            <label class="form-label">Customer</label>
+            {% if is_customer_view and customer %}
+              <input type="text" class="form-control bg-light" value="{{ customer.name }}" readonly disabled>
+              <div class="form-text text-muted">Automatically identified from your authenticated account: {{ customer.name }}</div>
+            {% elif form.customer %}
+              {{ form.customer }}
+              {% if form.customer.errors %}<div class="text-danger small mt-1">{{ form.customer.errors.0 }}</div>{% endif %}
+            {% elif customer %}
+              <input type="text" class="form-control bg-light" value="{{ customer.name }}" readonly disabled>
+            {% endif %}
+          </div>
+
+          <!-- Site Dropdown -->
+          <div class="mb-3">
+            <label class="form-label" for="{{ form.site.id_for_label }}">Site</label>
+            {{ form.site }}
+            {% if form.site.errors %}<div class="text-danger small mt-1">{{ form.site.errors.0 }}</div>{% endif %}
+            <div class="form-text text-muted">Filter assets by location (optional).</div>
+          </div>
+
+          <!-- Asset Dropdown (Filtered by Site) -->
+          <div class="mb-3">
+            <label class="form-label" for="{{ form.asset.id_for_label }}">Asset</label>
+            {{ form.asset }}
+            {% if form.asset.errors %}<div class="text-danger small mt-1">{{ form.asset.errors.0 }}</div>{% endif %}
+          </div>
+
+          <!-- Question Textarea -->
+          <div class="mb-3">
+            <label class="form-label" for="{{ form.question.id_for_label }}">Describe the problem or ask a question</label>
+            {{ form.question }}
+            {% if form.question.errors %}<div class="text-danger small mt-1">{{ form.question.errors.0 }}</div>{% endif %}
+          </div>
+
+          <button type="submit" class="btn btn-servy w-100">Get Guided Help</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column: RAG Guidance & Escalation Options -->
+  <div class="col-xl-7">
+    {% if result %}
+      <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div>
+            <h3 class="card-title mb-0">Suggested Solution</h3>
+            {% if interaction and interaction.asset %}
+            <div class="small text-muted mt-1">
+              Assisting Asset: <strong>{{ interaction.asset.name }}</strong>
+              {% if interaction.asset.model_number %} · Model {{ interaction.asset.model_number }}{% endif %}
+              {% if interaction.asset.product %} ({{ interaction.asset.product.name }}){% endif %}
+            </div>
+            {% endif %}
+          </div>
+          <span class="badge bg-blue-lt text-blue">{{ result.engine }}</span>
+        </div>
+        <div class="card-body">
+          <div class="rag-answer" style="white-space: pre-wrap; font-size: 0.95rem; line-height: 1.6;">{{ result.answer }}</div>
+          <hr>
+          <h4>Sources &amp; References</h4>
+          {% for r in result.references %}
+          <div class="reference-card">
+            <strong>{{ r.reference }}</strong>
+            <div class="small-muted">{{ r.doc_type }}</div>
+          </div>
+          {% empty %}
+          <div class="text-secondary">No approved knowledge source matched strongly enough.</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% if interaction %}
+      <div class="card">
+        <div class="card-body">
+          <h3 class="mb-3">Did this resolve your issue?</h3>
+          <div class="d-flex flex-wrap gap-3">
+            <form method="post" action="{% url 'mark_resolved' interaction.id %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-success px-4">Yes, issue resolved</button>
+            </form>
+            <form method="post" action="{% url 'escalate_interaction' interaction.id %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-danger px-4">No, create service call</button>
+            </form>
+          </div>
+          <div class="small-muted mt-2">
+            If escalated, a new Call Register entry is created with your question, attempted AI guidance, and automatic technician assignment.
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    {% else %}
+      <div class="card">
+        <div class="empty-state py-5 text-center">
+          <div class="fs-1 mb-2">✦</div>
+          <p class="text-muted mb-0">
+            Select your asset and submit your question to retrieve verified documentation before opening a service ticket.
+          </p>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var siteSelect = document.getElementById("id_site");
+  var assetSelect = document.getElementById("id_asset");
+  if (!siteSelect || !assetSelect) return;
+
+  var assetSiteMap = {{ asset_site_map_json|default:'{}'|safe }};
+
+  function filterAssetsBySite() {
+    var selectedSite = siteSelect.value;
+    var currentAsset = assetSelect.value;
+    var firstVisible = null;
+
+    for (var i = 0; i < assetSelect.options.length; i++) {
+      var opt = assetSelect.options[i];
+      if (!opt.value) continue; // Skip empty placeholder
+
+      var siteForAsset = assetSiteMap[opt.value];
+      if (!selectedSite || !siteForAsset || siteForAsset === selectedSite) {
+        opt.hidden = false;
+        opt.disabled = false;
+        if (!firstVisible) firstVisible = opt.value;
+      } else {
+        opt.hidden = true;
+        opt.disabled = true;
+      }
+    }
+
+    if (currentAsset && assetSelect.selectedOptions[0] && assetSelect.selectedOptions[0].disabled) {
+      assetSelect.value = "";
+    }
+  }
+
+  siteSelect.addEventListener("change", filterAssetsBySite);
+  filterAssetsBySite();
+});
+</script>
+{% endblock %}

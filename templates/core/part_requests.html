@@ -1,0 +1,6 @@
+{% extends 'core/base.html' %}
+{% block title %}Part Requests • Servy RAG{% endblock %}
+{% block content %}
+<div class="mb-4"><h1 class="section-title mb-1">Part Requests</h1><div class="text-secondary">Tracks request, approval, store and technician status.</div></div>
+<div class="card"><div class="table-responsive"><table class="table table-vcenter mb-0"><thead><tr><th>Indent ID</th><th>Date</th><th>Spare Description</th><th>Requester</th><th>Approver</th><th>Manager Status</th><th>Store Status</th><th>Technician Status</th></tr></thead><tbody>{% for p in page_obj %}<tr><td class="fw-bold">{{ p.indent_id }}</td><td>{{ p.date|date:'d M Y' }}<div class="small-muted">{{ p.date|time:'h:i A' }}</div></td><td>{{ p.spare_description }}</td><td>{{ p.requester.full_name|default:'—' }}</td><td>{{ p.approver.full_name|default:'—' }}</td><td><span class="badge badge-soft-info">{{ p.get_manager_status_display }}</span></td><td><span class="badge badge-soft-warning">{{ p.get_store_status_display }}</span></td><td><span class="badge bg-secondary-lt">{{ p.get_technician_status_display }}</span></td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}
