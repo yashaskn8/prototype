@@ -33,6 +33,7 @@ urlpatterns = [
 
     # Knowledge Base
     path("knowledge/", api_views.KnowledgeListView.as_view(), name="api_knowledge"),
+    path("knowledge/metadata-options/", api_views.KnowledgeMetadataOptionsView.as_view(), name="api_knowledge_metadata_options"),
     path("knowledge/<int:pk>/", api_views.KnowledgeDetailView.as_view(), name="api_knowledge_detail"),
     path("knowledge/<int:pk>/index-status/", api_views.KnowledgeIndexStatusView.as_view(), name="api_knowledge_index_status"),
     path("knowledge/<int:pk>/download/", api_views.KnowledgeDownloadView.as_view(), name="api_knowledge_download"),

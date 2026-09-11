@@ -17,7 +17,8 @@ from rest_framework.views import APIView
 from core.models import (
     Tenant, Customer, Site, Asset, Product, Project, ServiceCall, CallUpdate,
     KnowledgeDocument, KnowledgeChunk, CustomerInteraction, StaffProfile,
-    TenantMembership, InventoryItem, PartRequest, OperationalZone
+    TenantMembership, InventoryItem, PartRequest, OperationalZone,
+    ProductCategory, ProductDomain, Brand
 )
 from core.security import (
     require_api_context, authorized_knowledge_queryset,
@@ -461,7 +462,7 @@ class EngineerCopilotQueryView(APIView):
             return Response({"detail": "Engineer Copilot is restricted to service staff."}, status=status.HTTP_403_FORBIDDEN)
 
         tenant = ctx["tenant"]
-        call_id = request.data.get("call_id")
+        call_id = request.data.get("call_id") or request.data.get("service_call_id")
         question = (request.data.get("question") or request.data.get("query") or "").strip()
 
         if not call_id or not question:
@@ -720,7 +721,7 @@ class KnowledgeListView(APIView):
         if ctx["role"] in {"store_admin", "store_operator"}:
             return Response({"detail": "Knowledge base access is not permitted for store roles."}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = authorized_knowledge_queryset(ctx).select_related("product", "asset", "customer")
+        qs = authorized_knowledge_queryset(ctx).select_related("product", "asset", "customer").annotate(chunks_count=Count("chunks"))
 
         search = request.query_params.get("q", "").strip()
         if search:
@@ -729,6 +730,10 @@ class KnowledgeListView(APIView):
         doc_type = request.query_params.get("doc_type", "").strip()
         if doc_type:
             qs = qs.filter(doc_type=doc_type)
+
+        source_type = request.query_params.get("source_type", "").strip()
+        if source_type:
+            qs = qs.filter(source_type=source_type)
 
         product_id = request.query_params.get("product_id")
         if product_id:
@@ -755,9 +760,14 @@ class KnowledgeListView(APIView):
         total_count = qs.count()
 
         items = list(qs[:100].values(
-            "id", "title", "doc_type", "is_confidential", "is_rag_enabled",
-            "index_status", "index_version", "updated_at", "product__name", "asset__name"
+            "id", "title", "description", "doc_type", "source_type", "source_url", "tags",
+            "file", "is_confidential", "disable_sharing", "is_rag_enabled",
+            "index_status", "index_version", "updated_at", "product__name", "asset__name",
+            "customer__name", "chunks_count"
         ))
+        for item in items:
+            item["has_file"] = bool(item.pop("file", None))
+
         return Response({
             "count": total_count,
             "documents": items,
@@ -828,8 +838,41 @@ class KnowledgeIndexStatusView(APIView):
         })
 
 
+class KnowledgeMetadataOptionsView(APIView):
+    """Return available metadata taxonomy options for KB upload and classification."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        customers = list(Customer.objects.filter(tenant=tenant).values("id", "name"))
+        domains = list(ProductDomain.objects.filter(tenant=tenant).values("id", "name"))
+        categories = list(ProductCategory.objects.filter(tenant=tenant).values("id", "name", "domain_id"))
+        brands = list(Brand.objects.filter(tenant=tenant).values("id", "name"))
+        products = list(Product.objects.filter(tenant=tenant).values("id", "name", "category_id", "brand_id"))
+        assets = list(Asset.objects.filter(tenant=tenant, status="active").values("id", "name", "asset_code", "model_number", "product_id", "customer_id"))
+
+        doc_types = [{"key": k, "label": str(v)} for k, v in KnowledgeDocument.DOC_TYPES]
+        source_types = [{"key": k, "label": str(v)} for k, v in KnowledgeDocument.SOURCE_TYPES]
+
+        return Response({
+            "customers": customers,
+            "domains": domains,
+            "categories": categories,
+            "brands": brands,
+            "products": products,
+            "assets": assets,
+            "doc_types": doc_types,
+            "source_types": source_types,
+        })
+
+
 class KnowledgeUploadView(APIView):
-    """Upload and index Knowledge Base documents."""
+    """Upload and index Knowledge Base documents with generic content & RAG classification."""
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [UploadThrottle]
 
@@ -840,16 +883,36 @@ class KnowledgeUploadView(APIView):
 
         tenant = ctx["tenant"]
         title = (request.data.get("title") or "").strip()
+        description = (request.data.get("description") or "").strip()
         doc_type = request.data.get("doc_type", "reference")
+        source_type = (request.data.get("source_type") or ("file" if request.FILES.get("file") else "text")).strip().lower()
+        source_url = (request.data.get("source_url") or "").strip()
+        tags = (request.data.get("tags") or "").strip()
         is_confidential = str(request.data.get("is_confidential", "")).lower() in {"1", "true", "yes"}
+        disable_sharing = str(request.data.get("disable_sharing", "")).lower() in {"1", "true", "yes"}
+        rag_enabled_raw = request.data.get("is_rag_enabled")
+        is_rag_enabled = True if rag_enabled_raw is None or rag_enabled_raw == "" else str(rag_enabled_raw).lower() in {"1", "true", "yes"}
+
+        customer_id = request.data.get("customer_id")
+        domain_id = request.data.get("domain_id")
+        category_id = request.data.get("category_id")
+        product_id = request.data.get("product_id")
+        asset_id = request.data.get("asset_id")
+
+        customer = Customer.objects.filter(tenant=tenant, id=customer_id).first() if customer_id else None
+        domain = ProductDomain.objects.filter(tenant=tenant, id=domain_id).first() if domain_id else None
+        category = ProductCategory.objects.filter(tenant=tenant, id=category_id).first() if category_id else None
+        product = Product.objects.filter(tenant=tenant, id=product_id).first() if product_id else None
+        asset = Asset.objects.filter(tenant=tenant, id=asset_id).first() if asset_id else None
+
         content_text = (request.data.get("content_text") or "").strip()
         uploaded_file = request.FILES.get("file")
 
         if not title:
             return Response({"detail": "Title is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not content_text and not uploaded_file:
-            return Response({"detail": "Provide either text content or a file."}, status=status.HTTP_400_BAD_REQUEST)
+        if not content_text and not uploaded_file and not source_url:
+            return Response({"detail": "Provide text content, an attachment file, or a source hyperlink."}, status=status.HTTP_400_BAD_REQUEST)
 
         # File validation
         if uploaded_file:
@@ -881,20 +944,32 @@ class KnowledgeUploadView(APIView):
                     return Response({"detail": "Binary data or null bytes detected in text file."}, status=status.HTTP_400_BAD_REQUEST)
 
         doc = None
+        chunks_indexed = 0
         try:
             with transaction.atomic():
                 doc = KnowledgeDocument.objects.create(
                     tenant=tenant,
+                    customer=customer,
+                    domain=domain,
+                    category=category,
+                    product=product,
+                    asset=asset,
                     title=title,
+                    description=description,
                     doc_type=doc_type,
+                    source_type=source_type,
+                    source_url=source_url,
+                    tags=tags,
                     is_confidential=is_confidential,
+                    disable_sharing=disable_sharing,
+                    is_rag_enabled=is_rag_enabled,
                     content_text=content_text,
                     file=uploaded_file,
                     original_filename=uploaded_file.name if uploaded_file else "",
-                    is_rag_enabled=True,
-                    index_status="INDEXING",
+                    index_status="INDEXING" if is_rag_enabled else "NOT_INDEXED",
                 )
-                chunks_indexed = index_document(doc)
+                if is_rag_enabled and (content_text or uploaded_file):
+                    chunks_indexed = index_document(doc)
         except UnsafeDocumentError as exc:
             if doc and doc.file:
                 try:
@@ -911,7 +986,8 @@ class KnowledgeUploadView(APIView):
             "title": doc.title,
             "chunks_count": chunks_indexed,
             "index_status": doc.index_status,
-            "message": f"Document created and indexed ({chunks_indexed} chunks).",
+            "is_rag_enabled": doc.is_rag_enabled,
+            "message": f"Document created ({chunks_indexed} chunks indexed)." if is_rag_enabled else "Document saved to Knowledge Base.",
         }, status=status.HTTP_201_CREATED)
 
 
