@@ -1,6 +1,7 @@
+import time
 from datetime import timedelta
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Count, Q, Max
 from django.utils import timezone
 
@@ -28,7 +29,7 @@ def _sla_for(tenant, priority="normal"):
 
 def create_call_from_interaction(interaction):
     interaction.refresh_from_db()
-    if interaction.escalated_call:
+    if interaction.escalated_call_id:
         return interaction.escalated_call
 
     tenant = interaction.tenant
@@ -41,14 +42,14 @@ def create_call_from_interaction(interaction):
     response_minutes = sla.response_minutes if sla else 120
     resolution_minutes = sla.resolution_minutes if sla else 720
 
-    for _ in range(3):
+    for attempt in range(5):
         try:
             with transaction.atomic():
                 from core.models import CustomerInteraction
                 locked = CustomerInteraction.objects.filter(id=interaction.id).first()
                 if not locked:
                     raise ValueError("Interaction record not found.")
-                if locked.escalated_call:
+                if locked.escalated_call_id:
                     return locked.escalated_call
 
                 last_id = ServiceCall.objects.filter(tenant=tenant).aggregate(m=Max("servy_id"))["m"] or 42830
@@ -93,16 +94,17 @@ def create_call_from_interaction(interaction):
                 locked.save(update_fields=["resolved", "escalated_call"])
                 interaction.refresh_from_db()
                 return call
-        except IntegrityError:
-            # Handle SQLite concurrency contention: OneToOne constraint on escalated_call
-            # or servy_id collision. Rollback occurs automatically in transaction.atomic().
+        except (IntegrityError, OperationalError):
+            # Handle SQLite concurrency contention: OneToOne constraint on escalated_call,
+            # servy_id collision, or SQLite database lock. Rollback occurs automatically.
             interaction.refresh_from_db()
-            if interaction.escalated_call:
+            if interaction.escalated_call_id:
                 return interaction.escalated_call
+            time.sleep(0.05 * (attempt + 1))
             continue
 
     interaction.refresh_from_db()
-    if interaction.escalated_call:
+    if interaction.escalated_call_id:
         return interaction.escalated_call
     raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
 

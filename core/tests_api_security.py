@@ -102,6 +102,11 @@ class ApiSecurityAndPermissionsTests(TestCase):
         TenantMembership.objects.create(user=self.user_store, tenant=self.tenant_a, role="store_operator", can_view_confidential=False)
         StaffProfile.objects.create(tenant=self.tenant_a, user=self.user_store, full_name="Store Keeper", role="store_operator")
 
+        # Store Admin
+        self.user_store_admin = User.objects.create_user("store_admin_user", password="StoreAdminPassword!2026")
+        TenantMembership.objects.create(user=self.user_store_admin, tenant=self.tenant_a, role="store_admin", can_view_confidential=False)
+        StaffProfile.objects.create(tenant=self.tenant_a, user=self.user_store_admin, full_name="Store Manager", role="store_admin")
+
         # Customer 1
         self.user_cust1 = User.objects.create_user("cust1_user", password="CustPassword!2026")
         TenantMembership.objects.create(user=self.user_cust1, tenant=self.tenant_a, role="customer", customer=self.customer_a1)
@@ -258,6 +263,61 @@ class ApiSecurityAndPermissionsTests(TestCase):
         # Verify exactly one service call exists for this interaction
         self.assertEqual(ServiceCall.objects.filter(source_interactions=interaction).count(), 1)
 
+    def test_escalation_concurrency_and_retry(self):
+        """Test that create_call_from_interaction handles OperationalError and IntegrityError with retry."""
+        from unittest.mock import patch
+        from django.db import OperationalError
+        from core.services.ticketing import create_call_from_interaction
+
+        interaction = CustomerInteraction.objects.create(
+            tenant=self.tenant_a, created_by=self.user_cust1, customer=self.customer_a1,
+            site=self.site_a1, asset=self.asset_a1, question="Hydraulic cylinder noisy", answer="Check seals"
+        )
+
+        orig_create = ServiceCall.objects.create
+        call_count = [0]
+
+        def flaky_create(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Simulate SQLite lock error on first attempt
+                raise OperationalError("database is locked")
+            return orig_create(*args, **kwargs)
+
+        with patch.object(ServiceCall.objects, "create", side_effect=flaky_create):
+            call = create_call_from_interaction(interaction)
+
+        self.assertIsNotNone(call)
+        self.assertEqual(call_count[0], 2)
+        self.assertEqual(ServiceCall.objects.filter(source_interactions=interaction).count(), 1)
+
+    def test_store_roles_cannot_resolve_or_escalate_interaction(self):
+        """Store operators and store admins must be forbidden from Customer AI Support resolve & escalate endpoints."""
+        interaction = CustomerInteraction.objects.create(
+            tenant=self.tenant_a, created_by=self.user_cust1, customer=self.customer_a1,
+            site=self.site_a1, asset=self.asset_a1, question="Valve leaking", answer="Replace seal"
+        )
+        resolve_url = reverse("api_customer_support_resolve", kwargs={"pk": interaction.id})
+        escalate_url = reverse("api_customer_support_escalate", kwargs={"pk": interaction.id})
+
+        # Store Operator -> 403
+        self.client.login(username="store_user", password="StorePassword!2026")
+        res_res = self.client.post(resolve_url)
+        self.assertEqual(res_res.status_code, 403)
+        self.assertIn("Customer AI Support is not available for store roles", str(res_res.data))
+
+        res_esc = self.client.post(escalate_url)
+        self.assertEqual(res_esc.status_code, 403)
+        self.assertIn("Customer AI Support is not available for store roles", str(res_esc.data))
+
+        # Store Admin -> 403
+        self.client.login(username="store_admin_user", password="StoreAdminPassword!2026")
+        res_res2 = self.client.post(resolve_url)
+        self.assertEqual(res_res2.status_code, 403)
+
+        res_esc2 = self.client.post(escalate_url)
+        self.assertEqual(res_esc2.status_code, 403)
+
     # ------------------------------------------------------------------
     # 5. Multi-Tenant Superuser Selection
     # ------------------------------------------------------------------
@@ -268,6 +328,12 @@ class ApiSecurityAndPermissionsTests(TestCase):
         session.pop("active_tenant_id", None)
         session.pop("tenant_id", None)
         session.save()
+
+        # /api/auth/me/ succeeds for superuser and returns role superuser and available_tenants
+        res_me = self.client.get(reverse("api_auth_me"))
+        self.assertEqual(res_me.status_code, 200)
+        self.assertEqual(res_me.data["user"]["role"], "superuser")
+        self.assertGreaterEqual(len(res_me.data["available_tenants"]), 2)
 
         # Any tenant-scoped endpoint returns 400
         res = self.client.get(reverse("api_dashboard"))
@@ -342,6 +408,18 @@ class ApiSecurityAndPermissionsTests(TestCase):
         res_fake_pdf = self.client.post(url, {"title": "Fake PDF", "file": fake_pdf})
         self.assertEqual(res_fake_pdf.status_code, 400)
         self.assertIn("PDF specification", str(res_fake_pdf.data))
+
+        # Upload malformed DOCX (valid PK header but corrupted zip payload) -> 400 NOT 500
+        corrupted_content = b"PK\x03\x04corrupted_payload_that_cannot_be_unzipped"
+        bad_docx = SimpleUploadedFile("broken.docx", corrupted_content, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        res_bad_docx = self.client.post(url, {
+            "title": "Broken DOCX Test",
+            "doc_type": "manual",
+            "file": bad_docx,
+        }, format="multipart")
+        self.assertEqual(res_bad_docx.status_code, 400)
+        self.assertIn("detail", res_bad_docx.data)
+        self.assertFalse(KnowledgeDocument.objects.filter(title="Broken DOCX Test").exists())
 
     # ------------------------------------------------------------------
     # 7. Supporting Modules and Field Schema Verification
@@ -443,3 +521,61 @@ class ApiSecurityAndPermissionsTests(TestCase):
         self.assertIn("references", copilot_res.data)
         # Tech does NOT see confidential key because can_view_confidential=False
         self.assertNotIn("7741", copilot_res.data["answer"])
+
+    def test_engineer_copilot_past_resolutions_source_kind(self):
+        """Verify past_resolutions array in Engineer Copilot filters for source_kind == 'past_resolution'."""
+        from unittest.mock import patch
+
+        call = ServiceCall.objects.create(
+            tenant=self.tenant_a,
+            servy_id=42999,
+            call_type="Service",
+            complaint_type="Valve Leaking",
+            complaint_text="Hydraulic valve seal broken",
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            status="assigned",
+            priority="normal"
+        )
+
+        mock_references = [
+            {
+                "source_kind": "past_resolution",
+                "service_call_id": call.id,
+                "title": f"Service Call #{call.servy_id} - Valve Leaking",
+                "reference": f"Service Call #{call.servy_id}",
+                "doc_type": "service_resolution",
+                "score": 0.95,
+            },
+            {
+                "source_kind": "knowledge",
+                "document_id": self.doc_public.id,
+                "title": self.doc_public.title,
+                "reference": self.doc_public.title,
+                "doc_type": "reference",
+                "score": 0.88,
+            }
+        ]
+
+        def mock_ask_rag(*args, **kwargs):
+            return {
+                "answer": "Refer to previous resolution for valve seal replacement.",
+                "references": mock_references,
+                "engine": "mock",
+                "retrieved": [],
+            }
+
+        self.client.login(username="tech_user", password="TechPassword!2026")
+        url = reverse("api_engineer_copilot_query")
+        with patch("core.api_views.ask_rag", side_effect=mock_ask_rag):
+            res = self.client.post(url, {
+                "call_id": call.id,
+                "question": "How do I fix valve leak?",
+            }, format="json")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("past_resolutions", res.data)
+        self.assertEqual(len(res.data["past_resolutions"]), 1)
+        self.assertEqual(res.data["past_resolutions"][0]["service_call_id"], call.id)
+        self.assertEqual(res.data["past_resolutions"][0]["title"], f"Service Call #{call.servy_id} - Valve Leaking")

@@ -26,6 +26,7 @@ from core.security import (
 from core.services.rag import ask_rag
 from core.services.ticketing import create_call_from_interaction
 from core.services.indexing import index_document
+from core.services.document_loader import UnsafeDocumentError
 from core.services.chroma_store import queue_chroma_deletion
 from core.services.excel_io import export_calls_xlsx, import_calls_xlsx
 from core.forms import MAX_KB_UPLOAD_BYTES
@@ -97,16 +98,21 @@ class LoginView(APIView):
             if ctx["customer"]:
                 customer_id = ctx["customer"].id
                 customer_name = ctx["customer"].name
-        except exceptions.ParseError:
+        except (exceptions.ValidationError, exceptions.ParseError):
             # Superuser with multiple active tenants and none selected yet
             if user.is_superuser:
                 role = "superuser"
             else:
                 raise
 
+        available_tenants = []
+        if user.is_superuser:
+            available_tenants = list(Tenant.objects.filter(is_active=True).values("id", "name", "slug"))
+
         return Response({
             "detail": "Login successful",
             "csrfToken": get_token(request),
+            "available_tenants": available_tenants,
             "user": {
                 "id": user.id,
                 "username": user.username,
@@ -147,7 +153,7 @@ class CurrentUserView(APIView):
             if ctx["customer"]:
                 customer_id = ctx["customer"].id
                 customer_name = ctx["customer"].name
-        except exceptions.ParseError:
+        except (exceptions.ValidationError, exceptions.ParseError):
             if request.user.is_superuser:
                 role = "superuser"
             else:
@@ -358,10 +364,23 @@ class CustomerSupportQueryView(APIView):
             source_refs=rag_res["references"],
         )
 
+        past_resolutions = [
+            {
+                "service_call_id": r.get("service_call_id"),
+                "title": r.get("title"),
+                "reference": r.get("reference"),
+                "doc_type": r.get("doc_type"),
+                "score": r.get("score"),
+            }
+            for r in rag_res.get("references", [])
+            if r.get("source_kind") == "past_resolution"
+        ]
+
         return Response({
             "interaction_id": interaction.id,
             "answer": rag_res["answer"],
             "references": rag_res["references"],
+            "past_resolutions": past_resolutions,
             "engine": rag_res["engine"],
             "retrieval_backend": retrieval_backend,
         })
@@ -373,6 +392,11 @@ class CustomerSupportResolveView(APIView):
 
     def post(self, request, pk):
         ctx = require_api_context(request)
+        if ctx["role"] in {"store_admin", "store_operator"}:
+            return Response(
+                {"detail": "Customer AI Support is not available for store roles."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         tenant = ctx["tenant"]
 
         try:
@@ -394,6 +418,11 @@ class CustomerSupportEscalateView(APIView):
 
     def post(self, request, pk):
         ctx = require_api_context(request)
+        if ctx["role"] in {"store_admin", "store_operator"}:
+            return Response(
+                {"detail": "Customer AI Support is not available for store roles."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         tenant = ctx["tenant"]
 
         try:
@@ -461,12 +490,14 @@ class EngineerCopilotQueryView(APIView):
 
         past_resolutions = [
             {
-                "service_call_id": r["service_call_id"],
-                "title": r["title"],
-                "reference": r["reference"],
+                "service_call_id": r.get("service_call_id"),
+                "title": r.get("title"),
+                "reference": r.get("reference"),
+                "doc_type": r.get("doc_type"),
+                "score": r.get("score"),
             }
             for r in rag_res.get("references", [])
-            if r.get("source_kind") == "resolution"
+            if r.get("source_kind") == "past_resolution"
         ]
 
         return Response({
@@ -808,19 +839,31 @@ class KnowledgeUploadView(APIView):
                 if b"\x00" in sample:
                     return Response({"detail": "Binary data or null bytes detected in text file."}, status=status.HTTP_400_BAD_REQUEST)
 
-        doc = KnowledgeDocument.objects.create(
-            tenant=tenant,
-            title=title,
-            doc_type=doc_type,
-            is_confidential=is_confidential,
-            content_text=content_text,
-            file=uploaded_file,
-            original_filename=uploaded_file.name if uploaded_file else "",
-            is_rag_enabled=True,
-            index_status="INDEXING",
-        )
-
-        chunks_indexed = index_document(doc)
+        doc = None
+        try:
+            with transaction.atomic():
+                doc = KnowledgeDocument.objects.create(
+                    tenant=tenant,
+                    title=title,
+                    doc_type=doc_type,
+                    is_confidential=is_confidential,
+                    content_text=content_text,
+                    file=uploaded_file,
+                    original_filename=uploaded_file.name if uploaded_file else "",
+                    is_rag_enabled=True,
+                    index_status="INDEXING",
+                )
+                chunks_indexed = index_document(doc)
+        except UnsafeDocumentError as exc:
+            if doc and doc.file:
+                try:
+                    doc.file.delete(save=False)
+                except Exception:
+                    pass
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response({
             "id": doc.id,
