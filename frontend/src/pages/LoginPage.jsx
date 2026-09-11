@@ -10,10 +10,10 @@ export function LoginPage() {
   const [localError, setLocalError] = useState(null);
 
   const demoAccounts = [
-    { label: 'Admin', role: 'Full System Superuser', u: 'admin' },
-    { label: 'Manager', role: 'Service Operations', u: 'manager' },
-    { label: 'Technician', role: 'Apex Services Tech', u: 'tech1' },
-    { label: 'Customer', role: 'Acme Diagnostics', u: 'acme_user' },
+    { label: 'Customer', role: 'FreshDairy Labs Customer', u: 'freshdairy', p: 'FreshDairy!2026' },
+    { label: 'Technician', role: 'Field Service Tech', u: 'engineer', p: 'ServyTech!2026' },
+    { label: 'Manager', role: 'Service Operations', u: 'manager', p: 'ServyManager!2026' },
+    { label: 'Admin', role: 'System Superuser', u: 'admin', p: 'ServyAdmin!2026' },
   ];
 
   async function handleSubmit(e) {
@@ -31,9 +31,9 @@ export function LoginPage() {
     }
   }
 
-  function fillDemo(u) {
+  function fillDemo(u, p) {
     setUsername(u);
-    setPassword('');
+    setPassword(p);
     setLocalError(null);
   }
 
@@ -63,7 +63,7 @@ export function LoginPage() {
 
         <div style={{ marginBottom: '20px' }}>
           <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
-            Quick Demo Personas
+            Quick Demo Personas (1-Click Login)
           </label>
           <div className="persona-buttons">
             {demoAccounts.map(acc => (
@@ -71,7 +71,7 @@ export function LoginPage() {
                 key={acc.u}
                 type="button"
                 className="persona-btn"
-                onClick={() => fillDemo(acc.u)}
+                onClick={() => fillDemo(acc.u, acc.p)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <strong>{acc.label}</strong>
@@ -80,6 +80,9 @@ export function LoginPage() {
                 <span>{acc.role} ({acc.u})</span>
               </button>
             ))}
+          </div>
+          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+            Click any demo persona to automatically fill verified login credentials.
           </div>
         </div>
 
