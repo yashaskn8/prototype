@@ -15,6 +15,7 @@ def ask_rag(*, tenant, question, asset, customer=None, include_confidential=Fals
             "retrieved": [],
         }
 
+    include_past_resolutions = bool(staff_mode and service_call)
     results = retrieve(
         tenant=tenant,
         question=question,
@@ -24,7 +25,7 @@ def ask_rag(*, tenant, question, asset, customer=None, include_confidential=Fals
         top_k=settings.SERVY_RAG_TOP_K,
         min_score=settings.SERVY_RAG_MIN_SCORE,
         service_call=service_call,
-        include_past_resolutions=True,
+        include_past_resolutions=include_past_resolutions,
         staff_mode=staff_mode,
     )
     answer, engine = generate_answer(question, asset, results, service_call=service_call)

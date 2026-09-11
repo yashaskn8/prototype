@@ -532,8 +532,18 @@ class SitesAssetsView(APIView):
         if not site:
             return Response({"detail": "Site not found or access denied."}, status=status.HTTP_404_NOT_FOUND)
 
+        asset_filter = {
+            "tenant": tenant,
+            "site": site,
+            "status": "active",
+        }
+        if role in CUSTOMER_ROLES:
+            asset_filter["customer"] = customer
+        elif site.customer_id:
+            asset_filter["customer"] = site.customer
+
         assets = list(Asset.objects.filter(
-            tenant=tenant, site=site, status="active"
+            **asset_filter
         ).select_related("product").values("id", "name", "asset_code", "model_number", "product__name"))
 
         return Response({"assets": assets})
@@ -716,11 +726,42 @@ class KnowledgeListView(APIView):
         if search:
             qs = qs.filter(Q(title__icontains=search) | Q(tags__icontains=search) | Q(description__icontains=search))
 
+        doc_type = request.query_params.get("doc_type", "").strip()
+        if doc_type:
+            qs = qs.filter(doc_type=doc_type)
+
+        product_id = request.query_params.get("product_id")
+        if product_id:
+            qs = qs.filter(product_id=product_id)
+
+        asset_id = request.query_params.get("asset_id")
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+
+        index_status = request.query_params.get("index_status", "").strip()
+        if index_status:
+            qs = qs.filter(index_status=index_status)
+
+        rag_enabled = request.query_params.get("is_rag_enabled")
+        if rag_enabled is not None and rag_enabled != "":
+            qs = qs.filter(is_rag_enabled=rag_enabled.lower() in ("true", "1"))
+
+        # Confidential filter only for authorized staff
+        if ctx.get("can_view_confidential"):
+            confidential_param = request.query_params.get("is_confidential")
+            if confidential_param is not None and confidential_param != "":
+                qs = qs.filter(is_confidential=confidential_param.lower() in ("true", "1"))
+
+        total_count = qs.count()
+
         items = list(qs[:100].values(
             "id", "title", "doc_type", "is_confidential", "is_rag_enabled",
             "index_status", "index_version", "updated_at", "product__name", "asset__name"
         ))
-        return Response({"documents": items})
+        return Response({
+            "count": total_count,
+            "documents": items,
+        })
 
 
 class KnowledgeDetailView(APIView):

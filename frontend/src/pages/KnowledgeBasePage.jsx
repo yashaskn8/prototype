@@ -20,9 +20,14 @@ import {
 export function KnowledgeBasePage() {
   const { user } = useAuth();
   const [docs, setDocs] = useState([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
+  const [docTypeFilter, setDocTypeFilter] = useState('');
+  const [indexStatusFilter, setIndexStatusFilter] = useState('');
+  const [ragFilter, setRagFilter] = useState('');
+  const [confidentialFilter, setConfidentialFilter] = useState('');
 
   // Upload modal state
   const [showUpload, setShowUpload] = useState(false);
@@ -34,12 +39,23 @@ export function KnowledgeBasePage() {
   const [uploading, setUploading] = useState(false);
   const [uploadNotice, setUploadNotice] = useState(null);
 
+  const isStaff = ['admin', 'manager', 'technician', 'superuser'].includes(user?.role);
+
   async function loadDocs() {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/api/knowledge/');
+      const params = new URLSearchParams();
+      if (search.trim()) params.append('q', search.trim());
+      if (docTypeFilter) params.append('doc_type', docTypeFilter);
+      if (indexStatusFilter) params.append('index_status', indexStatusFilter);
+      if (ragFilter) params.append('is_rag_enabled', ragFilter);
+      if (confidentialFilter) params.append('is_confidential', confidentialFilter);
+
+      const qs = params.toString() ? `?${params.toString()}` : '';
+      const res = await api.get(`/api/knowledge/${qs}`);
       setDocs(res.documents || []);
+      setTotalCount(res.count !== undefined ? res.count : (res.documents || []).length);
     } catch (err) {
       setError(err.detail || 'Failed to load knowledge base.');
     } finally {
@@ -49,7 +65,7 @@ export function KnowledgeBasePage() {
 
   useEffect(() => {
     loadDocs();
-  }, []);
+  }, [docTypeFilter, indexStatusFilter, ragFilter, confidentialFilter]);
 
   async function handleUpload(e) {
     e.preventDefault();
@@ -93,13 +109,6 @@ export function KnowledgeBasePage() {
     }
   }
 
-  const filteredDocs = docs.filter(d => 
-    !search || 
-    d.title.toLowerCase().includes(search.toLowerCase()) ||
-    (d.description && d.description.toLowerCase().includes(search.toLowerCase())) ||
-    (d.tags && d.tags.toLowerCase().includes(search.toLowerCase()))
-  );
-
   const canUpload = ['admin', 'manager', 'technician', 'superuser'].includes(user?.role);
   const canDelete = ['admin', 'manager', 'superuser'].includes(user?.role);
 
@@ -108,11 +117,16 @@ export function KnowledgeBasePage() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
         <div>
-          <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-main)', letterSpacing: '-0.02em' }}>
-            Technical Knowledge Base & Manuals
-          </h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem' }}>
-            Multi-tier vector-indexed documents, wiring schematics, and confidential service bulletins.
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-main)', letterSpacing: '-0.02em' }}>
+              Technical Knowledge Base & Manuals
+            </h2>
+            <span className="badge" style={{ background: '#e0e7ff', color: '#4338ca', fontWeight: 700, fontSize: '0.82rem', padding: '4px 10px' }}>
+              {totalCount} {totalCount === 1 ? 'document' : 'documents'}
+            </span>
+          </div>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginTop: '4px' }}>
+            Multi-tier vector-indexed documents, technical manuals, and equipment operating guides.
           </p>
         </div>
 
@@ -132,8 +146,8 @@ export function KnowledgeBasePage() {
 
       {/* Filter Bar */}
       <div className="card" style={{ marginBottom: '20px', padding: '16px 20px' }}>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-          <div style={{ position: 'relative', flex: 1 }}>
+        <form onSubmit={e => { e.preventDefault(); loadDocs(); }} style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flex: 1, minWidth: '220px' }}>
             <Search size={16} color="#94a3b8" style={{ position: 'absolute', left: '12px', top: '12px' }} />
             <input
               type="text"
@@ -144,10 +158,62 @@ export function KnowledgeBasePage() {
               onChange={e => setSearch(e.target.value)}
             />
           </div>
-          <button className="btn btn-secondary" onClick={loadDocs} title="Refresh documents">
-            <RefreshCw size={14} />
+
+          <select
+            className="form-control"
+            style={{ width: 'auto', minWidth: '130px' }}
+            value={docTypeFilter}
+            onChange={e => setDocTypeFilter(e.target.value)}
+          >
+            <option value="">All Doc Types</option>
+            <option value="manual">Manuals</option>
+            <option value="sop">SOPs</option>
+            <option value="schematic">Schematics</option>
+            <option value="bulletin">Bulletins</option>
+            <option value="guide">User Guides</option>
+          </select>
+
+          <select
+            className="form-control"
+            style={{ width: 'auto', minWidth: '130px' }}
+            value={indexStatusFilter}
+            onChange={e => setIndexStatusFilter(e.target.value)}
+          >
+            <option value="">All Index Statuses</option>
+            <option value="INDEXED">Indexed</option>
+            <option value="NOT_INDEXED">Not Indexed</option>
+            <option value="INDEXING">Indexing</option>
+            <option value="FAILED">Failed</option>
+          </select>
+
+          <select
+            className="form-control"
+            style={{ width: 'auto', minWidth: '120px' }}
+            value={ragFilter}
+            onChange={e => setRagFilter(e.target.value)}
+          >
+            <option value="">RAG Status</option>
+            <option value="true">RAG Enabled</option>
+            <option value="false">RAG Disabled</option>
+          </select>
+
+          {isStaff && (
+            <select
+              className="form-control"
+              style={{ width: 'auto', minWidth: '130px' }}
+              value={confidentialFilter}
+              onChange={e => setConfidentialFilter(e.target.value)}
+            >
+              <option value="">All Classifications</option>
+              <option value="false">Public</option>
+              <option value="true">Confidential Only</option>
+            </select>
+          )}
+
+          <button type="submit" className="btn btn-secondary" title="Search / Refresh">
+            <RefreshCw size={14} /> Search
           </button>
-        </div>
+        </form>
       </div>
 
       {/* Documents Grid / Table */}
@@ -172,14 +238,14 @@ export function KnowledgeBasePage() {
                     <p>Loading technical library...</p>
                   </td>
                 </tr>
-              ) : filteredDocs.length === 0 ? (
+              ) : docs.length === 0 ? (
                 <tr>
                   <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
                     No knowledge documents found matching the criteria.
                   </td>
                 </tr>
               ) : (
-                filteredDocs.map(doc => (
+                docs.map(doc => (
                   <tr key={doc.id}>
                     <td>
                       <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>

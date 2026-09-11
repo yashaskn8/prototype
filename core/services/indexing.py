@@ -52,6 +52,13 @@ def index_document(document):
             is_quarantined=bool(flags),
         ))
     KnowledgeChunk.objects.bulk_create(objects)
+    # Mark as INDEXED immediately so the sparse/fallback retriever can find
+    # these chunks even when Chroma sync hasn't completed yet (or inside test
+    # transactions where on_commit never fires).
+    document.index_status = "INDEXED"
+    from django.utils import timezone as _tz
+    document.indexed_at = _tz.now()
+    document.save(update_fields=["index_status", "indexed_at"])
     from .chroma_store import queue_chroma_sync
     queue_chroma_sync(document.id)
     return len(objects)

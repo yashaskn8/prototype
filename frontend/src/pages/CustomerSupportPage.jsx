@@ -20,6 +20,8 @@ export function CustomerSupportPage() {
   const [loadingContext, setLoadingContext] = useState(true);
 
   const [selectedSite, setSelectedSite] = useState('');
+  const [siteAssets, setSiteAssets] = useState([]);
+  const [loadingAssets, setLoadingAssets] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState('');
   const [query, setQuery] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -31,7 +33,7 @@ export function CustomerSupportPage() {
   const [resolutionNotice, setResolutionNotice] = useState(null);
   const [escalationResult, setEscalationResult] = useState(null);
 
-  // Load customer sites and assets
+  // Load authorized customer sites from API
   async function loadContext() {
     setLoadingContext(true);
     setError(null);
@@ -39,7 +41,13 @@ export function CustomerSupportPage() {
       const data = await api.get('/api/customer-support/context/');
       setContextData(data);
       if (data.sites && data.sites.length > 0) {
-        setSelectedSite(data.sites[0].id);
+        const firstSiteId = String(data.sites[0].id);
+        setSelectedSite(firstSiteId);
+        loadAssetsForSite(firstSiteId);
+      } else {
+        setSelectedSite('');
+        setSiteAssets([]);
+        setSelectedAsset('');
       }
     } catch (err) {
       setError(err.detail || 'Failed to load customer profile context.');
@@ -48,18 +56,50 @@ export function CustomerSupportPage() {
     }
   }
 
+  // Dynamically load assets belonging to the selected site
+  async function loadAssetsForSite(siteId) {
+    if (!siteId) {
+      setSiteAssets([]);
+      setSelectedAsset('');
+      return;
+    }
+    setLoadingAssets(true);
+    try {
+      const res = await api.get(`/api/sites/${siteId}/assets/`);
+      const assets = res.assets || [];
+      setSiteAssets(assets);
+      if (assets.length > 0) {
+        setSelectedAsset(String(assets[0].id));
+      } else {
+        setSelectedAsset('');
+      }
+    } catch (err) {
+      console.error('Failed to load site assets', err);
+      setSiteAssets([]);
+      setSelectedAsset('');
+    } finally {
+      setLoadingAssets(false);
+    }
+  }
+
   useEffect(() => {
     loadContext();
   }, []);
 
-  // Filter assets by selected site
-  const siteAssets = contextData?.assets?.filter(
-    a => !selectedSite || String(a.site_id) === String(selectedSite)
-  ) || [];
+  function handleSiteChange(e) {
+    const newSiteId = e.target.value;
+    setSelectedSite(newSiteId);
+    setSelectedAsset('');
+    if (newSiteId) {
+      loadAssetsForSite(newSiteId);
+    } else {
+      setSiteAssets([]);
+    }
+  }
 
   async function handleQuery(e) {
     e.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim() || !selectedSite || !selectedAsset) return;
 
     setSubmitting(true);
     setError(null);
@@ -68,8 +108,8 @@ export function CustomerSupportPage() {
 
     try {
       const res = await api.post('/api/customer-support/query/', {
-        site_id: selectedSite || null,
-        asset_id: selectedAsset || null,
+        site_id: selectedSite,
+        asset_id: selectedAsset,
         question: query.trim(),
       });
       setResult(res);
@@ -120,7 +160,7 @@ export function CustomerSupportPage() {
           Customer AI Self-Service Diagnostic
         </h2>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem' }}>
-          Troubleshoot issues against verified technical manuals and historical cases before creating a service dispatch.
+          Troubleshoot issues using approved technical manuals and Knowledge Base guidance before creating a service dispatch.
         </p>
       </div>
 
@@ -162,34 +202,46 @@ export function CustomerSupportPage() {
             <select
               className="form-control"
               value={selectedSite}
-              onChange={e => {
-                setSelectedSite(e.target.value);
-                setSelectedAsset('');
-              }}
+              onChange={handleSiteChange}
               disabled={loadingContext}
             >
-              <option value="">All Customer Sites</option>
+              {!selectedSite && <option value="">Select a Site</option>}
               {contextData?.sites?.map(s => (
                 <option key={s.id} value={s.id}>{s.name} ({s.city || 'Site'})</option>
               ))}
             </select>
+            {contextData?.sites && contextData.sites.length === 0 && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                No sites found for this customer account.
+              </div>
+            )}
           </div>
 
           <div className="form-group">
-            <label className="form-label">Equipment / Asset (Optional)</label>
+            <label className="form-label">Equipment / Asset</label>
             <select
               className="form-control"
               value={selectedAsset}
               onChange={e => setSelectedAsset(e.target.value)}
-              disabled={loadingContext}
+              disabled={loadingContext || loadingAssets || siteAssets.length === 0}
             >
-              <option value="">General Inquiry / Any Asset</option>
+              {!selectedAsset && <option value="">Select an Equipment / Asset</option>}
               {siteAssets.map(a => (
                 <option key={a.id} value={a.id}>
                   {a.name} {a.model_number ? `(${a.model_number})` : ''}
                 </option>
               ))}
             </select>
+            {loadingAssets && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                Loading equipment for selected site...
+              </div>
+            )}
+            {!loadingAssets && selectedSite && siteAssets.length === 0 && (
+              <div style={{ fontSize: '0.75rem', color: '#b91c1c', marginTop: '4px' }}>
+                No active equipment found at this facility.
+              </div>
+            )}
           </div>
 
           <div style={{ 
@@ -203,7 +255,7 @@ export function CustomerSupportPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: 'var(--text-main)', marginBottom: '4px' }}>
               <ShieldCheck size={14} color="#10b981" /> Tenant Security Active
             </div>
-            Customer account: <strong>{contextData?.customer?.name || user?.username}</strong>. Queries are strictly restricted to your company's equipment manuals and historical cases.
+            Customer account: <strong>{contextData?.customer?.name || user?.username}</strong>. Queries are restricted to approved Knowledge Base content for your organisation and equipment.
           </div>
         </div>
 
@@ -250,7 +302,7 @@ export function CustomerSupportPage() {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={submitting || !query.trim()}
+                disabled={submitting || !query.trim() || !selectedSite || !selectedAsset}
               >
                 {submitting ? (
                   <>
@@ -278,7 +330,7 @@ export function CustomerSupportPage() {
                 </span>
               </div>
 
-              <div className="rag-answer-body">
+              <div className="rag-answer-body" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
                 {result.answer}
               </div>
 
@@ -292,27 +344,12 @@ export function CustomerSupportPage() {
                     {result.references.map((ref, idx) => (
                       <span key={idx} className="citation-chip">
                         <FileText size={14} color="var(--primary)" />
-                        <strong>{ref.title || ref.source}</strong>
-                        {ref.chunk_index !== undefined && <span style={{ opacity: 0.7 }}>(Sec. #{ref.chunk_index})</span>}
+                        <strong>{ref.title || ref.reference}</strong>
+                        {ref.heading && <span style={{ opacity: 0.85 }}>({ref.heading})</span>}
                         {ref.doc_type && <span className="badge" style={{ fontSize: '0.65rem' }}>{ref.doc_type}</span>}
                       </span>
                     ))}
                   </div>
-                </div>
-              )}
-
-              {/* Past Resolutions (Same Customer) */}
-              {result.past_resolutions && result.past_resolutions.length > 0 && (
-                <div style={{ marginTop: '16px' }}>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#15803d', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <History size={14} /> PREVIOUS SIMILAR RESOLUTIONS ON YOUR SITES
-                  </div>
-                  {result.past_resolutions.map((pr, idx) => (
-                    <div key={idx} className="resolution-card">
-                      <h4>Case {pr.servy_id || `#${idx + 1}`}: {pr.complaint_type || 'Service Issue'}</h4>
-                      <p><strong>Fix Applied:</strong> {pr.resolution_text || 'Standard calibration performed.'}</p>
-                    </div>
-                  ))}
                 </div>
               )}
 
