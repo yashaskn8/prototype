@@ -19,13 +19,21 @@ def _limit(text):
 
 
 def _validate_docx_archive(path):
-    with zipfile.ZipFile(path) as zf:
-        total = sum(i.file_size for i in zf.infolist())
-        if total > MAX_DOCX_UNCOMPRESSED:
-            raise UnsafeDocumentError("DOCX expands beyond the configured safety limit.")
-        for item in zf.infolist():
-            if item.filename.startswith("/") or ".." in Path(item.filename).parts:
-                raise UnsafeDocumentError("Unsafe DOCX archive path detected.")
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            if len(infos) > 500:
+                raise UnsafeDocumentError("The DOCX archive contains too many internal files.")
+            total = sum(i.file_size for i in infos)
+            if total > MAX_DOCX_UNCOMPRESSED:
+                raise UnsafeDocumentError("DOCX expands beyond the configured safety limit.")
+            for item in infos:
+                if item.filename.startswith("/") or ".." in Path(item.filename).parts:
+                    raise UnsafeDocumentError("Unsafe DOCX archive path detected.")
+    except UnsafeDocumentError:
+        raise
+    except Exception as exc:
+        raise UnsafeDocumentError("Invalid or corrupted DOCX archive.") from exc
 
 
 def extract_document_text(document):
@@ -52,26 +60,34 @@ def extract_document_text(document):
             from pypdf import PdfReader
         except ImportError:
             return ""
-        reader = PdfReader(str(path), strict=False)
-        if len(reader.pages) > MAX_PDF_PAGES:
-            raise UnsafeDocumentError(f"PDF has more than {MAX_PDF_PAGES} pages.")
-        text = []
-        for page in reader.pages:
-            text.append(page.extract_text() or "")
-            if sum(len(x) for x in text) >= MAX_TEXT_CHARS:
-                break
-        return _limit("\n\n".join(text))
+        try:
+            reader = PdfReader(str(path), strict=False)
+            if len(reader.pages) > MAX_PDF_PAGES:
+                raise UnsafeDocumentError(f"PDF has more than {MAX_PDF_PAGES} pages.")
+            text = []
+            for page in reader.pages:
+                text.append(page.extract_text() or "")
+                if sum(len(x) for x in text) >= MAX_TEXT_CHARS:
+                    break
+            return _limit("\n\n".join(text))
+        except UnsafeDocumentError:
+            raise
+        except Exception as exc:
+            raise UnsafeDocumentError("Failed to parse PDF document.") from exc
     if suffix == ".docx":
         _validate_docx_archive(path)
         try:
             from docx import Document
         except ImportError:
             return ""
-        doc = Document(str(path))
-        parts = []
-        for p in doc.paragraphs:
-            parts.append(p.text)
-            if sum(len(x) for x in parts) >= MAX_TEXT_CHARS:
-                break
-        return _limit("\n".join(parts))
+        try:
+            doc = Document(str(path))
+            parts = []
+            for p in doc.paragraphs:
+                parts.append(p.text)
+                if sum(len(x) for x in parts) >= MAX_TEXT_CHARS:
+                    break
+            return _limit("\n".join(parts))
+        except Exception as exc:
+            raise UnsafeDocumentError("Failed to parse DOCX document.") from exc
     return ""

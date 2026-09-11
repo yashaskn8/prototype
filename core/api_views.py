@@ -1,4 +1,4 @@
-import io
+import os
 import logging
 from django.conf import settings
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
@@ -10,7 +10,7 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
 
-from rest_framework import permissions, status, throttling
+from rest_framework import permissions, status, throttling, exceptions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -19,7 +19,10 @@ from core.models import (
     KnowledgeDocument, KnowledgeChunk, CustomerInteraction, StaffProfile,
     TenantMembership, InventoryItem, PartRequest, OperationalZone
 )
-from core.security import get_current_membership
+from core.security import (
+    require_api_context, authorized_knowledge_queryset,
+    STAFF_ROLES, TECH_ROLES, ADMIN_ROLES, CUSTOMER_ROLES, ALL_ROLES
+)
 from core.services.rag import ask_rag
 from core.services.ticketing import create_call_from_interaction
 from core.services.indexing import index_document
@@ -28,6 +31,8 @@ from core.services.excel_io import export_calls_xlsx, import_calls_xlsx
 from core.forms import MAX_KB_UPLOAD_BYTES
 
 logger = logging.getLogger("servy.api")
+
+ALLOWED_KB_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
 
 
 # ----------------------------------------------------------------------
@@ -44,75 +49,6 @@ class EngineerRAGThrottle(throttling.ScopedRateThrottle):
 
 class UploadThrottle(throttling.ScopedRateThrottle):
     scope = "upload"
-
-
-# ----------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------
-def get_user_context(request_or_user):
-    """Derive user's tenant, role, customer (if any), and permissions."""
-    user = request_or_user if hasattr(request_or_user, "is_authenticated") and not hasattr(request_or_user, "user") else getattr(request_or_user, "user", request_or_user)
-    if not user.is_authenticated:
-        return {
-            "authenticated": False,
-            "role": "anonymous",
-            "tenant": None,
-            "customer": None,
-            "staff_profile": None,
-            "membership": None,
-            "can_view_confidential": False,
-        }
-
-    if hasattr(request_or_user, "session"):
-        membership = get_current_membership(request_or_user)
-    else:
-        membership = TenantMembership.objects.filter(user=user, is_active=True, tenant__is_active=True).select_related("tenant", "customer").first()
-
-    staff_profile = StaffProfile.objects.filter(user=user, is_active=True).select_related("tenant", "branch", "zone").first()
-
-    if user.is_superuser:
-        tenant = membership.tenant if membership else (staff_profile.tenant if staff_profile else Tenant.objects.first())
-        role = "superuser"
-        customer = membership.customer if membership else None
-        can_view_confidential = True
-    elif membership:
-        tenant = membership.tenant
-        role = membership.role
-        customer = membership.customer
-        can_view_confidential = membership.can_view_confidential
-    elif staff_profile:
-        tenant = staff_profile.tenant
-        role = staff_profile.role
-        customer = None
-        can_view_confidential = False
-    else:
-        tenant = Tenant.objects.first()
-        role = "guest"
-        customer = None
-        can_view_confidential = False
-
-    return {
-        "authenticated": True,
-        "role": role,
-        "tenant": tenant,
-        "customer": customer,
-        "staff_profile": staff_profile,
-        "membership": membership,
-        "can_view_confidential": can_view_confidential,
-    }
-
-
-def get_active_tenant(request):
-    """Determine tenant strictly according to user's authorized profile."""
-    if request.user.is_superuser:
-        tenant_id = request.session.get("tenant_id") or request.session.get("active_tenant_id")
-        if tenant_id:
-            try:
-                return Tenant.objects.get(id=tenant_id)
-            except Tenant.DoesNotExist:
-                pass
-    ctx = get_user_context(request)
-    return ctx.get("tenant")
 
 
 # ----------------------------------------------------------------------
@@ -148,8 +84,25 @@ class LoginView(APIView):
             return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
         auth_login(request, user)
-        ctx = get_user_context(user)
-        tenant = ctx["tenant"]
+
+        tenant = None
+        role = "guest"
+        customer_id = None
+        customer_name = None
+
+        try:
+            ctx = require_api_context(request)
+            tenant = ctx["tenant"]
+            role = ctx["role"]
+            if ctx["customer"]:
+                customer_id = ctx["customer"].id
+                customer_name = ctx["customer"].name
+        except exceptions.ParseError:
+            # Superuser with multiple active tenants and none selected yet
+            if user.is_superuser:
+                role = "superuser"
+            else:
+                raise
 
         return Response({
             "detail": "Login successful",
@@ -158,11 +111,11 @@ class LoginView(APIView):
                 "id": user.id,
                 "username": user.username,
                 "email": user.email,
-                "role": ctx["role"],
+                "role": role,
                 "tenant_id": tenant.id if tenant else None,
                 "tenant_name": tenant.name if tenant else None,
-                "customer_id": ctx["customer"].id if ctx["customer"] else None,
-                "customer_name": ctx["customer"].name if ctx["customer"] else None,
+                "customer_id": customer_id,
+                "customer_name": customer_name,
             }
         })
 
@@ -182,24 +135,38 @@ class CurrentUserView(APIView):
 
     @method_decorator(ensure_csrf_cookie)
     def get(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        tenant = None
+        role = "guest"
+        customer_id = None
+        customer_name = None
 
-        # Multi-tenant available tenants for superuser
+        try:
+            ctx = require_api_context(request)
+            tenant = ctx["tenant"]
+            role = ctx["role"]
+            if ctx["customer"]:
+                customer_id = ctx["customer"].id
+                customer_name = ctx["customer"].name
+        except exceptions.ParseError:
+            if request.user.is_superuser:
+                role = "superuser"
+            else:
+                raise
+
         available_tenants = []
         if request.user.is_superuser:
-            available_tenants = list(Tenant.objects.values("id", "name", "slug"))
+            available_tenants = list(Tenant.objects.filter(is_active=True).values("id", "name", "slug"))
 
         return Response({
             "user": {
                 "id": request.user.id,
                 "username": request.user.username,
                 "email": request.user.email,
-                "role": ctx["role"],
+                "role": role,
                 "tenant_id": tenant.id if tenant else None,
                 "tenant_name": tenant.name if tenant else None,
-                "customer_id": ctx["customer"].id if ctx["customer"] else None,
-                "customer_name": ctx["customer"].name if ctx["customer"] else None,
+                "customer_id": customer_id,
+                "customer_name": customer_name,
             },
             "available_tenants": available_tenants,
             "csrfToken": get_token(request),
@@ -218,12 +185,12 @@ class SwitchTenantView(APIView):
             )
         tenant_id = request.data.get("tenant_id")
         try:
-            target = Tenant.objects.get(id=tenant_id)
+            target = Tenant.objects.get(id=tenant_id, is_active=True)
             request.session["active_tenant_id"] = target.id
             request.session["tenant_id"] = target.id
             return Response({"detail": f"Switched to tenant {target.name}", "tenant_id": target.id, "tenant_name": target.name})
         except Tenant.DoesNotExist:
-            return Response({"detail": "Tenant not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"detail": "Active tenant not found."}, status=status.HTTP_404_NOT_FOUND)
 
 
 # ----------------------------------------------------------------------
@@ -234,11 +201,8 @@ class DashboardView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
-        if not tenant:
-            return Response({"detail": "Tenant context required."}, status=status.HTTP_400_BAD_REQUEST)
-
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
         role = ctx["role"]
         customer = ctx["customer"]
 
@@ -247,14 +211,16 @@ class DashboardView(APIView):
             "tenant_name": tenant.name,
         }
 
-        if role == "customer" and customer:
+        if role in CUSTOMER_ROLES and customer:
             calls_qs = ServiceCall.objects.filter(tenant=tenant, customer=customer)
-            data["stats"] = {
+            stats = {
                 "total_calls": calls_qs.count(),
                 "open_calls": calls_qs.filter(status__in=["open", "assigned", "in_progress", "pending_parts"]).count(),
                 "closed_calls": calls_qs.filter(status="closed").count(),
                 "active_assets": Asset.objects.filter(tenant=tenant, customer=customer, status="active").count(),
             }
+            data["stats"] = stats
+            data["metrics"] = stats
             data["recent_calls"] = list(calls_qs.order_by("-created_at")[:5].values(
                 "id", "servy_id", "complaint_type", "status", "priority", "created_at"
             ))
@@ -263,17 +229,21 @@ class DashboardView(APIView):
             ).order_by("-created_at")[:5].values("id", "question", "resolved", "created_at", "escalated_call_id"))
 
         else:
-            # Staff / Technician / Admin
+            # Staff / Technician / Admin / Superuser
             calls_qs = ServiceCall.objects.filter(tenant=tenant)
             staff = ctx.get("staff_profile")
             my_calls = calls_qs.filter(technician=staff) if staff else calls_qs.none()
 
-            data["stats"] = {
+            stats = {
                 "total_calls": calls_qs.count(),
                 "open_calls": calls_qs.filter(status__in=["open", "assigned", "in_progress"]).count(),
                 "assigned_to_me": my_calls.filter(status__in=["assigned", "in_progress"]).count(),
                 "kb_documents": KnowledgeDocument.objects.filter(tenant=tenant, is_rag_enabled=True).count(),
+                "inventory_items": InventoryItem.objects.filter(tenant=tenant).count(),
+                "part_requests": PartRequest.objects.filter(tenant=tenant).count(),
             }
+            data["stats"] = stats
+            data["metrics"] = stats
             data["recent_calls"] = list(calls_qs.order_by("-created_at")[:8].values(
                 "id", "servy_id", "complaint_type", "status", "priority", "created_at",
                 "customer__name", "asset__name"
@@ -283,19 +253,23 @@ class DashboardView(APIView):
 
 
 # ----------------------------------------------------------------------
-# Workflow 1: Customer AI Support
+# Workflow 1: Customer AI Support (Pre-ticket)
 # ----------------------------------------------------------------------
 class CustomerSupportContextView(APIView):
     """Fetch sites and assets for pre-ticket self-service."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
         customer = ctx["customer"]
 
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+
         # Staff can pass ?customer_id= to preview or assist
-        if not customer and ctx["role"] in {"superuser", "tenant_admin", "branch_manager", "technician"}:
+        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
             cust_id = request.query_params.get("customer_id")
             if cust_id:
                 customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
@@ -323,11 +297,15 @@ class CustomerSupportQueryView(APIView):
     throttle_classes = [CustomerRAGThrottle]
 
     def post(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
         customer = ctx["customer"]
 
-        if not customer and ctx["role"] in {"superuser", "tenant_admin", "branch_manager", "technician"}:
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
             cust_id = request.data.get("customer_id")
             if cust_id:
                 customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
@@ -339,7 +317,7 @@ class CustomerSupportQueryView(APIView):
 
         site_id = request.data.get("site_id")
         asset_id = request.data.get("asset_id")
-        question = (request.data.get("question") or "").strip()
+        question = (request.data.get("question") or request.data.get("query") or "").strip()
 
         if not site_id or not asset_id or not question:
             return Response({"detail": "Site, asset, and question are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -394,16 +372,16 @@ class CustomerSupportResolveView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
 
         try:
             interaction = CustomerInteraction.objects.get(tenant=tenant, id=pk)
         except CustomerInteraction.DoesNotExist:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if ctx["role"] == "customer" and interaction.customer_id != ctx["customer"].id:
-            return Response({"detail": "Unauthorized interaction ID."}, status=status.HTTP_404_NOT_FOUND)
+        if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
+            return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
         interaction.resolved = True
         interaction.save(update_fields=["resolved"])
@@ -415,18 +393,18 @@ class CustomerSupportEscalateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
 
         try:
             interaction = CustomerInteraction.objects.get(tenant=tenant, id=pk)
         except CustomerInteraction.DoesNotExist:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if ctx["role"] == "customer" and interaction.customer_id != ctx["customer"].id:
-            return Response({"detail": "Unauthorized interaction ID."}, status=status.HTTP_404_NOT_FOUND)
+        if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
+            return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Idempotent ticket creation
+        # Idempotent ticket creation with OneToOne constraint enforcement
         call = create_call_from_interaction(interaction)
         return Response({
             "call_id": call.id,
@@ -440,7 +418,7 @@ class CustomerSupportEscalateView(APIView):
 
 
 # ----------------------------------------------------------------------
-# Workflow 2: Engineer Copilot
+# Workflow 2: Engineer Copilot (Post-ticket)
 # ----------------------------------------------------------------------
 class EngineerCopilotQueryView(APIView):
     """Technician Copilot scoped to an existing Service Call."""
@@ -448,13 +426,14 @@ class EngineerCopilotQueryView(APIView):
     throttle_classes = [EngineerRAGThrottle]
 
     def post(self, request):
-        ctx = get_user_context(request)
-        if ctx["role"] == "customer":
+        ctx = require_api_context(request)
+        role = ctx["role"]
+        if role not in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
             return Response({"detail": "Engineer Copilot is restricted to service staff."}, status=status.HTTP_403_FORBIDDEN)
 
-        tenant = get_active_tenant(request)
+        tenant = ctx["tenant"]
         call_id = request.data.get("call_id")
-        question = (request.data.get("question") or "").strip()
+        question = (request.data.get("question") or request.data.get("query") or "").strip()
 
         if not call_id or not question:
             return Response({"detail": "Service call ID and question are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -464,13 +443,15 @@ class EngineerCopilotQueryView(APIView):
         except ServiceCall.DoesNotExist:
             return Response({"detail": "Service call not found in this tenant."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Run RAG in staff mode: includes confidential manuals and previous resolutions
+        # Respect can_view_confidential permission flag
+        include_confidential = ctx["can_view_confidential"]
+
         rag_res = ask_rag(
             tenant=tenant,
             question=question,
             asset=call.asset,
             customer=call.customer,
-            include_confidential=True,
+            include_confidential=include_confidential,
             service_call=call,
             staff_mode=True,
         )
@@ -478,9 +459,20 @@ class EngineerCopilotQueryView(APIView):
         retrieved_list = rag_res.get("retrieved", [])
         retrieval_backend = getattr(retrieved_list, "retrieval_backend", "fallback")
 
+        past_resolutions = [
+            {
+                "service_call_id": r["service_call_id"],
+                "title": r["title"],
+                "reference": r["reference"],
+            }
+            for r in rag_res.get("references", [])
+            if r.get("source_kind") == "resolution"
+        ]
+
         return Response({
             "answer": rag_res["answer"],
             "references": rag_res["references"],
+            "past_resolutions": past_resolutions,
             "engine": rag_res["engine"],
             "retrieval_backend": retrieval_backend,
         })
@@ -494,12 +486,16 @@ class SitesAssetsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, site_id):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
 
         site_qs = Site.objects.filter(tenant=tenant, id=site_id)
-        if ctx["role"] == "customer" and ctx["customer"]:
-            site_qs = site_qs.filter(customer=ctx["customer"])
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"detail": "Site not found or access denied."}, status=status.HTTP_404_NOT_FOUND)
+            site_qs = site_qs.filter(customer=customer)
 
         site = site_qs.first()
         if not site:
@@ -509,7 +505,7 @@ class SitesAssetsView(APIView):
             tenant=tenant, site=site, status="active"
         ).select_related("product").values("id", "name", "asset_code", "model_number", "product__name"))
 
-        return Response(assets)
+        return Response({"assets": assets})
 
 
 class AssetsListView(APIView):
@@ -517,12 +513,16 @@ class AssetsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
 
         qs = Asset.objects.filter(tenant=tenant).select_related("customer", "site", "product")
-        if ctx["role"] == "customer" and ctx["customer"]:
-            qs = qs.filter(customer=ctx["customer"])
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"assets": []})
+            qs = qs.filter(customer=customer)
 
         search = request.query_params.get("q", "").strip()
         if search:
@@ -532,7 +532,7 @@ class AssetsListView(APIView):
             "id", "name", "asset_code", "model_number", "serial_number",
             "status", "customer__name", "site__name", "product__name"
         ))
-        return Response(items)
+        return Response({"assets": items})
 
 
 # ----------------------------------------------------------------------
@@ -543,14 +543,18 @@ class CallRegisterView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
 
         qs = ServiceCall.objects.filter(tenant=tenant).select_related(
             "customer", "site", "asset", "technician"
         )
-        if ctx["role"] == "customer" and ctx["customer"]:
-            qs = qs.filter(customer=ctx["customer"])
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"calls": []})
+            qs = qs.filter(customer=customer)
 
         status_filter = request.query_params.get("status")
         if status_filter:
@@ -570,7 +574,7 @@ class CallRegisterView(APIView):
             "contact_name", "created_at", "customer__name", "site__name",
             "asset__name", "technician__full_name"
         ))
-        return Response(items)
+        return Response({"calls": items})
 
 
 class CallDetailView(APIView):
@@ -578,8 +582,8 @@ class CallDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
 
         try:
             call = ServiceCall.objects.select_related(
@@ -588,7 +592,7 @@ class CallDetailView(APIView):
         except ServiceCall.DoesNotExist:
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if ctx["role"] == "customer" and call.customer_id != ctx["customer"].id:
+        if ctx["role"] in CUSTOMER_ROLES and (not ctx["customer"] or call.customer_id != ctx["customer"].id):
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
         updates = list(call.updates.select_related("author").order_by("created_at").values(
@@ -627,11 +631,11 @@ class CallExportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        if ctx["role"] == "customer":
-            return Response({"detail": "Export is restricted to staff."}, status=status.HTTP_403_FORBIDDEN)
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "Export is restricted to administrators and managers."}, status=status.HTTP_403_FORBIDDEN)
 
-        tenant = get_active_tenant(request)
+        tenant = ctx["tenant"]
         return export_calls_xlsx(tenant)
 
 
@@ -640,11 +644,11 @@ class CallImportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        ctx = get_user_context(request)
-        if ctx["role"] not in {"superuser", "admin", "manager"}:
-            return Response({"detail": "Import is restricted to managers."}, status=status.HTTP_403_FORBIDDEN)
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "Import is restricted to administrators and managers."}, status=status.HTTP_403_FORBIDDEN)
 
-        tenant = get_active_tenant(request)
+        tenant = ctx["tenant"]
         uploaded = request.FILES.get("file")
         if not uploaded:
             return Response({"detail": "File required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -671,15 +675,11 @@ class KnowledgeListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        if ctx["role"] in {"store_admin", "store_operator"}:
+            return Response({"detail": "Knowledge base access is not permitted for store roles."}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = KnowledgeDocument.objects.filter(tenant=tenant).select_related("product", "asset", "customer")
-        if ctx["role"] == "customer":
-            # Strict non-confidential customer scoping
-            qs = qs.filter(is_confidential=False)
-            if ctx["customer"]:
-                qs = qs.filter(Q(customer__isnull=True) | Q(customer=ctx["customer"]))
+        qs = authorized_knowledge_queryset(ctx).select_related("product", "asset", "customer")
 
         search = request.query_params.get("q", "").strip()
         if search:
@@ -689,7 +689,7 @@ class KnowledgeListView(APIView):
             "id", "title", "doc_type", "is_confidential", "is_rag_enabled",
             "index_status", "index_version", "updated_at", "product__name", "asset__name"
         ))
-        return Response(items)
+        return Response({"documents": items})
 
 
 class KnowledgeDetailView(APIView):
@@ -697,15 +697,14 @@ class KnowledgeDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        if ctx["role"] in {"store_admin", "store_operator"}:
+            return Response({"detail": "Knowledge base access is not permitted for store roles."}, status=status.HTTP_403_FORBIDDEN)
 
+        qs = authorized_knowledge_queryset(ctx)
         try:
-            doc = KnowledgeDocument.objects.select_related("product", "asset", "customer").get(tenant=tenant, id=pk)
+            doc = qs.select_related("product", "asset", "customer").get(id=pk)
         except KnowledgeDocument.DoesNotExist:
-            return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if ctx["role"] == "customer" and doc.is_confidential:
             return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
 
         chunks = list(doc.chunks.order_by("chunk_index").values("id", "chunk_index", "heading", "text", "is_quarantined"))
@@ -738,9 +737,13 @@ class KnowledgeIndexStatusView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        if ctx["role"] in {"store_admin", "store_operator"}:
+            return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        qs = authorized_knowledge_queryset(ctx)
         try:
-            doc = KnowledgeDocument.objects.get(tenant=tenant, id=pk)
+            doc = qs.get(id=pk)
         except KnowledgeDocument.DoesNotExist:
             return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -759,11 +762,11 @@ class KnowledgeUploadView(APIView):
     throttle_classes = [UploadThrottle]
 
     def post(self, request):
-        ctx = get_user_context(request)
-        if ctx["role"] == "customer":
-            return Response({"detail": "KB uploads are restricted to staff."}, status=status.HTTP_403_FORBIDDEN)
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "KB uploads are restricted to managers and administrators."}, status=status.HTTP_403_FORBIDDEN)
 
-        tenant = get_active_tenant(request)
+        tenant = ctx["tenant"]
         title = (request.data.get("title") or "").strip()
         doc_type = request.data.get("doc_type", "reference")
         is_confidential = str(request.data.get("is_confidential", "")).lower() in {"1", "true", "yes"}
@@ -778,15 +781,32 @@ class KnowledgeUploadView(APIView):
 
         # File validation
         if uploaded_file:
+            name_lower = uploaded_file.name.lower()
+            ext = os.path.splitext(name_lower)[1]
+            if ext not in ALLOWED_KB_EXTENSIONS:
+                return Response(
+                    {"detail": f"Unsupported file extension '{ext}'. Allowed: {', '.join(sorted(ALLOWED_KB_EXTENSIONS))}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             if uploaded_file.size > MAX_KB_UPLOAD_BYTES:
-                return Response({"detail": f"File exceeds max size of {MAX_KB_UPLOAD_BYTES // (1024*1024)}MB."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"detail": f"File exceeds max size of {MAX_KB_UPLOAD_BYTES // (1024*1024)}MB."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             head = uploaded_file.read(8)
             uploaded_file.seek(0)
-            name_lower = uploaded_file.name.lower()
-            if name_lower.endswith(".pdf") and not head.startswith(b"%PDF-"):
+
+            if ext == ".pdf" and not head.startswith(b"%PDF-"):
                 return Response({"detail": "File header does not match PDF specification."}, status=status.HTTP_400_BAD_REQUEST)
-            if name_lower.endswith(".docx") and not head.startswith(b"PK"):
+            if ext == ".docx" and not head.startswith(b"PK"):
                 return Response({"detail": "File header does not match DOCX specification."}, status=status.HTTP_400_BAD_REQUEST)
+            if ext in {".txt", ".md", ".csv"}:
+                sample = uploaded_file.read(4096)
+                uploaded_file.seek(0)
+                if b"\x00" in sample:
+                    return Response({"detail": "Binary data or null bytes detected in text file."}, status=status.HTTP_400_BAD_REQUEST)
 
         doc = KnowledgeDocument.objects.create(
             tenant=tenant,
@@ -800,7 +820,6 @@ class KnowledgeUploadView(APIView):
             index_status="INDEXING",
         )
 
-        # Process and index
         chunks_indexed = index_document(doc)
 
         return Response({
@@ -817,15 +836,14 @@ class KnowledgeDownloadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        ctx = get_user_context(request)
-        tenant = get_active_tenant(request)
-
-        try:
-            doc = KnowledgeDocument.objects.get(tenant=tenant, id=pk)
-        except KnowledgeDocument.DoesNotExist:
+        ctx = require_api_context(request)
+        if ctx["role"] in {"store_admin", "store_operator"}:
             raise Http404("Document not found.")
 
-        if ctx["role"] == "customer" and doc.is_confidential:
+        qs = authorized_knowledge_queryset(ctx)
+        try:
+            doc = qs.get(id=pk)
+        except KnowledgeDocument.DoesNotExist:
             raise Http404("Document not found.")
 
         if not doc.file:
@@ -839,11 +857,11 @@ class KnowledgeDeleteView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, pk):
-        ctx = get_user_context(request)
-        if ctx["role"] not in {"superuser", "admin", "manager"}:
-            return Response({"detail": "Deletion is restricted to administrators."}, status=status.HTTP_403_FORBIDDEN)
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "Deletion is restricted to administrators and managers."}, status=status.HTTP_403_FORBIDDEN)
 
-        tenant = get_active_tenant(request)
+        tenant = ctx["tenant"]
         try:
             doc = KnowledgeDocument.objects.get(tenant=tenant, id=pk)
         except KnowledgeDocument.DoesNotExist:
@@ -865,12 +883,19 @@ class ProjectsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        tenant = get_active_tenant(request)
-        ctx = get_user_context(request)
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
+
         qs = Project.objects.filter(tenant=tenant).select_related("customer", "site")
-        if ctx["role"] == "customer" and ctx["customer"]:
-            qs = qs.filter(customer=ctx["customer"])
-        return Response(list(qs[:100].values("id", "code", "name", "status", "customer__name", "site__name")))
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"projects": []})
+            qs = qs.filter(customer=customer)
+
+        items = list(qs[:100].values("id", "code", "name", "status", "customer__name", "site__name"))
+        return Response({"projects": items})
 
 
 class InventoryListView(APIView):
@@ -878,9 +903,32 @@ class InventoryListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        tenant = get_active_tenant(request)
-        qs = InventoryItem.objects.filter(tenant=tenant).select_related("category")
-        return Response(list(qs[:100].values("id", "item_code", "name", "quantity_on_hand", "reorder_level", "category__name")))
+        ctx = require_api_context(request)
+        if ctx["role"] not in (STAFF_ROLES | {"superuser"}):
+            return Response({"detail": "Inventory access is restricted to internal staff."}, status=status.HTTP_403_FORBIDDEN)
+
+        tenant = ctx["tenant"]
+        qs = InventoryItem.objects.filter(tenant=tenant).select_related("branch", "brand", "product")
+
+        items = []
+        for it in qs[:100]:
+            items.append({
+                "id": it.id,
+                "name": it.spare_name,
+                "spare_name": it.spare_name,
+                "sku": it.ipn,
+                "ipn": it.ipn,
+                "category": it.category,
+                "brand": it.brand.name if it.brand else "",
+                "product": it.product.name if it.product else "",
+                "quantity": it.quantity,
+                "quantity_on_hand": it.quantity,
+                "unit": it.unit,
+                "reorder_level": 5,
+                "branch__name": it.branch.name if it.branch else "Central Warehouse",
+            })
+
+        return Response({"items": items})
 
 
 class PartRequestsListView(APIView):
@@ -888,12 +936,17 @@ class PartRequestsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        if ctx["role"] not in (STAFF_ROLES | {"superuser"}):
+            return Response({"detail": "Part requests access is restricted to internal staff."}, status=status.HTTP_403_FORBIDDEN)
+
+        tenant = ctx["tenant"]
         qs = PartRequest.objects.filter(tenant=tenant).select_related("service_call", "requester")
-        return Response(list(qs[:100].values(
+        items = list(qs[:100].values(
             "id", "indent_id", "spare_description", "manager_status", "store_status", "date",
             "service_call__servy_id", "requester__full_name"
-        )))
+        ))
+        return Response({"part_requests": items})
 
 
 class OperationsListView(APIView):
@@ -901,8 +954,16 @@ class OperationsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        tenant = get_active_tenant(request)
-        zones = list(OperationalZone.objects.filter(tenant=tenant).select_related("branch").values("id", "name", "code", "branch__name"))
+        ctx = require_api_context(request)
+        if ctx["role"] not in (STAFF_ROLES | {"superuser"}):
+            return Response({"detail": "Operations access is restricted to internal staff."}, status=status.HTTP_403_FORBIDDEN)
+
+        tenant = ctx["tenant"]
+        zones = list(OperationalZone.objects.filter(tenant=tenant).select_related("branch").values(
+            "id", "name", "description", "branch__name", "is_active"
+        ))
+        for z in zones:
+            z["code"] = z["name"]
         return Response({"zones": zones})
 
 
@@ -911,11 +972,12 @@ class UsersListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        ctx = get_user_context(request)
-        if ctx["role"] == "customer":
-            return Response({"detail": "Access restricted."}, status=status.HTTP_403_FORBIDDEN)
-        tenant = get_active_tenant(request)
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "Access to users directory is restricted to administrators and managers."}, status=status.HTTP_403_FORBIDDEN)
+
+        tenant = ctx["tenant"]
         staff = list(StaffProfile.objects.filter(tenant=tenant).select_related("branch", "zone").values(
             "id", "full_name", "role", "email", "phone", "branch__name", "zone__name", "is_active"
         ))
-        return Response(staff)
+        return Response({"users": staff})

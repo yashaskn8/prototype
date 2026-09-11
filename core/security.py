@@ -1,14 +1,25 @@
 from functools import wraps
-from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
-from django.shortcuts import redirect
-from django.core.cache import cache
-from django.conf import settings
 import time
 
-from .models import Tenant, TenantMembership
+from django.conf import settings
+from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
+from django.core.exceptions import PermissionDenied
+from django.db.models import Q
+from django.shortcuts import redirect
+from rest_framework.exceptions import (
+    NotAuthenticated,
+    PermissionDenied as DRFPermissionDenied,
+    ValidationError as DRFValidationError,
+)
+
+from .models import StaffProfile, Tenant, TenantMembership
 
 STAFF_ROLES = {"admin", "manager", "technician", "store_admin", "store_operator"}
+TECH_ROLES = {"admin", "manager", "technician"}
+ADMIN_ROLES = {"admin", "manager"}
+CUSTOMER_ROLES = {"customer"}
+ALL_ROLES = {"admin", "manager", "technician", "store_admin", "store_operator", "customer"}
 
 
 def get_memberships(request):
@@ -38,6 +49,100 @@ def require_membership(request):
     if membership is None:
         raise PermissionDenied("Your account is not assigned to an active Servy tenant.")
     return membership
+
+
+def require_api_context(request):
+    """Authoritative context resolver for DRF API endpoints.
+
+    Rules:
+    - Anonymous: raises NotAuthenticated (HTTP 401).
+    - Authenticated non-superuser without active TenantMembership: raises DRFPermissionDenied (HTTP 403).
+      NEVER fall back to Tenant.objects.first() or 'guest'.
+    - Superuser: derives tenant from explicit session selection or fallback only if exactly one tenant exists.
+    - Customer: requires active customer profile; cannot view confidential docs.
+    - Staff: derives staff profile and explicit can_view_confidential permission flag.
+    """
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        raise NotAuthenticated("Authentication credentials were not provided.")
+
+    if user.is_superuser:
+        tenant_id = request.session.get("active_tenant_id") or request.session.get("tenant_id")
+        tenant = None
+        if tenant_id:
+            tenant = Tenant.objects.filter(id=tenant_id, is_active=True).first()
+        if not tenant:
+            active_tenants = Tenant.objects.filter(is_active=True)
+            if active_tenants.count() == 1:
+                tenant = active_tenants.first()
+            elif active_tenants.count() > 1:
+                raise DRFValidationError({"detail": "Select an active tenant first."})
+            else:
+                raise DRFPermissionDenied("No active tenants found.")
+
+        membership = TenantMembership.objects.filter(user=user, tenant=tenant, is_active=True).select_related("tenant", "customer").first()
+        staff_profile = StaffProfile.objects.filter(user=user, tenant=tenant, is_active=True).select_related("branch", "zone").first()
+        return {
+            "user": user,
+            "membership": membership,
+            "tenant": tenant,
+            "role": "superuser",
+            "customer": membership.customer if membership else None,
+            "staff_profile": staff_profile,
+            "can_view_confidential": True,
+        }
+
+    membership = get_current_membership(request)
+    if membership is None or not membership.is_active or not membership.tenant.is_active:
+        raise DRFPermissionDenied("Your account is not assigned to an active Servy tenant.")
+
+    tenant = membership.tenant
+    role = membership.role
+
+    if role == "customer":
+        if not membership.customer_id or not membership.customer:
+            raise DRFPermissionDenied("Customer account is not linked to an active customer profile.")
+        customer = membership.customer
+        staff_profile = None
+        can_view_confidential = False
+    else:
+        customer = None
+        staff_profile = StaffProfile.objects.filter(user=user, tenant=tenant, is_active=True).select_related("branch", "zone").first()
+        can_view_confidential = bool(membership.can_view_confidential)
+
+    return {
+        "user": user,
+        "membership": membership,
+        "tenant": tenant,
+        "role": role,
+        "customer": customer,
+        "staff_profile": staff_profile,
+        "can_view_confidential": can_view_confidential,
+    }
+
+
+def authorized_knowledge_queryset(ctx):
+    """Return KnowledgeDocument queryset scoped strictly to the authorized context.
+
+    - Customer: tenant matches, is_confidential=False, document customer is NULL or current customer.
+    - Staff: tenant matches. If can_view_confidential is False and not superuser: is_confidential=False.
+    """
+    from .models import KnowledgeDocument
+    tenant = ctx["tenant"]
+    role = ctx["role"]
+    qs = KnowledgeDocument.objects.filter(tenant=tenant)
+
+    if role == "customer":
+        qs = qs.filter(is_confidential=False)
+        customer = ctx.get("customer")
+        if customer:
+            qs = qs.filter(Q(customer__isnull=True) | Q(customer=customer))
+        else:
+            qs = qs.none()
+    elif not ctx.get("can_view_confidential", False) and role != "superuser":
+        qs = qs.filter(is_confidential=False)
+
+    return qs
 
 
 def roles_required(*roles):
@@ -88,3 +193,4 @@ def rate_limit_exceeded(request, bucket="rag", limit=None):
         cache.set(key, 1, timeout=70)
         count = 1
     return count > limit
+

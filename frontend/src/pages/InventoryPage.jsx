@@ -18,8 +18,8 @@ export function InventoryPage() {
         api.get('/api/inventory/'),
         api.get('/api/part-requests/'),
       ]);
-      setInventory(invRes.items || []);
-      setPartRequests(reqRes.part_requests || []);
+      setInventory(invRes.items || (Array.isArray(invRes) ? invRes : []));
+      setPartRequests(reqRes.part_requests || (Array.isArray(reqRes) ? reqRes : []));
     } catch (err) {
       setError(err.detail || 'Failed to load inventory data.');
     } finally {
@@ -31,11 +31,13 @@ export function InventoryPage() {
     loadData();
   }, []);
 
-  const filteredInv = inventory.filter(i =>
-    !search ||
-    i.name.toLowerCase().includes(search.toLowerCase()) ||
-    (i.sku && i.sku.toLowerCase().includes(search.toLowerCase()))
-  );
+  const filteredInv = inventory.filter(i => {
+    const name = i.name || i.spare_name || '';
+    const sku = i.sku || i.ipn || '';
+    return !search ||
+      name.toLowerCase().includes(search.toLowerCase()) ||
+      sku.toLowerCase().includes(search.toLowerCase());
+  });
 
   const filteredReq = partRequests.filter(r =>
     !search ||
@@ -131,10 +133,10 @@ export function InventoryPage() {
                     const isLow = item.quantity <= (item.reorder_level || 5);
                     return (
                       <tr key={item.id}>
-                        <td style={{ fontWeight: 600 }}>{item.name}</td>
+                        <td style={{ fontWeight: 600 }}>{item.name || item.spare_name}</td>
                         <td>
                           <span className="badge" style={{ background: '#f1f5f9', color: '#1e293b', fontFamily: 'var(--font-mono)' }}>
-                            {item.sku}
+                            {item.sku || item.ipn}
                           </span>
                         </td>
                         <td>{item.branch__name || 'Central Warehouse'}</td>

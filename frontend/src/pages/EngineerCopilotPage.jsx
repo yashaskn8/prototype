@@ -1,25 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { useAuth } from '../AuthContext';
 import { 
   Wrench, 
   Send, 
-  Search, 
   FileText, 
-  ShieldAlert, 
   Lock, 
   RefreshCw, 
   AlertCircle, 
   History, 
   PhoneCall, 
-  Tag, 
   User, 
   MapPin, 
   Cpu
 } from 'lucide-react';
 
 export function EngineerCopilotPage({ initialCallId }) {
-  const { user } = useAuth();
   const [calls, setCalls] = useState([]);
   const [loadingCalls, setLoadingCalls] = useState(true);
   const [selectedCallId, setSelectedCallId] = useState(initialCallId || '');
@@ -36,7 +31,7 @@ export function EngineerCopilotPage({ initialCallId }) {
     setLoadingCalls(true);
     try {
       const res = await api.get('/api/calls/');
-      const list = res.calls || [];
+      const list = res.calls || (Array.isArray(res) ? res : []);
       setCalls(list);
       if (!selectedCallId && list.length > 0) {
         setSelectedCallId(list[0].id);
@@ -83,7 +78,7 @@ export function EngineerCopilotPage({ initialCallId }) {
     try {
       const res = await api.post('/api/engineer-copilot/query/', {
         call_id: selectedCallId,
-        query: query.trim(),
+        question: query.trim(),
       });
       setResult(res);
     } catch (err) {

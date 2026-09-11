@@ -11,12 +11,10 @@ import {
   ShieldCheck, 
   RefreshCw, 
   Building, 
-  Package, 
-  ArrowRight,
   Ticket
 } from 'lucide-react';
 
-export function CustomerSupportPage({ onNavigate }) {
+export function CustomerSupportPage() {
   const { user } = useAuth();
   const [contextData, setContextData] = useState(null);
   const [loadingContext, setLoadingContext] = useState(true);
@@ -72,7 +70,7 @@ export function CustomerSupportPage({ onNavigate }) {
       const res = await api.post('/api/customer-support/query/', {
         site_id: selectedSite || null,
         asset_id: selectedAsset || null,
-        query: query.trim(),
+        question: query.trim(),
       });
       setResult(res);
     } catch (err) {
@@ -86,7 +84,7 @@ export function CustomerSupportPage({ onNavigate }) {
     if (!result?.interaction_id) return;
     setResolving(true);
     try {
-      const res = await api.post(`/api/customer-support/${result.interaction_id}/resolve/`);
+      const res = await api.post(`/api/customer-support/interactions/${result.interaction_id}/resolve/`);
       setResolutionNotice(res.detail || 'Marked as resolved. Thank you!');
     } catch (err) {
       setError(err.detail || 'Could not update interaction.');
@@ -99,7 +97,7 @@ export function CustomerSupportPage({ onNavigate }) {
     if (!result?.interaction_id) return;
     setEscalating(true);
     try {
-      const res = await api.post(`/api/customer-support/${result.interaction_id}/escalate/`);
+      const res = await api.post(`/api/customer-support/interactions/${result.interaction_id}/escalate/`);
       setEscalationResult(res);
     } catch (err) {
       setError(err.detail || 'Could not escalate service ticket.');

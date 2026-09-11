@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../AuthContext';
-import { Shield, KeyRound, User, Lock, AlertCircle, ArrowRight } from 'lucide-react';
+import { Shield, User, Lock, AlertCircle, ArrowRight } from 'lucide-react';
 
 export function LoginPage() {
   const { login, error: authError } = useAuth();
@@ -10,10 +10,10 @@ export function LoginPage() {
   const [localError, setLocalError] = useState(null);
 
   const demoAccounts = [
-    { label: 'Admin', role: 'Full System Superuser', u: 'admin', p: 'adminpass123' },
-    { label: 'Manager', role: 'Service Operations', u: 'manager', p: 'managerpass123' },
-    { label: 'Technician', role: 'Apex Services Tech', u: 'tech1', p: 'techpass123' },
-    { label: 'Customer', role: 'Acme Diagnostics', u: 'acme_user', p: 'acmepass123' },
+    { label: 'Admin', role: 'Full System Superuser', u: 'admin' },
+    { label: 'Manager', role: 'Service Operations', u: 'manager' },
+    { label: 'Technician', role: 'Apex Services Tech', u: 'tech1' },
+    { label: 'Customer', role: 'Acme Diagnostics', u: 'acme_user' },
   ];
 
   async function handleSubmit(e) {
@@ -31,9 +31,9 @@ export function LoginPage() {
     }
   }
 
-  function fillDemo(u, p) {
+  function fillDemo(u) {
     setUsername(u);
-    setPassword(p);
+    setPassword('');
     setLocalError(null);
   }
 
@@ -71,13 +71,13 @@ export function LoginPage() {
                 key={acc.u}
                 type="button"
                 className="persona-btn"
-                onClick={() => fillDemo(acc.u, acc.p)}
+                onClick={() => fillDemo(acc.u)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <strong>{acc.label}</strong>
                   <ArrowRight size={12} color="#6366f1" />
                 </div>
-                <span>{acc.role}</span>
+                <span>{acc.role} ({acc.u})</span>
               </button>
             ))}
           </div>

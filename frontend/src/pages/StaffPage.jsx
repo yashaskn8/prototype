@@ -13,7 +13,7 @@ export function StaffPage() {
     setError(null);
     try {
       const res = await api.get('/api/users/');
-      setStaff(res || []);
+      setStaff(res.users || (Array.isArray(res) ? res : []));
     } catch (err) {
       setError(err.detail || 'Failed to load staff directory.');
     } finally {

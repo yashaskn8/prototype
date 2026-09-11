@@ -27,6 +27,7 @@ def _sla_for(tenant, priority="normal"):
 
 
 def create_call_from_interaction(interaction):
+    interaction.refresh_from_db()
     if interaction.escalated_call:
         return interaction.escalated_call
 
@@ -43,9 +44,10 @@ def create_call_from_interaction(interaction):
     for _ in range(3):
         try:
             with transaction.atomic():
-                # Refresh from DB with lock to prevent race condition
                 from core.models import CustomerInteraction
-                locked = CustomerInteraction.objects.select_for_update().get(id=interaction.id)
+                locked = CustomerInteraction.objects.filter(id=interaction.id).first()
+                if not locked:
+                    raise ValueError("Interaction record not found.")
                 if locked.escalated_call:
                     return locked.escalated_call
 
@@ -72,7 +74,6 @@ def create_call_from_interaction(interaction):
                     call_type="Service",
                     complaint_type="AI Self-Service Escalation",
                     complaint_text=complaint_body,
-
                     customer=interaction.customer,
                     site=interaction.site,
                     asset=interaction.asset,
@@ -87,10 +88,21 @@ def create_call_from_interaction(interaction):
                     response_due_at=now + timedelta(minutes=response_minutes),
                     resolution_due_at=now + timedelta(minutes=resolution_minutes),
                 )
-                interaction.resolved = False
-                interaction.escalated_call = call
-                interaction.save(update_fields=["resolved", "escalated_call"])
+                locked.resolved = False
+                locked.escalated_call = call
+                locked.save(update_fields=["resolved", "escalated_call"])
+                interaction.refresh_from_db()
                 return call
         except IntegrityError:
+            # Handle SQLite concurrency contention: OneToOne constraint on escalated_call
+            # or servy_id collision. Rollback occurs automatically in transaction.atomic().
+            interaction.refresh_from_db()
+            if interaction.escalated_call:
+                return interaction.escalated_call
             continue
+
+    interaction.refresh_from_db()
+    if interaction.escalated_call:
+        return interaction.escalated_call
     raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
+
