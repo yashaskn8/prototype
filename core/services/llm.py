@@ -69,8 +69,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     for r in retrieved:
         words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", f"{r.heading} {r.text}".lower())}
         overlap = len(terms & words)
-        if overlap > 0 or r.score >= 0.70:
-            matched_chunks.append((overlap, r))
+        matched_chunks.append((overlap, r))
 
     if not matched_chunks:
         return INSUFFICIENT_EVIDENCE_MESSAGE
