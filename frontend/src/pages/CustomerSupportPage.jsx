@@ -110,6 +110,7 @@ export function CustomerSupportPage() {
         site_id: selectedSite,
         asset_id: selectedAsset,
         question: query.trim(),
+        customer_id: contextData?.customer?.id,
       });
       setResult(res);
     } catch (err) {

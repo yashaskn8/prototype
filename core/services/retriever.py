@@ -35,7 +35,7 @@ class RetrievedChunk:
 
     @property
     def reference(self):
-        section = f" → {self.heading}" if self.heading else ""
+        section = f" > {self.heading}" if self.heading else ""
         return f"{self.title}{section}"
 
 
@@ -45,11 +45,10 @@ class RetrievedResultList(list):
         self.retrieval_backend = retrieval_backend
 
 
-def _knowledge_candidates(tenant, asset, customer, include_confidential):
+def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False):
     qs = KnowledgeChunk.objects.filter(
         tenant=tenant,
         document__is_rag_enabled=True,
-        document__index_status__in=["INDEXED", "FAILED"],
         is_quarantined=False,
     ).select_related(
         "document", "document__product", "document__asset",
@@ -146,28 +145,6 @@ def _format_chunk_text(chunk) -> str:
     return chunk.text or ""
 
 
-# ---------------------------------------------------------------------------
-# Source Authority Tiers (Defect #7)
-# ---------------------------------------------------------------------------
-
-def _source_authority_tier(chunk) -> int:
-    """Classify a retrieved chunk into an authority tier.
-
-    Tier 1: Asset-specific approved technical documentation (highest)
-    Tier 2: Product-specific approved technical documentation
-    Tier 3: Category/domain/general approved documentation
-    Tier 4: Historical service-resolution memory (lowest)
-    """
-    if chunk.source_kind == "past_resolution":
-        return 4
-    if chunk.document_id:
-        doc = KnowledgeDocument.objects.filter(id=chunk.document_id).first()
-        if doc:
-            if doc.asset_id:
-                return 1
-            if doc.product_id:
-                return 2
-    return 3
 
 
 # ---------------------------------------------------------------------------
@@ -466,9 +443,13 @@ def retrieve(
 
     # Step 1: Django determines candidate pool according to tenant, customer,
     # confidentiality, and asset scope
-    candidates = list(_knowledge_candidates(tenant, asset, customer, include_confidential))
+    candidates = list(_knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=True))
     allowed_chunks_by_id = {c.id: c for c in candidates}
     allowed_doc_ids = {c.document_id for c in candidates}
+    # For dense retrieval, only INDEXED documents have valid Chroma embeddings
+    dense_candidates = [c for c in candidates if c.document.index_status == "INDEXED"]
+    dense_chunks_by_id = {c.id: c for c in dense_candidates}
+    dense_doc_ids = {c.document_id for c in dense_candidates}
 
     retrieval_backend = "fallback"
 

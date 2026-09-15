@@ -167,7 +167,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     output.append("STEP-BY-STEP TROUBLESHOOTING")
     for i, step in enumerate(troubleshooting_steps[:6], 1):
         clean_step = step.rstrip(".")
-        output.append(f"Step {i} — {clean_step}.")
+        output.append(f"Step {i} - {clean_step}.")
         # Only include a "Why:" line if we found one in the actual source text
         if step in step_reasons:
             output.append(step_reasons[step])
@@ -247,9 +247,9 @@ CHECK FIRST
 List the initial documented checks.
 
 STEP-BY-STEP TROUBLESHOOTING
-Step 1 — [action]
+Step 1 - [action]
 Why: [reason]
-Step 2 — [action]
+Step 2 - [action]
 Why: [reason]
 
 EXPECTED RESULT

@@ -305,9 +305,13 @@ export function EngineerCopilotPage({ initialCallId }) {
                     <History size={14} /> FLEET-WIDE SANITIZED CASE MEMORY ({result.past_resolutions.length})
                   </div>
                   {result.past_resolutions.map((pr, idx) => (
-                    <div key={idx} className="resolution-card" style={{ background: '#eff6ff', borderColor: '#bfdbfe' }}>
-                      <h4 style={{ color: '#1d4ed8' }}>Resolved Case {pr.servy_id}: {pr.complaint_type}</h4>
-                      <p style={{ color: '#1e40af' }}><strong>Action Taken:</strong> {pr.resolution_text}</p>
+                    <div key={idx} className="resolution-card" style={{ background: '#eff6ff', borderColor: '#bfdbfe', padding: '10px 14px', borderRadius: '6px', marginBottom: '8px' }}>
+                      <h4 style={{ color: '#1d4ed8', margin: '0 0 4px 0', fontSize: '0.9rem', fontWeight: 600 }}>
+                        Resolved Case #{pr.servy_id || pr.service_call_id}: {pr.complaint_type || pr.title || 'Fleet Resolution'}
+                      </h4>
+                      <p style={{ color: '#1e40af', margin: 0, fontSize: '0.85rem' }}>
+                        <strong>Action Taken:</strong> {pr.resolution_text || 'Resolved according to standard technical procedures.'}
+                      </p>
                     </div>
                   ))}
                 </div>

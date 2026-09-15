@@ -216,38 +216,65 @@ class DashboardView(APIView):
         data = {
             "role": role,
             "tenant_name": tenant.name,
+            "tenant": {"id": tenant.id, "name": tenant.name, "slug": tenant.slug},
         }
 
         if role in CUSTOMER_ROLES and customer:
             calls_qs = ServiceCall.objects.filter(tenant=tenant, customer=customer)
+            interactions_qs = CustomerInteraction.objects.filter(tenant=tenant, customer=customer)
             stats = {
                 "total_calls": calls_qs.count(),
+                "service_calls": calls_qs.count(),
                 "open_calls": calls_qs.filter(status__in=["open", "assigned", "in_progress", "pending_parts"]).count(),
                 "closed_calls": calls_qs.filter(status="closed").count(),
                 "active_assets": Asset.objects.filter(tenant=tenant, customer=customer, status="active").count(),
+                "assets": Asset.objects.filter(tenant=tenant, customer=customer, status="active").count(),
+                "knowledge_documents": KnowledgeDocument.objects.filter(tenant=tenant, is_rag_enabled=True).count(),
+                "interactions_today": interactions_qs.filter(created_at__date=timezone.now().date()).count(),
+                "escalations_today": interactions_qs.filter(created_at__date=timezone.now().date(), escalated_call__isnull=False).count(),
             }
             data["stats"] = stats
             data["metrics"] = stats
             data["recent_calls"] = list(calls_qs.order_by("-created_at")[:5].values(
                 "id", "servy_id", "complaint_type", "status", "priority", "created_at"
             ))
-            data["recent_interactions"] = list(CustomerInteraction.objects.filter(
-                tenant=tenant, customer=customer
-            ).order_by("-created_at")[:5].values("id", "question", "resolved", "created_at", "escalated_call_id"))
+            recent_interactions_qs = interactions_qs.select_related(
+                "customer", "asset"
+            ).order_by("-created_at")[:5]
+            data["recent_interactions"] = [
+                {
+                    "id": ix.id,
+                    "question": ix.question,
+                    "resolved": ix.resolved,
+                    "created_at": ix.created_at,
+                    "escalated_call_id": ix.escalated_call_id,
+                    "customer__name": ix.customer.name if ix.customer else "",
+                    "asset__name": ix.asset.name if ix.asset else "",
+                    "escalated_call": ix.escalated_call_id is not None,
+                    "resolved_without_call": ix.resolved and ix.escalated_call_id is None,
+                }
+                for ix in recent_interactions_qs
+            ]
 
         else:
             # Staff / Technician / Admin / Superuser
             calls_qs = ServiceCall.objects.filter(tenant=tenant)
+            interactions_qs = CustomerInteraction.objects.filter(tenant=tenant)
             staff = ctx.get("staff_profile")
             my_calls = calls_qs.filter(technician=staff) if staff else calls_qs.none()
 
             stats = {
                 "total_calls": calls_qs.count(),
+                "service_calls": calls_qs.count(),
                 "open_calls": calls_qs.filter(status__in=["open", "assigned", "in_progress"]).count(),
                 "assigned_to_me": my_calls.filter(status__in=["assigned", "in_progress"]).count(),
                 "kb_documents": KnowledgeDocument.objects.filter(tenant=tenant, is_rag_enabled=True).count(),
+                "knowledge_documents": KnowledgeDocument.objects.filter(tenant=tenant, is_rag_enabled=True).count(),
+                "assets": Asset.objects.filter(tenant=tenant, status="active").count(),
                 "inventory_items": InventoryItem.objects.filter(tenant=tenant).count(),
                 "part_requests": PartRequest.objects.filter(tenant=tenant).count(),
+                "interactions_today": interactions_qs.filter(created_at__date=timezone.now().date()).count(),
+                "escalations_today": interactions_qs.filter(created_at__date=timezone.now().date(), escalated_call__isnull=False).count(),
             }
             data["stats"] = stats
             data["metrics"] = stats
@@ -255,6 +282,23 @@ class DashboardView(APIView):
                 "id", "servy_id", "complaint_type", "status", "priority", "created_at",
                 "customer__name", "asset__name"
             ))
+            recent_interactions_qs = interactions_qs.select_related(
+                "customer", "asset"
+            ).order_by("-created_at")[:5]
+            data["recent_interactions"] = [
+                {
+                    "id": ix.id,
+                    "question": ix.question,
+                    "resolved": ix.resolved,
+                    "created_at": ix.created_at,
+                    "escalated_call_id": ix.escalated_call_id,
+                    "customer__name": ix.customer.name if ix.customer else "",
+                    "asset__name": ix.asset.name if ix.asset else "",
+                    "escalated_call": ix.escalated_call_id is not None,
+                    "resolved_without_call": ix.resolved and ix.escalated_call_id is None,
+                }
+                for ix in recent_interactions_qs
+            ]
 
         return Response(data)
 
@@ -316,7 +360,13 @@ class CustomerSupportQueryView(APIView):
             cust_id = request.data.get("customer_id")
             if cust_id:
                 customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
-            else:
+            if not customer:
+                target_site_id = request.data.get("site_id")
+                if target_site_id:
+                    matched_site = Site.objects.filter(tenant=tenant, id=target_site_id).select_related("customer").first()
+                    if matched_site and matched_site.customer:
+                        customer = matched_site.customer
+            if not customer:
                 customer = Customer.objects.filter(tenant=tenant).first()
 
         if not customer:
@@ -365,17 +415,33 @@ class CustomerSupportQueryView(APIView):
             source_refs=rag_res["references"],
         )
 
-        past_resolutions = [
-            {
-                "service_call_id": r.get("service_call_id"),
-                "title": r.get("title"),
-                "reference": r.get("reference"),
-                "doc_type": r.get("doc_type"),
-                "score": r.get("score"),
-            }
+        # Enrich past resolution references with full ServiceCall details
+        past_res_call_ids = [
+            r.get("service_call_id")
             for r in rag_res.get("references", [])
-            if r.get("source_kind") == "past_resolution"
+            if r.get("source_kind") == "past_resolution" and r.get("service_call_id")
         ]
+        sc_map = {
+            sc.id: sc
+            for sc in ServiceCall.objects.filter(tenant=tenant, id__in=past_res_call_ids)
+        }
+        past_resolutions = []
+        for r in rag_res.get("references", []):
+            if r.get("source_kind") == "past_resolution":
+                sc = sc_map.get(r.get("service_call_id"))
+                servy_id = sc.servy_id if sc else r.get("service_call_id")
+                complaint_type = sc.complaint_type if sc and sc.complaint_type else (r.get("heading") or "Past Service Call")
+                resolution_text = (sc.resolution_text or sc.technician_notes or "Resolved according to standard technical procedures.") if sc else "Resolved according to standard technical procedures."
+                past_resolutions.append({
+                    "service_call_id": r.get("service_call_id"),
+                    "servy_id": servy_id,
+                    "complaint_type": complaint_type,
+                    "resolution_text": resolution_text,
+                    "title": r.get("title"),
+                    "reference": r.get("reference"),
+                    "doc_type": r.get("doc_type"),
+                    "score": r.get("score"),
+                })
 
         return Response({
             "interaction_id": interaction.id,
@@ -410,7 +476,7 @@ class CustomerSupportResolveView(APIView):
 
         interaction.resolved = True
         interaction.save(update_fields=["resolved"])
-        return Response({"status": "resolved", "interaction_id": interaction.id})
+        return Response({"status": "resolved", "interaction_id": interaction.id, "detail": "Marked as resolved. Thank you!"})
 
 
 class CustomerSupportEscalateView(APIView):
@@ -489,17 +555,33 @@ class EngineerCopilotQueryView(APIView):
         retrieved_list = rag_res.get("retrieved", [])
         retrieval_backend = getattr(retrieved_list, "retrieval_backend", "fallback")
 
-        past_resolutions = [
-            {
-                "service_call_id": r.get("service_call_id"),
-                "title": r.get("title"),
-                "reference": r.get("reference"),
-                "doc_type": r.get("doc_type"),
-                "score": r.get("score"),
-            }
+        # Enrich past resolution references with full ServiceCall details
+        past_res_call_ids = [
+            r.get("service_call_id")
             for r in rag_res.get("references", [])
-            if r.get("source_kind") == "past_resolution"
+            if r.get("source_kind") == "past_resolution" and r.get("service_call_id")
         ]
+        sc_map = {
+            sc.id: sc
+            for sc in ServiceCall.objects.filter(tenant=tenant, id__in=past_res_call_ids)
+        }
+        past_resolutions = []
+        for r in rag_res.get("references", []):
+            if r.get("source_kind") == "past_resolution":
+                sc = sc_map.get(r.get("service_call_id"))
+                servy_id = sc.servy_id if sc else r.get("service_call_id")
+                complaint_type = sc.complaint_type if sc and sc.complaint_type else (r.get("heading") or "Past Service Call")
+                resolution_text = (sc.resolution_text or sc.technician_notes or "Resolved according to standard technical procedures.") if sc else "Resolved according to standard technical procedures."
+                past_resolutions.append({
+                    "service_call_id": r.get("service_call_id"),
+                    "servy_id": servy_id,
+                    "complaint_type": complaint_type,
+                    "resolution_text": resolution_text,
+                    "title": r.get("title"),
+                    "reference": r.get("reference"),
+                    "doc_type": r.get("doc_type"),
+                    "score": r.get("score"),
+                })
 
         return Response({
             "answer": rag_res["answer"],
@@ -612,7 +694,7 @@ class CallRegisterView(APIView):
             )
 
         items = list(qs.order_by("-created_at")[:100].values(
-            "id", "servy_id", "complaint_type", "status", "priority",
+            "id", "servy_id", "complaint_type", "complaint_text", "status", "priority",
             "contact_name", "created_at", "customer__name", "site__name",
             "asset__name", "technician__full_name"
         ))
