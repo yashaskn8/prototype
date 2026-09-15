@@ -41,8 +41,8 @@ jobs:
       - name: Red Team Offline Checks (Roles & Scoping)
         run: python red_team_offline.py
 
-      - name: Run Core Tests & API Security Regression Tests
-        run: python manage.py test core.tests core.tests_api_security core.tests_security -v 2
+      - name: Run All Core Tests (Unit, Security, RAG, Red-Team)
+        run: python manage.py test core -v 2
 
   frontend-build-and-lint:
     name: Frontend Build & Lint

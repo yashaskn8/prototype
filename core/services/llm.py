@@ -50,6 +50,15 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE
 
+    # Check for identifier-based abstention: if query mentions a specific
+    # error code not found in any retrieved source, abstain.
+    from .identifiers import query_identifiers_not_in_sources
+    source_texts = [r.text for r in retrieved]
+    missing_ids = query_identifiers_not_in_sources(question or "", source_texts)
+    if missing_ids:
+        missing_str = ", ".join(sorted(missing_ids))
+        return f"No approved documentation found for identifier {missing_str}."
+
     raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", question or "")}
     terms = raw_terms - _STOPWORDS
     if not terms:
@@ -78,6 +87,8 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     troubleshooting_steps = []
     expected_results = []
     escalations = []
+    # Track original Why:/reason text from sources
+    step_reasons = {}  # step_text -> reason_text (only from source)
 
     check_keywords = ("check", "confirm", "ensure", "inspect", "first", "verify", "examine")
     escalate_keywords = ("stop", "escalate", "service call", "abnormal", "technician", "fails", "failed", "persist", "unresolved")
@@ -92,7 +103,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
             line_str = line.strip()
             if not line_str:
                 continue
-            num_match = re.match(r"^\d+[\.\)]\s*(.+)", line_str)
+            num_match = re.match(r"^\d+[\.)\]]\s*(.+)", line_str)
             if num_match:
                 sentences.append(num_match.group(1).strip())
             else:
@@ -100,12 +111,22 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
                     if len(s.strip()) > 15:
                         sentences.append(s.strip())
 
+        # Look for "Why:" or "Reason:" lines that follow a step in the source
+        prev_sentence = None
         for s in sentences:
             s_clean = s.strip()
             if not s_clean or s_clean in seen_sentences:
+                prev_sentence = s_clean
                 continue
             seen_sentences.add(s_clean)
             s_lower = s_clean.lower()
+
+            # Check if this is a "Why:" line that belongs to the previous step
+            why_match = re.match(r"^(?:why|reason)\s*:\s*(.+)", s_lower)
+            if why_match and prev_sentence:
+                step_reasons[prev_sentence] = s_clean
+                prev_sentence = s_clean
+                continue
 
             if any(k in s_lower for k in escalate_keywords):
                 escalations.append(s_clean)
@@ -118,6 +139,8 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
                     troubleshooting_steps.append(s_clean)
             else:
                 troubleshooting_steps.append(s_clean)
+
+            prev_sentence = s_clean
 
     if not checks and troubleshooting_steps:
         checks.append(troubleshooting_steps.pop(0))
@@ -138,30 +161,25 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
         for c in checks[:3]:
             output.append(f"- {c.rstrip('.')}.")
     else:
-        output.append("- Confirm standard operating conditions and power supply per technical manual.")
+        # No checks found in source — omit section rather than fabricate
+        output.append("- Refer to the approved technical manual for initial checks.")
     output.append("")
 
     output.append("STEP-BY-STEP TROUBLESHOOTING")
     for i, step in enumerate(troubleshooting_steps[:6], 1):
         clean_step = step.rstrip(".")
         output.append(f"Step {i} — {clean_step}.")
-        if "clean" in clean_step.lower() or "rinse" in clean_step.lower():
-            output.append("Why: Removes residue or blockages impeding standard flow.")
-        elif "tube" in clean_step.lower() or "connect" in clean_step.lower() or "fit" in clean_step.lower():
-            output.append("Why: Ensures airtight sample pathway without leakage or air bubbles.")
-        elif "sample" in clean_step.lower() or "cup" in clean_step.lower() or "level" in clean_step.lower():
-            output.append("Why: Ensures sufficient volume for pump intake and proper sensor contact.")
-        elif "power" in clean_step.lower() or "isolator" in clean_step.lower() or "cable" in clean_step.lower():
-            output.append("Why: Ensures verified electrical supply required for motor and logic controls.")
-        else:
-            output.append("Why: Documented maintenance procedure required to restore normal operating parameters.")
+        # Only include a "Why:" line if we found one in the actual source text
+        if step in step_reasons:
+            output.append(step_reasons[step])
     output.append("")
 
     output.append("EXPECTED RESULT")
     if expected_results:
         output.append(expected_results[0].rstrip(".") + ".")
     else:
-        output.append(f"{asset_name} completes verification cycle within normal operating limits without recurring error.")
+        # Do NOT fabricate an expected result — state that the source doesn't specify
+        output.append("The approved source does not specify an expected result.")
     output.append("")
 
     output.append("STOP AND ESCALATE IF")
@@ -169,7 +187,8 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
         for esc in escalations[:3]:
             output.append(f"- {esc.rstrip('.')}.")
     else:
-        output.append("- Stop troubleshooting and escalate if error repeats after completing documented checks.")
+        # Do NOT fabricate escalation criteria — state that the source doesn't specify
+        output.append("- The approved source does not specify escalation criteria. Contact support if the issue persists.")
     output.append("")
 
     output.append("VERIFIED REFERENCES")

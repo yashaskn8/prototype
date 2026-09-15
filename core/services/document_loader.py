@@ -69,7 +69,14 @@ def extract_document_text(document):
                 text.append(page.extract_text() or "")
                 if sum(len(x) for x in text) >= MAX_TEXT_CHARS:
                     break
-            return _limit("\n\n".join(text))
+            combined = "\n\n".join(text).strip()
+            if not combined:
+                # Scanned PDF with no extractable text — flag for operator
+                if hasattr(document, "index_error"):
+                    document.index_error = "No extractable text found (OCR required / scanned document)"
+                    document.save(update_fields=["index_error"])
+                return ""
+            return _limit(combined)
         except UnsafeDocumentError:
             raise
         except Exception as exc:
@@ -83,10 +90,28 @@ def extract_document_text(document):
         try:
             doc = Document(str(path))
             parts = []
+            # Extract paragraphs
             for p in doc.paragraphs:
                 parts.append(p.text)
                 if sum(len(x) for x in parts) >= MAX_TEXT_CHARS:
                     break
+            # Extract tables as pipe-delimited markdown
+            if sum(len(x) for x in parts) < MAX_TEXT_CHARS:
+                for table in doc.tables:
+                    table_rows = []
+                    for row in table.rows:
+                        cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                        table_rows.append("| " + " | ".join(cells) + " |")
+                    if table_rows:
+                        # Add markdown table header separator after first row
+                        header = table_rows[0]
+                        separator = "| " + " | ".join("---" for _ in table.rows[0].cells) + " |"
+                        parts.append("")
+                        parts.append(header)
+                        parts.append(separator)
+                        parts.extend(table_rows[1:])
+                    if sum(len(x) for x in parts) >= MAX_TEXT_CHARS:
+                        break
             return _limit("\n".join(parts))
         except Exception as exc:
             raise UnsafeDocumentError("Failed to parse DOCX document.") from exc

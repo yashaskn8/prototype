@@ -39,14 +39,16 @@ def index_document(document):
     objects = []
     for i, (heading, body) in enumerate(chunks):
         flags = detect_document_prompt_injection(body)
+        full_text = f"## {heading}\n{body}" if heading and heading not in body else body
+        content_embedding_text = f"{heading}\n{body}" if heading and heading not in body else body
         objects.append(KnowledgeChunk(
             tenant=document.tenant,
             document=document,
             chunk_index=i,
             heading=heading,
-            text=body,
-            embedding=embed_text(_doc_embedding_text(document, heading, body)),
-            content_embedding=embed_text(body),
+            text=full_text,
+            embedding=embed_text(_doc_embedding_text(document, heading, full_text)),
+            content_embedding=embed_text(content_embedding_text),
             embedding_model=VECTOR_MODEL,
             safety_flags=flags,
             is_quarantined=bool(flags),

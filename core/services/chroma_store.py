@@ -163,9 +163,13 @@ def sync_document_to_chroma(document_id: int):
 
     except Exception as exc:
         logger.error("Failed to index doc %s to Chroma: %s", doc.id, exc, exc_info=True)
+        # IMPORTANT: Do NOT set index_status to FAILED here.  The SQLite
+        # sparse embeddings were created successfully by index_document() and
+        # must remain discoverable by the fallback retriever.  Only record
+        # the Chroma-specific failure in index_error.
         KnowledgeDocument.objects.filter(id=document_id).update(
-            index_status="FAILED",
-            index_error=str(exc)[:500]
+            index_status="INDEXED",
+            index_error=f"Chroma sync failed: {str(exc)[:480]}; sparse index active"
         )
         return False
 
