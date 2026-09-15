@@ -28,7 +28,10 @@ def get_sentence_transformer():
             if _sentence_model is None:
                 try:
                     from sentence_transformers import SentenceTransformer
-                    _sentence_model = SentenceTransformer("all-MiniLM-L6-v2")
+                    try:
+                        _sentence_model = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
+                    except Exception:
+                        _sentence_model = SentenceTransformer("all-MiniLM-L6-v2")
                     logger.info("Loaded SentenceTransformer('all-MiniLM-L6-v2') successfully")
                 except Exception as exc:
                     logger.warning("Could not load SentenceTransformer: %s", exc)
