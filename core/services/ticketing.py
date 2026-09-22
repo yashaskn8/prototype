@@ -18,7 +18,13 @@ def choose_technician(tenant, branch=None, zone=None):
         branch_qs = qs.filter(branch=branch)
         if branch_qs.exists():
             qs = branch_qs
-    return qs.annotate(
+
+    # Prefer technicians with a linked user account so they can actually
+    # log in to see and act on the assigned call.
+    loginable_qs = qs.filter(user__isnull=False)
+    pick_from = loginable_qs if loginable_qs.exists() else qs
+
+    return pick_from.annotate(
         active_calls=Count("service_calls", filter=Q(service_calls__status__in=["assigned", "in_progress"]))
     ).order_by("active_calls", "full_name").first()
 

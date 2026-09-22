@@ -29,6 +29,8 @@ export function CallRegisterPage({ onOpenCopilot }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
+  const isTechnician = user?.role === 'technician';
+  const [myCallsOnly, setMyCallsOnly] = useState(isTechnician);
 
   // Call Detail Modal State
   const [selectedCall, setSelectedCall] = useState(null);
@@ -45,7 +47,8 @@ export function CallRegisterPage({ onOpenCopilot }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/api/calls/');
+      const params = myCallsOnly ? '?assigned_to_me=true' : '';
+      const res = await api.get(`/api/calls/${params}`);
       setCalls(res.calls || []);
     } catch (err) {
       setError(err.detail || 'Failed to load call register.');
@@ -56,7 +59,7 @@ export function CallRegisterPage({ onOpenCopilot }) {
 
   useEffect(() => {
     loadCalls();
-  }, []);
+  }, [myCallsOnly]);
 
   async function openCallDetail(callId) {
     setSelectedCall(callId);
@@ -190,6 +193,17 @@ export function CallRegisterPage({ onOpenCopilot }) {
             </select>
           </div>
 
+          {isTechnician && (
+            <button
+              className={`btn ${myCallsOnly ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setMyCallsOnly(prev => !prev)}
+              title={myCallsOnly ? 'Show all tenant calls' : 'Show only my assigned calls'}
+              style={myCallsOnly ? { background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)', whiteSpace: 'nowrap' } : { whiteSpace: 'nowrap' }}
+            >
+              <User size={14} /> {myCallsOnly ? 'My Calls' : 'All Calls'}
+            </button>
+          )}
+
           <button className="btn btn-secondary" onClick={loadCalls} title="Refresh register">
             <RefreshCw size={14} />
           </button>
@@ -205,6 +219,7 @@ export function CallRegisterPage({ onOpenCopilot }) {
                 <th>Servy ID</th>
                 <th>Customer & Site</th>
                 <th>Issue / Complaint</th>
+                <th>Assigned To</th>
                 <th>Priority</th>
                 <th>Status</th>
                 <th>Created</th>
@@ -214,15 +229,15 @@ export function CallRegisterPage({ onOpenCopilot }) {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
                     <RefreshCw size={20} className="spin" style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
                     <p>Loading service call records...</p>
                   </td>
                 </tr>
               ) : filteredCalls.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
-                    No service calls match the specified filter.
+                  <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                    {myCallsOnly ? 'No service calls assigned to you.' : 'No service calls match the specified filter.'}
                   </td>
                 </tr>
               ) : (
@@ -239,6 +254,14 @@ export function CallRegisterPage({ onOpenCopilot }) {
                       <div style={{ fontWeight: 500 }}>{c.complaint_type || 'General Service'}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {c.complaint_text}
+                      </div>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <User size={14} color="#64748b" />
+                        <span style={{ fontWeight: 500, fontSize: '0.85rem' }}>
+                          {c.technician__full_name || 'Unassigned'}
+                        </span>
                       </div>
                     </td>
                     <td>

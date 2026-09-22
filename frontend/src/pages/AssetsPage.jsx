@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../api';
-import { Package, Search, RefreshCw, AlertCircle, Building, Tag, QrCode } from 'lucide-react';
+import { AssetDetailPage } from './AssetDetailPage';
+import { Package, Search, RefreshCw, AlertCircle, ChevronRight } from 'lucide-react';
 
 export function AssetsPage() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
+  const [selectedAssetId, setSelectedAssetId] = useState(null);
 
   async function loadAssets() {
     setLoading(true);
@@ -25,6 +27,18 @@ export function AssetsPage() {
     loadAssets();
   }, []);
 
+  if (selectedAssetId) {
+    return (
+      <AssetDetailPage 
+        assetId={selectedAssetId} 
+        onBack={() => {
+          setSelectedAssetId(null);
+          loadAssets();
+        }} 
+      />
+    );
+  }
+
   const filteredAssets = assets.filter(a => 
     !search || 
     a.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -41,7 +55,7 @@ export function AssetsPage() {
             Equipment & Asset Registry
           </h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem' }}>
-            Track deployed customer machinery, serial tags, and operational health.
+            View registered equipment, technical documentation, operational health, and launch AI diagnostics.
           </p>
         </div>
       </div>
@@ -82,25 +96,30 @@ export function AssetsPage() {
                 <th>Model / Product</th>
                 <th>Customer & Site</th>
                 <th>Status</th>
+                <th style={{ textAlign: 'right' }}>Action</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
                     <RefreshCw size={20} className="spin" style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
                     <p>Loading asset database...</p>
                   </td>
                 </tr>
               ) : filteredAssets.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
                     No assets found matching the search criteria.
                   </td>
                 </tr>
               ) : (
                 filteredAssets.map(a => (
-                  <tr key={a.id}>
+                  <tr 
+                    key={a.id} 
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setSelectedAssetId(a.id)}
+                  >
                     <td>
                       <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <Package size={16} color="var(--primary)" />
@@ -129,6 +148,18 @@ export function AssetsPage() {
                       <span className="badge badge-resolved">
                         {a.status || 'Active'}
                       </span>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button 
+                        className="btn btn-secondary" 
+                        style={{ padding: '6px 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedAssetId(a.id);
+                        }}
+                      >
+                        Manage <ChevronRight size={14} />
+                      </button>
                     </td>
                   </tr>
                 ))

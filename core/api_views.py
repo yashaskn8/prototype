@@ -659,6 +659,371 @@ class AssetsListView(APIView):
         return Response({"assets": items})
 
 
+class AssetDetailView(APIView):
+    """Retrieve full asset details, warranty countdown, and associated operational counts."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
+
+        qs = Asset.objects.filter(tenant=tenant).select_related(
+            "customer", "site", "product", "product__brand", "product__category", "product__category__domain"
+        )
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+            qs = qs.filter(customer=customer)
+
+        asset = qs.filter(id=pk).first()
+        if not asset:
+            return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Warranty calculations
+        today = timezone.now().date()
+        warranty_days_remaining = None
+        is_warranty_expired = None
+        if asset.warranty_until:
+            delta = (asset.warranty_until - today).days
+            warranty_days_remaining = max(0, delta)
+            is_warranty_expired = delta < 0
+
+        # Associated metrics
+        open_calls_count = ServiceCall.objects.filter(
+            tenant=tenant, asset=asset, status__in=["open", "assigned", "in_progress"]
+        ).count()
+
+        from core.services.knowledge_scope import get_applicable_knowledge_queryset
+        doc_count = get_applicable_knowledge_queryset(asset, ctx).count()
+
+        return Response({
+            "asset": {
+                "id": asset.id,
+                "name": asset.name,
+                "asset_code": asset.asset_code,
+                "model_number": asset.model_number,
+                "serial_number": asset.serial_number,
+                "status": asset.status,
+                "warranty_until": asset.warranty_until,
+                "warranty_days_remaining": warranty_days_remaining,
+                "is_warranty_expired": is_warranty_expired,
+                "customer": {"id": asset.customer.id, "name": asset.customer.name} if asset.customer else None,
+                "site": {
+                    "id": asset.site.id,
+                    "name": asset.site.name,
+                    "address": asset.site.address,
+                    "city": asset.site.city,
+                } if asset.site else None,
+                "product": {
+                    "id": asset.product.id,
+                    "name": asset.product.name,
+                    "description": asset.product.description,
+                    "brand_name": asset.product.brand.name if asset.product and asset.product.brand else None,
+                    "category_name": asset.product.category.name if asset.product and asset.product.category else None,
+                    "domain_name": asset.product.category.domain.name if asset.product and asset.product.category and asset.product.category.domain else None,
+                } if asset.product else None,
+                "open_calls_count": open_calls_count,
+                "documents_count": doc_count,
+            }
+        })
+
+
+class AssetDocumentsView(APIView):
+    """Retrieve all KnowledgeDocuments applicable to an asset (Asset -> Product -> Category -> General)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
+
+        qs = Asset.objects.filter(tenant=tenant).select_related("product")
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+            qs = qs.filter(customer=customer)
+
+        asset = qs.filter(id=pk).first()
+        if not asset:
+            return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        from core.services.knowledge_scope import get_applicable_knowledge_queryset
+        doc_qs = get_applicable_knowledge_queryset(asset, ctx)
+
+        results = []
+        for d in doc_qs[:200]:
+            scope_level = "general"
+            if d.asset_id == asset.id:
+                scope_level = "asset"
+            elif asset.product_id and d.product_id == asset.product_id:
+                scope_level = "product"
+            elif asset.product and asset.product.category_id and d.category_id == asset.product.category_id:
+                scope_level = "category"
+
+            results.append({
+                "id": d.id,
+                "title": d.title,
+                "description": d.description,
+                "doc_type": d.doc_type,
+                "doc_type_display": d.get_doc_type_display(),
+                "version": d.version,
+                "is_rag_enabled": d.is_rag_enabled,
+                "index_status": d.index_status,
+                "index_error": d.index_error,
+                "has_file": bool(d.file),
+                "original_filename": d.original_filename or (os.path.basename(d.file.name) if d.file else ""),
+                "scope_level": scope_level,
+                "is_confidential": d.is_confidential,
+                "published_at": d.published_at,
+                "updated_at": d.updated_at,
+            })
+
+        return Response({"documents": results})
+
+
+class AssetDocumentUploadView(APIView):
+    """Upload a document attached directly to an asset.
+    Customer uploads are strictly created with is_rag_enabled=False to prevent prompt injection.
+    Staff uploads can trigger immediate indexing."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [UploadThrottle]
+
+    def post(self, request, pk):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
+
+        qs = Asset.objects.filter(tenant=tenant).select_related("customer", "product")
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+            qs = qs.filter(customer=customer)
+
+        asset = qs.filter(id=pk).first()
+        if not asset:
+            return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        title = (request.data.get("title") or "").strip()
+        description = (request.data.get("description") or "").strip()
+        doc_type = request.data.get("doc_type", "reference")
+        content_text = (request.data.get("content_text") or "").strip()
+        uploaded_file = request.FILES.get("file")
+
+        if not title:
+            return Response({"detail": "Title is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not content_text and not uploaded_file:
+            return Response({"detail": "Provide text content or a file attachment."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # File validation
+        if uploaded_file:
+            name_lower = uploaded_file.name.lower()
+            ext = os.path.splitext(name_lower)[1]
+            if ext not in ALLOWED_KB_EXTENSIONS:
+                return Response(
+                    {"detail": f"Unsupported file extension '{ext}'. Allowed: {', '.join(sorted(ALLOWED_KB_EXTENSIONS))}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if uploaded_file.size > MAX_KB_UPLOAD_BYTES:
+                return Response(
+                    {"detail": f"File exceeds max size of {MAX_KB_UPLOAD_BYTES // (1024*1024)}MB."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            head = uploaded_file.read(8)
+            uploaded_file.seek(0)
+            if ext == ".pdf" and not head.startswith(b"%PDF-"):
+                return Response({"detail": "File header does not match PDF specification."}, status=status.HTTP_400_BAD_REQUEST)
+            if ext == ".docx" and not head.startswith(b"PK"):
+                return Response({"detail": "File header does not match DOCX specification."}, status=status.HTTP_400_BAD_REQUEST)
+            if ext in {".txt", ".md", ".csv"}:
+                sample = uploaded_file.read(4096)
+                uploaded_file.seek(0)
+                if b"\x00" in sample:
+                    return Response({"detail": "Binary data or null bytes detected in text file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_customer = role in CUSTOMER_ROLES
+        is_rag_enabled = False if is_customer else str(request.data.get("is_rag_enabled", "true")).lower() in {"1", "true", "yes"}
+
+        doc = None
+        chunks_indexed = 0
+        try:
+            with transaction.atomic():
+                doc = KnowledgeDocument.objects.create(
+                    tenant=tenant,
+                    customer=asset.customer,
+                    asset=asset,
+                    product=asset.product,
+                    title=title,
+                    description=description,
+                    doc_type=doc_type,
+                    source_type="file" if uploaded_file else "text",
+                    is_confidential=False,
+                    is_rag_enabled=is_rag_enabled,
+                    content_text=content_text,
+                    file=uploaded_file,
+                    original_filename=uploaded_file.name if uploaded_file else "",
+                    index_status="INDEXING" if is_rag_enabled else "NOT_INDEXED",
+                )
+                if is_rag_enabled and (content_text or uploaded_file):
+                    chunks_indexed = index_document(doc)
+        except UnsafeDocumentError as exc:
+            if doc and doc.file:
+                try:
+                    doc.file.delete(save=False)
+                except Exception:
+                    pass
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "id": doc.id,
+            "title": doc.title,
+            "chunks_count": chunks_indexed,
+            "index_status": doc.index_status,
+            "is_rag_enabled": doc.is_rag_enabled,
+            "message": "Document uploaded successfully. It is pending staff approval before AI RAG ingestion." if is_customer else f"Document indexed ({chunks_indexed} chunks)."
+        }, status=status.HTTP_201_CREATED)
+
+
+class AssetCallsView(APIView):
+    """Retrieve service calls scoped to a single asset, with open vs history filtering.
+    Customer callers receive sanitized payloads omitting internal technician_notes."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        role = ctx["role"]
+        customer = ctx["customer"]
+
+        qs = Asset.objects.filter(tenant=tenant)
+        if role in CUSTOMER_ROLES:
+            if not customer:
+                return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+            qs = qs.filter(customer=customer)
+
+        asset = qs.filter(id=pk).first()
+        if not asset:
+            return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        calls_qs = ServiceCall.objects.filter(tenant=tenant, asset=asset).select_related(
+            "customer", "site", "technician"
+        )
+        if role in CUSTOMER_ROLES:
+            calls_qs = calls_qs.filter(customer=customer)
+
+        scope_param = request.query_params.get("scope", "all").lower()
+        if scope_param == "open":
+            calls_qs = calls_qs.filter(status__in=["open", "assigned", "in_progress"])
+        elif scope_param == "history":
+            calls_qs = calls_qs.filter(status__in=["marked_for_closure", "closed"])
+
+        is_customer = role in CUSTOMER_ROLES
+        items = []
+        for c in calls_qs.order_by("-created_at")[:100]:
+            items.append({
+                "id": c.id,
+                "servy_id": c.servy_id,
+                "complaint_type": c.complaint_type,
+                "complaint_text": c.complaint_text,
+                "status": c.status,
+                "priority": c.priority,
+                "contact_name": c.contact_name,
+                "created_at": c.created_at,
+                "closed_at": c.closed_at,
+                "resolution_text": c.resolution_text,
+                "technician_notes": "" if is_customer else c.technician_notes,
+                "technician_name": c.technician.full_name if (c.technician and not is_customer) else None,
+                "site_name": c.site.name if c.site else None,
+            })
+
+        return Response({"calls": items})
+
+
+class KnowledgeApproveRagView(APIView):
+    """Idempotently approve a document for AI RAG ingestion. Restricted to Staff/Admins."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser", "technician", "manager"}):
+            return Response({"detail": "Permission denied. Only staff can approve documents for RAG."}, status=status.HTTP_403_FORBIDDEN)
+
+        tenant = ctx["tenant"]
+        try:
+            doc = KnowledgeDocument.objects.get(tenant=tenant, id=pk)
+        except KnowledgeDocument.DoesNotExist:
+            return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if doc.is_rag_enabled and doc.index_status == "INDEXED":
+            return Response({
+                "id": doc.id,
+                "is_rag_enabled": True,
+                "index_status": doc.index_status,
+                "message": "Document is already approved and indexed for RAG."
+            })
+
+        try:
+            doc.is_rag_enabled = True
+            doc.save(update_fields=["is_rag_enabled"])
+            chunks_indexed = index_document(doc)
+        except Exception as exc:
+            doc.is_rag_enabled = False
+            doc.index_status = "FAILED"
+            doc.index_error = str(exc)
+            doc.save(update_fields=["is_rag_enabled", "index_status", "index_error"])
+            return Response({"detail": f"Failed to index document: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            "id": doc.id,
+            "is_rag_enabled": True,
+            "index_status": doc.index_status,
+            "chunks_count": chunks_indexed,
+            "message": f"Document successfully approved and indexed ({chunks_indexed} chunks)."
+        })
+
+
+class KnowledgeRemoveRagView(APIView):
+    """Idempotently remove a document from AI RAG. Restricted to Staff/Admins."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        ctx = require_api_context(request)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser", "technician", "manager"}):
+            return Response({"detail": "Permission denied. Only staff can remove documents from RAG."}, status=status.HTTP_403_FORBIDDEN)
+
+        tenant = ctx["tenant"]
+        try:
+            doc = KnowledgeDocument.objects.get(tenant=tenant, id=pk)
+        except KnowledgeDocument.DoesNotExist:
+            return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not doc.is_rag_enabled and doc.index_status == "NOT_INDEXED":
+            return Response({
+                "id": doc.id,
+                "is_rag_enabled": False,
+                "index_status": doc.index_status,
+                "message": "Document is already disabled for RAG."
+            })
+
+        doc.is_rag_enabled = False
+        doc.index_status = "NOT_INDEXED"
+        doc.save(update_fields=["is_rag_enabled", "index_status"])
+        queue_chroma_deletion(doc.id)
+
+        return Response({
+            "id": doc.id,
+            "is_rag_enabled": False,
+            "index_status": "NOT_INDEXED",
+            "message": "Document removed from AI RAG."
+        })
+
+
 # ----------------------------------------------------------------------
 # Call Register Endpoints
 # ----------------------------------------------------------------------
@@ -680,9 +1045,23 @@ class CallRegisterView(APIView):
                 return Response({"calls": []})
             qs = qs.filter(customer=customer)
 
+        # Filter: assigned_to_me — scopes to the logged-in technician's StaffProfile
+        assigned_to_me = request.query_params.get("assigned_to_me", "").lower()
+        if assigned_to_me in ("true", "1"):
+            staff_profile = ctx.get("staff_profile")
+            if staff_profile:
+                qs = qs.filter(technician=staff_profile)
+            else:
+                # User has no linked StaffProfile — return empty set
+                return Response({"calls": []})
+
         status_filter = request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
+
+        priority_filter = request.query_params.get("priority")
+        if priority_filter:
+            qs = qs.filter(priority=priority_filter)
 
         search = request.query_params.get("q", "").strip()
         if search:
@@ -690,7 +1069,8 @@ class CallRegisterView(APIView):
                 Q(complaint_text__icontains=search) |
                 Q(complaint_type__icontains=search) |
                 Q(servy_id__icontains=search) |
-                Q(customer__name__icontains=search)
+                Q(customer__name__icontains=search) |
+                Q(technician__full_name__icontains=search)
             )
 
         items = list(qs.order_by("-created_at")[:100].values(
@@ -716,7 +1096,8 @@ class CallDetailView(APIView):
         except ServiceCall.DoesNotExist:
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if ctx["role"] in CUSTOMER_ROLES and (not ctx["customer"] or call.customer_id != ctx["customer"].id):
+        is_customer = ctx["role"] in CUSTOMER_ROLES
+        if is_customer and (not ctx["customer"] or call.customer_id != ctx["customer"].id):
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
         updates = list(call.updates.select_related("author").order_by("created_at").values(
@@ -732,7 +1113,7 @@ class CallDetailView(APIView):
                 "servy_id": call.servy_id,
                 "complaint_type": call.complaint_type,
                 "complaint_text": call.complaint_text,
-                "technician_notes": call.technician_notes,
+                "technician_notes": "" if is_customer else call.technician_notes,
                 "resolution_text": call.resolution_text,
                 "status": call.status,
                 "priority": call.priority,
@@ -743,10 +1124,10 @@ class CallDetailView(APIView):
                 "customer": {"id": call.customer.id, "name": call.customer.name} if call.customer else None,
                 "site": {"id": call.site.id, "name": call.site.name} if call.site else None,
                 "asset": {"id": call.asset.id, "name": call.asset.name, "model_number": call.asset.model_number} if call.asset else None,
-                "technician": {"id": call.technician.id, "name": call.technician.full_name} if call.technician else None,
+                "technician": ({"id": call.technician.id, "name": call.technician.full_name} if call.technician else None) if not is_customer else None,
             },
             "updates": updates,
-            "part_requests": parts,
+            "part_requests": parts if not is_customer else [],
         })
 
 

@@ -24,6 +24,10 @@ urlpatterns = [
     # Sites & Assets
     path("sites/<int:site_id>/assets/", api_views.SitesAssetsView.as_view(), name="api_sites_assets"),
     path("assets/", api_views.AssetsListView.as_view(), name="api_assets"),
+    path("assets/<int:pk>/", api_views.AssetDetailView.as_view(), name="api_asset_detail"),
+    path("assets/<int:pk>/documents/", api_views.AssetDocumentsView.as_view(), name="api_asset_documents"),
+    path("assets/<int:pk>/documents/upload/", api_views.AssetDocumentUploadView.as_view(), name="api_asset_document_upload"),
+    path("assets/<int:pk>/calls/", api_views.AssetCallsView.as_view(), name="api_asset_calls"),
 
     # Call Register & Detail
     path("calls/", api_views.CallRegisterView.as_view(), name="api_calls"),
@@ -39,6 +43,8 @@ urlpatterns = [
     path("knowledge/<int:pk>/download/", api_views.KnowledgeDownloadView.as_view(), name="api_knowledge_download"),
     path("knowledge/upload/", api_views.KnowledgeUploadView.as_view(), name="api_knowledge_upload"),
     path("knowledge/<int:pk>/delete/", api_views.KnowledgeDeleteView.as_view(), name="api_knowledge_delete"),
+    path("knowledge/<int:pk>/approve-for-rag/", api_views.KnowledgeApproveRagView.as_view(), name="api_knowledge_approve_rag"),
+    path("knowledge/<int:pk>/remove-from-rag/", api_views.KnowledgeRemoveRagView.as_view(), name="api_knowledge_remove_rag"),
 
     # Read-Only Supporting Modules
     path("projects/", api_views.ProjectsListView.as_view(), name="api_projects"),
