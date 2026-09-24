@@ -45,10 +45,12 @@ def evaluate_node_policy(
     if not asset or (customer and asset.customer_id != customer.id):
         return False, "ASSET_CUSTOMER_MISMATCH", {}
 
-    # Invariant 5: Playbook published status
+    # Invariant 5: Playbook published status and version pinning
     playbook = session.playbook
     if not playbook or playbook.status != "PUBLISHED":
         return False, "PLAYBOOK_NOT_PUBLISHED", {}
+    if session.playbook_version and playbook.version != session.playbook_version:
+        return False, "PLAYBOOK_VERSION_MISMATCH", {}
 
     definition = playbook.definition or {}
     nodes = definition.get("nodes", {})
@@ -76,20 +78,19 @@ def evaluate_node_policy(
         if safety_class == SAFETY_RED:
             return False, "RED_SAFETY_CLASS_FORBIDDEN", {}
 
-        is_terminal = node.get("is_terminal", False)
-        if not is_terminal:
-            evidence_anchor = node.get("evidence_anchor")
-            if not evidence_anchor:
-                return False, "NO_EVIDENCE_NO_REPAIR_INSTRUCTION", {}
+        # CRITICAL FIX 4: ALL customer repair actions strictly require valid evidence anchor
+        evidence_anchor = node.get("evidence_anchor")
+        if not evidence_anchor:
+            return False, "NO_EVIDENCE_NO_REPAIR_INSTRUCTION", {}
 
-            valid_anchor, anchor_reason, doc = verify_evidence_anchor(
-                evidence_anchor=evidence_anchor,
-                tenant_id=session.tenant_id,
-                customer=customer,
-                asset=asset
-            )
-            if not valid_anchor:
-                return False, f"EVIDENCE_INVALID_{anchor_reason}", {}
+        valid_anchor, anchor_reason, doc = verify_evidence_anchor(
+            evidence_anchor=evidence_anchor,
+            tenant_id=session.tenant_id,
+            customer=customer,
+            asset=asset
+        )
+        if not valid_anchor:
+            return False, f"EVIDENCE_INVALID_{anchor_reason}", {}
 
     # Sanitize node for customer presentation (no internal chunk IDs or raw scores)
     sanitized = {

@@ -1,25 +1,28 @@
 """
 Diagnostic Session Orchestrator for Servy Zero-Repeat.
 
-Handles state transitions, idempotency, optimistic concurrency, and escalation.
+Handles state transitions, atomic idempotency lifecycle, optimistic concurrency, and escalation.
 
 Hard Invariants:
   - Atomic transactions for all mutations.
-  - Optimistic concurrency control (expected_version mismatch => 409 Conflict).
-  - Idempotency via DiagnosticCommand (same key + same payload => replay; same key + different payload => 409).
-  - Exactly ONE ServiceCall created upon escalation.
-  - Customer can NEVER mutate a terminal session (RESOLVED, ESCALATED).
-  - Caller may ONLY submit answers for the CURRENT node (no arbitrary node_id bypass).
-  - SAFE_ACTION confirmation requires prior SAFE_ACTION_PRESENTED event for that node.
-  - Escalation triggered by reducer is executed atomically inside the same transaction.
-  - Resolve endpoint rejects unless session is at a resolvable terminal state.
+  - Optimistic concurrency control (expected_version must match locked DB record).
+  - Current-node enforcement (client cannot skip ahead, replay old nodes, or execute out-of-order).
+  - Presentation requirement (SAFE_ACTION confirmation strictly requires prior SAFE_ACTION_PRESENTED in sequence).
+  - Atomic escalation inside the same transaction that sets ESCALATED status.
+  - Exactly ONE ServiceCall per DiagnosticSession, repeated escalations are idempotent.
+  - Immutable DiagnosticEvent append-only ledger.
+  - Customer can NEVER mutate a terminal session (RESOLVED, ESCALATED, ABANDONED).
+  - Resolution safety: manual resolve requires a verified resolution state and no blocking contradictions.
+  - Atomic idempotency reservation (IN_PROGRESS -> COMPLETED / FAILED) before business logic.
 """
 
 import hashlib
 import json
 import time
-from typing import Any, Dict, Optional, Tuple
+from datetime import timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Max
 from django.utils import timezone
@@ -34,16 +37,19 @@ from core.models import (
     RecoveryPassport,
     ServiceCall,
 )
-from core.services.ticketing import _sla_for, choose_technician, create_service_call_record
-
+from core.services.ticketing import (
+    _sla_for,
+    choose_technician,
+    create_service_call_record,
+)
 from .evidence import verify_evidence_anchor
 from .passport import build_recovery_passport
-from .playbooks import validate_playbook_definition
 from .policy import evaluate_node_policy
 from .reducer import reduce_session_events
 from .routing import select_playbook_for_asset
 from .schemas import (
     EVENT_COMPLAINT_RECORDED,
+    EVENT_CONTRADICTION_RESOLVED,
     EVENT_OBSERVATION_RECORDED,
     EVENT_OBSERVATION_REQUESTED,
     EVENT_PLAYBOOK_SELECTED,
@@ -68,8 +74,9 @@ from .schemas import (
 
 
 class ConcurrencyConflictError(Exception):
-    def __init__(self, current_version: int):
-        super().__init__(f"Session version conflict. Current version is {current_version}.")
+    def __init__(self, current_version: int = 0, detail: str = ""):
+        msg = detail or f"Session version conflict. Current version is {current_version}."
+        super().__init__(msg)
         self.current_version = current_version
 
 
@@ -106,6 +113,107 @@ def _hash_payload(data: Any) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# CRITICAL FIX 1: Atomic Idempotency Lifecycle Reservation
+# ---------------------------------------------------------------------------
+
+def reserve_idempotency_key(
+    tenant,
+    idempotency_key: str,
+    command_type: str,
+    payload: Any,
+    session: Optional[DiagnosticSession] = None
+) -> Tuple[Optional[DiagnosticCommand], bool]:
+    """Atomically reserve an idempotency key before business logic execution.
+
+    Returns:
+        (DiagnosticCommand, is_replay)
+        - If is_replay is True: command already completed; caller should return stored response.
+        - If is_replay is False: reservation secured; caller must proceed with business mutation
+          and call complete_idempotency() on success or fail_idempotency() on error.
+    """
+    if not idempotency_key:
+        return None, False
+
+    request_hash = _hash_payload(payload)
+
+    for attempt in range(3):
+        try:
+            with transaction.atomic():
+                cmd = DiagnosticCommand.objects.create(
+                    tenant=tenant,
+                    idempotency_key=idempotency_key,
+                    command_type=command_type,
+                    request_hash=request_hash,
+                    session=session,
+                    state=DiagnosticCommand.STATE_IN_PROGRESS,
+                    response_status=200,
+                    response_payload={},
+                )
+                return cmd, False
+        except (IntegrityError, OperationalError):
+            # Key already exists or concurrent insert
+            cmd = DiagnosticCommand.objects.filter(tenant=tenant, idempotency_key=idempotency_key).first()
+            if not cmd:
+                time.sleep(0.05)
+                continue
+
+            # Payload conflict verification
+            if cmd.request_hash != request_hash:
+                raise IdempotencyPayloadConflictError("Idempotency key reused with different request payload.")
+
+            if cmd.state == DiagnosticCommand.STATE_COMPLETED:
+                return cmd, True
+
+            if cmd.state == DiagnosticCommand.STATE_IN_PROGRESS:
+                # Concurrent worker is executing
+                raise ConcurrencyConflictError(
+                    detail="A request with this idempotency key is currently in progress. Please retry shortly."
+                )
+
+            if cmd.state == DiagnosticCommand.STATE_FAILED:
+                # Retry failed command
+                with transaction.atomic():
+                    cmd = DiagnosticCommand.objects.select_for_update().get(id=cmd.id)
+                    cmd.state = DiagnosticCommand.STATE_IN_PROGRESS
+                    cmd.request_hash = request_hash
+                    cmd.save(update_fields=["state", "request_hash", "updated_at"])
+                    return cmd, False
+
+    raise ConcurrencyConflictError(detail="Could not acquire idempotency lock. Please retry.")
+
+
+def complete_idempotency(
+    cmd: Optional[DiagnosticCommand],
+    response_status: int,
+    response_payload: Dict[str, Any]
+) -> None:
+    """Mark an idempotency reservation as COMPLETED with authoritative response data."""
+    if not cmd:
+        return
+    DiagnosticCommand.objects.filter(id=cmd.id).update(
+        state=DiagnosticCommand.STATE_COMPLETED,
+        response_status=response_status,
+        response_payload=response_payload,
+        updated_at=timezone.now(),
+    )
+
+
+def fail_idempotency(
+    cmd: Optional[DiagnosticCommand],
+    error_detail: str = ""
+) -> None:
+    """Mark an idempotency reservation as FAILED so subsequent retries can re-execute cleanly."""
+    if not cmd:
+        return
+    DiagnosticCommand.objects.filter(id=cmd.id).update(
+        state=DiagnosticCommand.STATE_FAILED,
+        response_status=500,
+        response_payload={"detail": error_detail or "Command execution failed."},
+        updated_at=timezone.now(),
+    )
+
+
 def check_or_record_idempotency(
     tenant,
     idempotency_key: str,
@@ -113,22 +221,8 @@ def check_or_record_idempotency(
     payload: Any,
     session: Optional[DiagnosticSession] = None
 ) -> Tuple[Optional[DiagnosticCommand], bool]:
-    """Check if an idempotency key was previously processed.
-
-    Returns (DiagnosticCommand, is_replay).
-    """
-    if not idempotency_key:
-        return None, False
-
-    request_hash = _hash_payload(payload)
-
-    cmd = DiagnosticCommand.objects.filter(tenant=tenant, idempotency_key=idempotency_key).first()
-    if cmd:
-        if cmd.request_hash == request_hash:
-            return cmd, True
-        raise IdempotencyPayloadConflictError("Idempotency key reused with different request payload.")
-
-    return None, False
+    """Backwards-compatible wrapper around atomic reservation."""
+    return reserve_idempotency_key(tenant, idempotency_key, command_type, payload, session)
 
 
 def save_idempotency_response(
@@ -139,25 +233,31 @@ def save_idempotency_response(
     response_status: int,
     response_payload: Dict[str, Any],
     session: Optional[DiagnosticSession] = None
-) -> DiagnosticCommand:
-    """Save an idempotency record with the response payload."""
+) -> Optional[DiagnosticCommand]:
+    """Backwards-compatible wrapper to complete an idempotency record."""
     if not idempotency_key:
         return None
-
     request_hash = _hash_payload(payload)
-    cmd, _ = DiagnosticCommand.objects.get_or_create(
-        tenant=tenant,
-        idempotency_key=idempotency_key,
-        defaults={
-            "session": session,
-            "command_type": command_type,
-            "request_hash": request_hash,
-            "response_status": response_status,
-            "response_payload": response_payload,
-        }
-    )
-    return cmd
+    cmd = DiagnosticCommand.objects.filter(tenant=tenant, idempotency_key=idempotency_key).first()
+    if cmd:
+        complete_idempotency(cmd, response_status, response_payload)
+        return cmd
+    else:
+        return DiagnosticCommand.objects.create(
+            tenant=tenant,
+            idempotency_key=idempotency_key,
+            command_type=command_type,
+            request_hash=request_hash,
+            session=session,
+            state=DiagnosticCommand.STATE_COMPLETED,
+            response_status=response_status,
+            response_payload=response_payload,
+        )
 
+
+# ---------------------------------------------------------------------------
+# Core Helpers
+# ---------------------------------------------------------------------------
 
 def _append_event(locked_session, event_type: str, actor_role: str, payload: dict) -> DiagnosticEvent:
     """Locked helper: append an immutable event to the ledger under existing row lock."""
@@ -183,12 +283,13 @@ def _build_facts_snapshot(state):
     }
 
 
-def _execute_escalation_atomically(locked_session, reason: str, customer=None):
-    """Execute escalation inside the SAME transaction that detected ESCALATED status.
-
-    This is the atomic escalation fix (Defect 3). The caller MUST already hold
-    a select_for_update lock on locked_session inside a transaction.atomic().
-    """
+def _execute_escalation_atomically(
+    locked_session,
+    reason: str,
+    customer=None,
+    customer_note: str = ""
+) -> Tuple[ServiceCall, RecoveryPassport]:
+    """Execute escalation inside the SAME transaction that detected ESCALATED status."""
     tenant = locked_session.tenant
 
     # Exactly-once: if already escalated, return existing
@@ -204,9 +305,12 @@ def _execute_escalation_atomically(locked_session, reason: str, customer=None):
     sla = _sla_for(tenant, "normal")
 
     do_not_repeat_text = "\n".join(f"- {item}" for item in passport_dict["do_not_repeat_items"]) or "- None"
+
+    # HIGH FIX 19: Clearly distinguish customer comment from system escalation reason
     complaint_body = (
         f"Customer Issue:\n{locked_session.complaint}\n\n"
-        f"Escalation Reason:\n{reason}\n\n"
+        f"Customer Comment / Requested Reason:\n{customer_note or 'None provided'}\n\n"
+        f"System Diagnostic Escalation Reason:\n{reason}\n\n"
         f"ALREADY COMPLETED — DO NOT REPEAT WITH CUSTOMER:\n{do_not_repeat_text}\n\n"
         f"Diagnostic Session ID: {locked_session.session_id}\n"
         f"Evidence Completeness: {int(locked_session.evidence_completeness * 100)}%\n"
@@ -242,12 +346,16 @@ def _execute_escalation_atomically(locked_session, reason: str, customer=None):
 
     _append_event(
         locked_session, EVENT_SESSION_ESCALATED, "system",
-        {"reason": reason, "service_call_id": call.id, "servy_id": call.servy_id}
+        {"reason": reason, "service_call_id": call.id, "servy_id": call.servy_id, "customer_note": customer_note}
     )
 
     locked_session.escalated_call = call
     return call, passport
 
+
+# ---------------------------------------------------------------------------
+# Public Orchestrator Operations
+# ---------------------------------------------------------------------------
 
 def start_diagnostic_session(
     tenant,
@@ -260,17 +368,31 @@ def start_diagnostic_session(
     """Initialize a persistent, authorized DiagnosticSession."""
     complaint = (complaint or "").strip()[:1000]
 
-    # Check active session limit (Defect: use constant from schemas)
+    # HIGH FIX 16: Explicit service-layer tenant and customer relationship validation
+    if customer.tenant_id != tenant.id:
+        raise ValidationError("Customer does not belong to the active tenant.")
+    if asset.tenant_id != tenant.id or asset.customer_id != customer.id:
+        raise ValidationError("Asset does not belong to the selected customer/tenant.")
+
+    # Check active session limit
     active_count = DiagnosticSession.objects.filter(
         tenant=tenant, customer=customer, status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY"]
     ).count()
     if active_count >= MAX_ACTIVE_SESSIONS_PER_CUSTOMER:
         raise SessionLimitExceededError("Maximum active diagnostic sessions limit reached. Please resolve or escalate open sessions.")
 
-    # Select candidate published playbook
-    playbook = select_playbook_for_asset(asset, complaint, tenant)
-    playbook_def = playbook.definition if playbook else {}
-    start_node = playbook_def.get("start_node_id", "start")
+    # CRITICAL FIX 2 & 10: Select candidate published playbook with positive threshold + hybrid RAG
+    playbook = select_playbook_for_asset(asset, complaint, tenant, customer=customer)
+
+    # CRITICAL FIX 3: Safe intake state if no playbook available
+    if not playbook:
+        status_init = "NO_PLAYBOOK_AVAILABLE"
+        start_node = "no_playbook"
+        playbook_def = {}
+    else:
+        status_init = "ACTIVE"
+        playbook_def = playbook.definition if playbook else {}
+        start_node = playbook_def.get("start_node_id", "start")
 
     with transaction.atomic():
         session = DiagnosticSession.objects.create(
@@ -282,7 +404,7 @@ def start_diagnostic_session(
             playbook_version=playbook.version if playbook else 1,
             complaint=complaint,
             current_node_id=start_node,
-            status="ACTIVE",
+            status=status_init,
             version=1,
             created_by=user,
         )
@@ -294,7 +416,7 @@ def start_diagnostic_session(
             seq_num=seq,
             event_type=EVENT_SESSION_STARTED,
             actor_role="customer",
-            payload={"start_node_id": start_node, "asset_id": asset.id},
+            payload={"start_node_id": start_node, "asset_id": asset.id, "has_playbook": bool(playbook)},
         )
 
         seq += 1
@@ -329,14 +451,14 @@ def start_diagnostic_session(
                 payload={"node_id": start_node},
             )
 
-        events = list(session.events.order_by("seq_num"))
-        state = reduce_session_events(events, playbook_def, session.session_id)
+            events = list(session.events.order_by("seq_num"))
+            state = reduce_session_events(events, playbook_def, session.session_id)
 
-        session.facts_snapshot = _build_facts_snapshot(state)
-        session.evidence_completeness = state.evidence_completeness
-        session.current_node_id = state.current_node_id
-        session.status = state.status
-        session.save(update_fields=["facts_snapshot", "evidence_completeness", "current_node_id", "status"])
+            session.facts_snapshot = _build_facts_snapshot(state)
+            session.evidence_completeness = state.evidence_completeness
+            session.current_node_id = state.current_node_id
+            session.status = state.status
+            session.save(update_fields=["facts_snapshot", "evidence_completeness", "current_node_id", "status"])
 
     # Evaluate presentation node
     node_payload = get_session_view_data(session, customer)
@@ -355,9 +477,19 @@ def submit_diagnostic_answer(
     with transaction.atomic():
         locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
 
+        # MEDIUM FIX 23: Expire stale sessions
+        if locked_session.updated_at and (timezone.now() - locked_session.updated_at) > timedelta(days=7):
+            locked_session.status = "ABANDONED"
+            locked_session.save(update_fields=["status"])
+            raise TerminalSessionMutationError("Diagnostic session has expired due to inactivity.")
+
         # Check terminal state
         if locked_session.status in ("RESOLVED", "ESCALATED", "ABANDONED"):
             raise TerminalSessionMutationError(f"Cannot mutate terminal session with status '{locked_session.status}'.")
+
+        # MEDIUM FIX 22: Enforce MAX_SESSION_STEPS
+        if locked_session.events.count() >= MAX_SESSION_STEPS:
+            raise ValueError(f"Maximum session diagnostic steps ({MAX_SESSION_STEPS}) reached. Please escalate to service.")
 
         # Optimistic concurrency check
         if locked_session.version != expected_version:
@@ -366,6 +498,10 @@ def submit_diagnostic_answer(
         # DEFECT 1 FIX: Enforce current node — caller cannot skip ahead or replay old nodes
         if node_id != locked_session.current_node_id:
             raise CurrentNodeMismatchError(node_id, locked_session.current_node_id)
+
+        # HIGH FIX 9: Playbook version pinning guarantee
+        if locked_session.playbook and locked_session.playbook.version != locked_session.playbook_version:
+            raise ValueError("Playbook version pinning mismatch. Historical session cannot execute on altered version.")
 
         playbook_def = locked_session.playbook.definition if locked_session.playbook else {}
         nodes = playbook_def.get("nodes", {})
@@ -396,7 +532,7 @@ def submit_diagnostic_answer(
         locked_session.status = state.status
         locked_session.version += 1
 
-        # DEFECT 3 FIX: If reducer reached ESCALATED, execute escalation INSIDE this transaction
+        # Atomic escalation check
         if locked_session.status == "ESCALATED":
             call, passport = _execute_escalation_atomically(
                 locked_session,
@@ -404,7 +540,7 @@ def submit_diagnostic_answer(
                 customer=customer
             )
 
-        # Emit SAFE_ACTION_PRESENTED if the new current node is a SAFE_ACTION (for Defect 2 chain)
+        # Emit SAFE_ACTION_PRESENTED if the new current node is a SAFE_ACTION
         new_node = nodes.get(state.current_node_id, {})
         if new_node.get("node_type") == NODE_SAFE_ACTION and locked_session.status not in ("RESOLVED", "ESCALATED"):
             _append_event(locked_session, EVENT_SAFE_ACTION_PRESENTED, "system", {
@@ -433,9 +569,13 @@ def confirm_safe_action(
         if locked_session.version != expected_version:
             raise ConcurrencyConflictError(locked_session.version)
 
-        # DEFECT 1 FIX: Enforce current node match
+        # Current node match
         if node_id != locked_session.current_node_id:
             raise CurrentNodeMismatchError(node_id, locked_session.current_node_id)
+
+        # Version pinning
+        if locked_session.playbook and locked_session.playbook.version != locked_session.playbook_version:
+            raise ValueError("Playbook version pinning mismatch.")
 
         playbook_def = locked_session.playbook.definition if locked_session.playbook else {}
         nodes = playbook_def.get("nodes", {})
@@ -444,7 +584,7 @@ def confirm_safe_action(
         if node.get("node_type") != NODE_SAFE_ACTION:
             raise ValueError(f"Node '{node_id}' is not a SAFE_ACTION.")
 
-        # DEFECT 2 FIX: Verify EVENT_SAFE_ACTION_PRESENTED exists for this node before allowing confirmation
+        # HIGH FIX 14: Strict sequence scoping — verify presentation occurred prior to confirmation
         presentation_exists = locked_session.events.filter(
             event_type=EVENT_SAFE_ACTION_PRESENTED,
             payload__node_id=node_id,
@@ -455,7 +595,7 @@ def confirm_safe_action(
                 f"The action must be presented to the customer before it can be confirmed."
             )
 
-        # Check it's not already confirmed for this node
+        # Prevent double-confirmation for this node
         already_confirmed = locked_session.events.filter(
             event_type=EVENT_SAFE_ACTION_CONFIRMED,
             payload__node_id=node_id,
@@ -463,7 +603,7 @@ def confirm_safe_action(
         if already_confirmed:
             raise ValueError(f"SAFE_ACTION '{node_id}' has already been confirmed.")
 
-        # Invariant: Verify policy again prior to recording completion
+        # Runtime policy check
         is_allowed, reason, _ = evaluate_node_policy(locked_session, node_id, customer)
         if not is_allowed:
             raise ValueError(f"Action blocked by policy: {reason}")
@@ -482,7 +622,6 @@ def confirm_safe_action(
         locked_session.evidence_completeness = state.evidence_completeness
         locked_session.version += 1
 
-        # If reducer reached ESCALATED atomically
         if locked_session.status == "ESCALATED":
             _execute_escalation_atomically(
                 locked_session,
@@ -490,7 +629,6 @@ def confirm_safe_action(
                 customer=customer
             )
 
-        # Emit SAFE_ACTION_PRESENTED if next node is also a SAFE_ACTION
         new_node = nodes.get(state.current_node_id, {})
         if new_node.get("node_type") == NODE_SAFE_ACTION and locked_session.status not in ("RESOLVED", "ESCALATED"):
             _append_event(locked_session, EVENT_SAFE_ACTION_PRESENTED, "system", {
@@ -507,9 +645,15 @@ def resolve_diagnostic_session(
     session: DiagnosticSession,
     expected_version: int,
     customer=None,
-    summary: str = "Resolved by customer."
+    summary: str = ""
 ) -> Tuple[DiagnosticSession, Dict[str, Any]]:
-    """Mark a diagnostic session as safely RESOLVED."""
+    """Mark a diagnostic session as safely RESOLVED.
+
+    CRITICAL FIX 5: Reject manual resolution unless session is at a valid resolution state:
+      - Current node has reached terminal resolution (is_terminal=True), OR
+      - A verification confirming issue recovery was recorded, AND
+      - No unresolved contradictions block resolution.
+    """
     with transaction.atomic():
         locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
 
@@ -520,7 +664,35 @@ def resolve_diagnostic_session(
         if locked_session.version != expected_version:
             raise ConcurrencyConflictError(locked_session.version)
 
-        _append_event(locked_session, EVENT_SESSION_RESOLVED, "customer", {"summary": summary})
+        # Check for unresolved contradictions
+        facts_snapshot = locked_session.facts_snapshot or {}
+        contradictions = facts_snapshot.get("contradictions", [])
+        if any(not c.get("resolved") for c in contradictions):
+            raise ValueError("Cannot resolve session with unresolved contradictions.")
+
+        # Authoritative resolution check
+        playbook_def = locked_session.playbook.definition if locked_session.playbook else {}
+        nodes = playbook_def.get("nodes", {})
+        current_node = nodes.get(locked_session.current_node_id, {})
+
+        has_terminal = current_node.get("is_terminal", False)
+        has_positive_verify = locked_session.events.filter(
+            event_type=EVENT_VERIFICATION_RECORDED,
+            payload__value=True
+        ).exists()
+
+        if not has_terminal and not has_positive_verify:
+            raise ValueError(
+                "Cannot mark session as RESOLVED: the active diagnostic path has not reached a verified resolution state. "
+                "To exit an incomplete session, use ABANDON."
+            )
+
+        # Authoritative resolution summary comes from playbook, customer text is non-authoritative
+        resolution_text = current_node.get("instruction") or "Diagnostic issue resolved through verified procedure."
+        _append_event(locked_session, EVENT_SESSION_RESOLVED, "customer", {
+            "summary": resolution_text,
+            "customer_note": (summary or "").strip()[:500]
+        })
 
         locked_session.status = "RESOLVED"
         locked_session.version += 1
@@ -535,14 +707,7 @@ def escalate_diagnostic_session(
     expected_version: int,
     customer=None
 ) -> Tuple[DiagnosticSession, ServiceCall, RecoveryPassport]:
-    """Escalate a diagnostic session to ServiceCall, generating a deterministic RecoveryPassport.
-
-    Hard Invariants:
-      - Exactly ONE ServiceCall per DiagnosticSession.
-      - Repeated calls return the existing call idempotently.
-      - Passport contains only evidenced, customer-confirmed actions.
-      - Atomic transaction locks session and ensures non-terminal mutation.
-    """
+    """Escalate a diagnostic session to ServiceCall, generating a deterministic RecoveryPassport."""
     for attempt in range(5):
         try:
             with transaction.atomic():
@@ -560,7 +725,10 @@ def escalate_diagnostic_session(
                     raise ConcurrencyConflictError(locked_session.version)
 
                 call, passport = _execute_escalation_atomically(
-                    locked_session, reason=reason, customer=customer
+                    locked_session,
+                    reason="Customer requested escalation to technician.",
+                    customer=customer,
+                    customer_note=reason
                 )
 
                 locked_session.status = "ESCALATED"
@@ -579,21 +747,26 @@ def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str
     """Compile the authoritative client-facing view data for a DiagnosticSession."""
     playbook_def = session.playbook.definition if session.playbook else {}
     nodes = playbook_def.get("nodes", {})
-    current_node = nodes.get(session.current_node_id, {})
 
-    # Evaluate runtime policy for current node
     node_data = None
-    if session.status not in ("RESOLVED", "ESCALATED", "ABANDONED") and session.current_node_id in nodes:
+    blocked_reason = None
+    can_escalate = True
+    can_ask_quick_ai = True
+    can_clarify = False
+
+    if session.status == "NO_PLAYBOOK_AVAILABLE":
+        can_clarify = True
+        node_data = None
+        blocked_reason = "No confident diagnostic playbook matches the reported symptom. You may clarify symptoms, query Quick AI, or request an engineer service call."
+
+    elif session.status not in ("RESOLVED", "ESCALATED", "ABANDONED") and session.current_node_id in nodes:
         allowed, reason, sanitized = evaluate_node_policy(session, session.current_node_id, customer)
         if allowed:
             node_data = sanitized
         else:
-            # DEFECT 20 FIX: Policy fallback to executable ESCALATE instead of dead-end
-            node_data = {
-                "node_id": "policy_fallback_escalate",
-                "node_type": NODE_ESCALATE,
-                "reason": f"Required evidence verification failed: {reason}. Escalating safely to service engineering.",
-            }
+            # HIGH FIX 20: Clean policy fallback without fake ephemeral graph node
+            node_data = None
+            blocked_reason = f"Diagnostic action blocked by safety policy ({reason}). Escalation available."
 
     passport_data = None
     if session.status == "ESCALATED" and hasattr(session, "recovery_passport") and session.recovery_passport:
@@ -619,6 +792,10 @@ def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str
         "version": session.version,
         "evidence_completeness": session.evidence_completeness,
         "current_node": node_data,
+        "can_escalate": can_escalate,
+        "can_ask_quick_ai": can_ask_quick_ai,
+        "can_clarify": can_clarify,
+        "blocked_reason": blocked_reason,
         "escalated_call": {
             "id": session.escalated_call.id,
             "servy_id": session.escalated_call.servy_id,

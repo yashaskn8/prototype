@@ -4,10 +4,11 @@ Deterministic Recovery Passport Generator for Servy Zero-Repeat.
 Zero LLM inside the authoritative passport.
 Constructed purely from the immutable DiagnosticEvent ledger and deterministic facts.
 
-DEFECT 12 FIX: Verify EVENT_SAFE_ACTION_PRESENTED preceded EVENT_SAFE_ACTION_CONFIRMED
-in the ledger before adding to do_not_repeat_items.
-
-DEFECT 14 FIX: Separate system_escalation_reason from customer_requested_reason.
+Hard Invariants:
+  - Strict chronological replay: SAFE_ACTION_CONFIRMED is valid ONLY IF a matching
+    SAFE_ACTION_PRESENTED occurred strictly prior in the ordered event sequence (CRITICAL FIX 6).
+  - Explicit separation between authoritative System Escalation Reason and non-authoritative
+    Customer Requested Reason (HIGH FIX 19).
 """
 
 from typing import Any, Dict, List
@@ -50,44 +51,40 @@ def build_recovery_passport(session: DiagnosticSession) -> Dict[str, Any]:
                 "source": source,
             })
 
-    # DEFECT 12 FIX: Build a set of node_ids that were PRESENTED before checking CONFIRMED
-    presented_node_ids = set()
-    for ev in events:
-        if ev.event_type == EVENT_SAFE_ACTION_PRESENTED:
-            p = ev.payload or {}
-            node_id = p.get("node_id")
-            if node_id:
-                presented_node_ids.add(node_id)
-
-    # Extract completed actions (strictly from EVENT_SAFE_ACTION_CONFIRMED events)
-    # DEFECT 12 FIX: Only include actions where presentation preceded confirmation
+    # CRITICAL FIX 6: Strictly single-pass chronological event replay
+    # A confirmed action is ONLY valid if its presentation occurred earlier in the sequence.
+    seen_presented = set()
     completed_actions = []
     do_not_repeat = []
+    verifications = []
+    system_escalation_reason = None
+    customer_requested_reason = None
+
     for ev in events:
-        if ev.event_type == EVENT_SAFE_ACTION_CONFIRMED:
-            p = ev.payload or {}
+        event_type = ev.event_type
+        p = ev.payload or {}
+
+        if event_type == EVENT_SAFE_ACTION_PRESENTED:
+            node_id = p.get("node_id")
+            if node_id:
+                seen_presented.add(node_id)
+
+        elif event_type == EVENT_SAFE_ACTION_CONFIRMED:
             node_id = p.get("node_id", "")
             instruction = p.get("instruction", "")
 
-            # DEFECT 12: Only trust confirmed actions that had prior presentation
-            if node_id not in presented_node_ids:
-                # Defensive: action was confirmed without presentation — do NOT add to passport
-                continue
+            # Causality check: must have been presented earlier in this stream
+            if node_id and node_id in seen_presented:
+                completed_actions.append({
+                    "node_id": node_id,
+                    "instruction": instruction,
+                    "confirmed_at": str(ev.created_at),
+                    "evidence_anchor": p.get("evidence_anchor", {}),
+                })
+                if instruction:
+                    do_not_repeat.append(f"Action '{instruction[:80]}' verified completed by customer.")
 
-            completed_actions.append({
-                "node_id": node_id,
-                "instruction": instruction,
-                "confirmed_at": str(ev.created_at),
-                "evidence_anchor": p.get("evidence_anchor", {}),
-            })
-            if instruction:
-                do_not_repeat.append(f"Action '{instruction[:80]}' verified completed by customer.")
-
-    # Extract verifications
-    verifications = []
-    for ev in events:
-        if ev.event_type == EVENT_VERIFICATION_RECORDED:
-            p = ev.payload or {}
+        elif event_type == EVENT_VERIFICATION_RECORDED:
             verifications.append({
                 "fact_key": p.get("fact_key"),
                 "value": p.get("value"),
@@ -98,20 +95,15 @@ def build_recovery_passport(session: DiagnosticSession) -> Dict[str, Any]:
                     f"Check '{p.get('fact_key')}' failed to resolve the issue after action."
                 )
 
-    contradictions = facts_snapshot.get("contradictions", [])
-
-    # DEFECT 14 FIX: Extract escalation reasons separated by source
-    system_escalation_reason = None
-    customer_requested_reason = None
-    for ev in events:
-        if ev.event_type == EVENT_SESSION_ESCALATED:
-            p = ev.payload or {}
+        elif event_type == EVENT_SESSION_ESCALATED:
             reason = p.get("reason", "")
             actor = getattr(ev, "actor_role", "system")
             if actor == "customer":
                 customer_requested_reason = reason
             else:
                 system_escalation_reason = reason
+
+    contradictions = facts_snapshot.get("contradictions", [])
 
     structured_data = {
         "passport_version": "1.0",

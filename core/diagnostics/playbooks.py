@@ -51,6 +51,14 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
 
     if start_node_id not in nodes:
         errors.append(f"Start node '{start_node_id}' does not exist in 'nodes'.")
+    else:
+        # HIGH FIX 21: Start node must be OBSERVE for safe diagnostic intake
+        start_node_def = nodes.get(start_node_id, {})
+        if start_node_def.get("node_type") != NODE_OBSERVE:
+            errors.append(
+                f"Start node '{start_node_id}' must be of type OBSERVE for customer safety and intake clarity. "
+                f"Got '{start_node_def.get('node_type')}'."
+            )
 
     has_escalation_node = False
 
@@ -99,14 +107,15 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
                     f"SAFE_ACTION node '{node_id}' has RED safety classification. RED actions must NEVER be presented to customers and cannot be published."
                 )
 
-            # DEFECT 6 FIX: ALL SAFE_ACTION nodes require evidence_anchor.
-            # Terminal SAFE_ACTION nodes are state transitions from VERIFY, not evidence-free.
-            # The only exception: if the node is purely a resolution confirmation
-            # (is_terminal=True), we still validate evidence_anchor if present but
-            # don't require it — the resolution should come from a VERIFY step.
+            # CRITICAL FIX 4: ALL SAFE_ACTION nodes strictly require a valid evidence_anchor.
+            # No exceptions for terminal nodes — resolution is derived from VERIFY, not fake actions.
             evidence_anchor = node.get("evidence_anchor")
-            is_terminal = node.get("is_terminal", False)
-            if evidence_anchor and isinstance(evidence_anchor, dict):
+            if not evidence_anchor or not isinstance(evidence_anchor, dict):
+                errors.append(
+                    f"SAFE_ACTION node '{node_id}' must include a valid 'evidence_anchor'. "
+                    f"All customer repair instructions strictly require authoritative grounding evidence."
+                )
+            else:
                 doc_id = evidence_anchor.get("document_id")
                 checksum = evidence_anchor.get("checksum_sha256")
                 version = evidence_anchor.get("version")
@@ -127,9 +136,6 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
                             errors.append(f"SAFE_ACTION node '{node_id}' references document {doc_id} which is not RAG enabled.")
                         if doc.is_confidential:
                             errors.append(f"SAFE_ACTION node '{node_id}' references confidential document {doc_id} which cannot be shown to customers.")
-            elif not is_terminal:
-                # Non-terminal SAFE_ACTION without evidence_anchor is always invalid
-                errors.append(f"SAFE_ACTION node '{node_id}' must include a valid 'evidence_anchor'.")
 
         # Transitions validation
         is_terminal = node.get("is_terminal", False) or node_type == NODE_ESCALATE

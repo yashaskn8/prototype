@@ -168,9 +168,11 @@ class DiagnosticRecoveryTests(TestCase):
                     ],
                 },
                 "resolved_node": {
-                    "node_type": "SAFE_ACTION",
+                    "node_type": "VERIFY",
+                    "question": "Is unit operational?",
+                    "response_schema": "BOOLEAN",
+                    "fact_key": "operational_check",
                     "instruction": "Unit calibrated and operating normally.",
-                    "safety_class": "GREEN",
                     "is_terminal": True,
                 },
                 "escalate_node": {
@@ -187,7 +189,7 @@ class DiagnosticRecoveryTests(TestCase):
             name="Milk Analyzer Recovery Playbook",
             version=1,
             status="PUBLISHED",
-            applicability_tags="unstable reading, reading, clean, sensor",
+            applicability_tags="unstable reading, reading, clean, sensor, calibration",
             definition=self.valid_definition,
         )
 
@@ -420,7 +422,8 @@ class DiagnosticRecoveryTests(TestCase):
         diag_session, _ = start_diagnostic_session(
             self.t1, self.c1, self.asset1, "Unstable reading"
         )
-        resolve_diagnostic_session(diag_session, expected_version=diag_session.version, customer=self.c1)
+        diag_session.status = "RESOLVED"
+        diag_session.save(update_fields=["status"])
 
         self.client.force_login(self.cust_user1)
         session = self.client.session

@@ -671,14 +671,39 @@ class DiagnosticPlaybook(TenantOwnedModel):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            old = DiagnosticPlaybook.objects.filter(pk=self.pk).values("status", "definition", "version").first()
-            if old and old["status"] == "PUBLISHED":
-                update_fields = kwargs.get("update_fields")
-                if update_fields is None or "definition" in update_fields:
-                    if self.definition != old["definition"]:
-                        from django.core.exceptions import ValidationError
-                        raise ValidationError("Published DiagnosticPlaybook version is immutable. Create a new version instead.")
+            old = DiagnosticPlaybook.objects.filter(pk=self.pk).first()
+            if old and old.status == "PUBLISHED":
+                from django.core.exceptions import ValidationError
+                # Semantic fields that must never change on a published version
+                semantic_fields = [
+                    ("definition", "definition"),
+                    ("version", "version"),
+                    ("product_id", "product"),
+                    ("category_id", "category"),
+                    ("domain_id", "domain"),
+                    ("applicability_tags", "applicability_tags"),
+                    ("tenant_id", "tenant"),
+                ]
+                for attr, field_name in semantic_fields:
+                    if getattr(self, attr) != getattr(old, attr):
+                        raise ValidationError(
+                            f"Published DiagnosticPlaybook is immutable. Field '{field_name}' cannot be modified. "
+                            f"Create a new playbook version (v{old.version + 1}) to update diagnostics."
+                        )
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        if self.status == "PUBLISHED":
+            raise ValidationError(
+                f"Cannot delete published DiagnosticPlaybook '{self.name}' v{self.version}. "
+                f"Retire the playbook (status='RETIRED') to remove it from new session routing."
+            )
+        if self.sessions.exists():
+            raise ValidationError(
+                f"Cannot delete DiagnosticPlaybook '{self.name}' v{self.version} because historical sessions reference it."
+            )
+        super().delete(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} v{self.version} ({self.status})"
@@ -692,6 +717,7 @@ class DiagnosticSession(TenantOwnedModel):
         ("RESOLVED", "Resolved"),
         ("ESCALATED", "Escalated"),
         ("ABANDONED", "Abandoned"),
+        ("NO_PLAYBOOK_AVAILABLE", "No Playbook Available"),
     ]
     session_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="diagnostic_sessions")
@@ -723,11 +749,29 @@ class DiagnosticSession(TenantOwnedModel):
             errors["asset"] = "Session asset does not belong to the selected customer."
         if self.escalated_call_id and self.customer_id and self.escalated_call.customer_id != self.customer_id:
             errors["escalated_call"] = "Escalated call belongs to another customer."
+        if self.playbook_id and self.playbook.tenant_id != self.tenant_id:
+            errors["playbook"] = "Playbook belongs to another tenant."
         if errors:
             raise ValidationError(errors)
 
     def __str__(self):
         return f"DiagSession {self.session_id} - {self.asset.name} ({self.status})"
+
+
+class DiagnosticEventQuerySet(models.QuerySet):
+    """Immutable QuerySet preventing bulk update and delete on DiagnosticEvent."""
+    def update(self, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("DiagnosticEvent records are strictly immutable: bulk update is blocked.")
+
+    def delete(self):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("DiagnosticEvent records are strictly immutable: bulk delete is blocked.")
+
+
+class DiagnosticEventManager(models.Manager):
+    def get_queryset(self):
+        return DiagnosticEventQuerySet(self.model, using=self._db)
 
 
 class DiagnosticEvent(TenantOwnedModel):
@@ -737,6 +781,8 @@ class DiagnosticEvent(TenantOwnedModel):
     actor_role = models.CharField(max_length=30, default="customer")
     payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = DiagnosticEventManager()
 
     class Meta:
         unique_together = ("session", "seq_num")
@@ -757,14 +803,25 @@ class DiagnosticEvent(TenantOwnedModel):
 
 
 class DiagnosticCommand(TenantOwnedModel):
-    """Idempotency record for state-changing diagnostic operations."""
+    """Atomic idempotency record for state-changing diagnostic operations."""
+    STATE_IN_PROGRESS = "IN_PROGRESS"
+    STATE_COMPLETED = "COMPLETED"
+    STATE_FAILED = "FAILED"
+    STATE_CHOICES = [
+        (STATE_IN_PROGRESS, "In Progress"),
+        (STATE_COMPLETED, "Completed"),
+        (STATE_FAILED, "Failed"),
+    ]
+
     session = models.ForeignKey(DiagnosticSession, on_delete=models.CASCADE, null=True, blank=True, related_name="commands")
     idempotency_key = models.CharField(max_length=120)
     command_type = models.CharField(max_length=60)
     request_hash = models.CharField(max_length=64)
+    state = models.CharField(max_length=20, choices=STATE_CHOICES, default=STATE_COMPLETED)
     response_status = models.PositiveIntegerField(default=200)
     response_payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         unique_together = ("tenant", "idempotency_key")

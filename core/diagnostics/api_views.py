@@ -334,6 +334,8 @@ class DiagnosticResolveView(APIView):
                 {"detail": str(e), "current_version": e.current_version},
                 status=status.HTTP_409_CONFLICT
             )
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(view_data)
 

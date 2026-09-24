@@ -240,13 +240,19 @@ def reduce_session_events(
             state.status = "ESCALATED"
             state.escalation_reason = payload.get("reason", "Escalated to engineering service.")
 
-    # Calculate deterministic evidence completeness
-    if required_facts:
+    # Calculate deterministic evidence completeness (HIGH FIX 12)
+    active_node = nodes.get(state.current_node_id, {})
+    branch_required = active_node.get("required_facts_for_handoff") or active_node.get("required_facts")
+    if branch_required and isinstance(branch_required, list) and len(branch_required) > 0:
+        captured_count = sum(1 for k in branch_required if k in state.facts and state.facts[k].value is not None)
+        state.evidence_completeness = round(min(1.0, captured_count / len(branch_required)), 2)
+    elif required_facts and isinstance(required_facts, list) and len(required_facts) > 0:
         captured_count = sum(1 for k in required_facts if k in state.facts and state.facts[k].value is not None)
         state.evidence_completeness = round(min(1.0, captured_count / len(required_facts)), 2)
     else:
-        # Default completeness metric based on facts and completed actions
-        captured = len(state.facts) + len(state.completed_actions)
-        state.evidence_completeness = round(min(1.0, captured / 5.0), 2)
+        # Default metric based on actual diagnostic facts and completed actions
+        captured = len([k for k, f in state.facts.items() if k != "complaint" and f.value is not None]) + len(state.completed_actions)
+        total_steps = max(1.0, float(min(5, len(nodes) or 3)))
+        state.evidence_completeness = round(min(1.0, captured / total_steps), 2)
 
     return state
