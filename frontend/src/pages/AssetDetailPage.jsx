@@ -4,7 +4,7 @@ import { useAuth } from '../AuthContext';
 import { 
   ArrowLeft, Package, FileText, Bot, History, Ticket, ShieldCheck, 
   Upload, Download, AlertCircle, CheckCircle2, Clock, Calendar, 
-  Send, RefreshCw, AlertTriangle, ChevronRight, Check
+  Send, RefreshCw, AlertTriangle, ChevronRight, Check, Activity, Shield, CheckSquare
 } from 'lucide-react';
 
 export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
@@ -43,6 +43,130 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const [openCalls, setOpenCalls] = useState([]);
   const [historyCalls, setHistoryCalls] = useState([]);
   const [loadingCalls, setLoadingCalls] = useState(false);
+
+  // Servy Zero-Repeat: Diagnose & Recover State
+  const [diagComplaint, setDiagComplaint] = useState('');
+  const [diagSession, setDiagSession] = useState(null);
+  const [diagSubmitting, setDiagSubmitting] = useState(false);
+  const [diagNotice, setDiagNotice] = useState(null);
+  const [diagAnswerText, setDiagAnswerText] = useState('');
+
+  function makeIdempotencyKey(prefix) {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  async function handleStartDiagnostics(e) {
+    if (e) e.preventDefault();
+    if (!diagComplaint.trim()) return;
+    setDiagSubmitting(true);
+    setDiagNotice(null);
+    try {
+      const res = await api.post(`/api/assets/${assetId}/diagnostics/`, {
+        complaint: diagComplaint.trim(),
+        idempotency_key: makeIdempotencyKey('diag-start'),
+      });
+      setDiagSession(res);
+      setDiagNotice({ type: 'info', text: 'Diagnostic session initiated with verified asset locking.' });
+    } catch (err) {
+      setDiagNotice({ type: 'error', text: err.detail || 'Failed to start diagnostic recovery session.' });
+    } finally {
+      setDiagSubmitting(false);
+    }
+  }
+
+  async function handleSubmitAnswer(nodeId, val) {
+    if (!diagSession) return;
+    setDiagSubmitting(true);
+    setDiagNotice(null);
+    try {
+      const res = await api.post(`/api/diagnostics/${diagSession.session_id}/answers/`, {
+        node_id: nodeId,
+        value: val,
+        expected_version: diagSession.version,
+        idempotency_key: makeIdempotencyKey('diag-ans'),
+      });
+      setDiagSession(res);
+      setDiagAnswerText('');
+    } catch (err) {
+      if (err.status === 409 || (err.detail && err.detail.includes('conflict'))) {
+        setDiagNotice({ type: 'error', text: 'Session was modified in another view. Refreshing...' });
+        refreshSession(diagSession.session_id);
+      } else {
+        setDiagNotice({ type: 'error', text: err.detail || 'Failed to submit observation.' });
+      }
+    } finally {
+      setDiagSubmitting(false);
+    }
+  }
+
+  async function handleCompleteAction(nodeId) {
+    if (!diagSession) return;
+    setDiagSubmitting(true);
+    setDiagNotice(null);
+    try {
+      const res = await api.post(`/api/diagnostics/${diagSession.session_id}/actions/${nodeId}/complete/`, {
+        expected_version: diagSession.version,
+        idempotency_key: makeIdempotencyKey('diag-act'),
+      });
+      setDiagSession(res);
+    } catch (err) {
+      if (err.status === 409 || (err.detail && err.detail.includes('conflict'))) {
+        setDiagNotice({ type: 'error', text: 'Session was modified in another view. Refreshing...' });
+        refreshSession(diagSession.session_id);
+      } else {
+        setDiagNotice({ type: 'error', text: err.detail || 'Failed to confirm action.' });
+      }
+    } finally {
+      setDiagSubmitting(false);
+    }
+  }
+
+  async function handleResolveSession() {
+    if (!diagSession) return;
+    setDiagSubmitting(true);
+    setDiagNotice(null);
+    try {
+      const res = await api.post(`/api/diagnostics/${diagSession.session_id}/resolve/`, {
+        expected_version: diagSession.version,
+        summary: 'Customer verified complete resolution after guided procedure.',
+      });
+      setDiagSession(res);
+      setDiagNotice({ type: 'success', text: 'Asset safely recovered and marked operational.' });
+    } catch (err) {
+      setDiagNotice({ type: 'error', text: err.detail || 'Failed to resolve session.' });
+    } finally {
+      setDiagSubmitting(false);
+    }
+  }
+
+  async function handleEscalateSession(customReason) {
+    if (!diagSession) return;
+    setDiagSubmitting(true);
+    setDiagNotice(null);
+    try {
+      const res = await api.post(`/api/diagnostics/${diagSession.session_id}/escalate/`, {
+        reason: customReason || 'Escalated by customer during diagnostic procedure.',
+        expected_version: diagSession.version,
+        idempotency_key: makeIdempotencyKey('diag-esc'),
+      });
+      setDiagSession(res);
+      setDiagNotice({ type: 'info', text: 'Service Call created with deterministic Recovery Passport.' });
+      loadCalls();
+    } catch (err) {
+      setDiagNotice({ type: 'error', text: err.detail || 'Failed to escalate session.' });
+    } finally {
+      setDiagSubmitting(false);
+    }
+  }
+
+  async function refreshSession(sessionId) {
+    try {
+      const res = await api.get(`/api/diagnostics/${sessionId}/`);
+      setDiagSession(res);
+    } catch (err) {
+      console.error('Failed to reload diagnostic session', err);
+    }
+  }
 
   async function loadAssetDetail() {
     setLoading(true);
@@ -284,8 +408,9 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
       <div style={{ borderBottom: '1px solid var(--border)', marginBottom: '24px', display: 'flex', gap: '8px', overflowX: 'auto' }}>
         {[
           { id: 'overview', label: 'Overview', icon: Package },
+          { id: 'diagnostics', label: 'Diagnose & Recover', icon: Activity },
           { id: 'documents', label: `Documents (${asset.documents_count})`, icon: FileText },
-          { id: 'ask-ai', label: 'Ask AI Diagnostics', icon: Bot },
+          { id: 'ask-ai', label: 'Quick AI Q&A', icon: Bot },
           { id: 'tickets', label: `Open Tickets (${asset.open_calls_count})`, icon: Ticket },
           { id: 'history', label: 'Service History', icon: History },
           { id: 'warranty', label: 'Warranty & Asset Details', icon: ShieldCheck },
@@ -376,17 +501,364 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
           <div className="card">
             <div className="card-title" style={{ marginBottom: '12px' }}>Quick Actions</div>
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" onClick={() => setActiveTab('ask-ai')}>
-                <Bot size={16} /> Troubleshoot With AI Diagnostics
+              <button className="btn btn-primary" onClick={() => setActiveTab('diagnostics')}>
+                <Activity size={16} /> Diagnose & Recover (Zero-Repeat)
               </button>
               <button className="btn btn-secondary" onClick={() => setActiveTab('documents')}>
                 <FileText size={16} /> View Technical Documents ({asset.documents_count})
+              </button>
+              <button className="btn btn-secondary" onClick={() => setActiveTab('ask-ai')}>
+                <Bot size={16} /> Quick AI Q&A
               </button>
               <button className="btn btn-secondary" onClick={() => setActiveTab('tickets')}>
                 <Ticket size={16} /> View Open Tickets ({asset.open_calls_count})
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TAB: DIAGNOSE & RECOVER (SERVY ZERO-REPEAT) */}
+      {activeTab === 'diagnostics' && (
+        <div>
+          {diagNotice && (
+            <div className={`alert alert-${diagNotice.type === 'error' ? 'danger' : diagNotice.type === 'success' ? 'success' : 'info'}`} style={{ marginBottom: '16px' }}>
+              {diagNotice.type === 'error' ? <AlertCircle size={18} style={{ flexShrink: 0 }} /> : <CheckCircle2 size={18} style={{ flexShrink: 0 }} />}
+              <div>{diagNotice.text}</div>
+            </div>
+          )}
+
+          {!diagSession ? (
+            <div className="card" style={{ maxWidth: '800px', margin: '0 auto', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                <div style={{ padding: '12px', borderRadius: '12px', background: '#eff6ff', color: 'var(--primary)' }}>
+                  <Activity size={28} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                    Diagnose & Recover (Zero-Repeat)
+                  </h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    Tell Servy once. Either Servy safely helps recover your machine, or the engineer receives everything already checked so you never restart from zero.
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '8px', border: '1px solid var(--border)', marginBottom: '20px' }}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', marginBottom: '4px' }}>
+                  Target Machine Locked
+                </div>
+                <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-main)' }}>
+                  {asset.name} • {asset.model_number || asset.asset_code}
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  Product: {asset.product?.name || 'General Equipment'}
+                </div>
+              </div>
+
+              <form onSubmit={handleStartDiagnostics}>
+                <div className="form-group" style={{ marginBottom: '20px' }}>
+                  <label className="form-label" style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+                    Describe what is malfunctioning or abnormal:
+                  </label>
+                  <textarea
+                    className="form-control"
+                    rows={4}
+                    placeholder="e.g. My readings are unstable after cleaning cycle. Thermostat temperature fluctuating."
+                    value={diagComplaint}
+                    onChange={e => setDiagComplaint(e.target.value)}
+                    required
+                    style={{ fontSize: '0.9rem', lineHeight: '1.5' }}
+                  />
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                    Servy will bind this diagnostic incident to {asset.name} and guide you step-by-step using approved manufacturer procedures.
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={diagSubmitting || !diagComplaint.trim()}
+                    style={{ padding: '10px 24px', fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  >
+                    {diagSubmitting ? <RefreshCw size={16} className="spin" /> : <Activity size={16} />}
+                    {diagSubmitting ? 'Initializing Session...' : 'Start Guided Recovery'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '20px' }}>
+              {/* Header Status Bar */}
+              <div className="card" style={{ padding: '18px 24px', borderLeft: '4px solid var(--primary)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', marginBottom: '14px' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                      <span className="badge" style={{ background: '#eff6ff', color: 'var(--primary)', fontWeight: 700 }}>
+                        Session Active
+                      </span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        Target: <strong>{asset.name}</strong> ({asset.asset_code})
+                      </span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-main)' }}>
+                      "{diagSession.complaint}"
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
+                      Evidence Completeness
+                    </div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--primary)' }}>
+                      {Math.round((diagSession.evidence_completeness || 0) * 100)}%
+                    </div>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                <div style={{ width: '100%', height: '6px', background: '#e2e8f0', borderRadius: '3px', overflow: 'hidden' }}>
+                  <div 
+                    style={{ 
+                      width: `${Math.round((diagSession.evidence_completeness || 0) * 100)}%`, 
+                      height: '100%', 
+                      background: 'var(--primary)', 
+                      transition: 'width 0.4s ease' 
+                    }} 
+                  />
+                </div>
+              </div>
+
+              {/* Main Interactive Stage */}
+              {diagSession.status === 'RESOLVED' ? (
+                <div className="card" style={{ textAlign: 'center', padding: '40px 24px', background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+                  <div style={{ display: 'inline-flex', padding: '16px', borderRadius: '50%', background: '#dcfce7', color: '#16a34a', marginBottom: '16px' }}>
+                    <CheckCircle2 size={40} />
+                  </div>
+                  <h3 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#15803d', marginBottom: '8px' }}>
+                    Asset Safely Recovered
+                  </h3>
+                  <p style={{ maxWidth: '520px', margin: '0 auto 24px auto', color: '#166534', fontSize: '0.9rem' }}>
+                    The physical asset has been verified within operating specifications. All diagnostic observations and confirmations have been recorded.
+                  </p>
+                  <button 
+                    className="btn btn-secondary"
+                    onClick={() => { setDiagSession(null); setDiagComplaint(''); }}
+                  >
+                    Start New Recovery Session
+                  </button>
+                </div>
+              ) : diagSession.status === 'ESCALATED' ? (
+                <div className="card" style={{ border: '1px solid #cbd5e1' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px', background: '#f8fafc', borderRadius: '8px', borderBottom: '1px solid var(--border)', marginBottom: '20px' }}>
+                    <Ticket size={24} color="#d97706" />
+                    <div>
+                      <h4 style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--text-main)' }}>
+                        Service Call Dispatched: #{diagSession.escalated_call?.servy_id || 'SER-ESCALATED'}
+                      </h4>
+                      <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                        Field engineering has been notified. The deterministic Recovery Passport has been attached so the technician will NOT repeat what you already verified.
+                      </p>
+                    </div>
+                  </div>
+
+                  {diagSession.recovery_passport && (
+                    <div style={{ padding: '0 8px' }}>
+                      <h5 style={{ fontWeight: 700, fontSize: '0.95rem', color: '#b45309', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <ShieldCheck size={16} /> DO NOT REPEAT WITH CUSTOMER (Verified Checks)
+                      </h5>
+                      <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: '8px', padding: '14px', marginBottom: '18px' }}>
+                        {diagSession.recovery_passport.do_not_repeat_items?.length > 0 ? (
+                          <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#92400e' }}>
+                            {diagSession.recovery_passport.do_not_repeat_items.map((item, idx) => (
+                              <li key={idx} style={{ marginBottom: '4px' }}>{item}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div style={{ fontSize: '0.85rem', color: '#92400e' }}>No repetitive checks to exclude.</div>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <button className="btn btn-secondary" onClick={() => setActiveTab('tickets')}>
+                          <Ticket size={14} /> View in Open Tickets
+                        </button>
+                        <button className="btn btn-secondary" onClick={() => { setDiagSession(null); setDiagComplaint(''); }}>
+                          Close Diagnostic View
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : diagSession.current_node ? (
+                <div className="card" style={{ padding: '24px', border: '2px solid var(--border)' }}>
+                  {/* Node Type Indicator */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <span className="badge" style={{ 
+                      background: diagSession.current_node.node_type === 'SAFE_ACTION' ? '#ecfdf5' : '#f1f5f9',
+                      color: diagSession.current_node.node_type === 'SAFE_ACTION' ? '#059669' : '#1e293b',
+                      fontWeight: 700,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}>
+                      {diagSession.current_node.node_type === 'SAFE_ACTION' && <Shield size={12} />}
+                      {diagSession.current_node.node_type === 'OBSERVE' && 'Step 1: Observation'}
+                      {diagSession.current_node.node_type === 'SAFE_ACTION' && 'Step 2: Authorized Operator Procedure'}
+                      {diagSession.current_node.node_type === 'VERIFY' && 'Step 3: Outcome Verification'}
+                      {diagSession.current_node.node_type === 'ESCALATE' && 'Escalation Notice'}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Version: {diagSession.version}
+                    </span>
+                  </div>
+
+                  {/* OBSERVE Node */}
+                  {diagSession.current_node.node_type === 'OBSERVE' && (
+                    <div>
+                      <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '16px', color: 'var(--text-main)' }}>
+                        {diagSession.current_node.question}
+                      </h3>
+
+                      {diagSession.current_node.response_schema === 'BOOLEAN' ? (
+                        <div style={{ display: 'flex', gap: '16px', marginTop: '20px' }}>
+                          <button
+                            className="btn btn-primary"
+                            style={{ flex: 1, padding: '14px', fontSize: '1rem', fontWeight: 700 }}
+                            disabled={diagSubmitting}
+                            onClick={() => handleSubmitAnswer(diagSession.current_node.node_id, true)}
+                          >
+                            Yes
+                          </button>
+                          <button
+                            className="btn btn-secondary"
+                            style={{ flex: 1, padding: '14px', fontSize: '1rem', fontWeight: 700 }}
+                            disabled={diagSubmitting}
+                            onClick={() => handleSubmitAnswer(diagSession.current_node.node_id, false)}
+                          >
+                            No
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          <input
+                            type="text"
+                            className="form-control"
+                            placeholder="Enter observed reading or code..."
+                            value={diagAnswerText}
+                            onChange={e => setDiagAnswerText(e.target.value)}
+                            style={{ marginBottom: '14px' }}
+                          />
+                          <button
+                            className="btn btn-primary"
+                            disabled={diagSubmitting || !diagAnswerText.trim()}
+                            onClick={() => handleSubmitAnswer(diagSession.current_node.node_id, diagAnswerText.trim())}
+                          >
+                            Submit Observation
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* SAFE_ACTION Node */}
+                  {diagSession.current_node.node_type === 'SAFE_ACTION' && (
+                    <div>
+                      <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '18px', marginBottom: '20px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#15803d', fontWeight: 700, fontSize: '0.85rem', marginBottom: '8px' }}>
+                          <ShieldCheck size={18} /> Canonical Approved Procedure (Green Safety Class)
+                        </div>
+                        <div style={{ fontSize: '1.02rem', fontWeight: 600, color: '#166534', lineHeight: 1.6, marginBottom: '14px' }}>
+                          {diagSession.current_node.instruction}
+                        </div>
+
+                        {diagSession.current_node.source_citation && (
+                          <div style={{ fontSize: '0.78rem', color: '#15803d', borderTop: '1px solid #bbf7d0', paddingTop: '8px' }}>
+                            Source: <strong>{diagSession.current_node.source_citation.document_title}</strong> (Section: {diagSession.current_node.source_citation.heading}, v{diagSession.current_node.source_citation.version})
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        className="btn btn-primary"
+                        style={{ width: '100%', padding: '14px', fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                        disabled={diagSubmitting}
+                        onClick={() => handleCompleteAction(diagSession.current_node.node_id)}
+                      >
+                        <CheckSquare size={18} />
+                        I Have Completed This Action
+                      </button>
+                    </div>
+                  )}
+
+                  {/* VERIFY Node */}
+                  {diagSession.current_node.node_type === 'VERIFY' && (
+                    <div>
+                      <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '16px', color: 'var(--text-main)' }}>
+                        {diagSession.current_node.question}
+                      </h3>
+                      <div style={{ display: 'flex', gap: '16px', marginTop: '20px' }}>
+                        <button
+                          className="btn btn-primary"
+                          style={{ flex: 1, padding: '14px', fontSize: '1rem', fontWeight: 700 }}
+                          disabled={diagSubmitting}
+                          onClick={() => handleSubmitAnswer(diagSession.current_node.node_id, true)}
+                        >
+                          Yes, Issue Resolved
+                        </button>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ flex: 1, padding: '14px', fontSize: '1rem', fontWeight: 700 }}
+                          disabled={diagSubmitting}
+                          onClick={() => handleSubmitAnswer(diagSession.current_node.node_id, false)}
+                        >
+                          No, Issue Persists
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ESCALATE Node */}
+                  {diagSession.current_node.node_type === 'ESCALATE' && (
+                    <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                      <AlertTriangle size={36} color="#d97706" style={{ marginBottom: '12px' }} />
+                      <h3 style={{ fontSize: '1.15rem', fontWeight: 800, marginBottom: '8px' }}>
+                        Specialized Engineering Service Required
+                      </h3>
+                      <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '20px' }}>
+                        {diagSession.current_node.reason}
+                      </p>
+                      <button
+                        className="btn btn-primary"
+                        style={{ padding: '12px 28px', fontWeight: 700 }}
+                        disabled={diagSubmitting}
+                        onClick={() => handleEscalateSession(diagSession.current_node.reason)}
+                      >
+                        Dispatch Engineering Call
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Bottom manual escalation link */}
+                  {diagSession.current_node.node_type !== 'ESCALATE' && (
+                    <div style={{ marginTop: '24px', paddingTop: '16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                        Need immediate technician dispatch?
+                      </span>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ padding: '6px 12px', fontSize: '0.78rem' }}
+                        disabled={diagSubmitting}
+                        onClick={() => handleEscalateSession('Customer requested early technician escalation.')}
+                      >
+                        Escalate to Service
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
       )}
 
@@ -699,7 +1171,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                     <CheckCircle2 size={16} color="var(--primary)" /> Recommended Resolution
                   </span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Backend: {aiResult.retrieval_backend || 'Dense Semantic (ChromaDB)'}
+                    Backend: {aiResult.retrieval_backend || 'RAG'}
                   </span>
                 </div>
 
@@ -883,7 +1355,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                       </td>
                       <td>
                         <div style={{ fontSize: '0.82rem', color: '#059669', fontWeight: 500 }}>
-                          {c.resolution_text || 'Completed and verified by field engineering team.'}
+                          {c.resolution_text || 'No resolution summary recorded.'}
                         </div>
                       </td>
                       <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>

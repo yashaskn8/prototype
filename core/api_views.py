@@ -583,12 +583,24 @@ class EngineerCopilotQueryView(APIView):
                     "score": r.get("score"),
                 })
 
+        recovery_passport = None
+        if hasattr(call, "recovery_passport") and call.recovery_passport:
+            rp = call.recovery_passport
+            recovery_passport = {
+                "id": rp.id,
+                "structured_data": rp.structured_data,
+                "do_not_repeat_items": rp.do_not_repeat_items,
+                "evidence_completeness": rp.evidence_completeness,
+                "created_at": rp.created_at,
+            }
+
         return Response({
             "answer": rag_res["answer"],
             "references": rag_res["references"],
             "past_resolutions": past_resolutions,
             "engine": rag_res["engine"],
             "retrieval_backend": retrieval_backend,
+            "recovery_passport": recovery_passport,
         })
 
 
@@ -951,8 +963,8 @@ class KnowledgeApproveRagView(APIView):
 
     def post(self, request, pk):
         ctx = require_api_context(request)
-        if ctx["role"] not in (ADMIN_ROLES | {"superuser", "technician", "manager"}):
-            return Response({"detail": "Permission denied. Only staff can approve documents for RAG."}, status=status.HTTP_403_FORBIDDEN)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "Permission denied. Only administrators and managers can approve documents for RAG."}, status=status.HTTP_403_FORBIDDEN)
 
         tenant = ctx["tenant"]
         try:
@@ -994,8 +1006,8 @@ class KnowledgeRemoveRagView(APIView):
 
     def post(self, request, pk):
         ctx = require_api_context(request)
-        if ctx["role"] not in (ADMIN_ROLES | {"superuser", "technician", "manager"}):
-            return Response({"detail": "Permission denied. Only staff can remove documents from RAG."}, status=status.HTTP_403_FORBIDDEN)
+        if ctx["role"] not in (ADMIN_ROLES | {"superuser"}):
+            return Response({"detail": "Permission denied. Only administrators and managers can remove documents from RAG."}, status=status.HTTP_403_FORBIDDEN)
 
         tenant = ctx["tenant"]
         try:
@@ -1100,12 +1112,32 @@ class CallDetailView(APIView):
         if is_customer and (not ctx["customer"] or call.customer_id != ctx["customer"].id):
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        updates = list(call.updates.select_related("author").order_by("created_at").values(
+        updates_raw = list(call.updates.select_related("author").order_by("created_at").values(
             "id", "status", "note", "created_at", "author__full_name"
         ))
+        # Customer callers must NOT see internal notes or staff identity in call updates
+        if is_customer:
+            updates = [
+                {"id": u["id"], "status": u["status"], "note": "", "created_at": u["created_at"], "author__full_name": None}
+                for u in updates_raw
+            ]
+        else:
+            updates = updates_raw
+
         parts = list(call.part_requests.order_by("-date").values(
             "id", "indent_id", "spare_description", "manager_status", "store_status", "date"
         ))
+
+        rp = getattr(call, "recovery_passport", None)
+        recovery_passport = None
+        if rp:
+            recovery_passport = {
+                "id": rp.id,
+                "structured_data": rp.structured_data,
+                "do_not_repeat_items": rp.do_not_repeat_items,
+                "evidence_completeness": rp.evidence_completeness,
+                "created_at": rp.created_at,
+            }
 
         return Response({
             "call": {
@@ -1128,6 +1160,7 @@ class CallDetailView(APIView):
             },
             "updates": updates,
             "part_requests": parts if not is_customer else [],
+            "recovery_passport": recovery_passport,
         })
 
 

@@ -1,5 +1,6 @@
 from django.urls import path
 from . import api_views
+from .diagnostics import api_views as diag_views
 
 urlpatterns = [
     # Auth & Session
@@ -28,6 +29,14 @@ urlpatterns = [
     path("assets/<int:pk>/documents/", api_views.AssetDocumentsView.as_view(), name="api_asset_documents"),
     path("assets/<int:pk>/documents/upload/", api_views.AssetDocumentUploadView.as_view(), name="api_asset_document_upload"),
     path("assets/<int:pk>/calls/", api_views.AssetCallsView.as_view(), name="api_asset_calls"),
+
+    # Servy Zero-Repeat: Asset Recovery Diagnostics
+    path("assets/<int:asset_id>/diagnostics/", diag_views.AssetDiagnosticsStartView.as_view(), name="api_asset_diagnostics_start"),
+    path("diagnostics/<uuid:session_id>/", diag_views.DiagnosticSessionDetailView.as_view(), name="api_diagnostic_detail"),
+    path("diagnostics/<uuid:session_id>/answers/", diag_views.DiagnosticAnswerView.as_view(), name="api_diagnostic_answer"),
+    path("diagnostics/<uuid:session_id>/actions/<str:node_id>/complete/", diag_views.DiagnosticActionCompleteView.as_view(), name="api_diagnostic_action_complete"),
+    path("diagnostics/<uuid:session_id>/resolve/", diag_views.DiagnosticResolveView.as_view(), name="api_diagnostic_resolve"),
+    path("diagnostics/<uuid:session_id>/escalate/", diag_views.DiagnosticEscalateView.as_view(), name="api_diagnostic_escalate"),
 
     # Call Register & Detail
     path("calls/", api_views.CallRegisterView.as_view(), name="api_calls"),

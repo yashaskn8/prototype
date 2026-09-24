@@ -634,3 +634,150 @@ class AuditEvent(TenantOwnedModel):
 
     def __str__(self):
         return f"{self.action} {self.object_type}:{self.object_id}".strip()
+
+
+class DiagnosticPlaybook(TenantOwnedModel):
+    STATUS_CHOICES = [
+        ("DRAFT", "Draft"),
+        ("PUBLISHED", "Published"),
+        ("RETIRED", "Retired"),
+    ]
+    name = models.CharField(max_length=200)
+    version = models.PositiveIntegerField(default=1)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="DRAFT")
+    domain = models.ForeignKey(ProductDomain, on_delete=models.SET_NULL, null=True, blank=True, related_name="diagnostic_playbooks")
+    category = models.ForeignKey(ProductCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name="diagnostic_playbooks")
+    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, blank=True, related_name="diagnostic_playbooks")
+    applicability_tags = models.CharField(max_length=500, blank=True, help_text="Comma-separated symptom or model tags")
+    definition = models.JSONField(default=dict, help_text="Structured graph containing nodes, transitions, and validation rules")
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("tenant", "name", "version")
+        ordering = ["-updated_at", "name"]
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        errors = {}
+        if self.product_id and self.category_id and self.product.category_id and self.product.category_id != self.category_id:
+            errors["product"] = "Product does not belong to the selected category."
+        if self.category_id and self.domain_id and self.category.domain_id != self.domain_id:
+            errors["category"] = "Category does not belong to the selected domain."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.name} v{self.version} ({self.status})"
+
+
+class DiagnosticSession(TenantOwnedModel):
+    STATUS_CHOICES = [
+        ("ACTIVE", "Active"),
+        ("WAITING_INPUT", "Waiting Input"),
+        ("WAITING_VERIFY", "Waiting Verify"),
+        ("RESOLVED", "Resolved"),
+        ("ESCALATED", "Escalated"),
+        ("ABANDONED", "Abandoned"),
+    ]
+    session_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="diagnostic_sessions")
+    site = models.ForeignKey(Site, on_delete=models.SET_NULL, null=True, blank=True, related_name="diagnostic_sessions")
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="diagnostic_sessions")
+    playbook = models.ForeignKey(DiagnosticPlaybook, on_delete=models.SET_NULL, null=True, blank=True, related_name="sessions")
+    playbook_version = models.PositiveIntegerField(default=1)
+    complaint = models.TextField(help_text="Original complaint or symptom reported by customer")
+    current_node_id = models.CharField(max_length=100, default="start")
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="ACTIVE")
+    version = models.PositiveIntegerField(default=1, help_text="Monotonically increasing version for optimistic concurrency")
+    facts_snapshot = models.JSONField(default=dict, blank=True)
+    evidence_completeness = models.FloatField(default=0.0)
+    escalated_call = models.OneToOneField(ServiceCall, on_delete=models.SET_NULL, null=True, blank=True, related_name="diagnostic_session")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="created_diagnostic_sessions")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        errors = {}
+        if self.site_id and self.customer_id and self.site.customer_id != self.customer_id:
+            errors["site"] = "Session site does not belong to the selected customer."
+        if self.asset_id and self.customer_id and self.asset.customer_id != self.customer_id:
+            errors["asset"] = "Session asset does not belong to the selected customer."
+        if self.escalated_call_id and self.customer_id and self.escalated_call.customer_id != self.customer_id:
+            errors["escalated_call"] = "Escalated call belongs to another customer."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"DiagSession {self.session_id} - {self.asset.name} ({self.status})"
+
+
+class DiagnosticEvent(TenantOwnedModel):
+    session = models.ForeignKey(DiagnosticSession, on_delete=models.CASCADE, related_name="events")
+    seq_num = models.PositiveIntegerField()
+    event_type = models.CharField(max_length=60)
+    actor_role = models.CharField(max_length=30, default="customer")
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("session", "seq_num")
+        ordering = ["session", "seq_num"]
+
+    def __str__(self):
+        return f"{self.session_id} #{self.seq_num}: {self.event_type}"
+
+
+class DiagnosticCommand(TenantOwnedModel):
+    """Idempotency record for state-changing diagnostic operations."""
+    session = models.ForeignKey(DiagnosticSession, on_delete=models.CASCADE, null=True, blank=True, related_name="commands")
+    idempotency_key = models.CharField(max_length=120)
+    command_type = models.CharField(max_length=60)
+    request_hash = models.CharField(max_length=64)
+    response_status = models.PositiveIntegerField(default=200)
+    response_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("tenant", "idempotency_key")
+        indexes = [
+            models.Index(fields=["tenant", "idempotency_key"]),
+        ]
+
+    def __str__(self):
+        return f"Cmd {self.command_type} ({self.idempotency_key})"
+
+
+class RecoveryPassport(TenantOwnedModel):
+    session = models.OneToOneField(DiagnosticSession, on_delete=models.CASCADE, related_name="recovery_passport")
+    service_call = models.OneToOneField(ServiceCall, on_delete=models.CASCADE, null=True, blank=True, related_name="recovery_passport")
+    asset = models.ForeignKey(Asset, on_delete=models.CASCADE, related_name="recovery_passports")
+    complaint = models.TextField()
+    structured_data = models.JSONField(default=dict, help_text="Deterministic diagnostic evidence, observations, and outcomes")
+    do_not_repeat_items = models.JSONField(default=list, help_text="Verified actions and checks that should not be repeated")
+    evidence_completeness = models.FloatField(default=0.0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        errors = {}
+        if self.service_call_id and self.service_call.customer_id != self.session.customer_id:
+            errors["service_call"] = "Service call customer does not match diagnostic session customer."
+        if self.asset_id != self.session.asset_id:
+            errors["asset"] = "Passport asset must match session asset."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"RecoveryPassport for Asset {self.asset_id} (Session {self.session_id})"
