@@ -13,6 +13,7 @@ from .schemas import (
     DiagnosticFact,
     DiagnosticState,
     EVENT_COMPLAINT_RECORDED,
+    EVENT_CLARIFICATION_RECORDED,
     EVENT_CONTRADICTION_FOUND,
     EVENT_CONTRADICTION_RESOLVED,
     EVENT_OBSERVATION_RECORDED,
@@ -225,12 +226,34 @@ def reduce_session_events(
                 else:
                     state.status = "ACTIVE"
 
+        elif event_type == EVENT_CLARIFICATION_RECORDED:
+            clarification_text = payload.get("clarification", "")
+            if "complaint" in state.facts:
+                existing_val = state.facts["complaint"].value
+                state.facts["complaint"] = DiagnosticFact(
+                    key="complaint",
+                    value=f"{existing_val}\nClarification: {clarification_text}".strip(),
+                    source=SOURCE_CUSTOMER_ASSERTED,
+                    verified=False,
+                    updated_at=timestamp_str,
+                )
+
         elif event_type == EVENT_CONTRADICTION_RESOLVED:
             fact_key = payload.get("fact_key")
+            resolved_value = payload.get("value")
             for c in state.contradictions:
                 if c.fact_key == fact_key:
                     c.resolved = True
                     c.resolution_note = payload.get("resolution_note", "Resolved by explicit customer clarification.")
+            if fact_key and resolved_value is not None:
+                state.facts[fact_key] = DiagnosticFact(
+                    key=fact_key,
+                    value=resolved_value,
+                    source=SOURCE_CUSTOMER_ASSERTED,
+                    verified=False,
+                    updated_at=timestamp_str,
+                    node_id=payload.get("node_id"),
+                )
 
         elif event_type == EVENT_SESSION_RESOLVED:
             state.status = "RESOLVED"

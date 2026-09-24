@@ -63,12 +63,16 @@ from core.diagnostics.orchestrator import (
     PresentationRequiredError,
     SessionLimitExceededError,
     TerminalSessionMutationError,
+    _append_event,
+    _build_facts_snapshot,
+    clarify_diagnostic_session,
     complete_idempotency,
     confirm_safe_action,
     escalate_diagnostic_session,
     fail_idempotency,
     get_session_view_data,
     reserve_idempotency_key,
+    resolve_contradiction,
     resolve_diagnostic_session,
     start_diagnostic_session,
     submit_diagnostic_answer,
@@ -450,3 +454,200 @@ class DiagnosticHardeningRegressionTests(TestCase):
 
         with self.assertRaises(ValidationError):
             DiagnosticEvent.objects.filter(session=session).delete()
+
+    # ---------------------------------------------------------------------------
+    # CRITICAL FIX 1: Idempotency Failure Lifecycle & Conflict Handling
+    # ---------------------------------------------------------------------------
+    def test_failed_command_lifecycle_and_retry(self):
+        """Failed answer command marks DiagnosticCommand as FAILED and allows clean retry."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+        key = "idem-fail-retry-01"
+
+        # 1. Reserve key
+        cmd, replay = reserve_idempotency_key(
+            self.t1, key, "SUBMIT_ANSWER", {"session_id": str(session.session_id), "node_id": session.current_node_id, "value": True}, session
+        )
+        self.assertFalse(replay)
+        self.assertEqual(cmd.state, DiagnosticCommand.STATE_IN_PROGRESS)
+
+        # 2. Simulate failure
+        fail_idempotency(cmd, "Simulated transient failure", response_status=500)
+        cmd.refresh_from_db()
+        self.assertEqual(cmd.state, DiagnosticCommand.STATE_FAILED)
+        self.assertEqual(cmd.response_status, 500)
+
+        # 3. Retry with same payload
+        cmd2, replay2 = reserve_idempotency_key(
+            self.t1, key, "SUBMIT_ANSWER", {"session_id": str(session.session_id), "node_id": session.current_node_id, "value": True}, session
+        )
+        self.assertFalse(replay2)
+        self.assertEqual(cmd2.state, DiagnosticCommand.STATE_IN_PROGRESS)
+
+        # Complete
+        complete_idempotency(cmd2, 200, {"success": True})
+        cmd2.refresh_from_db()
+        self.assertEqual(cmd2.state, DiagnosticCommand.STATE_COMPLETED)
+
+    def test_in_progress_api_conflict_raises_concurrency_error(self):
+        """Reusing key while command is IN_PROGRESS raises ConcurrencyConflictError."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+        key = "idem-in-progress-01"
+
+        reserve_idempotency_key(
+            self.t1, key, "SUBMIT_ANSWER", {"session_id": str(session.session_id), "node_id": session.current_node_id, "value": True}, session
+        )
+
+        with self.assertRaises(ConcurrencyConflictError):
+            reserve_idempotency_key(
+                self.t1, key, "SUBMIT_ANSWER", {"session_id": str(session.session_id), "node_id": session.current_node_id, "value": True}, session
+            )
+
+    # ---------------------------------------------------------------------------
+    # CRITICAL FIX 2: NO_PLAYBOOK_AVAILABLE Lock Down & Clarification Flow
+    # ---------------------------------------------------------------------------
+    def test_no_playbook_operations_rejection(self):
+        """NO_PLAYBOOK session rejects answer submission, action confirmation, and resolution."""
+        session, view_data = start_diagnostic_session(self.t1, self.c1, self.asset1, "Completely unknown error 999999")
+        self.assertEqual(session.status, "NO_PLAYBOOK_AVAILABLE")
+        self.assertEqual(session.current_node_id, "")
+        self.assertIsNone(view_data["current_node"])
+        self.assertTrue(view_data["can_clarify"])
+        self.assertTrue(view_data["can_escalate"])
+
+        # Rejects submit answer
+        with self.assertRaises(ValueError):
+            submit_diagnostic_answer(session, "check_error_code", True, expected_version=session.version, customer=self.c1)
+
+        # Rejects confirm safe action
+        with self.assertRaises(ValueError):
+            confirm_safe_action(session, "action_clean_probe", expected_version=session.version, customer=self.c1)
+
+        # Rejects manual resolve
+        with self.assertRaises(ValueError):
+            resolve_diagnostic_session(session, expected_version=session.version, customer=self.c1)
+
+        # Escalation works
+        session, call, passport = escalate_diagnostic_session(session, "Cannot diagnose", expected_version=session.version, customer=self.c1)
+        self.assertEqual(session.status, "ESCALATED")
+        self.assertIsNotNone(call)
+
+    def test_no_playbook_clarification_success_and_retry(self):
+        """Clarification on NO_PLAYBOOK session reruns routing and binds matched playbook."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "Vague milk machine issue")
+        self.assertEqual(session.status, "NO_PLAYBOOK_AVAILABLE")
+
+        # Clarify with specific symptom
+        updated_session, view_data = clarify_diagnostic_session(
+            session=session,
+            clarification="E12 probe suction jammed and milk line clogged",
+            expected_version=session.version,
+            customer=self.c1
+        )
+
+        self.assertIn(updated_session.status, ("ACTIVE", "WAITING_INPUT"))
+        self.assertIsNotNone(updated_session.playbook)
+        self.assertEqual(updated_session.playbook.id, self.playbook1.id)
+        self.assertEqual(updated_session.current_node_id, "check_error_code")
+        self.assertIsNotNone(view_data["current_node"])
+
+    # ---------------------------------------------------------------------------
+    # CRITICAL FIX 3: Contradiction Resolution Flow
+    # ---------------------------------------------------------------------------
+    def test_contradiction_resolution_lifecycle(self):
+        """Customer can explicitly clarify and resolve a contradictory fact."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+
+        # 1. Answer True
+        session, _ = submit_diagnostic_answer(session, "check_error_code", True, expected_version=session.version, customer=self.c1)
+
+        # 2. Record contradictory observation
+        _append_event(session, EVENT_OBSERVATION_RECORDED, "customer", {
+            "node_id": "check_error_code",
+            "fact_key": "error_e12",
+            "value": False
+        })
+        events = list(session.events.order_by("seq_num"))
+        state = reduce_session_events(events, self.playbook1.definition, session.session_id)
+        session.facts_snapshot = _build_facts_snapshot(state)
+        session.version += 1
+        session.save()
+
+        # Unresolved contradiction exists
+        view_data = get_session_view_data(session, self.c1)
+        self.assertTrue(view_data["can_resolve_contradiction"])
+        self.assertEqual(len(view_data["unresolved_contradictions"]), 1)
+
+        # 3. Resolve contradiction
+        updated_session, updated_view = resolve_contradiction(
+            session=session,
+            fact_key="error_e12",
+            value=True,
+            expected_version=session.version,
+            customer=self.c1
+        )
+
+        self.assertFalse(updated_view["can_resolve_contradiction"])
+        self.assertEqual(len(updated_view["unresolved_contradictions"]), 0)
+        self.assertEqual(updated_session.facts_snapshot["facts"]["error_e12"]["value"], True)
+
+    # ---------------------------------------------------------------------------
+    # CRITICAL FIX 4: Resolution Authority (Current-Path Authorized ONLY)
+    # ---------------------------------------------------------------------------
+    def test_historical_positive_verify_cannot_resolve_unrelated_branch(self):
+        """An old positive verification does NOT authorize resolution from an unresolved state."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+
+        # Fake historical positive verify in ledger
+        _append_event(session, EVENT_VERIFICATION_RECORDED, "customer", {
+            "node_id": "old_verify_step",
+            "fact_key": "old_fact",
+            "value": True
+        })
+        session.version += 1
+        session.save()
+
+        # Session is currently at check_error_code (non-terminal)
+        with self.assertRaises(ValueError):
+            resolve_diagnostic_session(session, expected_version=session.version, customer=self.c1)
+
+    # ---------------------------------------------------------------------------
+    # HIGH FIX 5: Safe Action Presentation Token Binding
+    # ---------------------------------------------------------------------------
+    def test_safe_action_presentation_token_validation(self):
+        """Confirming SAFE_ACTION requires valid active presentation token."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+        # Step to SAFE_ACTION node
+        session, view_data = submit_diagnostic_answer(session, "check_error_code", True, expected_version=session.version, customer=self.c1)
+        self.assertEqual(session.current_node_id, "action_clean_probe")
+
+        token = view_data["current_node"]["presentation_token"]
+        self.assertTrue(bool(token))
+
+        # Invalid token fails
+        with self.assertRaises(PresentationRequiredError):
+            confirm_safe_action(session, "action_clean_probe", expected_version=session.version, presentation_token="wrong_token", customer=self.c1)
+
+        # Valid token succeeds
+        session, _ = confirm_safe_action(session, "action_clean_probe", expected_version=session.version, presentation_token=token, customer=self.c1)
+        self.assertEqual(session.current_node_id, "verify_sample_flow")
+
+    # ---------------------------------------------------------------------------
+    # HIGH FIX 6: Retired Playbook Version Semantics
+    # ---------------------------------------------------------------------------
+    def test_retired_playbook_existing_session_continues_new_session_ignores(self):
+        """Active session pinned to v1 continues when v1 is RETIRED; new sessions ignore v1."""
+        session, _ = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+        self.assertEqual(session.playbook.version, 1)
+
+        # Admin retires v1
+        self.playbook1.status = "RETIRED"
+        self.playbook1.save(update_fields=["status"])
+
+        # Existing session continues executing without error
+        session, view_data = submit_diagnostic_answer(session, "check_error_code", True, expected_version=session.version, customer=self.c1)
+        self.assertEqual(session.current_node_id, "action_clean_probe")
+        self.assertIsNotNone(view_data["current_node"])
+
+        # New session routing ignores RETIRED playbook
+        new_session, new_view = start_diagnostic_session(self.t1, self.c1, self.asset1, "E12 probe suction jammed")
+        self.assertEqual(new_session.status, "NO_PLAYBOOK_AVAILABLE")

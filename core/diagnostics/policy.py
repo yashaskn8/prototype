@@ -45,10 +45,10 @@ def evaluate_node_policy(
     if not asset or (customer and asset.customer_id != customer.id):
         return False, "ASSET_CUSTOMER_MISMATCH", {}
 
-    # Invariant 5: Playbook published status and version pinning
+    # Invariant 5: Playbook status and version pinning (PUBLISHED for new, RETIRED allowed for existing pinned)
     playbook = session.playbook
-    if not playbook or playbook.status != "PUBLISHED":
-        return False, "PLAYBOOK_NOT_PUBLISHED", {}
+    if not playbook or playbook.status not in ("PUBLISHED", "RETIRED"):
+        return False, f"PLAYBOOK_STATUS_INVALID_{playbook.status if playbook else 'NONE'}", {}
     if session.playbook_version and playbook.version != session.playbook_version:
         return False, "PLAYBOOK_VERSION_MISMATCH", {}
 

@@ -35,6 +35,8 @@ urlpatterns = [
     path("diagnostics/<uuid:session_id>/", diag_views.DiagnosticSessionDetailView.as_view(), name="api_diagnostic_detail"),
     path("diagnostics/<uuid:session_id>/answers/", diag_views.DiagnosticAnswerView.as_view(), name="api_diagnostic_answer"),
     path("diagnostics/<uuid:session_id>/actions/<str:node_id>/complete/", diag_views.DiagnosticActionCompleteView.as_view(), name="api_diagnostic_action_complete"),
+    path("diagnostics/<uuid:session_id>/clarify/", diag_views.DiagnosticClarifyView.as_view(), name="api_diagnostic_clarify"),
+    path("diagnostics/<uuid:session_id>/contradictions/<str:fact_key>/resolve/", diag_views.DiagnosticContradictionResolveView.as_view(), name="api_diagnostic_contradiction_resolve"),
     path("diagnostics/<uuid:session_id>/resolve/", diag_views.DiagnosticResolveView.as_view(), name="api_diagnostic_resolve"),
     path("diagnostics/<uuid:session_id>/escalate/", diag_views.DiagnosticEscalateView.as_view(), name="api_diagnostic_escalate"),
 
