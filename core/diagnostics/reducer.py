@@ -135,7 +135,7 @@ def reduce_session_events(
                     key=fact_key,
                     value=value,
                     source=SOURCE_CUSTOMER_ASSERTED,
-                    verified=True,
+                    verified=False,  # DEFECT 24 FIX: Observations are assertions, not verified. Only VERIFY steps set verified=True.
                     updated_at=timestamp_str,
                     node_id=node_id,
                 )

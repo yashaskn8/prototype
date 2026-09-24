@@ -18,7 +18,9 @@ from core.security import require_api_context
 
 from .orchestrator import (
     ConcurrencyConflictError,
+    CurrentNodeMismatchError,
     IdempotencyPayloadConflictError,
+    PresentationRequiredError,
     SessionLimitExceededError,
     TerminalSessionMutationError,
     check_or_record_idempotency,
@@ -183,6 +185,11 @@ class DiagnosticAnswerView(APIView):
                 {"detail": str(e), "current_version": e.current_version},
                 status=status.HTTP_409_CONFLICT
             )
+        except CurrentNodeMismatchError as e:
+            return Response(
+                {"detail": str(e), "expected_node": e.expected_node, "actual_node": e.actual_node},
+                status=status.HTTP_409_CONFLICT
+            )
         except TerminalSessionMutationError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError as e:
@@ -258,6 +265,13 @@ class DiagnosticActionCompleteView(APIView):
                 {"detail": str(e), "current_version": e.current_version},
                 status=status.HTTP_409_CONFLICT
             )
+        except CurrentNodeMismatchError as e:
+            return Response(
+                {"detail": str(e), "expected_node": e.expected_node, "actual_node": e.actual_node},
+                status=status.HTTP_409_CONFLICT
+            )
+        except PresentationRequiredError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except TerminalSessionMutationError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError as e:

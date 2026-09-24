@@ -52,7 +52,12 @@ def select_playbook_for_asset(
 
 
 def _find_best_tag_match(qs, complaint: str) -> Optional[DiagnosticPlaybook]:
-    """Score matching playbooks by applicability tags matching complaint words."""
+    """Score matching playbooks by applicability tags matching complaint words.
+
+    DEFECT 10 FIX: Do not select a playbook if no tags matched the complaint
+    (score == 0) and multiple candidates exist. A zero-score selection is
+    arbitrary and could route to a completely wrong diagnostic path.
+    """
     playbooks = list(qs)
     if not playbooks:
         return None
@@ -73,4 +78,9 @@ def _find_best_tag_match(qs, complaint: str) -> Optional[DiagnosticPlaybook]:
         scored.append((score, pb))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[0][1] if scored else playbooks[0]
+
+    # DEFECT 10 FIX: Require a positive score to select
+    if scored[0][0] <= 0:
+        return None
+
+    return scored[0][1]

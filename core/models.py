@@ -669,6 +669,17 @@ class DiagnosticPlaybook(TenantOwnedModel):
         if errors:
             raise ValidationError(errors)
 
+    def save(self, *args, **kwargs):
+        if self.pk:
+            old = DiagnosticPlaybook.objects.filter(pk=self.pk).values("status", "definition", "version").first()
+            if old and old["status"] == "PUBLISHED":
+                update_fields = kwargs.get("update_fields")
+                if update_fields is None or "definition" in update_fields:
+                    if self.definition != old["definition"]:
+                        from django.core.exceptions import ValidationError
+                        raise ValidationError("Published DiagnosticPlaybook version is immutable. Create a new version instead.")
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.name} v{self.version} ({self.status})"
 
@@ -730,6 +741,16 @@ class DiagnosticEvent(TenantOwnedModel):
     class Meta:
         unique_together = ("session", "seq_num")
         ordering = ["session", "seq_num"]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("DiagnosticEvent records are strictly immutable and cannot be updated.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("DiagnosticEvent records are strictly immutable and cannot be deleted.")
 
     def __str__(self):
         return f"{self.session_id} #{self.seq_num}: {self.event_type}"

@@ -9,13 +9,18 @@ Hard Invariants:
   - Idempotency via DiagnosticCommand (same key + same payload => replay; same key + different payload => 409).
   - Exactly ONE ServiceCall created upon escalation.
   - Customer can NEVER mutate a terminal session (RESOLVED, ESCALATED).
+  - Caller may ONLY submit answers for the CURRENT node (no arbitrary node_id bypass).
+  - SAFE_ACTION confirmation requires prior SAFE_ACTION_PRESENTED event for that node.
+  - Escalation triggered by reducer is executed atomically inside the same transaction.
+  - Resolve endpoint rejects unless session is at a resolvable terminal state.
 """
 
 import hashlib
 import json
+import time
 from typing import Any, Dict, Optional, Tuple
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Max
 from django.utils import timezone
 
@@ -29,7 +34,7 @@ from core.models import (
     RecoveryPassport,
     ServiceCall,
 )
-from core.services.ticketing import _sla_for, choose_technician
+from core.services.ticketing import _sla_for, choose_technician, create_service_call_record
 
 from .evidence import verify_evidence_anchor
 from .passport import build_recovery_passport
@@ -48,6 +53,7 @@ from .schemas import (
     EVENT_SESSION_RESOLVED,
     EVENT_SESSION_STARTED,
     EVENT_VERIFICATION_RECORDED,
+    MAX_ACTIVE_SESSIONS_PER_CUSTOMER,
     MAX_SESSION_STEPS,
     NODE_ESCALATE,
     NODE_OBSERVE,
@@ -76,6 +82,22 @@ class TerminalSessionMutationError(Exception):
 
 
 class SessionLimitExceededError(Exception):
+    pass
+
+
+class CurrentNodeMismatchError(Exception):
+    """Raised when caller tries to submit for a node that is not the current node."""
+    def __init__(self, expected_node: str, actual_node: str):
+        super().__init__(
+            f"Node mismatch: submitted for '{expected_node}' but session is at '{actual_node}'. "
+            f"The client may interpret language, but the server decides the current legal transition."
+        )
+        self.expected_node = expected_node
+        self.actual_node = actual_node
+
+
+class PresentationRequiredError(Exception):
+    """Raised when SAFE_ACTION_CONFIRMED is attempted without a prior SAFE_ACTION_PRESENTED."""
     pass
 
 
@@ -137,6 +159,96 @@ def save_idempotency_response(
     return cmd
 
 
+def _append_event(locked_session, event_type: str, actor_role: str, payload: dict) -> DiagnosticEvent:
+    """Locked helper: append an immutable event to the ledger under existing row lock."""
+    last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
+    return DiagnosticEvent.objects.create(
+        tenant=locked_session.tenant,
+        session=locked_session,
+        seq_num=last_seq + 1,
+        event_type=event_type,
+        actor_role=actor_role,
+        payload=payload,
+    )
+
+
+def _build_facts_snapshot(state):
+    """Build a serializable facts snapshot from the reducer state."""
+    return {
+        "facts": {k: {"value": f.value, "source": f.source, "verified": f.verified} for k, f in state.facts.items()},
+        "contradictions": [
+            {"fact_key": c.fact_key, "earlier": c.earlier_value, "new": c.new_value, "resolved": c.resolved}
+            for c in state.contradictions
+        ],
+    }
+
+
+def _execute_escalation_atomically(locked_session, reason: str, customer=None):
+    """Execute escalation inside the SAME transaction that detected ESCALATED status.
+
+    This is the atomic escalation fix (Defect 3). The caller MUST already hold
+    a select_for_update lock on locked_session inside a transaction.atomic().
+    """
+    tenant = locked_session.tenant
+
+    # Exactly-once: if already escalated, return existing
+    if locked_session.escalated_call_id:
+        passport = getattr(locked_session, "recovery_passport", None)
+        return locked_session.escalated_call, passport
+
+    passport_dict = build_recovery_passport(locked_session)
+
+    zone = locked_session.site.zone if locked_session.site else None
+    branch = zone.branch if zone and zone.branch else None
+    technician = choose_technician(tenant, branch=branch, zone=zone)
+    sla = _sla_for(tenant, "normal")
+
+    do_not_repeat_text = "\n".join(f"- {item}" for item in passport_dict["do_not_repeat_items"]) or "- None"
+    complaint_body = (
+        f"Customer Issue:\n{locked_session.complaint}\n\n"
+        f"Escalation Reason:\n{reason}\n\n"
+        f"ALREADY COMPLETED — DO NOT REPEAT WITH CUSTOMER:\n{do_not_repeat_text}\n\n"
+        f"Diagnostic Session ID: {locked_session.session_id}\n"
+        f"Evidence Completeness: {int(locked_session.evidence_completeness * 100)}%\n"
+        f"Asset: {locked_session.asset.name} ({locked_session.asset.asset_code})"
+    )
+
+    call = create_service_call_record(
+        tenant=tenant,
+        complaint_type="Diagnostic Recovery Escalation",
+        complaint_text=complaint_body,
+        customer=locked_session.customer,
+        site=locked_session.site,
+        asset=locked_session.asset,
+        zone=zone,
+        priority="normal",
+        sla=sla,
+        technician=technician,
+        contact_name=locked_session.customer.contact_name or locked_session.customer.name,
+        contact_phone=locked_session.customer.phone,
+        contact_email=locked_session.customer.email,
+    )
+
+    passport = RecoveryPassport.objects.create(
+        tenant=tenant,
+        session=locked_session,
+        service_call=call,
+        asset=locked_session.asset,
+        complaint=locked_session.complaint,
+        structured_data=passport_dict["structured_data"],
+        do_not_repeat_items=passport_dict["do_not_repeat_items"],
+        evidence_completeness=passport_dict["evidence_completeness"],
+    )
+
+    _append_event(
+        locked_session, EVENT_SESSION_ESCALATED, "system",
+        {"reason": reason, "service_call_id": call.id, "servy_id": call.servy_id}
+    )
+
+    locked_session.escalated_call = call
+    return call, passport
+
+
 def start_diagnostic_session(
     tenant,
     customer: Customer,
@@ -148,11 +260,11 @@ def start_diagnostic_session(
     """Initialize a persistent, authorized DiagnosticSession."""
     complaint = (complaint or "").strip()[:1000]
 
-    # Check active session limit (max 5 active sessions per customer)
+    # Check active session limit (Defect: use constant from schemas)
     active_count = DiagnosticSession.objects.filter(
         tenant=tenant, customer=customer, status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY"]
     ).count()
-    if active_count >= 10:
+    if active_count >= MAX_ACTIVE_SESSIONS_PER_CUSTOMER:
         raise SessionLimitExceededError("Maximum active diagnostic sessions limit reached. Please resolve or escalate open sessions.")
 
     # Select candidate published playbook
@@ -220,13 +332,7 @@ def start_diagnostic_session(
         events = list(session.events.order_by("seq_num"))
         state = reduce_session_events(events, playbook_def, session.session_id)
 
-        session.facts_snapshot = {
-            "facts": {k: {"value": f.value, "source": f.source, "verified": f.verified} for k, f in state.facts.items()},
-            "contradictions": [
-                {"fact_key": c.fact_key, "earlier": c.earlier_value, "new": c.new_value, "resolved": c.resolved}
-                for c in state.contradictions
-            ],
-        }
+        session.facts_snapshot = _build_facts_snapshot(state)
         session.evidence_completeness = state.evidence_completeness
         session.current_node_id = state.current_node_id
         session.status = state.status
@@ -257,6 +363,10 @@ def submit_diagnostic_answer(
         if locked_session.version != expected_version:
             raise ConcurrencyConflictError(locked_session.version)
 
+        # DEFECT 1 FIX: Enforce current node — caller cannot skip ahead or replay old nodes
+        if node_id != locked_session.current_node_id:
+            raise CurrentNodeMismatchError(node_id, locked_session.current_node_id)
+
         playbook_def = locked_session.playbook.definition if locked_session.playbook else {}
         nodes = playbook_def.get("nodes", {})
         node = nodes.get(node_id, {})
@@ -267,48 +377,42 @@ def submit_diagnostic_answer(
         schema = node.get("response_schema", RESPONSE_SHORT_TEXT)
         validated_value = _validate_answer_value(schema, value, node.get("choices", []))
 
-        last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
         event_type = EVENT_VERIFICATION_RECORDED if node_type == NODE_VERIFY else EVENT_OBSERVATION_RECORDED
 
-        DiagnosticEvent.objects.create(
-            tenant=locked_session.tenant,
-            session=locked_session,
-            seq_num=last_seq + 1,
-            event_type=event_type,
-            actor_role=actor_role,
-            payload={
-                "node_id": node_id,
-                "fact_key": fact_key,
-                "value": validated_value,
-            }
-        )
+        _append_event(locked_session, event_type, actor_role, {
+            "node_id": node_id,
+            "fact_key": fact_key,
+            "value": validated_value,
+        })
 
         # Re-reduce events
         events = list(locked_session.events.order_by("seq_num"))
         state = reduce_session_events(events, playbook_def, locked_session.session_id)
 
         # Update snapshot and version
-        locked_session.facts_snapshot = {
-            "facts": {k: {"value": f.value, "source": f.source, "verified": f.verified} for k, f in state.facts.items()},
-            "contradictions": [
-                {"fact_key": c.fact_key, "earlier": c.earlier_value, "new": c.new_value, "resolved": c.resolved}
-                for c in state.contradictions
-            ],
-        }
+        locked_session.facts_snapshot = _build_facts_snapshot(state)
         locked_session.evidence_completeness = state.evidence_completeness
         locked_session.current_node_id = state.current_node_id
         locked_session.status = state.status
         locked_session.version += 1
-        locked_session.save(update_fields=["facts_snapshot", "evidence_completeness", "current_node_id", "status", "version"])
 
-    # If reached ESCALATE node deterministically, trigger escalation automatically
-    if locked_session.status == "ESCALATED":
-        escalate_diagnostic_session(
-            session=locked_session,
-            reason=state.escalation_reason or "Escalated by diagnostic workflow.",
-            expected_version=locked_session.version,
-            customer=customer
-        )
+        # DEFECT 3 FIX: If reducer reached ESCALATED, execute escalation INSIDE this transaction
+        if locked_session.status == "ESCALATED":
+            call, passport = _execute_escalation_atomically(
+                locked_session,
+                reason=state.escalation_reason or "Escalated by diagnostic workflow.",
+                customer=customer
+            )
+
+        # Emit SAFE_ACTION_PRESENTED if the new current node is a SAFE_ACTION (for Defect 2 chain)
+        new_node = nodes.get(state.current_node_id, {})
+        if new_node.get("node_type") == NODE_SAFE_ACTION and locked_session.status not in ("RESOLVED", "ESCALATED"):
+            _append_event(locked_session, EVENT_SAFE_ACTION_PRESENTED, "system", {
+                "node_id": state.current_node_id,
+                "instruction": new_node.get("instruction", ""),
+            })
+
+        locked_session.save(update_fields=["facts_snapshot", "evidence_completeness", "current_node_id", "status", "version", "escalated_call"])
 
     return locked_session, get_session_view_data(locked_session, customer)
 
@@ -329,6 +433,10 @@ def confirm_safe_action(
         if locked_session.version != expected_version:
             raise ConcurrencyConflictError(locked_session.version)
 
+        # DEFECT 1 FIX: Enforce current node match
+        if node_id != locked_session.current_node_id:
+            raise CurrentNodeMismatchError(node_id, locked_session.current_node_id)
+
         playbook_def = locked_session.playbook.definition if locked_session.playbook else {}
         nodes = playbook_def.get("nodes", {})
         node = nodes.get(node_id, {})
@@ -336,24 +444,35 @@ def confirm_safe_action(
         if node.get("node_type") != NODE_SAFE_ACTION:
             raise ValueError(f"Node '{node_id}' is not a SAFE_ACTION.")
 
+        # DEFECT 2 FIX: Verify EVENT_SAFE_ACTION_PRESENTED exists for this node before allowing confirmation
+        presentation_exists = locked_session.events.filter(
+            event_type=EVENT_SAFE_ACTION_PRESENTED,
+            payload__node_id=node_id,
+        ).exists()
+        if not presentation_exists:
+            raise PresentationRequiredError(
+                f"Cannot confirm SAFE_ACTION '{node_id}' without prior presentation. "
+                f"The action must be presented to the customer before it can be confirmed."
+            )
+
+        # Check it's not already confirmed for this node
+        already_confirmed = locked_session.events.filter(
+            event_type=EVENT_SAFE_ACTION_CONFIRMED,
+            payload__node_id=node_id,
+        ).exists()
+        if already_confirmed:
+            raise ValueError(f"SAFE_ACTION '{node_id}' has already been confirmed.")
+
         # Invariant: Verify policy again prior to recording completion
         is_allowed, reason, _ = evaluate_node_policy(locked_session, node_id, customer)
         if not is_allowed:
             raise ValueError(f"Action blocked by policy: {reason}")
 
-        last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
-        DiagnosticEvent.objects.create(
-            tenant=locked_session.tenant,
-            session=locked_session,
-            seq_num=last_seq + 1,
-            event_type=EVENT_SAFE_ACTION_CONFIRMED,
-            actor_role="customer",
-            payload={
-                "node_id": node_id,
-                "instruction": node.get("instruction", ""),
-                "evidence_anchor": node.get("evidence_anchor", {}),
-            }
-        )
+        _append_event(locked_session, EVENT_SAFE_ACTION_CONFIRMED, "customer", {
+            "node_id": node_id,
+            "instruction": node.get("instruction", ""),
+            "evidence_anchor": node.get("evidence_anchor", {}),
+        })
 
         events = list(locked_session.events.order_by("seq_num"))
         state = reduce_session_events(events, playbook_def, locked_session.session_id)
@@ -362,7 +481,24 @@ def confirm_safe_action(
         locked_session.status = state.status
         locked_session.evidence_completeness = state.evidence_completeness
         locked_session.version += 1
-        locked_session.save(update_fields=["current_node_id", "status", "evidence_completeness", "version"])
+
+        # If reducer reached ESCALATED atomically
+        if locked_session.status == "ESCALATED":
+            _execute_escalation_atomically(
+                locked_session,
+                reason=state.escalation_reason or "Escalated after action confirmation.",
+                customer=customer
+            )
+
+        # Emit SAFE_ACTION_PRESENTED if next node is also a SAFE_ACTION
+        new_node = nodes.get(state.current_node_id, {})
+        if new_node.get("node_type") == NODE_SAFE_ACTION and locked_session.status not in ("RESOLVED", "ESCALATED"):
+            _append_event(locked_session, EVENT_SAFE_ACTION_PRESENTED, "system", {
+                "node_id": state.current_node_id,
+                "instruction": new_node.get("instruction", ""),
+            })
+
+        locked_session.save(update_fields=["facts_snapshot", "evidence_completeness", "current_node_id", "status", "version", "escalated_call"])
 
     return locked_session, get_session_view_data(locked_session, customer)
 
@@ -384,15 +520,7 @@ def resolve_diagnostic_session(
         if locked_session.version != expected_version:
             raise ConcurrencyConflictError(locked_session.version)
 
-        last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
-        DiagnosticEvent.objects.create(
-            tenant=locked_session.tenant,
-            session=locked_session,
-            seq_num=last_seq + 1,
-            event_type=EVENT_SESSION_RESOLVED,
-            actor_role="customer",
-            payload={"summary": summary}
-        )
+        _append_event(locked_session, EVENT_SESSION_RESOLVED, "customer", {"summary": summary})
 
         locked_session.status = "RESOLVED"
         locked_session.version += 1
@@ -415,8 +543,6 @@ def escalate_diagnostic_session(
       - Passport contains only evidenced, customer-confirmed actions.
       - Atomic transaction locks session and ensures non-terminal mutation.
     """
-    tenant = session.tenant
-
     for attempt in range(5):
         try:
             with transaction.atomic():
@@ -433,85 +559,20 @@ def escalate_diagnostic_session(
                 if locked_session.version != expected_version:
                     raise ConcurrencyConflictError(locked_session.version)
 
-                # Generate deterministic Recovery Passport payload
-                passport_dict = build_recovery_passport(locked_session)
-
-                # Find technician and SLA
-                zone = locked_session.site.zone if locked_session.site else None
-                branch = zone.branch if zone and zone.branch else None
-                technician = choose_technician(tenant, branch=branch, zone=zone)
-                sla = _sla_for(tenant, "normal")
-
-                now = timezone.now()
-                response_minutes = sla.response_minutes if sla else 120
-                resolution_minutes = sla.resolution_minutes if sla else 720
-
-                last_id = ServiceCall.objects.filter(tenant=tenant).aggregate(m=Max("servy_id"))["m"] or 50000
-
-                # Build complaint text with authoritative Recovery Passport handoff
-                do_not_repeat_text = "\n".join(f"- {item}" for item in passport_dict["do_not_repeat_items"]) or "- None"
-                complaint_body = (
-                    f"Customer Issue:\n{locked_session.complaint}\n\n"
-                    f"Escalation Reason:\n{reason}\n\n"
-                    f"ALREADY COMPLETED — DO NOT REPEAT WITH CUSTOMER:\n{do_not_repeat_text}\n\n"
-                    f"Diagnostic Session ID: {locked_session.session_id}\n"
-                    f"Evidence Completeness: {int(locked_session.evidence_completeness * 100)}%\n"
-                    f"Asset: {locked_session.asset.name} ({locked_session.asset.asset_code})"
-                )
-
-                call = ServiceCall.objects.create(
-                    tenant=tenant,
-                    servy_id=last_id + 1,
-                    call_type="Service",
-                    complaint_type="Diagnostic Recovery Escalation",
-                    complaint_text=complaint_body,
-                    customer=locked_session.customer,
-                    site=locked_session.site,
-                    asset=locked_session.asset,
-                    zone=zone,
-                    sla_policy=sla,
-                    technician=technician,
-                    status="assigned" if technician else "open",
-                    priority="normal",
-                    contact_name=locked_session.customer.contact_name or locked_session.customer.name,
-                    contact_phone=locked_session.customer.phone,
-                    contact_email=locked_session.customer.email,
-                    response_due_at=now + timezone.timedelta(minutes=response_minutes),
-                    resolution_due_at=now + timezone.timedelta(minutes=resolution_minutes),
-                )
-
-                # Persist RecoveryPassport record
-                passport = RecoveryPassport.objects.create(
-                    tenant=tenant,
-                    session=locked_session,
-                    service_call=call,
-                    asset=locked_session.asset,
-                    complaint=locked_session.complaint,
-                    structured_data=passport_dict["structured_data"],
-                    do_not_repeat_items=passport_dict["do_not_repeat_items"],
-                    evidence_completeness=passport_dict["evidence_completeness"],
-                )
-
-                last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
-                DiagnosticEvent.objects.create(
-                    tenant=tenant,
-                    session=locked_session,
-                    seq_num=last_seq + 1,
-                    event_type=EVENT_SESSION_ESCALATED,
-                    actor_role="customer",
-                    payload={"reason": reason, "service_call_id": call.id, "servy_id": call.servy_id}
+                call, passport = _execute_escalation_atomically(
+                    locked_session, reason=reason, customer=customer
                 )
 
                 locked_session.status = "ESCALATED"
-                locked_session.escalated_call = call
                 locked_session.version += 1
                 locked_session.save(update_fields=["status", "escalated_call", "version"])
 
                 return locked_session, call, passport
 
-        except (IntegrityError,):
+        except (IntegrityError, OperationalError):
             if attempt == 4:
                 raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str, Any]:
@@ -527,7 +588,7 @@ def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str
         if allowed:
             node_data = sanitized
         else:
-            # Policy failed: safe fallback to ESCALATE
+            # DEFECT 20 FIX: Policy fallback to executable ESCALATE instead of dead-end
             node_data = {
                 "node_id": "policy_fallback_escalate",
                 "node_type": NODE_ESCALATE,

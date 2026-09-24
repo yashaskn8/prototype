@@ -80,6 +80,7 @@ EVENT_SESSION_ESCALATED = "SESSION_ESCALATED"
 
 MAX_SESSION_STEPS = 25
 MAX_EXECUTION_DEPTH = 15
+MAX_ACTIVE_SESSIONS_PER_CUSTOMER = 5
 
 
 # ---------------------------------------------------------------------------

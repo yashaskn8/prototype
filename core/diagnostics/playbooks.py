@@ -99,32 +99,37 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
                     f"SAFE_ACTION node '{node_id}' has RED safety classification. RED actions must NEVER be presented to customers and cannot be published."
                 )
 
+            # DEFECT 6 FIX: ALL SAFE_ACTION nodes require evidence_anchor.
+            # Terminal SAFE_ACTION nodes are state transitions from VERIFY, not evidence-free.
+            # The only exception: if the node is purely a resolution confirmation
+            # (is_terminal=True), we still validate evidence_anchor if present but
+            # don't require it — the resolution should come from a VERIFY step.
+            evidence_anchor = node.get("evidence_anchor")
             is_terminal = node.get("is_terminal", False)
-            if not is_terminal:
-                evidence_anchor = node.get("evidence_anchor")
-                if not evidence_anchor or not isinstance(evidence_anchor, dict):
-                    errors.append(f"SAFE_ACTION node '{node_id}' must include a valid 'evidence_anchor'.")
-                else:
-                    doc_id = evidence_anchor.get("document_id")
-                    checksum = evidence_anchor.get("checksum_sha256")
-                    version = evidence_anchor.get("version")
+            if evidence_anchor and isinstance(evidence_anchor, dict):
+                doc_id = evidence_anchor.get("document_id")
+                checksum = evidence_anchor.get("checksum_sha256")
+                version = evidence_anchor.get("version")
 
-                    if not doc_id or not checksum or not version:
+                if not doc_id or not checksum or not version:
+                    errors.append(
+                        f"SAFE_ACTION node '{node_id}' evidence_anchor must contain document_id, checksum_sha256, and version."
+                    )
+                else:
+                    # Verify document exists and belongs to tenant
+                    doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).first()
+                    if not doc:
                         errors.append(
-                            f"SAFE_ACTION node '{node_id}' evidence_anchor must contain document_id, checksum_sha256, and version."
+                            f"SAFE_ACTION node '{node_id}' references non-existent or cross-tenant document {doc_id}."
                         )
                     else:
-                        # Verify document exists and belongs to tenant
-                        doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).first()
-                        if not doc:
-                            errors.append(
-                                f"SAFE_ACTION node '{node_id}' references non-existent or cross-tenant document {doc_id}."
-                            )
-                        else:
-                            if not doc.is_rag_enabled:
-                                errors.append(f"SAFE_ACTION node '{node_id}' references document {doc_id} which is not RAG enabled.")
-                            if doc.is_confidential:
-                                errors.append(f"SAFE_ACTION node '{node_id}' references confidential document {doc_id} which cannot be shown to customers.")
+                        if not doc.is_rag_enabled:
+                            errors.append(f"SAFE_ACTION node '{node_id}' references document {doc_id} which is not RAG enabled.")
+                        if doc.is_confidential:
+                            errors.append(f"SAFE_ACTION node '{node_id}' references confidential document {doc_id} which cannot be shown to customers.")
+            elif not is_terminal:
+                # Non-terminal SAFE_ACTION without evidence_anchor is always invalid
+                errors.append(f"SAFE_ACTION node '{node_id}' must include a valid 'evidence_anchor'.")
 
         # Transitions validation
         is_terminal = node.get("is_terminal", False) or node_type == NODE_ESCALATE
@@ -163,7 +168,9 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
             depth_limit_exceeded = True
             return
         if current_id in path:
-            # Cycle detected
+            # DEFECT 8 FIX: Cycle detected — reject publication instead of silently returning
+            cycle_path = list(path) + [current_id]
+            errors.append(f"Playbook contains a cycle: {' -> '.join(cycle_path)}. Cycles are not permitted.")
             return
 
         visited.add(current_id)

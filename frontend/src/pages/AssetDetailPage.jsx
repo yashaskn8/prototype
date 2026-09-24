@@ -131,7 +131,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         summary: 'Customer verified complete resolution after guided procedure.',
       });
       setDiagSession(res);
-      setDiagNotice({ type: 'success', text: 'Asset safely recovered and marked operational.' });
+      setDiagNotice({ type: 'success', text: 'Diagnostic session marked resolved after customer verification.' });
     } catch (err) {
       setDiagNotice({ type: 'error', text: err.detail || 'Failed to resolve session.' });
     } finally {
@@ -374,7 +374,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
               </span>
             </div>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginTop: '6px' }}>
-              {asset.product?.name || 'Standard Equipment'} 
+              {asset.product?.name || 'Not specified'} 
               {asset.model_number && ` • Model ${asset.model_number}`}
               {asset.serial_number && ` • S/N: ${asset.serial_number}`}
             </p>
@@ -636,10 +636,10 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                     <CheckCircle2 size={40} />
                   </div>
                   <h3 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#15803d', marginBottom: '8px' }}>
-                    Asset Safely Recovered
+                    Diagnostic Session Resolved
                   </h3>
                   <p style={{ maxWidth: '520px', margin: '0 auto 24px auto', color: '#166534', fontSize: '0.9rem' }}>
-                    The physical asset has been verified within operating specifications. All diagnostic observations and confirmations have been recorded.
+                    Diagnostic session marked resolved after customer verification. All diagnostic observations and confirmations have been recorded.
                   </p>
                   <button 
                     className="btn btn-secondary"

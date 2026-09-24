@@ -33,6 +33,67 @@ def _sla_for(tenant, priority="normal"):
     return SLAPolicy.objects.filter(tenant=tenant, priority=priority, is_active=True).order_by("response_minutes").first()
 
 
+def create_service_call_record(
+    tenant,
+    complaint_type: str,
+    complaint_text: str,
+    customer,
+    site=None,
+    asset=None,
+    zone=None,
+    priority="normal",
+    sla=None,
+    technician=None,
+    contact_name="",
+    contact_phone="",
+    contact_email="",
+    call_type="Service",
+    max_attempts=5,
+) -> ServiceCall:
+    """Safely create a ServiceCall handling concurrent servy_id allocation with retry."""
+    now = timezone.now()
+    if not sla:
+        sla = _sla_for(tenant, priority)
+    response_minutes = sla.response_minutes if sla else 120
+    resolution_minutes = sla.resolution_minutes if sla else 720
+
+    c_name = contact_name or (customer.contact_name if customer else "") or (customer.name if customer else "")
+    c_phone = contact_phone or (customer.phone if customer else "")
+    c_email = contact_email or (customer.email if customer else "")
+
+    for attempt in range(max_attempts):
+        try:
+            with transaction.atomic():
+                last_id = ServiceCall.objects.filter(tenant=tenant).aggregate(m=Max("servy_id"))["m"] or 42830
+                call = ServiceCall.objects.create(
+                    tenant=tenant,
+                    servy_id=last_id + 1,
+                    call_type=call_type,
+                    complaint_type=complaint_type,
+                    complaint_text=complaint_text,
+                    customer=customer,
+                    site=site,
+                    asset=asset,
+                    zone=zone,
+                    sla_policy=sla,
+                    technician=technician,
+                    status="assigned" if technician else "open",
+                    priority=priority,
+                    contact_name=c_name,
+                    contact_phone=c_phone,
+                    contact_email=c_email,
+                    response_due_at=now + timedelta(minutes=response_minutes),
+                    resolution_due_at=now + timedelta(minutes=resolution_minutes),
+                )
+                return call
+        except (IntegrityError, OperationalError):
+            if attempt == max_attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+    raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
+
+
 def create_call_from_interaction(interaction):
     interaction.refresh_from_db()
     if interaction.escalated_call_id:
@@ -45,8 +106,6 @@ def create_call_from_interaction(interaction):
     priority = "normal"
     sla = _sla_for(tenant, priority)
     now = timezone.now()
-    response_minutes = sla.response_minutes if sla else 120
-    resolution_minutes = sla.resolution_minutes if sla else 720
 
     for attempt in range(5):
         try:
@@ -58,9 +117,7 @@ def create_call_from_interaction(interaction):
                 if locked.escalated_call_id:
                     return locked.escalated_call
 
-                last_id = ServiceCall.objects.filter(tenant=tenant).aggregate(m=Max("servy_id"))["m"] or 42830
                 ref_list = []
-
                 if interaction.source_refs:
                     for r in interaction.source_refs:
                         ref_title = r.get("reference") or r.get("title")
@@ -75,25 +132,20 @@ def create_call_from_interaction(interaction):
                     f"Customer reported that the issue was not resolved (escalated from Customer AI Support at {now.strftime('%Y-%m-%d %H:%M:%S UTC')})."
                 )
 
-                call = ServiceCall.objects.create(
+                call = create_service_call_record(
                     tenant=tenant,
-                    servy_id=last_id + 1,
-                    call_type="Service",
                     complaint_type="AI Self-Service Escalation",
                     complaint_text=complaint_body,
                     customer=interaction.customer,
                     site=interaction.site,
                     asset=interaction.asset,
                     zone=zone,
-                    sla_policy=sla,
-                    technician=technician,
-                    status="assigned" if technician else "open",
                     priority=priority,
+                    sla=sla,
+                    technician=technician,
                     contact_name=interaction.customer.contact_name,
                     contact_phone=interaction.customer.phone,
                     contact_email=interaction.customer.email,
-                    response_due_at=now + timedelta(minutes=response_minutes),
-                    resolution_due_at=now + timedelta(minutes=resolution_minutes),
                 )
                 locked.resolved = False
                 locked.escalated_call = call
@@ -101,8 +153,6 @@ def create_call_from_interaction(interaction):
                 interaction.refresh_from_db()
                 return call
         except (IntegrityError, OperationalError):
-            # Handle SQLite concurrency contention: OneToOne constraint on escalated_call,
-            # servy_id collision, or SQLite database lock. Rollback occurs automatically.
             interaction.refresh_from_db()
             if interaction.escalated_call_id:
                 return interaction.escalated_call
