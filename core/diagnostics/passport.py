@@ -12,7 +12,7 @@ Hard Invariants:
 """
 
 from typing import Any, Dict, List
-from core.models import DiagnosticSession, RecoveryPassport
+from core.models import DiagnosticSession, RecoveryPassport, KnowledgeDocument
 from .schemas import (
     EVENT_SAFE_ACTION_CONFIRMED,
     EVENT_SAFE_ACTION_PRESENTED,
@@ -56,6 +56,7 @@ def build_recovery_passport(session: DiagnosticSession) -> Dict[str, Any]:
     seen_presented = set()
     completed_actions = []
     do_not_repeat = []
+    do_not_repeat_provenance = []
     verifications = []
     system_escalation_reason = None
     customer_requested_reason = None
@@ -73,27 +74,60 @@ def build_recovery_passport(session: DiagnosticSession) -> Dict[str, Any]:
             node_id = p.get("node_id", "")
             instruction = p.get("instruction", "")
 
-            # Causality check: must have been presented earlier in this stream
+            # Causality check: must have been presented strictly prior in this event stream
             if node_id and node_id in seen_presented:
+                anchor = p.get("evidence_anchor", {})
+                evidence_status = "NO_ANCHOR"
+                if anchor and isinstance(anchor, dict):
+                    doc_id = anchor.get("document_id")
+                    anchor_checksum = anchor.get("checksum_sha256")
+                    if doc_id:
+                        doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=session.tenant_id).first()
+                        if not doc:
+                            evidence_status = "DOCUMENT_REMOVED"
+                        elif anchor_checksum and doc.checksum_sha256 != anchor_checksum:
+                            evidence_status = "DOCUMENT_MODIFIED_SINCE_CONFIRMATION"
+                        else:
+                            evidence_status = "VERIFIED_FRESH"
+
                 completed_actions.append({
+                    "event_id": getattr(ev, "id", None),
+                    "seq_num": getattr(ev, "seq_num", None),
                     "node_id": node_id,
                     "instruction": instruction,
                     "confirmed_at": str(ev.created_at),
-                    "evidence_anchor": p.get("evidence_anchor", {}),
+                    "evidence_anchor": anchor,
+                    "evidence_status": evidence_status,
+                    "provenance": "DIAGNOSTIC_EVENT_LEDGER",
                 })
                 if instruction:
-                    do_not_repeat.append(f"Action '{instruction[:80]}' verified completed by customer.")
+                    item_text = f"Action '{instruction[:80]}' verified completed by customer."
+                    do_not_repeat.append(item_text)
+                    do_not_repeat_provenance.append({
+                        "item": item_text,
+                        "event_id": getattr(ev, "id", None),
+                        "seq_num": getattr(ev, "seq_num", None),
+                        "provenance": "DIAGNOSTIC_EVENT_LEDGER",
+                    })
 
         elif event_type == EVENT_VERIFICATION_RECORDED:
             verifications.append({
+                "event_id": getattr(ev, "id", None),
+                "seq_num": getattr(ev, "seq_num", None),
                 "fact_key": p.get("fact_key"),
                 "value": p.get("value"),
                 "recorded_at": str(ev.created_at),
+                "provenance": "DIAGNOSTIC_EVENT_LEDGER",
             })
             if p.get("value") is False or str(p.get("value")).lower() == "false":
-                do_not_repeat.append(
-                    f"Check '{p.get('fact_key')}' failed to resolve the issue after action."
-                )
+                item_text = f"Check '{p.get('fact_key')}' failed to resolve the issue after action."
+                do_not_repeat.append(item_text)
+                do_not_repeat_provenance.append({
+                    "item": item_text,
+                    "event_id": getattr(ev, "id", None),
+                    "seq_num": getattr(ev, "seq_num", None),
+                    "provenance": "DIAGNOSTIC_EVENT_LEDGER",
+                })
 
         elif event_type == EVENT_SESSION_ESCALATED:
             reason = p.get("reason", "")
@@ -130,6 +164,7 @@ def build_recovery_passport(session: DiagnosticSession) -> Dict[str, Any]:
         "total_steps": len(events),
         "system_escalation_reason": system_escalation_reason,
         "customer_requested_reason": customer_requested_reason,
+        "do_not_repeat_provenance": do_not_repeat_provenance,
     }
 
     return {

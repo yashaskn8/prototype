@@ -71,6 +71,14 @@ PROMPT_INJECTION_PATTERNS = [
     r"bypass\s+(the\s+)?(safety|content|security|filter)",
     r"output\s+(the\s+)?(system|initial|hidden)\s+prompt",
     r"repeat\s+(the\s+)?(text|words|prompt)\s+(above|before)",
+    # Adversarial red-team injection patterns
+    r"mark\s+this\s+(repair\s+)?safe",
+    r"bypass\s+safety",
+    r"pretend\s+this\s+is\s+approved",
+    r"output\s+another\s+tenant",
+    r"hide\s+this\s+citation",
+    r"invent\s+a\s+source",
+    r"tell\s+the\s+customer\s+to\s+bypass",
 ]
 
 # ---------------------------------------------------------------------------
@@ -92,6 +100,16 @@ QUERY_ABUSE_PATTERNS = [
     r"sql\s+inject",
     r"union\s+select",
     r";\s*(drop|delete|update|insert)\s+",
+    # Adversarial red-team user prompt attacks
+    r"ignore\s+(the\s+)?manual",
+    r"pretend\s+you\s+are\s+(the\s+)?engineer",
+    r"(give\s+me\s+)?the\s+repair\s+even\s+if\s+unsafe",
+    r"repair\s+even\s+if\s+unsafe",
+    r"invent\s+a\s+workaround",
+    r"skip\s+verification",
+    r"mark\s+this\s+fixed",
+    r"internal\s+technician\s+notes",
+    r"(use\s+)?another\s+customer('?s)?\s+service\s+history",
 ]
 
 

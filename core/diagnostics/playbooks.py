@@ -17,6 +17,7 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError
 
 from core.models import KnowledgeDocument
+from .evidence import verify_evidence_anchor
 from .schemas import (
     ALLOWED_NODE_TYPES,
     ALLOWED_RESPONSE_SCHEMAS,
@@ -107,8 +108,8 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
                     f"SAFE_ACTION node '{node_id}' has RED safety classification. RED actions must NEVER be presented to customers and cannot be published."
                 )
 
-            # CRITICAL FIX 4: ALL SAFE_ACTION nodes strictly require a valid evidence_anchor.
-            # No exceptions for terminal nodes — resolution is derived from VERIFY, not fake actions.
+            # CRITICAL FIX 4 & RED-TEAM AREA 1 & 2: ALL SAFE_ACTION nodes strictly require a valid,
+            # exact evidence_anchor that deterministically supports the instruction.
             evidence_anchor = node.get("evidence_anchor")
             if not evidence_anchor or not isinstance(evidence_anchor, dict):
                 errors.append(
@@ -116,26 +117,15 @@ def validate_playbook_definition(definition: Dict[str, Any], tenant_id: int) -> 
                     f"All customer repair instructions strictly require authoritative grounding evidence."
                 )
             else:
-                doc_id = evidence_anchor.get("document_id")
-                checksum = evidence_anchor.get("checksum_sha256")
-                version = evidence_anchor.get("version")
-
-                if not doc_id or not checksum or not version:
+                is_valid_anchor, anchor_reason, doc = verify_evidence_anchor(
+                    evidence_anchor=evidence_anchor,
+                    tenant_id=tenant_id,
+                    instruction=instruction,
+                )
+                if not is_valid_anchor:
                     errors.append(
-                        f"SAFE_ACTION node '{node_id}' evidence_anchor must contain document_id, checksum_sha256, and version."
+                        f"SAFE_ACTION node '{node_id}' evidence anchor is invalid: {anchor_reason}."
                     )
-                else:
-                    # Verify document exists and belongs to tenant
-                    doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).first()
-                    if not doc:
-                        errors.append(
-                            f"SAFE_ACTION node '{node_id}' references non-existent or cross-tenant document {doc_id}."
-                        )
-                    else:
-                        if not doc.is_rag_enabled:
-                            errors.append(f"SAFE_ACTION node '{node_id}' references document {doc_id} which is not RAG enabled.")
-                        if doc.is_confidential:
-                            errors.append(f"SAFE_ACTION node '{node_id}' references confidential document {doc_id} which cannot be shown to customers.")
 
         # Transitions validation
         is_terminal = node.get("is_terminal", False) or node_type == NODE_ESCALATE

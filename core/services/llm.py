@@ -201,16 +201,58 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     return "\n".join(output)
 
 
-def _clean_model_answer(answer):
+def _clean_model_answer(answer, retrieved=None):
     answer = (answer or "").strip()
-    answer = re.sub(r"\[\s*SOURCE\s+\d+\s*\]", "", answer, flags=re.I)
-    answer = re.sub(r"\[\s*REF(?:ERENCE)?\s*[:#]?\s*\d+\s*\]", "", answer, flags=re.I)
+    if not answer:
+        return INSUFFICIENT_EVIDENCE_MESSAGE
+
+    # Strip bracketed citations like [1], [Source 1], [Ref: 2]
+    answer = re.sub(r"\[\s*(?:source|ref|reference)?\s*[:#]?\s*\d+\s*\]", "", answer, flags=re.I)
+    answer = re.sub(r"\[\s*\d+\s*\]", "", answer)
+    # Strip line-based citations emitted by LLM: Source: ..., Manual: ..., Reference: ...
+    answer = re.sub(r"(?im)^\s*(?:source|manual|reference|doc|document|section)\s*[:\-]\s*.*$", "", answer)
+
+    # Strip any model-written VERIFIED REFERENCES section
+    # The server attaches citations exclusively from verified retrieval metadata
+    answer = re.split(r"(?im)^\s*VERIFIED\s+REFERENCES\b", answer)[0].strip()
+
+    # HARDENING: Strip structural prompt delimiters echoed back by the model
+    # These are internal prompt framing and must never appear in user-facing output
+    answer = re.sub(r"</?retrieved_source\b[^>]*>", "", answer)
+    answer = re.sub(r"UNTRUSTED_CONTENT_(?:START|END)", "", answer)
+    answer = re.sub(r"(?im)^\s*(?:ASSET|CALL CONTEXT|QUESTION|RETRIEVED SOURCES|ANSWER)\s*:\s*", "", answer)
+
+    # Reject speculative repair advice without approved grounding (Red-Team Area 4)
+    speculative_phrases = [
+        "probably", "likely", "usually", "you can try", "might want to try",
+        "you could try", "try swapping", "maybe you should", "perhaps you can",
+        "it's worth trying", "consider trying", "one option is to",
+        "a common fix is", "a quick workaround",
+    ]
+    answer_lower = answer.lower()
+    for phrase in speculative_phrases:
+        if phrase in answer_lower:
+            if any(w in answer_lower for w in ["step", "repair", "replace", "fix", "clean", "adjust"]):
+                return INSUFFICIENT_EVIDENCE_MESSAGE
+
+    # Reject answers that are suspiciously short (model didn't find real content)
+    # or suspiciously contain only the question restated
+    stripped = re.sub(r"\s+", " ", answer).strip()
+    if len(stripped) < 20:
+        return INSUFFICIENT_EVIDENCE_MESSAGE
+
     return answer[:8000].strip()
 
 
 def generate_answer(question, asset, retrieved, service_call=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "fallback"
+
+    # Support threshold check: If retrieval scores are below minimum support, fail closed
+    min_support = getattr(settings, "SERVY_RAG_MIN_SCORE", 0.0)
+    max_score = max((getattr(r, "score", 0.0) for r in retrieved), default=0.0)
+    if max_score < min_support:
+        return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
 
     context_blocks = []
     for i, r in enumerate(retrieved, 1):
@@ -276,10 +318,21 @@ ANSWER:"""
     provider = settings.SERVY_LLM_PROVIDER.lower()
     if provider in {"auto", "ollama"} and retrieved:
         try:
-            answer = ollama_generate(prompt)
-            answer = _clean_model_answer(answer)
-            if answer:
-                return answer, "ollama-local"
+            raw_answer = ollama_generate(prompt)
+            clean_answer = _clean_model_answer(raw_answer, retrieved)
+            if clean_answer and clean_answer != INSUFFICIENT_EVIDENCE_MESSAGE:
+                # Append verified references from authoritative retrieval metadata
+                seen_refs = set()
+                ref_lines = ["\n\nVERIFIED REFERENCES"]
+                for r in retrieved[:5]:
+                    ref_label = f"{r.reference} ({r.doc_type})"
+                    if ref_label not in seen_refs:
+                        seen_refs.add(ref_label)
+                        ref_lines.append(f"- {ref_label}")
+                final_answer = clean_answer + "\n" + "\n".join(ref_lines)
+                return final_answer, "ollama-local"
+            elif clean_answer == INSUFFICIENT_EVIDENCE_MESSAGE:
+                return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
         except Exception:
             pass
     return _extractive_answer(question, asset, retrieved, service_call=service_call), "extractive-local"

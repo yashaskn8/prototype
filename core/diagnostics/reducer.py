@@ -117,11 +117,13 @@ def reduce_session_events(
             value = payload.get("value")
             node_id = payload.get("node_id") or state.current_node_id
 
+            has_contradiction = False
             if fact_key:
                 # Contradiction detection: check if previously asserted fact conflicts
                 if fact_key in state.facts:
                     earlier_fact = state.facts[fact_key]
                     if earlier_fact.value != value:
+                        has_contradiction = True
                         state.contradictions.append(
                             ContradictionRecord(
                                 fact_key=fact_key,
@@ -132,32 +134,38 @@ def reduce_session_events(
                             )
                         )
 
-                state.facts[fact_key] = DiagnosticFact(
-                    key=fact_key,
-                    value=value,
-                    source=SOURCE_CUSTOMER_ASSERTED,
-                    verified=False,  # DEFECT 24 FIX: Observations are assertions, not verified. Only VERIFY steps set verified=True.
-                    updated_at=timestamp_str,
-                    node_id=node_id,
-                )
+                if not has_contradiction:
+                    source = payload.get("source") or SOURCE_CUSTOMER_ASSERTED
+                    state.facts[fact_key] = DiagnosticFact(
+                        key=fact_key,
+                        value=value,
+                        source=source,
+                        verified=False,
+                        updated_at=timestamp_str,
+                        node_id=node_id,
+                    )
 
-            # Determine next node via transitions
-            current_node = nodes.get(node_id, {})
-            transitions = current_node.get("transitions", [])
-            default_next = current_node.get("next_node")
-            next_node = _evaluate_transition(transitions, value, default_next)
+            # Determine next node via transitions ONLY if no unresolved contradiction was triggered
+            if not has_contradiction:
+                current_node = nodes.get(node_id, {})
+                transitions = current_node.get("transitions", [])
+                default_next = current_node.get("next_node")
+                next_node = _evaluate_transition(transitions, value, default_next)
 
-            if next_node and next_node in nodes:
-                state.current_node_id = next_node
-                next_node_def = nodes[next_node]
-                if next_node_def.get("node_type") == NODE_ESCALATE:
-                    state.status = "ESCALATED"
-                    state.escalation_reason = next_node_def.get("reason", "Automatic escalation from diagnostic path.")
-                elif next_node_def.get("is_terminal") and next_node_def.get("node_type") != NODE_ESCALATE:
-                    state.status = "RESOLVED"
-                    state.resolution_summary = next_node_def.get("instruction", "Issue resolved.")
-                else:
-                    state.status = "ACTIVE"
+                if next_node and next_node in nodes:
+                    state.current_node_id = next_node
+                    next_node_def = nodes[next_node]
+                    if next_node_def.get("node_type") == NODE_ESCALATE:
+                        state.status = "ESCALATED"
+                        state.escalation_reason = next_node_def.get("reason", "Automatic escalation from diagnostic path.")
+                    elif next_node_def.get("is_terminal") and next_node_def.get("node_type") != NODE_ESCALATE:
+                        state.status = "RESOLVED"
+                        state.resolution_summary = next_node_def.get("instruction", "Issue resolved.")
+                    else:
+                        state.status = "ACTIVE"
+            else:
+                # Progression blocked: retain state at current node awaiting resolution
+                state.status = "WAITING_INPUT"
 
         elif event_type == EVENT_SAFE_ACTION_PRESENTED:
             node_id = payload.get("node_id")
@@ -246,14 +254,26 @@ def reduce_session_events(
                     c.resolved = True
                     c.resolution_note = payload.get("resolution_note", "Resolved by explicit customer clarification.")
             if fact_key and resolved_value is not None:
+                source = payload.get("source") or SOURCE_CUSTOMER_ASSERTED
                 state.facts[fact_key] = DiagnosticFact(
                     key=fact_key,
                     value=resolved_value,
-                    source=SOURCE_CUSTOMER_ASSERTED,
+                    source=source,
                     verified=False,
                     updated_at=timestamp_str,
                     node_id=payload.get("node_id"),
                 )
+            # If all contradictions resolved, advance via transitions if applicable
+            unresolved = [c for c in state.contradictions if not c.resolved]
+            if not unresolved:
+                node_id = payload.get("node_id") or state.current_node_id
+                current_node = nodes.get(node_id, {})
+                transitions = current_node.get("transitions", [])
+                default_next = current_node.get("next_node")
+                next_node = _evaluate_transition(transitions, resolved_value, default_next)
+                if next_node and next_node in nodes:
+                    state.current_node_id = next_node
+                    state.status = "ACTIVE"
 
         elif event_type == EVENT_SESSION_RESOLVED:
             state.status = "RESOLVED"

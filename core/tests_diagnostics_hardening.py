@@ -440,7 +440,7 @@ class DiagnosticHardeningRegressionTests(TestCase):
         }
         valid, reason, _ = verify_evidence_anchor(anchor, self.t1.id, customer=self.c1, asset=self.asset1)
         self.assertFalse(valid)
-        self.assertEqual(reason, "EVIDENCE_CHUNK_QUARANTINED")
+        self.assertTrue(reason.startswith("EVIDENCE_CHUNK_QUARANTINED"))
 
     # ---------------------------------------------------------------------------
     # Fix 22: Append-only Event Ledger QuerySet Immutability

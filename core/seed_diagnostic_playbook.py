@@ -21,14 +21,22 @@ def seed_milk_analyzer_playbook():
     created_count = 0
 
     for tenant in tenants:
-        doc = KnowledgeDocument.objects.filter(
+        trouble_doc = KnowledgeDocument.objects.filter(
+            tenant=tenant,
+            title__icontains="Milk Analyzer MA-100 Troubleshooting Guide"
+        ).first() or KnowledgeDocument.objects.filter(
             tenant=tenant,
             title__icontains="Milk Analyzer MA-100"
         ).first()
 
+        clean_doc = KnowledgeDocument.objects.filter(
+            tenant=tenant,
+            title__icontains="Cleaning Procedure"
+        ).first() or trouble_doc
+
         product = Product.objects.filter(tenant=tenant, name__icontains="Milk Analyzer").first()
 
-        if not doc or not product:
+        if not trouble_doc or not product:
             continue
 
         definition = {
@@ -70,11 +78,12 @@ def seed_milk_analyzer_playbook():
                     "instruction": "Check sample mixing, sample temperature, sampling tube connection, thermostat cup cleanliness and seating. Run a rinse and the approved verification sample.",
                     "safety_class": "GREEN",
                     "evidence_anchor": {
-                        "document_id": doc.id,
-                        "checksum_sha256": doc.checksum_sha256,
-                        "version": doc.version,
-                        "heading": "Unstable reading",
-                        "title": doc.title,
+                        "document_id": trouble_doc.id,
+                        "checksum_sha256": trouble_doc.checksum_sha256,
+                        "version": trouble_doc.version,
+                        "heading": "Incorrect or unstable reading",
+                        "excerpt": "First confirm the sample is well mixed and within the supported temperature range. Check that the sampling tube is fully connected and not kinked. Confirm the thermostat cup is clean and correctly seated. Run a clean-water rinse, then the approved verification sample.",
+                        "title": trouble_doc.title,
                     },
                     "next_verification_node": "verify_reading_stabilized",
                 },
@@ -83,11 +92,12 @@ def seed_milk_analyzer_playbook():
                     "instruction": "Check the sampling tube for bends or blockage and ensure sample level is sufficient. Run the cleaning cycle.",
                     "safety_class": "GREEN",
                     "evidence_anchor": {
-                        "document_id": doc.id,
-                        "checksum_sha256": doc.checksum_sha256,
-                        "version": doc.version,
-                        "heading": "Does not draw sample",
-                        "title": doc.title,
+                        "document_id": trouble_doc.id,
+                        "checksum_sha256": trouble_doc.checksum_sha256,
+                        "version": trouble_doc.version,
+                        "heading": "Analyzer does not draw sample",
+                        "excerpt": "Check for a bent or blocked sampling tube. Confirm the cup contains enough sample and the tube end is below the liquid level. Run the cleaning cycle.",
+                        "title": trouble_doc.title,
                     },
                     "next_verification_node": "verify_reading_stabilized",
                 },
@@ -103,15 +113,16 @@ def seed_milk_analyzer_playbook():
                 },
                 "terminal_resolve": {
                     "node_type": "SAFE_ACTION",
-                    "instruction": "Milk Analyzer recovered and verified within operating calibration.",
+                    "instruction": "Run a clean-water cycle and confirm the thermostat cup is seated correctly, sample path free of air bubbles, and sampling tube is not bent, then run the verification sample.",
                     "safety_class": "GREEN",
                     "is_terminal": True,
                     "evidence_anchor": {
-                        "document_id": doc.id,
-                        "checksum_sha256": doc.checksum_sha256,
-                        "version": doc.version,
+                        "document_id": clean_doc.id,
+                        "checksum_sha256": clean_doc.checksum_sha256,
+                        "version": clean_doc.version,
                         "heading": "Verification after cleaning",
-                        "title": doc.title,
+                        "excerpt": "Run a clean-water cycle. If the analyzer reports an abnormal reading after cleaning, confirm that the thermostat cup is seated correctly, the sample path is free of air bubbles, and the sampling tube is not bent. Then run the organisation's verification sample.",
+                        "title": clean_doc.title,
                     },
                 },
                 "terminal_escalate": {

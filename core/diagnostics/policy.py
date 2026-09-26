@@ -87,7 +87,8 @@ def evaluate_node_policy(
             evidence_anchor=evidence_anchor,
             tenant_id=session.tenant_id,
             customer=customer,
-            asset=asset
+            asset=asset,
+            instruction=node.get("instruction", ""),
         )
         if not valid_anchor:
             return False, f"EVIDENCE_INVALID_{anchor_reason}", {}
@@ -109,9 +110,12 @@ def evaluate_node_policy(
     if node_type == NODE_SAFE_ACTION and node.get("evidence_anchor"):
         anchor = node["evidence_anchor"]
         sanitized["source_citation"] = {
+            "document_id": anchor.get("document_id"),
             "heading": anchor.get("heading", "Official Troubleshooting Procedure"),
             "document_title": anchor.get("title") or "Approved Operator Manual",
             "version": anchor.get("version", "1.0"),
+            "chunk_id": anchor.get("chunk_id"),
+            "verified": True,
         }
 
     return True, "ALLOWED", sanitized

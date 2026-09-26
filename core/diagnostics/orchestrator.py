@@ -18,6 +18,7 @@ Hard Invariants:
 
 import hashlib
 import json
+import re
 import time
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -366,10 +367,21 @@ def _execute_escalation_atomically(
 
     do_not_repeat_text = "\n".join(f"- {item}" for item in passport_dict["do_not_repeat_items"]) or "- None"
 
+    # Sanitize customer note to prevent spoofing structural escalation headers or prompt injections
+    clean_note = (customer_note or "").strip()[:500]
+    if clean_note:
+        clean_note = re.sub(r"</?retrieved_source\b[^>]*>", "", clean_note)
+        clean_note = re.sub(r"UNTRUSTED_CONTENT_(?:START|END)", "", clean_note)
+        clean_note = re.sub(
+            r"(?im)^\s*(?:system diagnostic escalation reason|already completed|diagnostic session id|evidence completeness|customer issue)\s*:",
+            "[Customer Note]:",
+            clean_note
+        )
+
     # HIGH FIX 19: Clearly distinguish customer comment from system escalation reason
     complaint_body = (
         f"Customer Issue:\n{locked_session.complaint}\n\n"
-        f"Customer Comment / Requested Reason:\n{customer_note or 'None provided'}\n\n"
+        f"Customer Comment / Requested Reason:\n{clean_note or 'None provided'}\n\n"
         f"System Diagnostic Escalation Reason:\n{reason}\n\n"
         f"ALREADY COMPLETED — DO NOT REPEAT WITH CUSTOMER:\n{do_not_repeat_text}\n\n"
         f"Diagnostic Session ID: {locked_session.session_id}\n"
@@ -750,9 +762,15 @@ def resolve_diagnostic_session(
             )
 
         resolution_text = current_node.get("instruction") or "Diagnostic issue resolved through verified procedure."
+        clean_summary = (summary or "").strip()[:500]
+        if clean_summary:
+            clean_summary = re.sub(r"</?retrieved_source\b[^>]*>", "", clean_summary)
+            clean_summary = re.sub(r"UNTRUSTED_CONTENT_(?:START|END)", "", clean_summary)
+            clean_summary = re.sub(r"(?im)^\s*(?:system|status|resolved|summary)\s*:\s*", "", clean_summary).strip()
+
         _append_event(locked_session, EVENT_SESSION_RESOLVED, "customer", {
             "summary": resolution_text,
-            "customer_note": (summary or "").strip()[:500]
+            "customer_note": clean_summary
         })
 
         locked_session.status = "RESOLVED"
@@ -770,6 +788,10 @@ def clarify_diagnostic_session(
 ) -> Tuple[DiagnosticSession, Dict[str, Any]]:
     """Clarify symptom for a session in NO_PLAYBOOK_AVAILABLE state, safely rerunning playbook routing."""
     clarification = (clarification or "").strip()[:1000]
+    # Sanitize clarification against prompt injection, delimiter echoing, and header spoofing
+    clarification = re.sub(r"</?retrieved_source\b[^>]*>", "", clarification)
+    clarification = re.sub(r"UNTRUSTED_CONTENT_(?:START|END)", "", clarification)
+    clarification = re.sub(r"(?im)^\s*(?:system|playbook|routing|instruction)\s*:\s*", "", clarification).strip()
     if not clarification:
         raise ValueError("Clarification text cannot be empty.")
 

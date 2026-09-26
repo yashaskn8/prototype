@@ -292,6 +292,7 @@ class DiagnosticRecoveryTests(TestCase):
             "document_id": self.doc.id,
             "checksum_sha256": self.doc_checksum,
             "version": "1.0",
+            "heading": "Unstable reading",
         }
         is_valid, reason, doc = verify_evidence_anchor(anchor, self.t1.id)
         self.assertTrue(is_valid)
