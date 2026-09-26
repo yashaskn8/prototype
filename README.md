@@ -23,30 +23,149 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
 - Two high-quality initial RAG domains: **Milk Analyzer** and **Aerolift**.
 - Standalone `sample_data/servy_dummy_schema.sqlite3` and `sample_data/servy_dummy_data.xlsx` for database/data-table review before running Django.
 
-## Quick start (Windows)
+## Quick Start & Running Commands
 
-### 1. Backend (Django)
-```bat
+### Prerequisites
+- **Python**: 3.10, 3.11, or 3.12
+- **Node.js**: v18+ and npm
+- **Git**
+
+---
+
+### Step 1: Backend Setup & Run (Terminal 1)
+
+#### Windows (PowerShell)
+```powershell
+# 1. Navigate to prototype directory (if not already there)
+cd prototype
+
+# 2. Create virtual environment
 python -m venv .venv
-.venv\Scripts\activate
+
+# 3. Activate virtual environment
+.\.venv\Scripts\Activate.ps1
+
+# 4. Install dependencies
 pip install -r requirements.txt
+
+# 5. Apply migrations
 python manage.py migrate
+
+# 6. Seed demo data and diagnostic playbooks (first-time setup)
+python manage.py seed_demo --reset
+python manage.py seed_diagnostic_playbook
+
+# 7. Start the Django API backend server
 python manage.py runserver 127.0.0.1:8000
 ```
 
-### 2. Frontend (React + Vite)
-```bat
-cd frontend
+#### Windows (Command Prompt / CMD)
+```cmd
+cd prototype
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py seed_demo --reset
+python manage.py seed_diagnostic_playbook
+python manage.py runserver 127.0.0.1:8000
+```
+
+#### macOS / Linux (Bash / Zsh)
+```bash
+cd prototype
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py seed_demo --reset
+python manage.py seed_diagnostic_playbook
+python manage.py runserver 127.0.0.1:8000
+```
+
+Backend will be available at:
+- **API Base**: `http://127.0.0.1:8000/api/`
+- **Django Admin**: `http://127.0.0.1:8000/admin/`
+
+---
+
+### Step 2: Frontend Setup & Run (Terminal 2)
+
+In a separate terminal window:
+
+```bash
+# 1. Navigate to the frontend directory
+cd prototype/frontend
+
+# 2. Install npm dependencies
 npm install
+
+# 3. Start the Vite development server
 npm run dev
 ```
-Open React App at `http://127.0.0.1:5173/` (or compiled SPA at `http://127.0.0.1:8000/app/`).
+
+Frontend will be available at:
+- **Web App (Vite Dev)**: `http://localhost:5173/`
+- **Compiled SPA (via Django)**: `http://127.0.0.1:8000/app/` (after running `npm run build`)
+
+---
 
 ### Demo Login Personas
-- **Admin**: `admin` / `adminpass123`
-- **Manager**: `manager` / `managerpass123`
-- **Technician**: `tech1` / `techpass123`
-- **Customer**: `acme_user` / `acmepass123`
+
+| Role | Username | Password | Access Scope |
+| :--- | :--- | :--- | :--- |
+| **Admin** | `admin` | `adminpass123` | Full system access, all tenants, admin panel |
+| **Manager** | `manager` | `managerpass123` | Service calls, dispatch, analytics, KB |
+| **Technician** | `tech1` | `techpass123` | Assigned calls, Engineer Copilot, confidential docs |
+| **Customer** | `acme_user` | `acmepass123` | Self-service diagnostics, assets, customer tickets |
+| **AeroLift Admin** | `aero_admin` | `AeroAdmin!2026` | Isolated second tenant demonstration |
+
+---
+
+### Useful Commands
+
+#### Stop / Kill Running Processes
+
+If ports `8000` (Django) or `5173` (Vite) are stuck or already in use:
+
+**Windows PowerShell:**
+```powershell
+# Stop process on port 8000 (Django)
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# Stop process on port 5173 (Vite)
+Get-Process -Id (Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+**Windows CMD:**
+```cmd
+netstat -ano | findstr :8000
+taskkill /F /PID <PID>
+
+netstat -ano | findstr :5173
+taskkill /F /PID <PID>
+```
+
+**macOS / Linux:**
+```bash
+lsof -ti :8000 | xargs kill -9
+lsof -ti :5173 | xargs kill -9
+```
+
+#### Run Automated Test Suites
+```bash
+# Run all 131 tests and 10,000-session adversarial simulation
+python manage.py test -v 1
+
+# Run diagnostic recovery & hardening tests only
+python manage.py test core.tests_diagnostics core.tests_diagnostics_hardening -v 2
+```
+
+#### Build Frontend for Production Deployment
+```bash
+cd prototype/frontend
+npm run build
+```
 
 ## Local LLM (optional, zero API cost)
 
