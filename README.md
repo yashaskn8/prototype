@@ -87,6 +87,74 @@ The RAG system does not blindly search all 118 items. It first filters by:
 
 and then ranks the permitted chunks. This is important because the supplied Knowledge Base screenshot contains test data, duplicates and unrelated content.
 
+## Deterministic Diagnostic Recovery & Zero-Repeat Architecture
+
+Servy includes a mathematically deterministic diagnostic execution engine and **Zero-Repeat** field dispatch system that eliminates customer troubleshooting loops and technician guesswork:
+
+1. **Append-Only Immutable Event Ledger (`DiagnosticEvent`)**:
+   - Every observation, action presentation, action confirmation, clarification, and contradiction is persisted as an append-only cryptographic sequence with strict monotonic `seq_num` ordering.
+   - Reduced state is derived dynamically through pure functional reduction (`reduce_session_events`).
+
+2. **Durable Evidence Anchoring & Tamper Detection**:
+   - Every troubleshooting node and safe action is bound to an `EvidenceAnchor` pointing to an approved `KnowledgeDocument` with SHA-256 checksum and version pinning.
+   - Requires exact source locators (`chunk_id`, verified `heading`, or normalized `excerpt`).
+   - If a document is updated or its checksum drifts, any dependent actions or sessions are automatically invalidated.
+   - Quarantined or prompt-injected chunks/documents are strictly blocked from authorizing any actions.
+
+3. **Cryptographic Presentation Tokens & Causality Verification**:
+   - A customer cannot confirm an action (`SAFE_ACTION_CONFIRMED`) without a strictly prior presentation event (`SAFE_ACTION_PRESENTED`) verified via a cryptographic HMAC token.
+   - Prevents replay attacks, out-of-order execution, and skipped troubleshooting steps.
+
+4. **Deterministic Recovery Passport (`RecoveryPassport`)**:
+   - **Zero LLM inside authoritative passport data**: facts and completed actions are derived 100% deterministically from the immutable event ledger.
+   - Real-time document freshness tracking: flags whether evidence remains verified or has drifted (`DOCUMENT_MODIFIED_SINCE_CONFIRMATION`, `DOCUMENT_REMOVED`).
+   - Automatically populates `do_not_repeat_items` attached to the resulting `ServiceCall` so dispatch technicians never ask the customer to repeat steps already completed.
+   - Strictly separates authoritative `system_escalation_reason` from non-authoritative customer comments.
+
+5. **Safe Resolution & Contradiction Guards**:
+   - Sessions can only be marked `RESOLVED` if the active deterministic path reaches an explicit terminal resolution node.
+   - Sessions with unresolved contradictions or incomplete evidence paths cannot be marked resolved.
+
+6. **Safety Policy & Prohibited Keyword Gating**:
+   - Hazardous procedural repairs (disassembly, high-voltage panel access, firmware resets, custom calibration, soldering) cannot be presented to customers and require professional technician dispatch.
+   - Clarification intake questions are schema-constrained (`BOOLEAN`, `SINGLE_CHOICE`, `SHORT_TEXT`, etc.) and automatically stripped of procedural repair suggestions.
+
+---
+
+## Ultra-Aggressive Hallucination-Prevention Guardrails
+
+The RAG and LLM pipeline includes structural defenses against AI hallucinations:
+
+- **Server-Side Verified Citations Only**: The model is prohibited from emitting citations. All citations and verified references are stripped from model output and attached server-side exclusively from verified database retrieval metadata.
+- **Structural Delimiter Scrubbing**: Strips prompt delimiters (`<retrieved_source>`, `UNTRUSTED_CONTENT_START/END`, etc.) if echoed back by the model.
+- **Speculative Repair Phrasing Rejection**: Automatically detects and rejects speculative repair suggestions (`"you can try"`, `"might want to try"`, `"perhaps you should"`, `"a quick workaround"`) without approved grounding, returning a safe insufficient-evidence fallback.
+- **Header Spoofing Neutralization**: Sanitizes customer notes and clarification texts to prevent injection of fake escalation headers (`System Diagnostic Escalation Reason:`, `ALREADY COMPLETED — DO NOT REPEAT WITH CUSTOMER:`).
+- **Anti-Prompt Injection & Query Abuse Detection**: Real-time scanning for adversarial prompts (`"ignore previous instructions"`, `"bypass safety"`, `"mark this fixed"`, `"invent a workaround"`).
+
+---
+
+## Running the Automated Test & Simulation Suite
+
+The project includes unit tests, regression tests, and a 10,000-session adversarial Monte Carlo simulation harness:
+
+```bat
+# Run complete test suite (131 tests + 10,000 adversarial trajectories)
+python manage.py test -v 1
+
+# Run diagnostic recovery & hardening tests specifically
+python manage.py test core.tests_diagnostics core.tests_diagnostics_hardening -v 2
+```
+
+The 10,000-session adversarial harness stress-tests 15 zero-tolerance invariants:
+- Zero cross-tenant data leakage
+- Zero ungrounded or unsafe actions presented to customers
+- Zero stale playbook procedures authorized
+- Zero duplicate service calls created
+- Zero unverified recovery passport claims
+- Zero customer mutations on terminal sessions
+
+---
+
 ## Included sample data
 
 - `sample_data/servy_dummy_data.xlsx` — reviewable multi-sheet representation of the supplied screen schema.
