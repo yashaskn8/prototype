@@ -50,6 +50,65 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const [diagSubmitting, setDiagSubmitting] = useState(false);
   const [diagNotice, setDiagNotice] = useState(null);
   const [diagAnswerText, setDiagAnswerText] = useState('');
+  const [diagClarifyText, setDiagClarifyText] = useState('');
+
+  // --- Session persistence helpers (survives page refresh) ---
+  const SESSION_STORAGE_KEY = `servy-diagnostic-session:${assetId}`;
+
+  function persistSessionId(sessionId) {
+    try { sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); } catch (_) { /* noop */ }
+  }
+  function clearPersistedSession() {
+    try { sessionStorage.removeItem(SESSION_STORAGE_KEY); } catch (_) { /* noop */ }
+  }
+  function getPersistedSessionId() {
+    try { return sessionStorage.getItem(SESSION_STORAGE_KEY) || null; } catch (_) { return null; }
+  }
+
+  // --- Status label helper ---
+  function getStatusLabel(status) {
+    switch (status) {
+      case 'RESOLVED': return 'Resolved';
+      case 'ESCALATED': return 'Escalated to Service';
+      case 'NO_PLAYBOOK_AVAILABLE': return 'Needs Clarification';
+      case 'ABANDONED': return 'Session Closed';
+      default: return 'Session Active';
+    }
+  }
+  function getStatusColor(status) {
+    switch (status) {
+      case 'RESOLVED': return { bg: '#dcfce7', color: '#15803d' };
+      case 'ESCALATED': return { bg: '#fef3c7', color: '#b45309' };
+      case 'NO_PLAYBOOK_AVAILABLE': return { bg: '#fef9c3', color: '#854d0e' };
+      case 'ABANDONED': return { bg: '#f1f5f9', color: '#64748b' };
+      default: return { bg: '#eff6ff', color: 'var(--primary)' };
+    }
+  }
+
+  // --- Terminal-state detection for error recovery ---
+  function isTerminalError(err) {
+    const d = (err?.detail || '').toLowerCase();
+    return d.includes('terminal') || d.includes('escalated') || d.includes('resolved')
+      || d.includes('session modified') || d.includes('version') || d.includes('conflict')
+      || d.includes('immutable') || err?.status === 409;
+  }
+
+  async function recoverAuthoritativeSession(sessionId) {
+    try {
+      const latest = await api.get(`/api/diagnostics/${sessionId}/`);
+      setDiagSession(latest);
+      persistSessionId(latest.session_id);
+      if (latest.status === 'ESCALATED') {
+        loadCalls();
+      }
+      return latest;
+    } catch (fetchErr) {
+      console.error('Failed to recover authoritative session', fetchErr);
+      clearPersistedSession();
+      setDiagSession(null);
+      return null;
+    }
+  }
 
   function makeIdempotencyKey(prefix) {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -66,6 +125,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         idempotency_key: makeIdempotencyKey('diag-start'),
       });
       setDiagSession(res);
+      persistSessionId(res.session_id);
       setDiagNotice({ type: 'info', text: 'Diagnostic session initiated with verified asset locking.' });
     } catch (err) {
       setDiagNotice({ type: 'error', text: err.detail || 'Failed to start diagnostic recovery session.' });
@@ -86,11 +146,17 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         idempotency_key: makeIdempotencyKey('diag-ans'),
       });
       setDiagSession(res);
+      persistSessionId(res.session_id);
       setDiagAnswerText('');
+      // If auto-escalation occurred, refresh tickets
+      if (res.status === 'ESCALATED') {
+        setDiagNotice({ type: 'info', text: 'Service Call created with deterministic Recovery Passport.' });
+        loadCalls();
+      }
     } catch (err) {
-      if (err.status === 409 || (err.detail && err.detail.includes('conflict'))) {
-        setDiagNotice({ type: 'error', text: 'Session was modified in another view. Refreshing...' });
-        refreshSession(diagSession.session_id);
+      if (isTerminalError(err)) {
+        setDiagNotice({ type: 'info', text: 'Your diagnostic session has changed. Refreshing latest state...' });
+        await recoverAuthoritativeSession(diagSession.session_id);
       } else {
         setDiagNotice({ type: 'error', text: err.detail || 'Failed to submit observation.' });
       }
@@ -109,10 +175,15 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         idempotency_key: makeIdempotencyKey('diag-act'),
       });
       setDiagSession(res);
+      persistSessionId(res.session_id);
+      if (res.status === 'ESCALATED') {
+        setDiagNotice({ type: 'info', text: 'Service Call created with deterministic Recovery Passport.' });
+        loadCalls();
+      }
     } catch (err) {
-      if (err.status === 409 || (err.detail && err.detail.includes('conflict'))) {
-        setDiagNotice({ type: 'error', text: 'Session was modified in another view. Refreshing...' });
-        refreshSession(diagSession.session_id);
+      if (isTerminalError(err)) {
+        setDiagNotice({ type: 'info', text: 'Your diagnostic session has changed. Refreshing latest state...' });
+        await recoverAuthoritativeSession(diagSession.session_id);
       } else {
         setDiagNotice({ type: 'error', text: err.detail || 'Failed to confirm action.' });
       }
@@ -131,9 +202,15 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         summary: 'Customer verified complete resolution after guided procedure.',
       });
       setDiagSession(res);
+      persistSessionId(res.session_id);
       setDiagNotice({ type: 'success', text: 'Diagnostic session marked resolved after customer verification.' });
     } catch (err) {
-      setDiagNotice({ type: 'error', text: err.detail || 'Failed to resolve session.' });
+      if (isTerminalError(err)) {
+        setDiagNotice({ type: 'info', text: 'Session already finalized. Refreshing...' });
+        await recoverAuthoritativeSession(diagSession.session_id);
+      } else {
+        setDiagNotice({ type: 'error', text: err.detail || 'Failed to resolve session.' });
+      }
     } finally {
       setDiagSubmitting(false);
     }
@@ -150,22 +227,23 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         idempotency_key: makeIdempotencyKey('diag-esc'),
       });
       setDiagSession(res);
+      persistSessionId(res.session_id);
       setDiagNotice({ type: 'info', text: 'Service Call created with deterministic Recovery Passport.' });
       loadCalls();
     } catch (err) {
-      setDiagNotice({ type: 'error', text: err.detail || 'Failed to escalate session.' });
+      if (isTerminalError(err)) {
+        setDiagNotice({ type: 'info', text: 'Session already escalated. Refreshing...' });
+        await recoverAuthoritativeSession(diagSession.session_id);
+      } else {
+        setDiagNotice({ type: 'error', text: err.detail || 'Failed to escalate session.' });
+      }
     } finally {
       setDiagSubmitting(false);
     }
   }
 
   async function refreshSession(sessionId) {
-    try {
-      const res = await api.get(`/api/diagnostics/${sessionId}/`);
-      setDiagSession(res);
-    } catch (err) {
-      console.error('Failed to reload diagnostic session', err);
-    }
+    return recoverAuthoritativeSession(sessionId);
   }
 
   async function loadAssetDetail() {
@@ -211,6 +289,14 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
 
   useEffect(() => {
     loadAssetDetail();
+  }, [assetId]);
+
+  // Restore persisted diagnostic session on mount/assetId change
+  useEffect(() => {
+    const savedId = getPersistedSessionId();
+    if (savedId && !diagSession) {
+      recoverAuthoritativeSession(savedId);
+    }
   }, [assetId]);
 
   useEffect(() => {
@@ -595,8 +681,8 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', marginBottom: '14px' }}>
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <span className="badge" style={{ background: '#eff6ff', color: 'var(--primary)', fontWeight: 700 }}>
-                        Session Active
+                      <span className="badge" style={{ background: getStatusColor(diagSession.status).bg, color: getStatusColor(diagSession.status).color, fontWeight: 700 }}>
+                        {getStatusLabel(diagSession.status)}
                       </span>
                       <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                         Target: <strong>{asset.name}</strong> ({asset.asset_code})
@@ -643,7 +729,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                   </p>
                   <button 
                     className="btn btn-secondary"
-                    onClick={() => { setDiagSession(null); setDiagComplaint(''); }}
+                    onClick={() => { clearPersistedSession(); setDiagSession(null); setDiagComplaint(''); }}
                   >
                     Start New Recovery Session
                   </button>
@@ -683,7 +769,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                         <button className="btn btn-secondary" onClick={() => setActiveTab('tickets')}>
                           <Ticket size={14} /> View in Open Tickets
                         </button>
-                        <button className="btn btn-secondary" onClick={() => { setDiagSession(null); setDiagComplaint(''); }}>
+                        <button className="btn btn-secondary" onClick={() => { clearPersistedSession(); setDiagSession(null); setDiagComplaint(''); }}>
                           Close Diagnostic View
                         </button>
                       </div>

@@ -106,6 +106,13 @@ def seed_milk_analyzer_playbook():
                     "instruction": "Milk Analyzer recovered and verified within operating calibration.",
                     "safety_class": "GREEN",
                     "is_terminal": True,
+                    "evidence_anchor": {
+                        "document_id": doc.id,
+                        "checksum_sha256": doc.checksum_sha256,
+                        "version": doc.version,
+                        "heading": "Verification after cleaning",
+                        "title": doc.title,
+                    },
                 },
                 "terminal_escalate": {
                     "node_type": "ESCALATE",
@@ -115,7 +122,7 @@ def seed_milk_analyzer_playbook():
             },
         }
 
-        playbook, _ = DiagnosticPlaybook.objects.get_or_create(
+        playbook, created = DiagnosticPlaybook.objects.get_or_create(
             tenant=tenant,
             name="Milk Analyzer MA-100 Recovery Playbook",
             version=1,
@@ -127,9 +134,16 @@ def seed_milk_analyzer_playbook():
             }
         )
 
-        playbook.definition = definition
-        playbook.save(update_fields=["definition"])
-        publish_playbook(playbook)
+        if not created:
+            DiagnosticPlaybook.objects.filter(id=playbook.id).update(
+                definition=definition,
+                product=product,
+                applicability_tags="unstable reading, reading unstable, cleaning, sensor, calibration, error code, draw sample",
+            )
+            playbook.refresh_from_db()
+
+        if playbook.status != "PUBLISHED":
+            publish_playbook(playbook)
         print(f"Published playbook for tenant {tenant.name}: {playbook.name} v{playbook.version}")
         created_count += 1
 

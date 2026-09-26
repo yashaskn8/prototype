@@ -575,7 +575,7 @@ class DiagnosticEscalateView(APIView):
         cmd = None
         if idempotency_key:
             try:
-                cmd, is_replay = check_or_record_idempotency(
+                cmd, is_replay = reserve_idempotency_key(
                     tenant=tenant,
                     idempotency_key=idempotency_key,
                     command_type="ESCALATE_SESSION",

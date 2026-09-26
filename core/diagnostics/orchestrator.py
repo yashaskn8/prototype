@@ -23,6 +23,7 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from django.core.exceptions import ValidationError
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Max
 from django.utils import timezone
@@ -205,6 +206,13 @@ def reserve_idempotency_key(
     raise ConcurrencyConflictError(detail="Could not acquire idempotency lock. Please retry.")
 
 
+def _json_safe(value: Any) -> Any:
+    """Normalize a Python structure to strictly JSON-compliant types (handling datetime, UUID, Decimal, etc.)."""
+    if value is None:
+        return None
+    return json.loads(json.dumps(value, cls=DjangoJSONEncoder))
+
+
 def complete_idempotency(
     cmd: Optional[DiagnosticCommand],
     response_status: int,
@@ -213,10 +221,11 @@ def complete_idempotency(
     """Mark an idempotency reservation as COMPLETED with authoritative response data."""
     if not cmd:
         return
+    safe_payload = _json_safe(response_payload)
     DiagnosticCommand.objects.filter(id=cmd.id).update(
         state=DiagnosticCommand.STATE_COMPLETED,
         response_status=response_status,
-        response_payload=response_payload,
+        response_payload=safe_payload,
         updated_at=timezone.now(),
     )
 
@@ -229,10 +238,11 @@ def fail_idempotency(
     """Mark an idempotency reservation as FAILED so subsequent retries can re-execute cleanly."""
     if not cmd:
         return
+    safe_payload = _json_safe({"detail": error_detail or "Command execution failed."})
     DiagnosticCommand.objects.filter(id=cmd.id).update(
         state=DiagnosticCommand.STATE_FAILED,
         response_status=response_status,
-        response_payload={"detail": error_detail or "Command execution failed."},
+        response_payload=safe_payload,
         updated_at=timezone.now(),
     )
 
@@ -261,9 +271,10 @@ def save_idempotency_response(
     if not idempotency_key:
         return None
     request_hash = _hash_payload(payload)
+    safe_payload = _json_safe(response_payload)
     cmd = DiagnosticCommand.objects.filter(tenant=tenant, idempotency_key=idempotency_key).first()
     if cmd:
-        complete_idempotency(cmd, response_status, response_payload)
+        complete_idempotency(cmd, response_status, safe_payload)
         return cmd
     else:
         return DiagnosticCommand.objects.create(
@@ -274,7 +285,7 @@ def save_idempotency_response(
             session=session,
             state=DiagnosticCommand.STATE_COMPLETED,
             response_status=response_status,
-            response_payload=response_payload,
+            response_payload=safe_payload,
         )
 
 
@@ -955,17 +966,17 @@ def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str
             blocked_reason = f"Diagnostic action blocked by safety policy ({reason}). Escalation available."
 
     passport_data = None
-    if session.status == "ESCALATED" and hasattr(session, "recovery_passport") and session.recovery_passport:
-        rp = session.recovery_passport
+    rp = getattr(session, "recovery_passport", None)
+    if session.status == "ESCALATED" and rp:
         passport_data = {
             "id": rp.id,
             "structured_data": rp.structured_data,
             "do_not_repeat_items": rp.do_not_repeat_items,
             "evidence_completeness": rp.evidence_completeness,
-            "created_at": rp.created_at,
+            "created_at": rp.created_at.isoformat() if getattr(rp, "created_at", None) else None,
         }
 
-    return {
+    view_data = {
         "session_id": str(session.session_id),
         "asset": {
             "id": session.asset.id,
@@ -977,7 +988,7 @@ def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str
         "status": session.status,
         "version": session.version,
         "evidence_completeness": session.evidence_completeness,
-        "current_node": node_data,
+        "current_node": node_data if session.status not in ("RESOLVED", "ESCALATED", "ABANDONED") else None,
         "can_escalate": can_escalate,
         "can_ask_quick_ai": can_ask_quick_ai,
         "can_clarify": can_clarify,
@@ -988,9 +999,10 @@ def get_session_view_data(session: DiagnosticSession, customer=None) -> Dict[str
             "id": session.escalated_call.id,
             "servy_id": session.escalated_call.servy_id,
             "status": session.escalated_call.status,
-        } if session.escalated_call else None,
+        } if getattr(session, "escalated_call", None) else None,
         "recovery_passport": passport_data,
     }
+    return _json_safe(view_data)
 
 
 def _validate_answer_value(schema: str, value: Any, choices: list) -> Any:
