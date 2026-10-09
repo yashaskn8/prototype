@@ -330,8 +330,119 @@ export function CustomerSupportPage() {
                 </span>
               </div>
 
-              <div className="rag-answer-body" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-                {result.answer}
+              <div className="rag-answer-body" style={{ lineHeight: 1.7 }}>
+                {(() => {
+                  // Parse structured sections from the RAG answer
+                  const answer = result.answer || '';
+                  const sectionPattern = /^(DIAGNOSTIC SUMMARY|CHECK FIRST|STEP-BY-STEP TROUBLESHOOTING|EXPECTED RESULT|STOP AND ESCALATE IF|VERIFIED REFERENCES)\s*$/;
+                  const sections = [];
+                  let currentSection = null;
+                  let currentLines = [];
+
+                  answer.split('\n').forEach(line => {
+                    const trimmed = line.trim();
+                    if (sectionPattern.test(trimmed)) {
+                      if (currentSection) {
+                        sections.push({ title: currentSection, content: currentLines.join('\n').trim() });
+                      }
+                      currentSection = trimmed;
+                      currentLines = [];
+                    } else {
+                      currentLines.push(line);
+                    }
+                  });
+                  if (currentSection) {
+                    sections.push({ title: currentSection, content: currentLines.join('\n').trim() });
+                  }
+
+                  // If no structured sections found, fall back to plain rendering
+                  if (sections.length === 0) {
+                    return <div style={{ whiteSpace: 'pre-wrap' }}>{answer}</div>;
+                  }
+
+                  const sectionStyles = {
+                    'DIAGNOSTIC SUMMARY': { bg: '#eff6ff', border: '#bfdbfe', icon: '🔍', color: '#1e40af' },
+                    'CHECK FIRST': { bg: '#fefce8', border: '#fde68a', icon: '⚡', color: '#a16207' },
+                    'STEP-BY-STEP TROUBLESHOOTING': { bg: '#f0fdf4', border: '#bbf7d0', icon: '🔧', color: '#166534' },
+                    'EXPECTED RESULT': { bg: '#f0f9ff', border: '#bae6fd', icon: '✅', color: '#0369a1' },
+                    'STOP AND ESCALATE IF': { bg: '#fef2f2', border: '#fecaca', icon: '🚨', color: '#b91c1c' },
+                    'VERIFIED REFERENCES': { bg: '#faf5ff', border: '#e9d5ff', icon: '📚', color: '#7e22ce' },
+                  };
+
+                  return sections.map((sec, idx) => {
+                    const style = sectionStyles[sec.title] || { bg: '#f8fafc', border: '#e2e8f0', icon: '📋', color: '#475569' };
+                    const lines = sec.content.split('\n').filter(l => l.trim());
+
+                    return (
+                      <div key={idx} style={{
+                        background: style.bg,
+                        border: `1px solid ${style.border}`,
+                        borderRadius: 'var(--radius-md)',
+                        padding: '14px 16px',
+                        marginBottom: '12px',
+                      }}>
+                        <div style={{
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
+                          color: style.color,
+                          letterSpacing: '0.03em',
+                          marginBottom: '8px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                        }}>
+                          <span>{style.icon}</span> {sec.title}
+                        </div>
+                        <div style={{ fontSize: '0.88rem', color: 'var(--text-main)' }}>
+                          {lines.map((line, li) => {
+                            const trimLine = line.trim();
+                            // Render step lines (Step N - ...) with emphasis
+                            const stepMatch = trimLine.match(/^Step\s+(\d+)\s*-\s*(.+)/i);
+                            if (stepMatch) {
+                              return (
+                                <div key={li} style={{ display: 'flex', gap: '8px', marginBottom: '6px', alignItems: 'flex-start' }}>
+                                  <span style={{
+                                    background: style.color,
+                                    color: '#fff',
+                                    borderRadius: '50%',
+                                    width: '22px',
+                                    height: '22px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    flexShrink: 0,
+                                    marginTop: '2px',
+                                  }}>{stepMatch[1]}</span>
+                                  <span>{stepMatch[2]}</span>
+                                </div>
+                              );
+                            }
+                            // Render bullet-point lines
+                            if (trimLine.startsWith('- ')) {
+                              return (
+                                <div key={li} style={{ paddingLeft: '8px', marginBottom: '4px', display: 'flex', gap: '6px' }}>
+                                  <span style={{ color: style.color, fontWeight: 700 }}>•</span>
+                                  <span>{trimLine.slice(2)}</span>
+                                </div>
+                              );
+                            }
+                            // Render Why: lines indented
+                            if (/^Why:|^Reason:/i.test(trimLine)) {
+                              return (
+                                <div key={li} style={{ paddingLeft: '32px', fontSize: '0.82rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '4px' }}>
+                                  {trimLine}
+                                </div>
+                              );
+                            }
+                            return <div key={li} style={{ marginBottom: '4px' }}>{trimLine}</div>;
+                          })}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
 
               {/* Verified Citations */}

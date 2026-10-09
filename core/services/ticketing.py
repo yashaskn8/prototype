@@ -127,7 +127,7 @@ def create_call_from_interaction(interaction):
 
                 complaint_body = (
                     f"Customer issue:\n{interaction.question}\n\n"
-                    f"Troubleshooting already attempted:\n{interaction.answer}\n\n"
+                    f"AI diagnostic guidance provided to customer (completion not confirmed):\n{interaction.answer}\n\n"
                     f"Source documents used:\n{ref_text}\n\n"
                     f"Customer reported that the issue was not resolved (escalated from Customer AI Support at {now.strftime('%Y-%m-%d %H:%M:%S UTC')})."
                 )

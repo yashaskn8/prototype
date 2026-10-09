@@ -102,7 +102,14 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
             line_str = line.strip()
             if not line_str:
                 continue
-            num_match = re.match(r"^\d+[\.)\]]\s*(.+)", line_str)
+            # Strip markdown heading prefixes injected by _format_chunk_text.
+            # These are structural artifacts, not actionable content.
+            heading_match = re.match(r"^#{1,4}\s+(.+)", line_str)
+            if heading_match:
+                # Section headings are navigational, not actionable sentences.
+                # Skip them to prevent cross-contamination from unrelated chunks.
+                continue
+            num_match = re.match(r"^\d+[\.)\\]]\s*(.+)", line_str)
             if num_match:
                 sentences.append(num_match.group(1).strip())
             else:
@@ -127,19 +134,28 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
                 prev_sentence = s_clean
                 continue
 
-            if any(k in s_lower for k in escalate_keywords):
-                escalations.append(s_clean)
-            elif any(k in s_lower for k in result_keywords):
-                expected_results.append(s_clean)
-            elif any(s_lower.startswith(k) or f" {k} " in s_lower for k in check_keywords):
+            # Classification priority: check > escalation > result > step.
+            # A sentence like "Confirm the isolator is on" is a CHECK even if
+            # it appears near escalation text, because it starts with a check
+            # keyword.  Escalation is only when there is NO check keyword match.
+            is_check = any(s_lower.startswith(k) or f" {k} " in s_lower for k in check_keywords)
+            is_escalation = any(k in s_lower for k in escalate_keywords)
+            is_result = any(k in s_lower for k in result_keywords)
+
+            if is_check:
                 if len(checks) < 3:
                     checks.append(s_clean)
                 else:
                     troubleshooting_steps.append(s_clean)
+            elif is_escalation:
+                escalations.append(s_clean)
+            elif is_result:
+                expected_results.append(s_clean)
             else:
                 troubleshooting_steps.append(s_clean)
 
             prev_sentence = s_clean
+
 
     if not checks and troubleshooting_steps:
         checks.append(troubleshooting_steps.pop(0))

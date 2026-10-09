@@ -349,9 +349,9 @@ export function CallRegisterPage({ onOpenCopilot }) {
                     <h4 style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '4px' }}>
                       COMPLAINT & SYMPTOM
                     </h4>
-                    <p style={{ fontSize: '0.9rem', color: 'var(--text-main)' }}>
+                    <div style={{ fontSize: '0.9rem', color: 'var(--text-main)', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
                       {detailData.call.complaint_text || detailData.call.complaint_type}
-                    </p>
+                    </div>
                   </div>
 
                   {detailData.call.resolution_text && (
