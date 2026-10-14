@@ -582,6 +582,7 @@ class EmailNotificationRule(TenantOwnedModel):
 
 
 class CustomerInteraction(TenantOwnedModel):
+    conversation = models.ForeignKey("CustomerConversation", on_delete=models.SET_NULL, null=True, blank=True, related_name="interactions")
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="servy_interactions")
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="rag_interactions")
     site = models.ForeignKey(Site, on_delete=models.SET_NULL, null=True, blank=True)
@@ -859,3 +860,148 @@ class RecoveryPassport(TenantOwnedModel):
 
     def __str__(self):
         return f"RecoveryPassport for Asset {self.asset_id} (Session {self.session_id})"
+
+
+class CustomerConversation(TenantOwnedModel):
+    conversation_uuid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="conversations")
+    site = models.ForeignKey(Site, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversations")
+    asset = models.ForeignKey(Asset, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversations")
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="customer_conversations")
+    title = models.CharField(max_length=200, blank=True)
+    status = models.CharField(max_length=30, default="ACTIVE")  # ACTIVE, RESOLVED, ESCALATED, CLOSED
+    current_diagnostic_session = models.ForeignKey(DiagnosticSession, on_delete=models.SET_NULL, null=True, blank=True, related_name="conversations")
+    linked_service_call = models.ForeignKey(ServiceCall, on_delete=models.SET_NULL, null=True, blank=True, related_name="customer_conversations")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["tenant", "customer", "updated_at"]),
+            models.Index(fields=["tenant", "asset", "updated_at"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        errors = {}
+        if self.site_id and self.site.customer_id != self.customer_id:
+            errors["site"] = "Conversation site does not belong to the selected customer."
+        if self.asset_id and self.asset.customer_id and self.asset.customer_id != self.customer_id:
+            errors["asset"] = "Conversation asset does not belong to the selected customer."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"Conv {self.conversation_uuid} - {self.customer.name} ({self.status})"
+
+
+class CustomerMessageQuerySet(models.QuerySet):
+    """Immutable QuerySet preventing bulk update and delete on CustomerMessage."""
+    def update(self, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("CustomerMessage records are strictly immutable: bulk update is blocked.")
+
+    def delete(self):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("CustomerMessage records are strictly immutable: bulk delete is blocked.")
+
+
+class CustomerMessageManager(models.Manager):
+    def get_queryset(self):
+        return CustomerMessageQuerySet(self.model, using=self._db)
+
+
+class CustomerMessage(TenantOwnedModel):
+    conversation = models.ForeignKey(CustomerConversation, on_delete=models.CASCADE, related_name="messages")
+    sender_role = models.CharField(max_length=30, default="customer")  # customer, assistant, system
+    message_text = models.TextField()
+    structured_contract = models.JSONField(default=dict, blank=True)
+    source_refs = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = CustomerMessageManager()
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "conversation", "created_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("CustomerMessage records are strictly immutable and cannot be updated.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        raise ValidationError("CustomerMessage records are strictly immutable and cannot be deleted.")
+
+    def __str__(self):
+        return f"Msg {self.id} in {self.conversation.conversation_uuid} [{self.sender_role}]"
+
+
+class SourceProvenanceRecord(TenantOwnedModel):
+    source_system = models.CharField(max_length=80, default="starlly")
+    source_org = models.CharField(max_length=80, default="273")
+    external_object_type = models.CharField(max_length=60)  # asset, customer, document
+    external_id = models.CharField(max_length=120)
+    local_object_type = models.CharField(max_length=60)  # Asset, Customer, KnowledgeDocument
+    local_object_id = models.PositiveIntegerField()
+    asset_code = models.CharField(max_length=120, blank=True)
+    checksum_sha256 = models.CharField(max_length=64, blank=True)
+    raw_attachment_sha256 = models.CharField(max_length=64, blank=True)
+    extracted_text_sha256 = models.CharField(max_length=64, blank=True)
+    verification_status = models.CharField(max_length=40, default="VERIFIED")  # VERIFIED, UNVERIFIED, REVOKED
+    verification_method = models.CharField(max_length=80, default="INGESTION_SHA256")
+    verified_at = models.DateTimeField(default=timezone.now)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        unique_together = ("tenant", "source_system", "source_org", "external_object_type", "external_id")
+        indexes = [
+            models.Index(fields=["tenant", "local_object_type", "local_object_id"]),
+            models.Index(fields=["tenant", "asset_code"]),
+            models.Index(fields=["tenant", "checksum_sha256"]),
+        ]
+
+    def __str__(self):
+        return f"Provenance {self.source_system}:{self.external_object_type}:{self.external_id} -> {self.local_object_type}:{self.local_object_id} ({self.verification_status})"
+
+
+class ProcedureApproval(TenantOwnedModel):
+    procedure_id = models.CharField(max_length=120, unique=True)
+    equipment_manufacturer = models.CharField(max_length=120, blank=True)
+    equipment_model = models.CharField(max_length=120, blank=True)
+    asset_scope = models.CharField(max_length=120, default="*")
+    document = models.ForeignKey(KnowledgeDocument, on_delete=models.SET_NULL, null=True, blank=True, related_name="procedure_approvals")
+    document_version = models.CharField(max_length=40, default="1.0")
+    source_chunk = models.ForeignKey(KnowledgeChunk, on_delete=models.SET_NULL, null=True, blank=True, related_name="procedure_approvals")
+    normalized_description = models.TextField()
+    procedure_keywords = models.JSONField(default=list, blank=True)
+    permitted_audience = models.CharField(max_length=40, default="technician")  # customer, technician
+    hazards = models.JSONField(default=list, blank=True)
+    prerequisites = models.JSONField(default=list, blank=True)
+    reviewer_identity = models.CharField(max_length=120, blank=True)
+    approval_evidence = models.CharField(max_length=240, blank=True)
+    approval_status = models.CharField(max_length=40, default="UNVERIFIED")  # UNVERIFIED, APPROVED, REVOKED, EXPIRED
+    effective_date = models.DateTimeField(null=True, blank=True)
+    expiration_date = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
+    audit_trail = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "approval_status", "permitted_audience"]),
+            models.Index(fields=["tenant", "equipment_model"]),
+            models.Index(fields=["tenant", "asset_scope"]),
+        ]
+
+    def __str__(self):
+        return f"Approval {self.procedure_id} ({self.approval_status} - {self.permitted_audience})"
+

@@ -127,6 +127,13 @@ class RealCompanyDataIsolationTests(TestCase):
             index_status="INDEXED",
         )
         self.real_doc.provenance_verified = True
+        from core.services.customer_isolation import register_test_verified_provenance
+        register_test_verified_provenance(self.real_customer)
+        register_test_verified_provenance(self.real_asset)
+        register_test_verified_provenance(self.other_customer)
+        register_test_verified_provenance(self.other_asset)
+        register_test_verified_provenance(self.real_doc)
+
         from core.services.vectors import embed_text
         chunk_text = "CHECK FIRST\n- Confirm electrical power is supplied to the indoor unit.\n- Inspect the washable air filter for heavy dust accumulation.\n\nSTEP-BY-STEP TROUBLESHOOTING\nStep 1: Clean exterior and wipe dust filter with clean water.\nWhy: Restores necessary airflow across the evaporator coil.\nStep 2: Restart the unit using the main power switch.\nWhy: Resets internal microcontroller safety lockout.\n\nEXPECTED RESULT\nIndoor blower motor resumes normal air delivery within 3 minutes.\n\nSTOP AND ESCALATE IF\n- Unusual burning smell or smoke is detected.\n- Error code E4 persists on the front panel."
         emb = embed_text(chunk_text)
@@ -161,6 +168,11 @@ class RealCompanyDataIsolationTests(TestCase):
             embedding=demo_emb,
             content_embedding=demo_emb,
         )
+
+    def tearDown(self):
+        from core.services.customer_isolation import clear_test_verified_provenance
+        clear_test_verified_provenance()
+        super().tearDown()
 
     # -----------------------------------------------------------------------
     # 1. Customer real-data mode never returns synthetic assets
@@ -533,6 +545,8 @@ class RealCompanyDataIsolationTests(TestCase):
             asset_code="SKY-AST-00005",
             status="active",
         )
+        from core.services.customer_isolation import register_test_verified_provenance
+        register_test_verified_provenance(test_asset)
         # Provenance verification confirms it is genuine company asset
         self.assertFalse(is_synthetic_asset(test_asset))
 
@@ -579,6 +593,8 @@ class RealCompanyDataIsolationTests(TestCase):
             asset_code="SKY-AST-00004",
             status="active",
         )
+        from core.services.customer_isolation import register_test_verified_provenance
+        register_test_verified_provenance(compressor)
         self.client.login(username="rajesh_k", password="TestPassword123")
         url = reverse("api_customer_support_query")
         payload = {

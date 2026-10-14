@@ -18,7 +18,8 @@ from core.models import (
     Tenant, Customer, Site, Asset, Product, Project, ServiceCall, CallUpdate,
     KnowledgeDocument, KnowledgeChunk, CustomerInteraction, StaffProfile,
     TenantMembership, InventoryItem, PartRequest, OperationalZone,
-    ProductCategory, ProductDomain, Brand, DiagnosticSession, DiagnosticEvent
+    ProductCategory, ProductDomain, Brand, DiagnosticSession, DiagnosticEvent,
+    CustomerConversation, CustomerMessage, SourceProvenanceRecord, ProcedureApproval
 )
 from core.security import (
     require_api_context, authorized_knowledge_queryset,
@@ -509,14 +510,52 @@ class CustomerSupportQueryView(APIView):
         except PermissionDenied as pe:
             return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
 
+        conversation_uuid = request.data.get("conversation_uuid")
+        conversation = None
+        if conversation_uuid:
+            conversation = CustomerConversation.objects.filter(
+                tenant=tenant, customer=customer, conversation_uuid=conversation_uuid
+            ).first()
+            if not conversation:
+                return Response(
+                    {"detail": "Conversation not found or access denied."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        else:
+            title = (question or "Customer Diagnostic Session")[:80]
+            conversation = CustomerConversation.objects.create(
+                tenant=tenant,
+                customer=customer,
+                site=site,
+                asset=asset,
+                created_by=request.user,
+                title=title,
+                status="ACTIVE",
+            )
+
+        req_session_id = request.data.get("session_id")
+        if not req_session_id and conversation and conversation.current_diagnostic_session:
+            req_session_id = str(conversation.current_diagnostic_session.session_id)
+
         # Step 1: Industrial Safety Hazard Check ACROSS ALL INPUTS AND PERSISTED FACTS
         # Check active session / previous history for persisted hazard facts
-        existing_session = DiagnosticSession.objects.filter(
-            tenant=tenant,
-            customer=customer,
-            asset=asset,
-            status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "ESCALATED", "NO_PLAYBOOK_AVAILABLE"],
-        ).order_by("-updated_at").first()
+        existing_session = None
+        if req_session_id:
+            existing_session = DiagnosticSession.objects.filter(
+                tenant=tenant, customer=customer, session_id=req_session_id
+            ).first()
+            if not existing_session:
+                return Response(
+                    {"detail": "Diagnostic session not found or access denied."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        if not existing_session:
+            existing_session = DiagnosticSession.objects.filter(
+                tenant=tenant,
+                customer=customer,
+                asset=asset,
+                status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "ESCALATED", "NO_PLAYBOOK_AVAILABLE"],
+            ).order_by("-updated_at").first()
 
         all_inputs = [question, clarification_response, user_observation]
         if existing_session and existing_session.complaint:
@@ -559,6 +598,7 @@ class CustomerSupportQueryView(APIView):
                 asset=asset,
                 complaint=question or clarification_response,
                 user=request.user,
+                session_id=req_session_id,
             )
             with transaction.atomic():
                 locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
@@ -588,12 +628,32 @@ class CustomerSupportQueryView(APIView):
                     payload={"reason": "Safety hazard detected in customer input", "warning": hazard_warning},
                 )
 
+            if conversation:
+                if not conversation.current_diagnostic_session:
+                    conversation.current_diagnostic_session = session
+                conversation.status = "ESCALATED"
+                conversation.save(update_fields=["current_diagnostic_session", "status", "updated_at"])
+                CustomerMessage.objects.create(
+                    tenant=tenant,
+                    conversation=conversation,
+                    sender_role="customer",
+                    message_text=question or combined_text,
+                )
+                CustomerMessage.objects.create(
+                    tenant=tenant,
+                    conversation=conversation,
+                    sender_role="assistant",
+                    message_text=hazard_warning,
+                    structured_contract={"hazard": True},
+                )
+
             interaction = CustomerInteraction.objects.create(
                 tenant=tenant,
                 created_by=request.user,
                 customer=customer,
                 site=site,
                 asset=asset,
+                conversation=conversation,
                 question=combined_text or question,
                 answer=hazard_warning,
                 source_refs=[],
@@ -606,6 +666,7 @@ class CustomerSupportQueryView(APIView):
                 is_hazard=True,
                 hazard_warning=hazard_warning,
             )
+            contract["conversation_uuid"] = str(conversation.conversation_uuid) if conversation else None
             return Response(contract)
 
         # Step 2: Symptom Ambiguity / Clarification Check
@@ -618,13 +679,33 @@ class CustomerSupportQueryView(APIView):
                 asset=asset,
                 complaint=question,
                 user=request.user,
+                session_id=req_session_id,
             )
+            if conversation:
+                if not conversation.current_diagnostic_session:
+                    conversation.current_diagnostic_session = session
+                    conversation.save(update_fields=["current_diagnostic_session", "updated_at"])
+                CustomerMessage.objects.create(
+                    tenant=tenant,
+                    conversation=conversation,
+                    sender_role="customer",
+                    message_text=question,
+                )
+                CustomerMessage.objects.create(
+                    tenant=tenant,
+                    conversation=conversation,
+                    sender_role="assistant",
+                    message_text=clarif_q,
+                    structured_contract={"options": clarif_opts},
+                )
+
             interaction = CustomerInteraction.objects.create(
                 tenant=tenant,
                 created_by=request.user,
                 customer=customer,
                 site=site,
                 asset=asset,
+                conversation=conversation,
                 question=question,
                 answer=clarif_q,
                 source_refs=[],
@@ -637,6 +718,7 @@ class CustomerSupportQueryView(APIView):
                 clarification_question=clarif_q,
                 clarification_options=clarif_opts,
             )
+            contract["conversation_uuid"] = str(conversation.conversation_uuid) if conversation else None
             return Response(contract)
 
         # If user answered clarification, bind and persist clarification event to session
@@ -648,7 +730,12 @@ class CustomerSupportQueryView(APIView):
                 asset=asset,
                 complaint=question,
                 user=request.user,
+                session_id=req_session_id,
             )
+            if conversation and not conversation.current_diagnostic_session:
+                conversation.current_diagnostic_session = session
+                conversation.save(update_fields=["current_diagnostic_session", "updated_at"])
+
             with transaction.atomic():
                 locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
                 last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
@@ -687,7 +774,19 @@ class CustomerSupportQueryView(APIView):
             asset=asset,
             complaint=combined_question,
             user=request.user,
+            session_id=req_session_id,
         )
+
+        if conversation:
+            if not conversation.current_diagnostic_session:
+                conversation.current_diagnostic_session = session
+                conversation.save(update_fields=["current_diagnostic_session", "updated_at"])
+            CustomerMessage.objects.create(
+                tenant=tenant,
+                conversation=conversation,
+                sender_role="customer",
+                message_text=question if not clarification_response else f"{question} (Clarification: {clarification_response})",
+            )
 
         interaction = CustomerInteraction.objects.create(
             tenant=tenant,
@@ -695,6 +794,7 @@ class CustomerSupportQueryView(APIView):
             customer=customer,
             site=site,
             asset=asset,
+            conversation=conversation,
             question=combined_question,
             answer=rag_res["answer"],
             source_refs=rag_res["references"],
@@ -708,6 +808,20 @@ class CustomerSupportQueryView(APIView):
             retrieved_references=rag_res["references"],
         )
         record_customer_action_presentation(session, contract["customer_safe_actions"], tenant)
+
+        if conversation:
+            CustomerMessage.objects.create(
+                tenant=tenant,
+                conversation=conversation,
+                sender_role="assistant",
+                message_text=rag_res["answer"],
+                structured_contract={
+                    "customer_safe_actions": contract.get("customer_safe_actions", []),
+                    "technician_actions": contract.get("technician_actions", []),
+                },
+                source_refs=rag_res.get("references", []),
+            )
+            contract["conversation_uuid"] = str(conversation.conversation_uuid)
 
         # Enrich past resolution references with full ServiceCall details for backward compatibility
         past_res_call_ids = [
@@ -812,6 +926,17 @@ class CustomerSupportResolveView(APIView):
             verified=False,
         )
 
+        if interaction.conversation:
+            interaction.conversation.status = "RESOLVED"
+            interaction.conversation.closed_at = timezone.now()
+            interaction.conversation.save(update_fields=["status", "closed_at", "updated_at"])
+            CustomerMessage.objects.create(
+                tenant=tenant,
+                conversation=interaction.conversation,
+                sender_role="system",
+                message_text="Issue marked as resolved by customer.",
+            )
+
         return Response({
             "status": "resolved",
             "interaction_id": interaction.id,
@@ -853,6 +978,19 @@ class CustomerSupportEscalateView(APIView):
 
         # Idempotent ticket creation with OneToOne constraint enforcement and customer observation preservation
         call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
+
+        if interaction.conversation:
+            interaction.conversation.status = "ESCALATED"
+            interaction.conversation.linked_service_call = call
+            interaction.conversation.save(update_fields=["status", "linked_service_call", "updated_at"])
+            CustomerMessage.objects.create(
+                tenant=tenant,
+                conversation=interaction.conversation,
+                sender_role="system",
+                message_text=f"Service Call #{call.servy_id} created successfully.",
+                structured_contract={"call_id": call.id, "servy_id": call.servy_id},
+            )
+
         return Response({
             "call_id": call.id,
             "servy_id": call.servy_id,
@@ -2163,4 +2301,540 @@ class ExternalAssetsListView(APIView):
             "limit": limit,
             "offset": offset,
             "sync_status": "read_only",
+        })
+
+
+# ----------------------------------------------------------------------
+# Customer Interaction Platform: Conversations & Service Tracking
+# ----------------------------------------------------------------------
+
+class CustomerConversationsListView(APIView):
+    """List or create persistent customer support conversations."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
+            cust_id = request.query_params.get("customer_id")
+            if cust_id:
+                customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
+            else:
+                customer = Customer.objects.filter(tenant=tenant).first()
+
+        if not customer:
+            return Response({"detail": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        qs = CustomerConversation.objects.filter(tenant=tenant, customer=customer).select_related(
+            "site", "asset", "current_diagnostic_session", "linked_service_call"
+        ).order_by("-updated_at")
+
+        asset_id = request.query_params.get("asset_id")
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+
+        site_id = request.query_params.get("site_id")
+        if site_id:
+            qs = qs.filter(site_id=site_id)
+
+        conv_status = request.query_params.get("status")
+        if conv_status:
+            qs = qs.filter(status=conv_status.upper())
+
+        try:
+            limit = min(int(request.query_params.get("limit", 20)), 50)
+            offset = max(int(request.query_params.get("offset", 0)), 0)
+        except ValueError:
+            limit, offset = 20, 0
+
+        total_count = qs.count()
+        paged = qs[offset:offset + limit]
+
+        results = []
+        for c in paged:
+            results.append({
+                "id": c.id,
+                "conversation_uuid": str(c.conversation_uuid),
+                "title": c.title or (f"Troubleshooting {c.asset.name}" if c.asset else "Support Conversation"),
+                "status": c.status,
+                "site": {"id": c.site.id, "name": c.site.name} if c.site else None,
+                "asset": {
+                    "id": c.asset.id,
+                    "name": c.asset.name,
+                    "asset_code": c.asset.asset_code,
+                    "model_number": c.asset.model_number,
+                } if c.asset else None,
+                "session_id": str(c.current_diagnostic_session.session_id) if c.current_diagnostic_session else None,
+                "session_status": c.current_diagnostic_session.status if c.current_diagnostic_session else None,
+                "linked_service_call": {
+                    "id": c.linked_service_call.id,
+                    "servy_id": c.linked_service_call.servy_id,
+                    "status": c.linked_service_call.status,
+                    "priority": c.linked_service_call.priority,
+                } if c.linked_service_call else None,
+                "message_count": c.messages.count(),
+                "created_at": c.created_at,
+                "updated_at": c.updated_at,
+                "closed_at": c.closed_at,
+            })
+
+        return Response({
+            "count": total_count,
+            "conversations": results,
+            "limit": limit,
+            "offset": offset,
+        })
+
+    def post(self, request):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
+            cust_id = request.data.get("customer_id")
+            if cust_id:
+                customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
+            if not customer:
+                customer = Customer.objects.filter(tenant=tenant).first()
+
+        if not customer:
+            return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        site_id = request.data.get("site_id")
+        asset_id = request.data.get("asset_id")
+        title = _clean_input(request.data.get("title") or "")
+        complaint = _clean_input(request.data.get("complaint") or request.data.get("initial_message") or "")
+
+        site = None
+        if site_id:
+            try:
+                site = Site.objects.get(tenant=tenant, customer=customer, id=site_id)
+            except Site.DoesNotExist:
+                return Response({"detail": "Site not found for this customer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        asset = None
+        if asset_id:
+            try:
+                asset = Asset.objects.get(tenant=tenant, customer=customer, id=asset_id)
+            except Asset.DoesNotExist:
+                return Response({"detail": "Asset not found for this customer."}, status=status.HTTP_400_BAD_REQUEST)
+            if site and asset.site_id and asset.site_id != site.id:
+                return Response({"detail": "Asset does not belong to selected site."}, status=status.HTTP_400_BAD_REQUEST)
+            if not site and asset.site:
+                site = asset.site
+
+        session = None
+        if asset:
+            session = DiagnosticSession.objects.create(
+                tenant=tenant,
+                customer=customer,
+                site=site,
+                asset=asset,
+                complaint=complaint or "Customer conversation started",
+                status="ACTIVE",
+                current_node_id="intake",
+                version=1,
+                created_by=request.user,
+            )
+            DiagnosticEvent.objects.create(
+                tenant=tenant,
+                session=session,
+                seq_num=1,
+                event_type="SESSION_STARTED",
+                actor_role="customer",
+                payload={"start_node_id": "intake", "asset_id": asset.id, "channel": "conversation"},
+            )
+
+        conv = CustomerConversation.objects.create(
+            tenant=tenant,
+            customer=customer,
+            site=site,
+            asset=asset,
+            created_by=request.user,
+            title=title or (f"Inquiry for {asset.name}" if asset else "Support Inquiry"),
+            status="ACTIVE",
+            current_diagnostic_session=session,
+        )
+
+        if complaint:
+            CustomerMessage.objects.create(
+                tenant=tenant,
+                conversation=conv,
+                sender_role="customer",
+                message_text=complaint,
+            )
+
+        return Response({
+            "id": conv.id,
+            "conversation_uuid": str(conv.conversation_uuid),
+            "title": conv.title,
+            "status": conv.status,
+            "session_id": str(session.session_id) if session else None,
+            "site": {"id": site.id, "name": site.name} if site else None,
+            "asset": {
+                "id": asset.id,
+                "name": asset.name,
+                "asset_code": asset.asset_code,
+                "model_number": asset.model_number,
+            } if asset else None,
+            "created_at": conv.created_at,
+        }, status=status.HTTP_201_CREATED)
+
+
+class CustomerConversationDetailView(APIView):
+    """Fetch complete authorized conversation details with equipment context and linked ticket."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, conversation_uuid):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        try:
+            conv = CustomerConversation.objects.select_related(
+                "customer", "site", "asset", "current_diagnostic_session", "linked_service_call"
+            ).get(tenant=tenant, conversation_uuid=conversation_uuid)
+        except CustomerConversation.DoesNotExist:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        messages_qs = conv.messages.all().order_by("created_at")
+        messages = [
+            {
+                "id": m.id,
+                "sender_role": m.sender_role,
+                "message_text": m.message_text,
+                "structured_contract": m.structured_contract,
+                "source_refs": m.source_refs,
+                "created_at": m.created_at,
+            }
+            for m in messages_qs
+        ]
+
+        ticket_data = None
+        if conv.linked_service_call:
+            sc = conv.linked_service_call
+            ticket_data = {
+                "id": sc.id,
+                "servy_id": sc.servy_id,
+                "status": sc.status,
+                "priority": sc.priority,
+                "complaint_type": sc.complaint_type,
+                "complaint_text": sc.complaint_text,
+                "created_at": sc.created_at,
+                "response_due_at": sc.response_due_at,
+                "resolution_due_at": sc.resolution_due_at,
+                "technician_assigned": bool(sc.technician_id),
+                "technician_name": sc.technician.full_name if sc.technician else None,
+            }
+
+        return Response({
+            "id": conv.id,
+            "conversation_uuid": str(conv.conversation_uuid),
+            "title": conv.title,
+            "status": conv.status,
+            "customer": {"id": conv.customer.id, "name": conv.customer.name},
+            "site": {"id": conv.site.id, "name": conv.site.name} if conv.site else None,
+            "asset": {
+                "id": conv.asset.id,
+                "name": conv.asset.name,
+                "asset_code": conv.asset.asset_code,
+                "model_number": conv.asset.model_number,
+                "status": conv.asset.status,
+            } if conv.asset else None,
+            "session_id": str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None,
+            "session_status": conv.current_diagnostic_session.status if conv.current_diagnostic_session else None,
+            "ticket": ticket_data,
+            "messages": messages,
+            "created_at": conv.created_at,
+            "updated_at": conv.updated_at,
+            "closed_at": conv.closed_at,
+        })
+
+
+class CustomerConversationMessagesView(APIView):
+    """Retrieve immutable messages or post a new customer message within a conversation."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [CustomerRAGThrottle]
+
+    def get(self, request, conversation_uuid):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        try:
+            conv = CustomerConversation.objects.get(tenant=tenant, conversation_uuid=conversation_uuid)
+        except CustomerConversation.DoesNotExist:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        messages = [
+            {
+                "id": m.id,
+                "sender_role": m.sender_role,
+                "message_text": m.message_text,
+                "structured_contract": m.structured_contract,
+                "source_refs": m.source_refs,
+                "created_at": m.created_at,
+            }
+            for m in conv.messages.all().order_by("created_at")
+        ]
+        return Response({"messages": messages})
+
+    def post(self, request, conversation_uuid):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        try:
+            conv = CustomerConversation.objects.select_related("asset", "site", "customer", "current_diagnostic_session").get(
+                tenant=tenant, conversation_uuid=conversation_uuid
+            )
+        except CustomerConversation.DoesNotExist:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if conv.status in ("RESOLVED", "CLOSED"):
+            return Response({"detail": "This conversation is closed. Start a new conversation for new issues."}, status=status.HTTP_400_BAD_REQUEST)
+
+        message_text = _clean_input(request.data.get("message") or request.data.get("text") or request.data.get("question"))
+        clarification_response = _clean_input(request.data.get("clarification_response"))
+        observation = _clean_input(request.data.get("observation"))
+
+        if not message_text and not clarification_response and not observation:
+            return Response({"detail": "Message text is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Record user message
+        user_msg = CustomerMessage.objects.create(
+            tenant=tenant,
+            conversation=conv,
+            sender_role="customer",
+            message_text=message_text or clarification_response or observation,
+        )
+
+        # Prepare payload for CustomerSupportQueryView
+        query_payload = {
+            "site_id": conv.site_id,
+            "asset_id": conv.asset_id,
+            "question": message_text or clarification_response or observation,
+            "clarification_response": clarification_response,
+            "observation": observation,
+            "conversation_uuid": str(conv.conversation_uuid),
+        }
+        if conv.current_diagnostic_session:
+            query_payload["session_id"] = str(conv.current_diagnostic_session.session_id)
+
+        # Process through query endpoint logic
+        request._full_data = query_payload
+        request.data.clear()
+        request.data.update(query_payload)
+
+        query_view = CustomerSupportQueryView()
+        query_view.request = request
+        query_view.format_kwarg = None
+        resp = query_view.post(request)
+
+        if resp.status_code == 200:
+            contract_data = resp.data
+            assistant_text = contract_data.get("answer") or contract_data.get("summary") or ""
+            asst_msg = CustomerMessage.objects.create(
+                tenant=tenant,
+                conversation=conv,
+                sender_role="assistant",
+                message_text=assistant_text,
+                structured_contract=contract_data,
+                source_refs=contract_data.get("references") or [],
+            )
+            conv.updated_at = timezone.now()
+            conv.save(update_fields=["updated_at"])
+
+            return Response({
+                "user_message": {
+                    "id": user_msg.id,
+                    "sender_role": user_msg.sender_role,
+                    "message_text": user_msg.message_text,
+                    "created_at": user_msg.created_at,
+                },
+                "assistant_message": {
+                    "id": asst_msg.id,
+                    "sender_role": asst_msg.sender_role,
+                    "message_text": asst_msg.message_text,
+                    "structured_contract": contract_data,
+                    "created_at": asst_msg.created_at,
+                },
+                "contract": contract_data,
+            })
+        return resp
+
+
+class CustomerConversationTicketView(APIView):
+    """Fetch linked ticket for this conversation."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, conversation_uuid):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        try:
+            conv = CustomerConversation.objects.select_related("linked_service_call").get(
+                tenant=tenant, conversation_uuid=conversation_uuid
+            )
+        except CustomerConversation.DoesNotExist:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not conv.linked_service_call:
+            return Response({"ticket": None, "detail": "No ticket has been created for this conversation yet."})
+
+        sc = conv.linked_service_call
+        return Response({
+            "ticket": {
+                "id": sc.id,
+                "servy_id": sc.servy_id,
+                "status": sc.status,
+                "priority": sc.priority,
+                "complaint_type": sc.complaint_type,
+                "complaint_text": sc.complaint_text,
+                "created_at": sc.created_at,
+                "response_due_at": sc.response_due_at,
+                "resolution_due_at": sc.resolution_due_at,
+                "technician_assigned": bool(sc.technician_id),
+                "technician_name": sc.technician.full_name if sc.technician else None,
+            }
+        })
+
+
+class CustomerTicketsListView(APIView):
+    """List service tickets for the authenticated customer."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
+            cust_id = request.query_params.get("customer_id")
+            if cust_id:
+                customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
+            else:
+                customer = Customer.objects.filter(tenant=tenant).first()
+
+        if not customer:
+            return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        qs = ServiceCall.objects.filter(tenant=tenant, customer=customer).select_related(
+            "asset", "site", "technician"
+        ).order_by("-created_at")
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter.lower())
+
+        asset_id = request.query_params.get("asset_id")
+        if asset_id:
+            qs = qs.filter(asset_id=asset_id)
+
+        try:
+            limit = min(int(request.query_params.get("limit", 20)), 50)
+            offset = max(int(request.query_params.get("offset", 0)), 0)
+        except ValueError:
+            limit, offset = 20, 0
+
+        total_count = qs.count()
+        calls = qs[offset:offset + limit]
+
+        results = [
+            {
+                "id": c.id,
+                "servy_id": c.servy_id,
+                "status": c.status,
+                "priority": c.priority,
+                "complaint_type": c.complaint_type,
+                "complaint_text": c.complaint_text,
+                "created_at": c.created_at,
+                "asset": {"id": c.asset.id, "name": c.asset.name, "asset_code": c.asset.asset_code} if c.asset else None,
+                "site": {"id": c.site.id, "name": c.site.name} if c.site else None,
+                "technician_assigned": bool(c.technician_id),
+                "technician_name": c.technician.full_name if c.technician else None,
+            }
+            for c in calls
+        ]
+
+        return Response({
+            "count": total_count,
+            "tickets": results,
+            "limit": limit,
+            "offset": offset,
+        })
+
+
+class CustomerTicketDetailView(APIView):
+    """Retrieve details of a customer's service ticket without leaking internal staff notes."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        try:
+            call = ServiceCall.objects.select_related("asset", "site", "technician", "customer").get(
+                tenant=tenant, id=pk
+            )
+        except ServiceCall.DoesNotExist:
+            return Response({"detail": "Ticket not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if role in CUSTOMER_ROLES and call.customer_id != customer.id:
+            return Response({"detail": "Ticket not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            "id": call.id,
+            "servy_id": call.servy_id,
+            "status": call.status,
+            "priority": call.priority,
+            "complaint_type": call.complaint_type,
+            "complaint_text": call.complaint_text,
+            "created_at": call.created_at,
+            "response_due_at": call.response_due_at,
+            "resolution_due_at": call.resolution_due_at,
+            "customer": {"id": call.customer.id, "name": call.customer.name},
+            "asset": {
+                "id": call.asset.id,
+                "name": call.asset.name,
+                "asset_code": call.asset.asset_code,
+                "model_number": call.asset.model_number,
+            } if call.asset else None,
+            "site": {"id": call.site.id, "name": call.site.name} if call.site else None,
+            "technician_assigned": bool(call.technician_id),
+            "technician_name": call.technician.full_name if call.technician else None,
+            "resolution_text": call.resolution_text if call.status in ("resolved", "closed") else None,
         })

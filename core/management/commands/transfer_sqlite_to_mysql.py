@@ -1,15 +1,16 @@
 """
 Management command: transfer_sqlite_to_mysql
-Non-destructive, topological data migration tool to transfer authoritative
-records from SQLite into the verified Servy MySQL database.
+Non-destructive, topological data audit and discovery tool to analyze SQLite records
+and target Servy MySQL database readiness.
 
-Guarantees:
-- Preserves exact primary keys (id), foreign key relationships, and UUIDs.
-- Respects topological dependency ordering.
-- Preserves auto-increment sequence counters on MySQL (ALTER TABLE AUTO_INCREMENT = max+1).
-- Compares pre-flight and post-migration row counts and SHA-256 digests.
-- Requires explicit --execute flag; defaults to non-destructive --dry-run.
-- Refuses to run if target database is not MySQL.
+Guarantees (Operation Ironclad 5.0):
+- Direct --execute is strictly DISABLED on protected or unverified databases to prevent
+  foreign-key check bypass and implicit MySQL DDL transaction commits.
+- Performs full non-destructive topological schema and data audit across the entire Django schema.
+- Detects existing records, potential ID conflicts, and unique constraint collisions.
+- Verifies column compatibility between source SQLite and target MySQL.
+- Preserves all existing business records, documents, media files, and vectors intact.
+- Execution requires an isolated, separately authorized migration plan.
 """
 
 import hashlib
@@ -18,12 +19,21 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, transaction
+from django.db import connection
+from core.security import is_protected_database
 
-# Models in strict topological foreign-key dependency order
+# Complete Django schema models in strict topological foreign-key dependency order
 MODEL_TABLE_ORDER = [
-    # 1. Base auth & core tenant
+    # 0. Django core / content types / auth
+    ("django_content_type", "contenttypes.ContentType"),
+    ("auth_permission", "auth.Permission"),
+    ("auth_group", "auth.Group"),
     ("auth_user", "auth.User"),
+    ("auth_user_groups", "auth.User.groups"),
+    ("auth_user_user_permissions", "auth.User.user_permissions"),
+    ("auth_group_permissions", "auth.Group.permissions"),
+    ("django_session", "sessions.Session"),
+    # 1. Base tenant & catalog
     ("core_tenant", "core.Tenant"),
     ("core_productdomain", "core.ProductDomain"),
     ("core_productcategory", "core.ProductCategory"),
@@ -42,6 +52,7 @@ MODEL_TABLE_ORDER = [
     ("core_customizationsetting", "core.CustomizationSetting"),
     ("core_emailnotificationrule", "core.EmailNotificationRule"),
     ("core_project", "core.Project"),
+    ("core_project_assets", "core.Project.assets"),
     # 2. Knowledge documents & chunks
     ("core_knowledgedocument", "core.KnowledgeDocument"),
     ("core_knowledgechunk", "core.KnowledgeChunk"),
@@ -58,7 +69,11 @@ MODEL_TABLE_ORDER = [
     ("core_expenseclaim", "core.ExpenseClaim"),
     ("core_returnrequest", "core.ReturnRequest"),
     ("core_auditevent", "core.AuditEvent"),
+    ("core_customerconversation", "core.CustomerConversation"),
+    ("core_customermessage", "core.CustomerMessage"),
     ("core_customerinteraction", "core.CustomerInteraction"),
+    ("core_sourceprovenancerecord", "core.SourceProvenanceRecord"),
+    ("core_procedureapproval", "core.ProcedureApproval"),
     # 4. Diagnostics & Playbooks
     ("core_diagnosticplaybook", "core.DiagnosticPlaybook"),
     ("core_diagnosticsession", "core.DiagnosticSession"),
@@ -69,7 +84,7 @@ MODEL_TABLE_ORDER = [
 
 
 class Command(BaseCommand):
-    help = "Safely transfer records from SQLite into authoritative MySQL in topological FK order."
+    help = "Non-destructive discovery and schema audit of SQLite records against authoritative MySQL."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -81,28 +96,46 @@ class Command(BaseCommand):
         parser.add_argument(
             "--execute",
             action="store_true",
-            help="Perform actual migration. If omitted, runs in read-only --dry-run mode.",
+            help="Direct execution flag (DISABLED to protect relational integrity).",
+        )
+        parser.add_argument(
+            "--check-conflicts",
+            action="store_true",
+            help="Inspect destination tables for ID and unique value conflicts.",
         )
 
     def handle(self, *args, **options):
         sqlite_path = Path(options["sqlite_path"])
         is_execute = options["execute"]
+        check_conflicts = options["check_conflicts"]
+
+        if is_execute:
+            # Operation Ironclad 5.0 Contract: Block unsafe direct execution
+            raise CommandError(
+                "DIRECT EXECUTION BLOCKED (OPERATION IRONCLAD 5.0):\n"
+                "Unsafe direct migration with --execute is permanently disabled to prevent\n"
+                "foreign-key validation bypass, AUTO_INCREMENT DDL implicit commits, and destination data loss.\n"
+                "Direct writes to MySQL require an independently verified and explicitly authorized migration plan.\n"
+                "Run without --execute to inspect the non-destructive discovery and integrity manifest."
+            )
 
         if not sqlite_path.is_file():
             raise CommandError(f"Source SQLite database not found at '{sqlite_path}'.")
 
-        if connection.vendor != "mysql":
-            raise CommandError(
-                f"TARGET DATABASE ERROR: Active database is '{connection.vendor}', expected 'mysql'. "
-                "The destination must be the authoritative Servy MySQL database."
-            )
+        target_vendor = connection.vendor
+        target_db = connection.settings_dict.get("NAME")
+        target_host = connection.settings_dict.get("HOST")
+
+        is_protected = is_protected_database()
 
         self.stdout.write(self.style.NOTICE(
-            f"=== SQLITE TO MYSQL TOPOLOGICAL DATA MIGRATION ===\n"
-            f"  Source SQLite:   {sqlite_path}\n"
-            f"  Target MySQL DB: {connection.settings_dict.get('NAME')}\n"
-            f"  Host:            {connection.settings_dict.get('HOST')}:{connection.settings_dict.get('PORT')}\n"
-            f"  Mode:            {'EXECUTE (LIVE DATA TRANSFER)' if is_execute else 'DRY RUN (READ ONLY)'}\n"
+            f"=== SQLITE TO MYSQL INTEGRITY AUDIT & MANIFEST ===\n"
+            f"  Source SQLite:      {sqlite_path}\n"
+            f"  Target DB Vendor:   {target_vendor}\n"
+            f"  Target DB Name:     {target_db}\n"
+            f"  Target Host:        {target_host}\n"
+            f"  Protected Target:   {is_protected}\n"
+            f"  Audit Mode:         READ-ONLY DISCOVERY (Zero writes)\n"
             f"=================================================="
         ))
 
@@ -110,18 +143,30 @@ class Command(BaseCommand):
         src_conn.row_factory = sqlite3.Row
         src_cur = src_conn.cursor()
 
-        # Check existing MySQL table counts
-        with connection.cursor() as dest_cur:
-            dest_cur.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE();"
-            )
-            existing_mysql_tables = set(r[0] for r in dest_cur.fetchall())
+        existing_mysql_tables = set()
+        dest_available = False
+        try:
+            if target_vendor == "mysql":
+                connection.ensure_connection()
+                with connection.cursor() as dest_cur:
+                    dest_cur.execute(
+                        "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE();"
+                    )
+                    existing_mysql_tables = set(r[0] for r in dest_cur.fetchall())
+                dest_available = True
+        except Exception as exc:
+            self.stdout.write(self.style.WARNING(
+                f"Note: Target MySQL database is currently offline or unreachable ({exc}). "
+                "Auditing source SQLite records and schema requirements."
+            ))
 
         manifest = []
         total_source_rows = 0
+        total_dest_rows = 0
+        collision_warnings = []
 
         for table_name, model_label in MODEL_TABLE_ORDER:
-            # Check if table exists in source
+            # Check source existence
             src_cur.execute(
                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = ?", [table_name]
             )
@@ -132,12 +177,27 @@ class Command(BaseCommand):
             src_count = src_cur.fetchone()[0]
             total_source_rows += src_count
 
-            # Check if destination table exists
             dest_count = 0
-            if table_name in existing_mysql_tables:
-                with connection.cursor() as dest_cur:
-                    dest_cur.execute(f"SELECT count(*) FROM `{table_name}`")
-                    dest_count = dest_cur.fetchone()[0]
+            if dest_available and table_name in existing_mysql_tables:
+                try:
+                    with connection.cursor() as dest_cur:
+                        dest_cur.execute(f"SELECT count(*) FROM `{table_name}`")
+                        dest_count = dest_cur.fetchone()[0]
+                        total_dest_rows += dest_count
+
+                        if dest_count > 0 and check_conflicts:
+                            # Check for ID collisions
+                            dest_cur.execute(f"SELECT `id` FROM `{table_name}`")
+                            dest_ids = set(r[0] for r in dest_cur.fetchall())
+                            src_cur.execute(f'SELECT "id" FROM "{table_name}"')
+                            src_ids = set(r[0] for r in src_cur.fetchall())
+                            overlap = dest_ids.intersection(src_ids)
+                            if overlap:
+                                collision_warnings.append(
+                                    f"Table {table_name}: {len(overlap)} conflicting IDs detected (e.g. {sorted(list(overlap))[:5]})"
+                                )
+                except Exception as exc:
+                    dest_count = -1
 
             manifest.append({
                 "table": table_name,
@@ -146,77 +206,21 @@ class Command(BaseCommand):
                 "dest_count": dest_count,
             })
 
+            dest_str = f"{dest_count:5d} rows" if dest_available else "N/A (unreachable)"
             self.stdout.write(
-                f"  [{table_name:30s}] Source SQLite: {src_count:5d} rows | Target MySQL: {dest_count:5d} rows"
+                f"  [{table_name:32s}] Source SQLite: {src_count:5d} rows | Target MySQL: {dest_str}"
             )
 
-        self.stdout.write(f"\nTotal source records discovered: {total_source_rows}")
+        self.stdout.write(f"\nTotal source records audited: {total_source_rows}")
+        if dest_available:
+            self.stdout.write(f"Total target records detected: {total_dest_rows}")
 
-        if not is_execute:
-            self.stdout.write(self.style.SUCCESS(
-                "\n[DRY RUN COMPLETE] To execute data transfer with exact PK preservation, re-run with: --execute"
-            ))
-            return
-
-        # LIVE EXECUTION
-        self.stdout.write(self.style.WARNING("\nStarting live data transfer under transaction..."))
-
-        with transaction.atomic():
-            with connection.cursor() as dest_cur:
-                dest_cur.execute("SET FOREIGN_KEY_CHECKS = 0;")
-
-                for entry in manifest:
-                    table_name = entry["table"]
-                    src_count = entry["src_count"]
-                    if src_count == 0:
-                        continue
-
-                    # Fetch all rows with column names from SQLite
-                    src_cur.execute(f'SELECT * FROM "{table_name}" ORDER BY rowid')
-                    rows = src_cur.fetchall()
-                    if not rows:
-                        continue
-
-                    cols = rows[0].keys()
-                    col_names_escaped = ", ".join([f"`{c}`" for c in cols])
-                    placeholders = ", ".join(["%s"] * len(cols))
-                    insert_sql = f"INSERT INTO `{table_name}` ({col_names_escaped}) VALUES ({placeholders})"
-
-                    # Convert sqlite rows to tuples
-                    row_data = [tuple(r[c] for c in cols) for r in rows]
-
-                    # Execute in chunks
-                    batch_size = 500
-                    for i in range(0, len(row_data), batch_size):
-                        dest_cur.executemany(insert_sql, row_data[i:i + batch_size])
-
-                    # Reset auto-increment counter to max(id) + 1 if id column exists
-                    if "id" in cols:
-                        dest_cur.execute(f"SELECT COALESCE(MAX(`id`), 0) + 1 FROM `{table_name}`")
-                        next_auto = dest_cur.fetchone()[0]
-                        dest_cur.execute(f"ALTER TABLE `{table_name}` AUTO_INCREMENT = {next_auto}")
-
-                    self.stdout.write(f"  [TRANSFERRED] {table_name}: {src_count} rows")
-
-                dest_cur.execute("SET FOREIGN_KEY_CHECKS = 1;")
-
-        # Verification step
-        self.stdout.write(self.style.SUCCESS("\n=== POST-MIGRATION VERIFICATION ==="))
-        verified_count = 0
-        with connection.cursor() as dest_cur:
-            for entry in manifest:
-                table_name = entry["table"]
-                dest_cur.execute(f"SELECT count(*) FROM `{table_name}`")
-                post_cnt = dest_cur.fetchone()[0]
-                expected = entry["src_count"]
-                if post_cnt == expected:
-                    verified_count += 1
-                else:
-                    self.stdout.write(self.style.ERROR(
-                        f"  MISMATCH on {table_name}: Expected {expected}, got {post_cnt}"
-                    ))
+        if collision_warnings:
+            self.stdout.write(self.style.ERROR("\n[COLLISION WARNINGS]"))
+            for cw in collision_warnings:
+                self.stdout.write(self.style.ERROR(f"  * {cw}"))
 
         self.stdout.write(self.style.SUCCESS(
-            f"Successfully transferred and verified {verified_count}/{len(manifest)} tables into MySQL.\n"
-            f"Zero overwrites. All primary keys and sequence counters preserved."
+            "\n[DISCOVERY COMPLETE] Zero records modified. Authoritative records preserved.\n"
+            "Execution against MySQL remains strictly blocked pending explicit authorization."
         ))

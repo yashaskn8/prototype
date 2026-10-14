@@ -50,6 +50,10 @@ jobs:
       - name: Verify MySQL Readiness
         run: python manage.py check_mysql_ready
 
+      - name: Configure Disposable Test Database Privileges
+        run: |
+          python -c "import pymysql; conn = pymysql.connect(host='127.0.0.1', user='root', password='root_ci_password'); c = conn.cursor(); c.execute('GRANT ALL PRIVILEGES ON \`test_%\`.* TO \'servy_ci\'@\'%\''); c.execute('FLUSH PRIVILEGES'); conn.close(); print('Scoped test_% privileges granted to servy_ci successfully.')"
+
       - name: Apply Migrations on MySQL
         run: python manage.py migrate
 

@@ -225,12 +225,13 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
                 locked.save(update_fields=["resolved", "escalated_call"])
 
                 # Link active DiagnosticSession and record explicit observation event
-                if session and not session.escalated_call_id:
-                    session.escalated_call = call
-                    session.status = "ESCALATED"
-                    session.version += 1
-                    session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
-                elif locked.asset_id and not session:
+                if session:
+                    if not session.escalated_call_id:
+                        session.escalated_call = call
+                        session.status = "ESCALATED"
+                        session.version += 1
+                        session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
+                elif locked.asset_id:
                     session = DiagnosticSession.objects.create(
                         tenant=tenant,
                         customer=locked.customer,
@@ -242,6 +243,7 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
                         version=1,
                     )
 
+                if session:
                     if clean_note:
                         last_seq = session.events.aggregate(m=Max("seq_num"))["m"] or 0
                         DiagnosticEvent.objects.create(

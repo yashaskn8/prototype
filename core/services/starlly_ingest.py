@@ -695,9 +695,31 @@ def ingest_starlly_real_data(
                     checksum_sha256=sha,
                     is_rag_enabled=True,
                     is_confidential=False,
-                    index_status="INDEXED",
+                    index_status="PENDING",
                 )
                 ingest_report["documents_created"] += 1
+
+                try:
+                    from core.models import SourceProvenanceRecord
+                    SourceProvenanceRecord.objects.get_or_create(
+                        tenant=tenant,
+                        source_system="starlly",
+                        source_org=org_id,
+                        external_object_type="document",
+                        external_id=str(sha),
+                        defaults={
+                            "local_object_type": "KnowledgeDocument",
+                            "local_object_id": doc.id,
+                            "asset_code": asset.asset_code,
+                            "checksum_sha256": sha,
+                            "raw_attachment_sha256": sha,
+                            "extracted_text_sha256": hashlib.sha256(text_content.encode("utf-8", errors="ignore")).hexdigest(),
+                            "verification_status": "VERIFIED",
+                            "verification_method": "INGESTION_SHA256",
+                        }
+                    )
+                except Exception as p_exc:
+                    logger.debug("SourceProvenanceRecord creation note: %s", p_exc)
 
                 # Split into sections and create KnowledgeChunks (NEVER delete existing chunks)
                 sections = split_document_into_sections(text_content)

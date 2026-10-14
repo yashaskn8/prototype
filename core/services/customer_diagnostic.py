@@ -246,7 +246,7 @@ def check_for_vague_complaint(complaint: str, asset: Optional[Asset] = None) -> 
 # Versioned Authoritative Customer Procedure Registry
 # Separates RAG candidate action discovery from deterministic procedure authorization.
 VERSIONED_APPROVED_PROCEDURES: Dict[str, Dict[str, Any]] = {
-    # Split AC Unit 2T (SKY-AST-00001)
+    # Split AC Unit 2T (SKY-AST-00001) - Unverified pending authenticated OEM signoff
     "PROC-SKY-AST-00001-AIR-FILTER-CLEAN": {
         "action_id": "PROC-SKY-AST-00001-AIR-FILTER-CLEAN",
         "equipment_model": "Split AC Unit 2T",
@@ -259,9 +259,10 @@ VERSIONED_APPROVED_PROCEDURES: Dict[str, Dict[str, Any]] = {
         ],
         "permitted_audience": "customer",
         "preconditions": ["unit_powered_off", "no_water_hazard"],
-        "reviewer_id": "REV-HVAC-CERT-041",
-        "approval_evidence": "OEM-SPLIT-AC-SAFETY-REV-1.0",
-        "approval_timestamp": "2026-09-15T00:00:00Z",
+        "reviewer_id": "UNVERIFIED",
+        "approval_evidence": "PENDING_AUTHENTICATED_OEM_APPROVAL",
+        "approval_status": "UNVERIFIED",
+        "approval_timestamp": None,
         "revoked": False,
         "safety_policy": "non-invasive-external-filter-clean",
     },
@@ -276,13 +277,14 @@ VERSIONED_APPROVED_PROCEDURES: Dict[str, Dict[str, Any]] = {
         ],
         "permitted_audience": "customer",
         "preconditions": ["no_burning_smell", "no_tripping_breaker"],
-        "reviewer_id": "REV-HVAC-CERT-041",
-        "approval_evidence": "OEM-SPLIT-AC-SAFETY-REV-1.0",
-        "approval_timestamp": "2026-09-15T00:00:00Z",
+        "reviewer_id": "UNVERIFIED",
+        "approval_evidence": "PENDING_AUTHENTICATED_OEM_APPROVAL",
+        "approval_status": "UNVERIFIED",
+        "approval_timestamp": None,
         "revoked": False,
         "safety_policy": "external-main-switch-reset",
     },
-    # General / Demo Asset Procedures (for test suites on demo/milk analyzer assets)
+    # General / Demo Asset Procedures (strictly for isolated demo/test fixtures)
     "PROC-DEMO-SAMPLE-TUBE-CLEAN": {
         "action_id": "PROC-DEMO-SAMPLE-TUBE-CLEAN",
         "equipment_model": "Milk Analyzer",
@@ -296,9 +298,10 @@ VERSIONED_APPROVED_PROCEDURES: Dict[str, Dict[str, Any]] = {
         ],
         "permitted_audience": "customer",
         "preconditions": ["wash_reservoir_accessible"],
-        "reviewer_id": "REV-DEMO-TEST-001",
-        "approval_evidence": "DEMO-FIXTURE-APPROVAL",
-        "approval_timestamp": "2026-09-15T00:00:00Z",
+        "reviewer_id": "DEMO_TEST_ONLY",
+        "approval_evidence": "DEMO_TEST_FIXTURE",
+        "approval_status": "TEST_ONLY",
+        "approval_timestamp": None,
         "revoked": False,
         "safety_policy": "external-rinse-non-chemical",
     },
@@ -308,7 +311,7 @@ VERSIONED_APPROVED_PROCEDURES: Dict[str, Dict[str, Any]] = {
 def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tuple[str, str]:
     """
     Classify a troubleshooting action according to industrial safety boundaries.
-    Enforces deterministic procedure authorization.
+    Enforces deterministic procedure authorization. Fails closed.
     Returns (safety_level, reason_or_warning).
     """
     lower = (step_text or "").lower()
@@ -332,11 +335,32 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
                 return "TECHNICIAN_ONLY", "Requires opening equipment chassis/enclosure or accessing internal components."
         return "INFORMATIONAL_OBSERVATION", "Approved non-invasive visual/status check."
 
-    # 4. Deterministic Versioned Procedure Authorization Check
+    # 4. Check Database-backed ProcedureApproval Model
     asset_code = getattr(asset, "asset_code", "") or ""
     if isinstance(asset, dict):
         asset_code = asset.get("asset_code", "") or ""
 
+    if asset:
+        try:
+            from core.models import ProcedureApproval
+            tenant = getattr(asset, "tenant", None)
+            if tenant:
+                approvals = ProcedureApproval.objects.filter(
+                    tenant=tenant,
+                    approval_status="APPROVED",
+                    permitted_audience="customer",
+                    revoked_at__isnull=True,
+                )
+                for app in approvals:
+                    if app.asset_scope != "*" and app.asset_scope != asset_code:
+                        continue
+                    keywords = app.procedure_keywords or []
+                    if any(kw in lower for kw in keywords):
+                        return "CUSTOMER_APPROVED", f"Authorized customer procedure ({app.procedure_id}) with verified approval."
+        except Exception:
+            pass
+
+    # 5. Deterministic Versioned Procedure Check
     matched_proc = None
     for proc_id, proc in VERSIONED_APPROVED_PROCEDURES.items():
         if proc.get("revoked", False):
@@ -348,7 +372,15 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
             break
 
     if matched_proc:
-        # Check permitted audience
+        # Check if approval status is UNVERIFIED (per Ironclad 5.0 contract)
+        if matched_proc.get("approval_status") == "UNVERIFIED":
+            return "UNKNOWN_REQUIRES_REVIEW", f"Procedure '{matched_proc['action_id']}' lacks verified manufacturer sign-off. Certified technician required."
+
+        if matched_proc.get("approval_status") == "TEST_ONLY":
+            from .customer_isolation import is_test_environment
+            if not is_test_environment():
+                return "UNKNOWN_REQUIRES_REVIEW", f"Procedure '{matched_proc['action_id']}' is not authorized for customer production use."
+
         if matched_proc.get("permitted_audience") not in ("customer", "operator"):
             return "TECHNICIAN_ONLY", f"Procedure '{matched_proc['action_id']}' is certified for technician use only."
 
@@ -369,7 +401,7 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
 
         return "CUSTOMER_APPROVED", f"Authorized customer procedure ({matched_proc['action_id']}) pending deterministic manual grounding."
 
-    # 5. Fail-Closed Default: Unapproved actions require technician review
+    # 6. Fail-Closed Default: Unapproved actions require technician review
     return "UNKNOWN_REQUIRES_REVIEW", "Action is not an authorized customer-safe procedure. Certified technician review required."
 
 
@@ -881,20 +913,40 @@ def get_or_create_customer_session(
     asset: Asset,
     complaint: str,
     user=None,
+    session_id: Optional[str] = None,
+    force_new: bool = False,
 ) -> DiagnosticSession:
-    """Finds an active DiagnosticSession or creates a new persistent session with atomic ledger."""
+    """Finds a specific or active DiagnosticSession, or creates a new persistent session with atomic ledger."""
     with transaction.atomic():
-        active_session = (
-            DiagnosticSession.objects.select_for_update()
-            .filter(
-                tenant=tenant,
-                customer=customer,
-                asset=asset,
-                status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
+        active_session = None
+
+        if session_id:
+            # Explicit session lookup with strict customer and tenant isolation
+            active_session = (
+                DiagnosticSession.objects.select_for_update()
+                .filter(
+                    tenant=tenant,
+                    customer=customer,
+                    session_id=session_id,
+                )
+                .first()
             )
-            .order_by("-updated_at")
-            .first()
-        )
+            if not active_session:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("Diagnostic session not found or does not belong to authorized customer.")
+
+        elif not force_new:
+            active_session = (
+                DiagnosticSession.objects.select_for_update()
+                .filter(
+                    tenant=tenant,
+                    customer=customer,
+                    asset=asset,
+                    status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
+                )
+                .order_by("-updated_at")
+                .first()
+            )
 
         if active_session:
             last_seq = active_session.events.aggregate(m=Max("seq_num"))["m"] or 0

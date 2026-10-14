@@ -55,6 +55,19 @@ def is_real_tenant(tenant: Any) -> bool:
     return is_verified_real_tenant(tenant)
 
 
+def is_test_environment() -> bool:
+    """Detect if current execution is within an isolated test runner or CI environment."""
+    import sys
+    import os
+    return (
+        "test" in sys.argv
+        or getattr(settings, "IN_TEST_SUITE", False)
+        or getattr(settings, "SERVY_ALLOW_TEST_PROVENANCE", False)
+        or os.getenv("CI") == "true"
+        or bool(getattr(settings, "DEBUG", False))
+    )
+
+
 # In-memory test-authorized registry for isolated test suites
 _TEST_VERIFIED_OBJECTS: set = set()
 
@@ -62,7 +75,10 @@ _TEST_VERIFIED_OBJECTS: set = set()
 def register_test_verified_provenance(obj: Any) -> None:
     """Explicitly register an in-memory test fixture as having verified provenance for the current test run.
     Attacker runtime forgery via setting attributes on arbitrary objects is strictly blocked.
+    Production runtime registration is strictly prohibited (fails closed).
     """
+    if not is_test_environment():
+        raise RuntimeError("Test provenance registration is strictly prohibited in production runtime.")
     if not obj:
         return
     obj_id = getattr(obj, "id", None)
@@ -79,7 +95,7 @@ def clear_test_verified_provenance() -> None:
 
 def is_test_verified_object(model_name: str, obj_id: Any) -> bool:
     """Check if an object ID is in the test-authorized set."""
-    if obj_id is None:
+    if not is_test_environment() or obj_id is None:
         return False
     return (model_name.lower(), obj_id) in _TEST_VERIFIED_OBJECTS
 
@@ -186,30 +202,61 @@ def is_verified_real_asset(asset: Any) -> bool:
     if ext_id and str(ext_id) != str(entry.get("external_id")):
         return False
 
+    # Durable database-backed SourceProvenanceRecord check
+    try:
+        from core.models import SourceProvenanceRecord
+        if asset_id and tenant:
+            prov = SourceProvenanceRecord.objects.filter(
+                tenant=tenant,
+                local_object_type="Asset",
+                local_object_id=asset_id,
+                verification_status="VERIFIED",
+            ).first()
+            if prov:
+                return True
+    except Exception:
+        pass
+
     # Durable local object identity binding:
-    # A synthetic asset cannot inherit authorization by simply copying a real asset code.
+    # A synthetic or duplicate asset cannot inherit authorization by simply copying a real asset code.
     asset_id = getattr(asset, "id", None)
     if isinstance(asset, dict):
         asset_id = asset.get("id")
 
+    if not asset_id:
+        return False
+
     if is_test_verified_object("asset", asset_id):
         return True
 
-    t_slug = getattr(tenant, "slug", str(tenant)) if tenant else ""
-    if t_slug == entry.get("tenant_slug"):
-        if asset_id is None or (entry.get("local_id") and asset_id != entry.get("local_id")):
-            return False
-    elif t_slug not in get_real_tenants():
-        return False
+    # Durable database-backed SourceProvenanceRecord check
+    try:
+        from core.models import SourceProvenanceRecord
+        if tenant:
+            prov = SourceProvenanceRecord.objects.filter(
+                tenant=tenant,
+                local_object_type="Asset",
+                local_object_id=asset_id,
+                verification_status="VERIFIED",
+            ).first()
+            if prov:
+                return True
+    except Exception:
+        pass
 
-    return True
+    t_slug = getattr(tenant, "slug", str(tenant)) if tenant else ""
+    if t_slug == entry.get("tenant_slug") or t_slug in get_real_tenants():
+        if entry.get("local_id") and asset_id == entry.get("local_id"):
+            return True
+        return False
+    return False
 
 
 def is_verified_real_customer(customer: Any) -> bool:
     """Positively verify that a customer has authentic server-controlled provenance.
     Requires:
       - Bound to an authorized real company tenant
-      - Matches verified company client registry
+      - Matches verified company client registry or database SourceProvenanceRecord
       - Matches exact local customer ID binding
       - Not a synthetic/demo customer
     """
@@ -232,6 +279,31 @@ def is_verified_real_customer(customer: Any) -> bool:
     if any(kw in name_lower for kw in ("synthetic", "dummy", "fake", "mock", "fixture")):
         return False
 
+    cust_id = getattr(customer, "id", None)
+    if isinstance(customer, dict):
+        cust_id = customer.get("id")
+
+    if not cust_id:
+        return False
+
+    if is_test_verified_object("customer", cust_id):
+        return True
+
+    # Check durable database-backed SourceProvenanceRecord
+    try:
+        from core.models import SourceProvenanceRecord
+        if tenant:
+            prov = SourceProvenanceRecord.objects.filter(
+                tenant=tenant,
+                local_object_type="Customer",
+                local_object_id=cust_id,
+                verification_status="VERIFIED",
+            ).first()
+            if prov:
+                return True
+    except Exception:
+        pass
+
     # Positive match against imported Starlly customers in registry
     registry = VERIFIED_REAL_PROVENANCE_REGISTRY.get("customers", {})
     entry = registry.get(name_clean)
@@ -250,21 +322,11 @@ def is_verified_real_customer(customer: Any) -> bool:
     if src_org and str(src_org) != str(entry.get("source_org")):
         return False
 
-    # Durable local customer ID binding:
-    cust_id = getattr(customer, "id", None)
-    if isinstance(customer, dict):
-        cust_id = customer.get("id")
-
-    if is_test_verified_object("customer", cust_id):
-        return True
-
-    if t_slug == entry.get("tenant_slug"):
-        if cust_id is None or (entry.get("local_id") and cust_id != entry.get("local_id")):
-            return False
-    elif t_slug not in get_real_tenants():
+    if t_slug == entry.get("tenant_slug") or t_slug in get_real_tenants():
+        if entry.get("local_id") and cust_id == entry.get("local_id"):
+            return True
         return False
-
-    return True
+    return False
 
 
 def is_verified_real_document(doc: Any) -> bool:
@@ -273,9 +335,8 @@ def is_verified_real_document(doc: Any) -> bool:
       - Bound to an authorized real company tenant
       - Bound to a verified real asset
       - Active for RAG, non-confidential, sharing not disabled
-      - Has verified import source (matching authentic attachment checksum in registry)
-      - Binds to authorized exact local document ID
-      - Content text matches verified SHA-256 hash
+      - Has verified import source (matching authentic attachment checksum in registry or DB)
+      - Content text matches verified SHA-256 hash for plain text, or media file matches for rich docs
       - Not a synthetic/demo fixture
     """
     if not doc:
@@ -311,11 +372,30 @@ def is_verified_real_document(doc: Any) -> bool:
     if isinstance(doc, dict):
         doc_id = doc.get("id")
 
+    if not doc_id:
+        return False
+
     if is_test_verified_object("knowledgedocument", doc_id):
         return True
 
-    # In production, document must have authentic SHA-256 checksum bound to the exact asset in the verified registry
     checksum = (getattr(doc, "checksum_sha256", "") or "").strip().lower()
+
+    # Check durable database-backed SourceProvenanceRecord
+    try:
+        from core.models import SourceProvenanceRecord
+        if tenant:
+            prov = SourceProvenanceRecord.objects.filter(
+                tenant=tenant,
+                local_object_type="KnowledgeDocument",
+                local_object_id=doc_id,
+                verification_status="VERIFIED",
+            ).first()
+            if prov and (not prov.checksum_sha256 or prov.checksum_sha256 == checksum):
+                return True
+    except Exception:
+        pass
+
+    # In production/registry check: document must have authentic SHA-256 checksum bound to the exact asset
     registry = VERIFIED_REAL_PROVENANCE_REGISTRY.get("documents", {})
     if not checksum or checksum not in registry:
         return False
@@ -331,18 +411,24 @@ def is_verified_real_document(doc: Any) -> bool:
     if asset_code != entry.get("asset_code"):
         return False
 
-    # Durable local document ID binding:
+    # Durable local document ID binding with tenant check:
     t_slug = getattr(tenant, "slug", str(tenant)) if tenant else ""
-    if t_slug == "skydream":
-        if doc_id is not None and entry.get("local_doc_id"):
+    if t_slug == "skydream" or t_slug in get_real_tenants():
+        if entry.get("local_doc_id"):
             if doc_id != entry.get("local_doc_id"):
                 return False
     elif t_slug not in get_real_tenants():
         return False
 
-    # Content integrity verification: if content_text is present, it must hash to the checksum
+    # Content integrity verification:
+    # 1. Plain text documents (.txt, .md): extracted text equals file content
+    # 2. Rich/binary documents (.pdf, .docx): content_text is extracted text, so do not reject
+    #    valid PDF merely because its extracted text is not byte-identical to raw PDF bytes.
     content_text = getattr(doc, "content_text", "")
-    if content_text:
+    filename = (getattr(doc, "original_filename", "") or "").lower()
+    is_plain_text = filename.endswith((".txt", ".md")) or getattr(doc, "source_type", "") == "text"
+
+    if content_text and is_plain_text:
         calc_sha = hashlib.sha256(content_text.encode("utf-8", errors="ignore")).hexdigest().lower()
         if calc_sha != checksum:
             return False
