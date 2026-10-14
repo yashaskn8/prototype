@@ -35,6 +35,7 @@ from core.models import (
 )
 from core.services.starlly_api import StarllyApiClient, validate_api_key, validate_base_url
 from core.services.chroma_store import sync_document_to_chroma
+from core.services.customer_isolation import VERIFIED_REAL_PROVENANCE_REGISTRY
 
 logger = logging.getLogger("servy.starlly_ingest")
 
@@ -46,6 +47,31 @@ APPROVED_ATTACHMENT_HOSTS = [
 class IngestionSecurityError(Exception):
     """Raised when an attachment URL fails SSRF or host validation."""
     pass
+
+
+MAX_ATTACHMENT_FILE_SIZE = 10 * 1024 * 1024  # 10 MB limit
+MAX_EXTRACTED_TEXT_LENGTH = 1_000_000       # 1M characters limit
+
+
+def sanitize_attachment_filename(filename: str, sha_prefix: str = "") -> str:
+    """Generate safe, path-traversal-free filename for local media storage."""
+    if not filename:
+        filename = "manual.txt"
+    # Remove path traversal, directory separators, Windows drive letters, null bytes
+    clean = filename.replace("\\", "/").split("/")[-1]
+    clean = re.sub(r"^[a-zA-Z]:", "", clean)
+    clean = re.sub(r"[\x00-\x1f\x7f]", "", clean)
+    clean = re.sub(r"\.\.+", "", clean)
+    clean = re.sub(r"[^\w\.\-\_]", "_", clean)
+    clean = clean.strip("._ ")
+    if not clean:
+        clean = "manual.txt"
+    if len(clean) > 80:
+        name_part, ext = os.path.splitext(clean)
+        clean = f"{name_part[:70]}{ext}"
+    if sha_prefix:
+        clean = f"{sha_prefix[:16]}_{clean}"
+    return clean
 
 
 def validate_attachment_url(url: str) -> str:
@@ -72,34 +98,77 @@ def validate_attachment_url(url: str) -> str:
 
 
 def fetch_attachment_content(file_url: str, timeout: int = 20) -> tuple[bytes, str, str]:
-    """Securely download attachment binary and extract genuine text content.
+    """Securely download attachment binary with bounded streaming and extract genuine text content.
 
     Returns (raw_bytes, sha256_hex, text_content).
     """
     valid_url = validate_attachment_url(file_url)
 
-    resp = requests.get(
-        valid_url,
-        timeout=timeout,
-        allow_redirects=False,
-        headers={"User-Agent": "Servy-RAG-Ingest/1.0"},
-    )
+    try:
+        resp = requests.get(
+            valid_url,
+            timeout=timeout,
+            allow_redirects=False,
+            stream=True,
+            headers={"User-Agent": "Servy-RAG-Ingest/1.0"},
+        )
+    except Exception as exc:
+        raise IngestionSecurityError(f"Failed to connect to attachment storage: {exc}")
 
     if resp.status_code in (301, 302, 303, 307, 308):
         raise IngestionSecurityError(f"Redirect from attachment storage rejected: status {resp.status_code}")
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Failed to download attachment from {valid_url}: HTTP {resp.status_code}")
+        raise RuntimeError(f"Failed to download attachment: HTTP {resp.status_code}")
 
-    content = resp.content
+    # Check Content-Length header if present
+    content_length = resp.headers.get("Content-Length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_ATTACHMENT_FILE_SIZE:
+                raise IngestionSecurityError(
+                    f"Attachment Content-Length {content_length} exceeds limit of {MAX_ATTACHMENT_FILE_SIZE} bytes."
+                )
+        except ValueError:
+            pass
+
+    # Bounded streaming download in 64KB chunks
+    buffer = bytearray()
+    for chunk in resp.iter_content(chunk_size=65536):
+        buffer.extend(chunk)
+        if len(buffer) > MAX_ATTACHMENT_FILE_SIZE:
+            raise IngestionSecurityError(
+                f"Downloaded stream exceeded maximum file size of {MAX_ATTACHMENT_FILE_SIZE} bytes."
+            )
+
+    content = bytes(buffer)
     if not content:
-        raise ValueError(f"Downloaded attachment from {valid_url} is empty (0 bytes).")
+        raise ValueError("Downloaded attachment is empty (0 bytes).")
+
+    # Format inspection: reject HTML error pages and executables
+    prefix = content[:512].lower()
+    if b"<html" in prefix or b"<!doctype html" in prefix:
+        raise IngestionSecurityError("Downloaded content is an HTML web page, not an authorized technical manual.")
+    if prefix.startswith(b"mz") or prefix.startswith(b"\x7felf"):
+        raise IngestionSecurityError("Downloaded content is an executable binary.")
 
     sha = hashlib.sha256(content).hexdigest()
-    text = resp.text
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            text = content.decode("latin-1")
+        except Exception as err:
+            raise IngestionSecurityError(f"Could not decode text content: {err}")
 
     if not text.strip():
-        raise ValueError(f"Extracted text content from {valid_url} is blank.")
+        raise ValueError("Extracted text content from attachment is blank.")
+
+    if len(text) > MAX_EXTRACTED_TEXT_LENGTH:
+        raise IngestionSecurityError(
+            f"Extracted text length {len(text)} exceeds limit of {MAX_EXTRACTED_TEXT_LENGTH} characters."
+        )
 
     return content, sha, text
 
@@ -149,18 +218,23 @@ def split_document_into_sections(text: str) -> List[Dict[str, str]]:
 def preview_starlly_ingestion(
     tenant_slug: str = "skydream",
     org_id: str = "273",
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    client: Optional[StarllyApiClient] = None,
 ) -> Dict[str, Any]:
     """Read-only preview of real company records available from Starlly API."""
-    client = StarllyApiClient(
-        base_url=settings.STARLLY_API_BASE_URL,
-        api_key=settings.STARLLY_API_KEY,
-        org_id=org_id,
-    )
+    if client is None:
+        resolved_url = base_url or getattr(settings, "STARLLY_API_BASE_URL", "") or os.getenv("STARLLY_API_BASE_URL", "")
+        resolved_key = api_key or getattr(settings, "STARLLY_API_KEY", "") or os.getenv("STARLLY_API_KEY", "")
+        client = StarllyApiClient(
+            base_url=resolved_url,
+            api_key=resolved_key,
+            org_id=org_id,
+        )
 
     assets_res = client.fetch_assets()
     assets = assets_res.get("assets", [])
 
-    # Fetch site-assets
     headers = client.get_auth_headers()
     sa_resp = requests.get(
         f"{client.base_url}/api/external/site-assets/",
@@ -170,7 +244,6 @@ def preview_starlly_ingestion(
     )
     site_assets = sa_resp.json() if sa_resp.status_code == 200 else []
 
-    # Fetch complaints
     comp_resp = requests.get(
         f"{client.base_url}/api/external/complaints/",
         headers=headers,
@@ -216,34 +289,72 @@ def ingest_starlly_real_data(
     tenant_slug: str = "skydream",
     tenant_name: str = "Skydream",
     org_id: str = "273",
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    client: Optional[StarllyApiClient] = None,
+    preview_only: bool = False,
 ) -> Dict[str, Any]:
-    """Execute ACID, zero-deletion ingestion of real company data into dedicated tenant."""
+    """Execute strictly non-destructive, zero-deletion ingestion of real company data.
+
+    Invariants:
+      - Default/preview mode does not mutate any records, files, or vectors.
+      - Never overwrites existing assets, documents, chunks, or files.
+      - Never deletes chunks or vector collections.
+      - Conflicting data is marked CONFLICT_REQUIRES_REVIEW without mutating.
+    """
     logger.info("Starting real company data ingestion for tenant '%s' (Org %s)", tenant_slug, org_id)
 
-    client = StarllyApiClient(
-        base_url=settings.STARLLY_API_BASE_URL,
-        api_key=settings.STARLLY_API_KEY,
-        org_id=org_id,
-    )
+    if preview_only:
+        return preview_starlly_ingestion(
+            tenant_slug=tenant_slug,
+            org_id=org_id,
+            api_key=api_key,
+            base_url=base_url,
+            client=client,
+        )
+
+    if client is None:
+        resolved_url = base_url or getattr(settings, "STARLLY_API_BASE_URL", "") or os.getenv("STARLLY_API_BASE_URL", "")
+        resolved_key = api_key or getattr(settings, "STARLLY_API_KEY", "") or os.getenv("STARLLY_API_KEY", "")
+        client = StarllyApiClient(
+            base_url=resolved_url,
+            api_key=resolved_key,
+            org_id=org_id,
+        )
 
     # 1. Fetch from Starlly
     assets_data = client.fetch_assets().get("assets", [])
     headers = client.get_auth_headers()
 
-    sa_resp = requests.get(f"{client.base_url}/api/external/site-assets/", headers=headers, timeout=15)
+    sa_resp = requests.get(
+        f"{client.base_url}/api/external/site-assets/",
+        headers=headers,
+        timeout=15,
+        allow_redirects=False,
+    )
     site_assets_data = sa_resp.json() if sa_resp.status_code == 200 else []
 
-    comp_resp = requests.get(f"{client.base_url}/api/external/complaints/", headers=headers, timeout=15)
+    comp_resp = requests.get(
+        f"{client.base_url}/api/external/complaints/",
+        headers=headers,
+        timeout=15,
+        allow_redirects=False,
+    )
     complaints_data = comp_resp.json() if comp_resp.status_code == 200 else []
 
     ingest_report: Dict[str, Any] = {
         "tenant": tenant_slug,
         "customers_created": 0,
+        "customers_existing": 0,
         "sites_created": 0,
+        "sites_existing": 0,
         "assets_created": 0,
-        "assets_updated": 0,
+        "assets_already_existed": 0,
         "documents_created": 0,
+        "documents_already_existed": 0,
         "chunks_indexed": 0,
+        "chunks_preserved": 0,
+        "conflicts": [],
         "errors": [],
     }
 
@@ -253,27 +364,8 @@ def ingest_starlly_real_data(
             slug=tenant_slug,
             defaults={"name": tenant_name, "is_active": True},
         )
-        if not tenant.is_active:
-            tenant.is_active = True
-            tenant.save(update_fields=["is_active"])
 
-        # 3. Create domain, category, brand
-        domain, _ = ProductDomain.objects.get_or_create(
-            tenant=tenant,
-            name="HVAC & Cooling Systems",
-            defaults={"description": "Commercial and residential air conditioning, VRF, and chilling equipment"},
-        )
-        category, _ = ProductCategory.objects.get_or_create(
-            tenant=tenant,
-            domain=domain,
-            name="Air Conditioning & Refrigeration",
-        )
-        brand, _ = Brand.objects.get_or_create(
-            tenant=tenant,
-            name="Skydream Engineering",
-        )
-
-        # 4. Ingest Customers and Sites from site-assets
+        # 3. Ingest Customers and Sites from site-assets
         customer_cache: Dict[str, Customer] = {}
         site_cache: Dict[tuple[str, str], Site] = {}
 
@@ -290,6 +382,8 @@ def ingest_starlly_real_data(
                 )
                 if created:
                     ingest_report["customers_created"] += 1
+                else:
+                    ingest_report["customers_existing"] += 1
                 customer_cache[client_name] = cust
 
             if client_name and site_name:
@@ -307,6 +401,8 @@ def ingest_starlly_real_data(
                     )
                     if s_created:
                         ingest_report["sites_created"] += 1
+                    else:
+                        ingest_report["sites_existing"] += 1
                     site_cache[cache_key] = site
 
         # Map assets to their primary site-asset deployment
@@ -316,7 +412,7 @@ def ingest_starlly_real_data(
             if asset_ext_id and asset_ext_id not in primary_deployments:
                 primary_deployments[asset_ext_id] = sa
 
-        # 5. Ingest Assets
+        # 4. Ingest Assets (Non-Destructive: Create-Only, No Overwriting)
         asset_record_cache: Dict[str, Asset] = {}
         for a_data in assets_data:
             code = (a_data.get("code") or "").strip()
@@ -327,14 +423,36 @@ def ingest_starlly_real_data(
             if not code or not name:
                 continue
 
-            product, _ = Product.objects.get_or_create(
-                tenant=tenant,
-                brand=brand,
-                category=category,
-                name=name,
-            )
+            existing_asset = Asset.objects.filter(tenant=tenant, asset_code=code).first()
+            if existing_asset:
+                # Compare immutable source identity and metadata
+                registry_entry = VERIFIED_REAL_PROVENANCE_REGISTRY.get("assets", {}).get(code, {})
+                expected_ext_id = registry_entry.get("external_id")
+                has_conflict = False
+                conflict_reasons = []
+                if expected_ext_id and str(ext_id) != str(expected_ext_id):
+                    has_conflict = True
+                    conflict_reasons.append(f"External ID mismatch: expected {expected_ext_id}, received {ext_id}")
+                if existing_asset.name != name:
+                    has_conflict = True
+                    conflict_reasons.append(f"Asset name mismatch: existing '{existing_asset.name}', received '{name}'")
+                if model and existing_asset.model_number and existing_asset.model_number != model:
+                    has_conflict = True
+                    conflict_reasons.append(f"Model number mismatch: existing '{existing_asset.model_number}', received '{model}'")
 
-            # Resolve customer and site from site-assets deployment if available
+                if has_conflict:
+                    ingest_report["conflicts"].append({
+                        "type": "ASSET_CONFLICT_REQUIRES_REVIEW",
+                        "asset_code": code,
+                        "reasons": conflict_reasons,
+                    })
+
+                # Strictly preserve existing asset without mutation
+                ingest_report["assets_already_existed"] += 1
+                asset_record_cache[ext_id] = existing_asset
+                continue
+
+            # New asset: resolve customer and site from site-assets deployment if available
             cust = None
             site = None
             serial = ""
@@ -348,27 +466,26 @@ def ingest_starlly_real_data(
                     site = site_cache[(c_name, s_name)]
                 serial = dep.get("serial") or ""
 
-            asset, a_created = Asset.objects.update_or_create(
+            product, _ = Product.objects.get_or_create(
                 tenant=tenant,
-                asset_code=code,
-                defaults={
-                    "customer": cust,
-                    "site": site,
-                    "product": product,
-                    "name": name,
-                    "model_number": model if model and model.lower() != "none" else "",
-                    "serial_number": serial,
-                    "status": "active" if a_data.get("is_active", True) else "inactive",
-                },
+                name=name,
             )
-            if a_created:
-                ingest_report["assets_created"] += 1
-            else:
-                ingest_report["assets_updated"] += 1
 
-            asset_record_cache[ext_id] = asset
+            new_asset = Asset.objects.create(
+                tenant=tenant,
+                customer=cust,
+                site=site,
+                product=product,
+                name=name,
+                asset_code=code,
+                model_number=model if model and model.lower() != "none" else "",
+                serial_number=serial,
+                status="active" if a_data.get("is_active", True) else "inactive",
+            )
+            ingest_report["assets_created"] += 1
+            asset_record_cache[ext_id] = new_asset
 
-        # 6. Ingest Attachments as KnowledgeDocuments
+        # 5. Ingest Attachments as KnowledgeDocuments (Non-Destructive)
         for a_data in assets_data:
             ext_id = str(a_data.get("id"))
             asset = asset_record_cache.get(ext_id)
@@ -380,6 +497,11 @@ def ingest_starlly_real_data(
                 att_name = att.get("name") or "manual.txt"
                 file_url = att.get("file_url")
 
+                if not file_url:
+                    continue
+
+                safe_name = sanitize_attachment_filename(att_name)
+
                 try:
                     raw_bytes, sha, text_content = fetch_attachment_content(file_url)
                 except Exception as exc:
@@ -387,8 +509,34 @@ def ingest_starlly_real_data(
                     ingest_report["errors"].append(f"{att_name}: {exc}")
                     continue
 
+                # Check if document already exists with this exact checksum
+                existing_doc = KnowledgeDocument.objects.filter(
+                    tenant=tenant,
+                    asset=asset,
+                    checksum_sha256=sha,
+                ).first()
+
+                if existing_doc:
+                    # Document with matching content exists; preserve it untouched
+                    ingest_report["documents_already_existed"] += 1
+                    ingest_report["chunks_preserved"] += existing_doc.chunks.count()
+                    continue
+
+                # Conflict detection: document with same filename but different content
+                conflict_doc = KnowledgeDocument.objects.filter(
+                    tenant=tenant,
+                    asset=asset,
+                    original_filename=safe_name,
+                ).exclude(checksum_sha256=sha).first()
+
+                if conflict_doc:
+                    ingest_report["conflicts"].append(
+                        f"Document '{safe_name}' on asset {asset.asset_code} has modified remote bytes: CONFLICT_REQUIRES_REVIEW"
+                    )
+                    continue
+
                 # Map doc_type based on filename semantics
-                lower_name = att_name.lower()
+                lower_name = safe_name.lower()
                 if "troubleshoot" in lower_name or "fault" in lower_name or "alarm" in lower_name:
                     doc_type = "troubleshooting"
                 elif "maintenance" in lower_name:
@@ -398,43 +546,39 @@ def ingest_starlly_real_data(
                 else:
                     doc_type = "reference"
 
-                clean_title = f"{asset.name} - {att_name.replace('.txt', '').replace('_', ' ').strip()}"
+                clean_title = f"{asset.name} - {safe_name.replace('.txt', '').replace('_', ' ').strip()}"
 
-                # Store file in local media storage
+                # Store file in local media storage safely without overwriting
                 media_rel_dir = Path("knowledge") / str(tenant.id) / f"{timezone.now():%Y/%m}"
                 media_abs_dir = Path(settings.MEDIA_ROOT) / media_rel_dir
                 media_abs_dir.mkdir(parents=True, exist_ok=True)
-                local_file_name = f"{sha[:16]}_{att_name}"
+                local_file_name = sanitize_attachment_filename(safe_name, sha_prefix=sha)
                 local_file_path = media_abs_dir / local_file_name
-                local_file_path.write_bytes(raw_bytes)
 
-                doc, d_created = KnowledgeDocument.objects.update_or_create(
+                if not local_file_path.exists():
+                    local_file_path.write_bytes(raw_bytes)
+
+                doc = KnowledgeDocument.objects.create(
                     tenant=tenant,
                     asset=asset,
-                    original_filename=att_name,
-                    defaults={
-                        "customer": asset.customer,
-                        "product": asset.product,
-                        "domain": domain,
-                        "category": category,
-                        "title": clean_title,
-                        "description": f"Verified Starlly technical reference for {asset.name} ({asset.asset_code})",
-                        "doc_type": doc_type,
-                        "source_type": "file",
-                        "file": str(media_rel_dir / local_file_name).replace("\\", "/"),
-                        "content_text": text_content,
-                        "checksum_sha256": sha,
-                        "is_rag_enabled": True,
-                        "is_confidential": False,
-                        "index_status": "INDEXED",
-                    },
+                    customer=asset.customer,
+                    product=asset.product,
+                    title=clean_title,
+                    original_filename=safe_name,
+                    description=f"Verified Starlly technical reference for {asset.name} ({asset.asset_code})",
+                    doc_type=doc_type,
+                    source_type="file",
+                    file=str(media_rel_dir / local_file_name).replace("\\", "/"),
+                    content_text=text_content,
+                    checksum_sha256=sha,
+                    is_rag_enabled=True,
+                    is_confidential=False,
+                    index_status="INDEXED",
                 )
                 ingest_report["documents_created"] += 1
 
-                # 7. Split into sections and create KnowledgeChunks
+                # Split into sections and create KnowledgeChunks (NEVER delete existing chunks)
                 sections = split_document_into_sections(text_content)
-                doc.chunks.all().delete()
-
                 for idx, sec in enumerate(sections):
                     KnowledgeChunk.objects.create(
                         tenant=tenant,
@@ -447,7 +591,7 @@ def ingest_starlly_real_data(
                     )
                     ingest_report["chunks_indexed"] += 1
 
-                # Sync to isolated company collection immediately
+                # Sync to isolated company collection without destructive vector deletion
                 sync_document_to_chroma(doc.id)
 
     logger.info("Real company data ingestion complete: %s", ingest_report)
@@ -457,7 +601,7 @@ def ingest_starlly_real_data(
 class StarllyRealDataIngestionService:
     """Service class for real company data ingestion, preview, and verification."""
 
-    def __init__(self, tenant=None, tenant_slug=None, org_id="273"):
+    def __init__(self, tenant=None, tenant_slug=None, org_id="273", api_key=None, base_url=None):
         if tenant:
             self.tenant = tenant
             self.tenant_slug = tenant.slug
@@ -467,35 +611,24 @@ class StarllyRealDataIngestionService:
             self.tenant_name = "Skydream"
             self.tenant = None
         self.org_id = str(org_id)
+        self.api_key = api_key
+        self.base_url = base_url
 
     def preview(self) -> Dict[str, Any]:
-        return preview_starlly_ingestion(tenant_slug=self.tenant_slug, org_id=self.org_id)
-
-    def _fetch_all_raw_data(self) -> Dict[str, Any]:
-        client = StarllyApiClient(
-            base_url=settings.STARLLY_API_BASE_URL,
-            api_key=settings.STARLLY_API_KEY,
+        return preview_starlly_ingestion(
+            tenant_slug=self.tenant_slug,
             org_id=self.org_id,
+            api_key=self.api_key,
+            base_url=self.base_url,
         )
-        assets_data = client.fetch_assets().get("assets", [])
-        headers = client.get_auth_headers()
-        sa_resp = requests.get(f"{client.base_url}/api/external/site-assets/", headers=headers, timeout=15)
-        site_assets_data = sa_resp.json() if sa_resp.status_code == 200 else []
-        comp_resp = requests.get(f"{client.base_url}/api/external/complaints/", headers=headers, timeout=15)
-        complaints_data = comp_resp.json() if comp_resp.status_code == 200 else []
-        return {
-            "assets": assets_data,
-            "site_assets": site_assets_data,
-            "complaints": complaints_data,
-        }
-
-    def _sync_assets(self, tenant, assets_data, site_assets_data):
-        pass
 
     def sync(self) -> Dict[str, Any]:
-        self._sync_assets(self.tenant, [], [])
+        """Execute safe non-destructive ingestion."""
         return ingest_starlly_real_data(
             tenant_slug=self.tenant_slug,
             tenant_name=self.tenant_name,
             org_id=self.org_id,
+            api_key=self.api_key,
+            base_url=self.base_url,
         )
+

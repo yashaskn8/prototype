@@ -124,6 +124,12 @@ def verify_evidence_anchor(
     if not doc.is_rag_enabled:
         return False, "DOCUMENT_RAG_DISABLED", doc
 
+    # Provenance gate under verified_real_only mode
+    from core.services.customer_isolation import get_customer_data_mode, is_verified_real_document
+    if get_customer_data_mode() == "verified_real_only":
+        if not is_verified_real_document(doc):
+            return False, "DOCUMENT_PROVENANCE_NOT_VERIFIED", doc
+
     # Drift Detection 1: Checksum verification
     if expected_checksum and doc.checksum_sha256 != expected_checksum:
         return False, f"DOCUMENT_DRIFT_CHECKSUM: expected {expected_checksum}, found {doc.checksum_sha256}", doc

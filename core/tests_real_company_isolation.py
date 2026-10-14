@@ -471,11 +471,21 @@ class RealCompanyDataIsolationTests(TestCase):
         mock_response.status_code = 200
         mock_response.json.return_value = []
 
-        with patch("core.services.starlly_api.StarllyApiClient.fetch_assets", return_value=mock_asset_data):
-            with patch("requests.get", return_value=mock_response):
-                from core.services.starlly_ingest import ingest_starlly_real_data
-                res1 = ingest_starlly_real_data(tenant_slug=self.real_tenant.slug)
-                res2 = ingest_starlly_real_data(tenant_slug=self.real_tenant.slug)
+        mock_client = MagicMock()
+        mock_client.base_url = "https://mock.starlly.in"
+        mock_client.fetch_assets.return_value = mock_asset_data
+        mock_client.get_auth_headers.return_value = {"Authorization": "Bearer mock_token_sk_123456789012345678"}
+
+        with patch("requests.get", return_value=mock_response):
+            from core.services.starlly_ingest import ingest_starlly_real_data
+            res1 = ingest_starlly_real_data(
+                tenant_slug=self.real_tenant.slug,
+                client=mock_client,
+            )
+            res2 = ingest_starlly_real_data(
+                tenant_slug=self.real_tenant.slug,
+                client=mock_client,
+            )
 
         self.assertEqual(res1["assets_created"], 0)  # Already existed
         self.assertEqual(res2["assets_created"], 0)  # Idempotent re-run
@@ -728,3 +738,285 @@ class RealCompanyDataIsolationTests(TestCase):
         self.assertEqual(session.version, initial_version)
         self.assertEqual(session.events.count(), initial_events_count)
         self.assertEqual(CustomerInteraction.objects.count(), initial_interaction_count)
+
+    # -----------------------------------------------------------------------
+    # 26. Missing Starlly credentials fail closed in production configuration
+    # -----------------------------------------------------------------------
+    def test_26_missing_credentials_fails_closed(self):
+        from core.services.starlly_api import StarllyApiClient, StarllyConfigurationError
+        with patch.dict("os.environ", {}, clear=True):
+            with self.settings(STARLLY_API_KEY=""):
+                with self.assertRaises(StarllyConfigurationError):
+                    client = StarllyApiClient(base_url="https://mock.starlly.in", api_key="")
+                    client.fetch_assets()
+
+    # -----------------------------------------------------------------------
+    # 27. Non-destructive importer preserves chunks, files, and asset records
+    # -----------------------------------------------------------------------
+    def test_27_non_destructive_importer_preserves_records_and_files(self):
+        doc = KnowledgeDocument.objects.create(
+            tenant=self.real_tenant,
+            asset=self.real_asset,
+            title="Ductable AC 5T - 01 Installation and Commissioning",
+            doc_type="installation",
+            content_text="Preexisting non-destructive document content.",
+            is_rag_enabled=True,
+            is_confidential=False,
+            index_status="INDEXED",
+        )
+        chunk = KnowledgeChunk.objects.create(
+            tenant=self.real_tenant,
+            document=doc,
+            chunk_index=0,
+            heading="Preexisting Section",
+            text="Preexisting chunk text that must never be deleted.",
+        )
+        initial_chunk_count = KnowledgeChunk.objects.filter(document=doc).count()
+
+        mock_asset_data = {
+            "assets": [
+                {
+                    "id": 101,
+                    "code": self.real_asset.asset_code,
+                    "name": self.real_asset.name,
+                    "model_number": self.real_asset.model_number,
+                    "serial_number": "SN-001",
+                    "status": "Active",
+                    "attachments": [
+                        {
+                            "id": 9999,
+                            "file_name": "Ductable_AC_Manual.pdf",
+                            "download_url": "https://mock.starlly.in/files/doc.pdf",
+                        }
+                    ],
+                }
+            ]
+        }
+        mock_client = MagicMock()
+        mock_client.base_url = "https://mock.starlly.in"
+        mock_client.fetch_assets.return_value = mock_asset_data
+        mock_client.get_auth_headers.return_value = {"Authorization": "Bearer mock_key"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+
+        with patch("requests.get", return_value=mock_resp):
+            from core.services.starlly_ingest import ingest_starlly_real_data
+            report = ingest_starlly_real_data(tenant_slug=self.real_tenant.slug, client=mock_client)
+
+        # Chunks must NOT have been deleted
+        self.assertEqual(KnowledgeChunk.objects.filter(document=doc).count(), initial_chunk_count)
+        chunk.refresh_from_db()
+        self.assertEqual(chunk.text, "Preexisting chunk text that must never be deleted.")
+
+    # -----------------------------------------------------------------------
+    # 28. Conflicting asset identity reports conflict without mutating
+    # -----------------------------------------------------------------------
+    def test_28_conflicting_asset_identity_reports_conflict(self):
+        # Incoming record has same asset_code as self.real_asset ("SKY-AST-00001"), but different external ID (999 vs 101)
+        mock_asset_data = {
+            "assets": [
+                {
+                    "id": 999,
+                    "code": self.real_asset.asset_code,
+                    "name": "Different Machine Name",
+                    "model_number": "DIFF-999",
+                    "serial_number": "SN-999",
+                    "status": "Active",
+                    "attachments": [],
+                }
+            ]
+        }
+        mock_client = MagicMock()
+        mock_client.base_url = "https://mock.starlly.in"
+        mock_client.fetch_assets.return_value = mock_asset_data
+        mock_client.get_auth_headers.return_value = {"Authorization": "Bearer mock_key"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = []
+
+        with patch("requests.get", return_value=mock_resp):
+            from core.services.starlly_ingest import ingest_starlly_real_data
+            report = ingest_starlly_real_data(tenant_slug=self.real_tenant.slug, client=mock_client)
+
+        self.assertTrue(len(report["conflicts"]) > 0)
+        self.real_asset.refresh_from_db()
+        self.assertNotEqual(self.real_asset.name, "Different Machine Name")
+
+    # -----------------------------------------------------------------------
+    # 29. Attachment downloader rejects path traversal and oversized streams
+    # -----------------------------------------------------------------------
+    def test_29_attachment_downloader_rejects_path_traversal_and_oversize(self):
+        from core.services.starlly_ingest import sanitize_attachment_filename, fetch_attachment_content
+
+        # Path traversal sanitized
+        safe_name = sanitize_attachment_filename("../../etc/passwd")
+        self.assertNotIn("..", safe_name)
+        self.assertNotIn("/", safe_name)
+        self.assertNotIn("\\", safe_name)
+
+        safe_win = sanitize_attachment_filename("..\\..\\windows\\system32\\calc.exe")
+        self.assertNotIn("..", safe_win)
+        self.assertNotIn("\\", safe_win)
+
+        # Oversized download rejected
+        oversized_resp = MagicMock()
+        oversized_resp.status_code = 200
+        oversized_resp.headers = {"Content-Length": "50000000"}  # 50MB
+        oversized_resp.iter_content.return_value = [b"A" * 65536] * 200
+        with patch("requests.get", return_value=oversized_resp):
+            content = fetch_attachment_content("https://starlly.sgp1.digitaloceanspaces.com/files/big.pdf")
+            self.assertEqual(content, "")
+
+    # -----------------------------------------------------------------------
+    # 30. Synthetic document inside real tenant rejected by retrieve query
+    # -----------------------------------------------------------------------
+    def test_30_synthetic_doc_inside_real_tenant_rejected_by_retrieve_query(self):
+        # Create an injected synthetic doc in real tenant with authentic-looking name
+        synth_doc = KnowledgeDocument.objects.create(
+            tenant=self.real_tenant,
+            asset=self.real_asset,
+            title="Split AC Unit 2T - Synthetic Injected Guide",
+            tags="synthetic, dummy",
+            doc_type="troubleshooting",
+            content_text="Clean exterior with distilled water.",
+            is_rag_enabled=True,
+            is_confidential=False,
+            index_status="INDEXED",
+        )
+        synth_chunk = KnowledgeChunk.objects.create(
+            tenant=self.real_tenant,
+            document=synth_doc,
+            chunk_index=0,
+            heading="Clean exterior",
+            text="Clean exterior with distilled water.",
+        )
+
+        from core.services.retriever import retrieve
+        with self.settings(SERVY_CUSTOMER_DATA_MODE="verified_real_only"):
+            results = retrieve(
+                tenant=self.real_tenant,
+                question="clean exterior",
+                asset=self.real_asset,
+                customer=self.real_customer,
+                staff_mode=False,
+            )
+            retrieved_chunk_ids = [r.chunk_id for r in results]
+            self.assertNotIn(synth_chunk.id, retrieved_chunk_ids)
+
+    # -----------------------------------------------------------------------
+    # 31. Grounding rejects missing or fabricated chunks
+    # -----------------------------------------------------------------------
+    def test_31_grounding_rejects_missing_or_fabricated_chunks(self):
+        from core.services.customer_diagnostic import find_grounding_reference
+
+        # Fabricated chunk ID
+        refs = [{
+            "document_id": 9999,
+            "chunk_id": 88888,
+            "text": "clean exterior with distilled water",
+        }]
+        is_grounded, ref, reason = find_grounding_reference(
+            "clean exterior",
+            refs,
+            self.real_tenant.id,
+            asset=self.real_asset,
+            customer=self.real_customer,
+        )
+        self.assertFalse(is_grounded)
+        self.assertEqual(reason, "ACTION_NOT_GROUNDED_IN_CHUNKS")
+
+    # -----------------------------------------------------------------------
+    # 32. Ticketing rejects cross-customer session hijack
+    # -----------------------------------------------------------------------
+    def test_32_ticketing_rejects_cross_customer_session_hijack(self):
+        # Create a session belonging to another customer
+        other_customer = Customer.objects.create(
+            tenant=self.real_tenant,
+            name="Other Customer Ltd",
+        )
+        other_site = Site.objects.create(
+            tenant=self.real_tenant,
+            customer=other_customer,
+            name="Other Plant",
+        )
+        other_asset = Asset.objects.create(
+            tenant=self.real_tenant,
+            customer=other_customer,
+            site=other_site,
+            name="Other Asset Unit",
+            asset_code="SKY-AST-00003",
+            status="active",
+        )
+        other_session = DiagnosticSession.objects.create(
+            tenant=self.real_tenant,
+            customer=other_customer,
+            asset=other_asset,
+            site=other_site,
+            complaint="Other complaint",
+            status="WAITING_INPUT",
+        )
+
+        interaction = CustomerInteraction.objects.create(
+            tenant=self.real_tenant,
+            customer=self.real_customer,
+            asset=self.real_asset,
+            question="AC not cooling",
+            answer="DIAGNOSTIC SUMMARY\nNeed technician.",
+        )
+
+        from core.services.ticketing import create_call_from_interaction
+        call = create_call_from_interaction(interaction, session_id=str(other_session.session_id))
+
+        # Must NOT hijack other customer's session
+        other_session.refresh_from_db()
+        self.assertIsNone(other_session.escalated_call)
+
+    # -----------------------------------------------------------------------
+    # 33. Safety classifier blocks invasive observations
+    # -----------------------------------------------------------------------
+    def test_33_safety_classifier_blocks_invasive_observations(self):
+        from core.services.customer_diagnostic import classify_action_safety
+        # Observation that requires opening chassis or probing live wiring
+        level, reason = classify_action_safety("Open electrical panel and inspect wiring", asset=self.real_asset)
+        self.assertEqual(level, "TECHNICIAN_ONLY")
+
+    # -----------------------------------------------------------------------
+    # 34. Dense retrieval failure does not fall back to demo collections
+    # -----------------------------------------------------------------------
+    def test_34_dense_failure_does_not_fall_back_to_demo_collections(self):
+        from core.services.retriever import retrieve
+        with patch("core.ml.embeddings.load_model", side_effect=RuntimeError("Chroma unavailable")):
+            with self.settings(SERVY_CUSTOMER_DATA_MODE="verified_real_only"):
+                results = retrieve(
+                    tenant=self.real_tenant,
+                    question="air flow problem",
+                    asset=self.real_asset,
+                    customer=self.real_customer,
+                    staff_mode=False,
+                )
+                # Results should either be sparse candidates from real tenant or empty; never demo collections
+                for r in results:
+                    self.assertEqual(r.source_kind, "knowledge_document")
+                    doc = KnowledgeDocument.objects.get(id=r.document_id)
+                    self.assertEqual(doc.tenant_id, self.real_tenant.id)
+
+    # -----------------------------------------------------------------------
+    # 35. Company vector zero-deletion contract
+    # -----------------------------------------------------------------------
+    def test_35_company_vector_zero_deletion_guard(self):
+        from core.services.chroma_store import delete_document_vectors
+        company_doc = KnowledgeDocument.objects.create(
+            tenant=self.real_tenant,
+            asset=self.real_asset,
+            title="Ductable AC 5T - 02 Preventive Maintenance",
+            doc_type="maintenance",
+            is_rag_enabled=True,
+            is_confidential=False,
+        )
+        # Attempt to delete company document vectors without explicit override
+        with self.assertRaises(RuntimeError) as ctx:
+            delete_document_vectors(company_doc, allow_company_purge=False)
+        self.assertIn("Zero-deletion violation", str(ctx.exception))

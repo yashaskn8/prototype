@@ -69,19 +69,29 @@ def get_sparse_collection():
     )
 
 
-def delete_document_vectors(document_id: int):
-    """Purge all chunk vectors for a given document from Chroma collections and BGE index."""
-    try:
-        dense_coll = get_dense_collection()
-        dense_coll.delete(where={"document_id": document_id})
-    except Exception as exc:
-        logger.warning("Error deleting document %s from dense collection: %s", document_id, exc)
+def delete_document_vectors(document_id: Any, allow_company_purge: bool = False):
+    """Purge chunk vectors for a given document.
+    Zero-deletion contract: Real company vectors are strictly protected from deletion.
+    """
+    from core.models import KnowledgeDocument
+    doc_id = document_id.id if hasattr(document_id, "id") else int(document_id)
+    doc = KnowledgeDocument.objects.filter(id=doc_id).select_related("tenant").first()
+    if doc and is_real_company_tenant(doc.tenant) and not allow_company_purge:
+        logger.warning("Zero-deletion contract: Refusing to purge real company vectors for document %s", doc_id)
+        raise RuntimeError(f"Zero-deletion violation: Refusing to purge real company vectors for document {doc_id}")
 
     try:
-        company_coll = get_company_dense_collection()
-        company_coll.delete(where={"document_id": document_id})
+        dense_coll = get_dense_collection()
+        dense_coll.delete(where={"document_id": doc_id})
     except Exception as exc:
-        logger.warning("Error deleting document %s from company collection: %s", document_id, exc)
+        logger.warning("Error deleting document %s from dense collection: %s", doc_id, exc)
+
+    if allow_company_purge:
+        try:
+            company_coll = get_company_dense_collection()
+            company_coll.delete(where={"document_id": doc_id})
+        except Exception as exc:
+            logger.warning("Error deleting document %s from company collection: %s", doc_id, exc)
 
     try:
         sparse_coll = get_sparse_collection()
@@ -99,7 +109,7 @@ def delete_document_vectors(document_id: int):
 
 def sync_document_to_chroma(document_id: int):
     """Sync an indexed KnowledgeDocument from SQLite to ChromaDB.
-    Runs after SQLite transaction commit.
+    Runs non-destructively: never deletes existing vectors.
     """
     from core.models import KnowledgeDocument
     try:
@@ -107,11 +117,9 @@ def sync_document_to_chroma(document_id: int):
             "tenant", "product", "asset", "category", "domain", "customer"
         ).prefetch_related("chunks").get(id=document_id)
     except KnowledgeDocument.DoesNotExist:
-        delete_document_vectors(document_id)
         return False
 
     if not doc.is_rag_enabled:
-        delete_document_vectors(document_id)
         KnowledgeDocument.objects.filter(id=document_id).update(
             index_status="NOT_INDEXED",
             index_error="RAG is disabled for this document"
@@ -120,7 +128,6 @@ def sync_document_to_chroma(document_id: int):
 
     chunks = list(doc.chunks.filter(is_quarantined=False).order_by("chunk_index"))
     if not chunks:
-        delete_document_vectors(document_id)
         KnowledgeDocument.objects.filter(id=document_id).update(
             index_status="NOT_INDEXED",
             index_error="No valid chunks to index"
@@ -129,7 +136,6 @@ def sync_document_to_chroma(document_id: int):
 
     model = get_sentence_transformer()
     if model is None:
-        # Sentence Transformer unavailable; record state and let fallback retriever handle it
         KnowledgeDocument.objects.filter(id=document_id).update(
             index_status="INDEXED",
             indexed_at=timezone.now(),
@@ -141,7 +147,7 @@ def sync_document_to_chroma(document_id: int):
         # Stable chunk ID format: doc_{id}_v{version}_c{idx}
         version = doc.index_version
         ids = [f"doc_{doc.id}_v{version}_c{c.chunk_index}" for c in chunks]
-        
+
         # Build composite metadata-aware text for embedding
         metadata_prefix = " ".join(filter(None, [
             doc.title, doc.description, doc.tags, doc.doc_type,
@@ -154,9 +160,9 @@ def sync_document_to_chroma(document_id: int):
         texts_to_embed = [
             f"{metadata_prefix} {c.heading}\n{c.text}".strip() for c in chunks
         ]
-        
+
         embeddings = model.encode(texts_to_embed, normalize_embeddings=True).tolist()
-        
+
         metadatas = [{
             "document_id": int(doc.id),
             "tenant_id": int(doc.tenant_id),
@@ -169,24 +175,27 @@ def sync_document_to_chroma(document_id: int):
             "heading": str(c.heading)[:200],
             "doc_type": str(doc.doc_type),
         } for c in chunks]
-        
+
         chunk_texts = [c.text for c in chunks]
-        
+
         is_real = is_real_company_tenant(doc.tenant)
         if is_real:
             dense_coll = get_company_dense_collection()
         else:
             dense_coll = get_dense_collection()
 
-        # Clean previous chunks for this document
-        dense_coll.delete(where={"document_id": doc.id})
+        # Non-destructive vector addition: do NOT delete previous vectors
+        existing = dense_coll.get(ids=ids)
+        existing_ids = set(existing.get("ids") or [])
+        new_indices = [i for i, cid in enumerate(ids) if cid not in existing_ids]
 
-        dense_coll.add(
-            ids=ids,
-            embeddings=embeddings,
-            documents=chunk_texts,
-            metadatas=metadatas
-        )
+        if new_indices:
+            dense_coll.add(
+                ids=[ids[i] for i in new_indices],
+                embeddings=[embeddings[i] for i in new_indices],
+                documents=[chunk_texts[i] for i in new_indices],
+                metadatas=[metadatas[i] for i in new_indices]
+            )
 
         KnowledgeDocument.objects.filter(id=document_id).update(
             index_status="INDEXED",

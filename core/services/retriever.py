@@ -63,7 +63,16 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
     )
 
     if not staff_mode and mode == "verified_real_only":
-        qs = qs.exclude(document__title__icontains="synthetic").exclude(document__tags__icontains="synthetic").exclude(document__tags__icontains="dummy")
+        from .customer_isolation import is_verified_real_document
+        qs = qs.exclude(document__title__icontains="synthetic")\
+               .exclude(document__tags__icontains="synthetic")\
+               .exclude(document__tags__icontains="dummy")\
+               .exclude(document__description__icontains="synthetic")\
+               .exclude(document__description__icontains="dummy")
+        # Positive provenance enforcement: only allow documents satisfying is_verified_real_document
+        doc_candidates = KnowledgeDocument.objects.filter(tenant=tenant)
+        verified_doc_ids = {d.id for d in doc_candidates if is_verified_real_document(d)}
+        qs = qs.filter(document_id__in=verified_doc_ids)
 
     if not include_confidential:
         qs = qs.filter(document__is_confidential=False)

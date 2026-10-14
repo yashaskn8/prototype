@@ -311,54 +311,80 @@ def find_grounding_reference(
 ) -> Tuple[bool, Optional[Dict[str, Any]], str]:
     """
     Verifies that action_text is deterministically supported by an applicable, authorized,
-    non-quarantined chunk in the retrieved references.
+    persisted, non-quarantined chunk loaded directly from the database.
+    Caller-provided excerpts and whole-document fallbacks are strictly rejected.
     """
     if not retrieved_references or not action_text:
         return False, None, "NO_REFERENCES_AVAILABLE"
 
     for ref in retrieved_references:
-        doc_id = ref.get("document_id")
-        chunk_id = ref.get("chunk_id")
-        excerpt = (
-            ref.get("excerpt")
-            or ref.get("chunk_text")
-            or ref.get("text")
-            or ref.get("content")
-            or ""
-        )
+        raw_doc_id = ref.get("document_id")
+        raw_chunk_id = ref.get("chunk_id")
 
-        # Re-verify document active state in DB if doc_id is available
-        if doc_id:
-            doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).select_related("product").first()
-            if not doc:
+        if not raw_doc_id or not raw_chunk_id:
+            continue
+
+        try:
+            doc_id = int(raw_doc_id)
+            chunk_id = int(raw_chunk_id)
+        except (ValueError, TypeError):
+            continue
+
+        # Load chunk directly from database with strict relational bindings
+        chunk = KnowledgeChunk.objects.filter(
+            id=chunk_id,
+            document_id=doc_id,
+            tenant_id=tenant_id,
+        ).select_related("document", "document__asset", "document__product").first()
+        if not chunk:
+            continue
+
+        if chunk.is_quarantined:
+            continue
+
+        doc = chunk.document
+        if not doc:
+            continue
+
+        # Document operational gates
+        if not doc.is_rag_enabled or doc.is_confidential or getattr(doc, "disable_sharing", False):
+            continue
+        if doc.index_status not in ("INDEXED", "INDEXING"):
+            continue
+
+        # Customer isolation
+        if doc.customer_id and customer and doc.customer_id != customer.id:
+            continue
+
+        # Asset and product hierarchy applicability
+        if asset:
+            if doc.asset_id and doc.asset_id != asset.id:
                 continue
-            if not doc.is_rag_enabled or doc.is_confidential or getattr(doc, "disable_sharing", False):
+            if doc.product_id and asset.product_id and doc.product_id != asset.product_id:
                 continue
-            if doc.customer_id and customer and doc.customer_id != customer.id:
+
+        # Real-only provenance verification
+        from .customer_isolation import get_customer_data_mode, is_verified_real_document
+        if get_customer_data_mode() == "verified_real_only":
+            if not is_verified_real_document(doc):
                 continue
-            if asset:
-                if doc.asset_id and doc.asset_id != asset.id:
-                    continue
-                if doc.product_id and asset.product_id and doc.product_id != asset.product_id:
-                    continue
 
-        if chunk_id:
-            chunk = KnowledgeChunk.objects.filter(id=chunk_id, document_id=doc_id).first()
-            if chunk:
-                if chunk.is_quarantined:
-                    continue
-                if not excerpt:
-                    excerpt = chunk.text
+        # Check prompt injection on the persisted chunk text
+        from core.services.content_safety import detect_document_prompt_injection
+        if chunk.text:
+            injections = detect_document_prompt_injection(chunk.text)
+            if injections or (chunk.safety_flags and "injection" in str(chunk.safety_flags).lower()):
+                continue
 
-        # If excerpt still empty, fallback to document content if doc available
-        if not excerpt and doc_id:
-            doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).first()
-            if doc:
-                excerpt = doc.content_text
-
-        is_bound, reason = validate_source_binding(action_text, excerpt)
+        # MUST validate deterministically against persisted chunk text (NOT caller-provided excerpt)
+        is_bound, reason = validate_source_binding(action_text, chunk.text)
         if is_bound:
-            return True, ref, "VALID"
+            verified_ref = dict(ref)
+            verified_ref["document_id"] = doc.id
+            verified_ref["chunk_id"] = chunk.id
+            verified_ref["heading"] = chunk.heading or ""
+            verified_ref["text"] = chunk.text
+            return True, verified_ref, "VALID"
 
     return False, None, "ACTION_NOT_GROUNDED_IN_CHUNKS"
 

@@ -106,10 +106,17 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
 
     tenant = interaction.tenant
 
-    # Incident-level deduplication:
+    # Incident-level deduplication with strict multi-tenant and asset verification:
     target_session = None
     if session_id:
-        target_session = DiagnosticSession.objects.filter(tenant=tenant, session_id=session_id).first()
+        # Prevent user-supplied session ID from binding to another customer's or asset's session
+        target_session = DiagnosticSession.objects.filter(
+            tenant=tenant,
+            customer=interaction.customer,
+            session_id=session_id,
+        ).first()
+        if interaction.asset_id and target_session and target_session.asset_id != interaction.asset_id:
+            target_session = None
     elif interaction.asset_id:
         target_session = DiagnosticSession.objects.filter(
             tenant=tenant,
@@ -122,17 +129,20 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
 
     if target_session and target_session.escalated_call_id:
         existing_call = target_session.escalated_call
+
         session_complaint = (target_session.complaint or "").strip().lower()
 
-        # Check if this interaction is genuinely part of the same incident
+        # Server-authoritative incident identity:
+        # A distinct symptom or complaint on the same asset creates an independent incident ticket.
+        # Repeated submissions of the same complaint or multi-turn turns within the same incident share the ticket.
         is_same_incident = False
         if session_id and str(target_session.session_id) == str(session_id):
             is_same_incident = True
-        elif question_text and session_complaint and (
+        elif not session_id and question_text and session_complaint and (
             question_text == session_complaint or
             "turn of incident" in question_text or
-            session_complaint in question_text or
-            question_text in session_complaint
+            (session_complaint in question_text and len(session_complaint) > 15) or
+            (question_text in session_complaint and len(question_text) > 15)
         ):
             is_same_incident = True
 
