@@ -3,7 +3,7 @@ import logging
 from django.conf import settings
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
 from django.db import transaction
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Max
 from django.http import FileResponse, Http404
 from django.middleware.csrf import get_token
 from django.utils import timezone
@@ -18,7 +18,7 @@ from core.models import (
     Tenant, Customer, Site, Asset, Product, Project, ServiceCall, CallUpdate,
     KnowledgeDocument, KnowledgeChunk, CustomerInteraction, StaffProfile,
     TenantMembership, InventoryItem, PartRequest, OperationalZone,
-    ProductCategory, ProductDomain, Brand, DiagnosticSession
+    ProductCategory, ProductDomain, Brand, DiagnosticSession, DiagnosticEvent
 )
 from core.security import (
     require_api_context, authorized_knowledge_queryset,
@@ -48,6 +48,11 @@ from core.services.customer_diagnostic import (
     get_or_create_customer_session,
     record_customer_action_presentation,
     resolve_customer_session,
+)
+from core.diagnostics.schemas import (
+    EVENT_CLARIFICATION_RECORDED,
+    EVENT_OBSERVATION_RECORDED,
+    EVENT_SESSION_ESCALATED,
 )
 from core.forms import MAX_KB_UPLOAD_BYTES
 
@@ -368,12 +373,30 @@ class CustomerSupportContextView(APIView):
 
         active_session = session_qs.first()
         if active_session:
+            latest_interaction = CustomerInteraction.objects.filter(
+                tenant=tenant,
+                customer=customer,
+                asset=active_session.asset,
+            ).order_by("-created_at").first()
+
+            contract_data = None
+            if latest_interaction:
+                contract_data = build_structured_diagnostic_contract(
+                    interaction=latest_interaction,
+                    session=active_session,
+                    raw_answer=latest_interaction.answer or "",
+                    retrieved_references=latest_interaction.source_refs or [],
+                    is_hazard=("IMMEDIATE SAFETY RISK" in (latest_interaction.answer or "")),
+                    hazard_warning=(latest_interaction.answer if "IMMEDIATE SAFETY RISK" in (latest_interaction.answer or "") else ""),
+                )
+
             active_session_data = {
                 "session_id": str(active_session.session_id),
                 "asset_id": active_session.asset_id,
                 "status": active_session.status,
                 "version": active_session.version,
                 "complaint": active_session.complaint,
+                "contract": contract_data,
             }
 
         return Response({
@@ -384,8 +407,16 @@ class CustomerSupportContextView(APIView):
         })
 
 
+def _clean_input(val, max_len=1000):
+    if val is None:
+        return ""
+    if not isinstance(val, str):
+        val = str(val)
+    return val.strip()[:max_len]
+
+
 class CustomerSupportQueryView(APIView):
-    """Execute customer RAG query before ticket creation."""
+    """Execute customer RAG query before ticket creation with multi-input hazard evaluation."""
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [CustomerRAGThrottle]
 
@@ -416,7 +447,9 @@ class CustomerSupportQueryView(APIView):
 
         site_id = request.data.get("site_id")
         asset_id = request.data.get("asset_id")
-        question = (request.data.get("question") or request.data.get("query") or "").strip()
+        question = _clean_input(request.data.get("question") or request.data.get("query"))
+        clarification_response = _clean_input(request.data.get("clarification_response"))
+        user_observation = _clean_input(request.data.get("observation"))
 
         if not site_id or not asset_id or not question:
             return Response({"detail": "Site, asset, and question are required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -432,24 +465,60 @@ class CustomerSupportQueryView(APIView):
         except Asset.DoesNotExist:
             return Response({"detail": "Selected asset does not belong to this customer or site."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Step 1: Industrial Safety Hazard Check
-        is_hazard, hazard_warning = check_for_safety_hazard(question)
+        # Step 1: Industrial Safety Hazard Check ACROSS ALL INPUTS
+        # Validates complaint, clarification response, and observation together before RAG
+        all_inputs = [question, clarification_response, user_observation]
+        combined_text = " ".join(t for t in all_inputs if t)
+
+        is_hazard, hazard_warning = check_for_safety_hazard(combined_text)
+        if not is_hazard:
+            for inp in all_inputs:
+                if inp:
+                    is_h, h_w = check_for_safety_hazard(inp)
+                    if is_h:
+                        is_hazard, hazard_warning = is_h, h_w
+                        break
+
         if is_hazard:
             session = get_or_create_customer_session(
                 tenant=tenant,
                 customer=customer,
                 site=site,
                 asset=asset,
-                complaint=question,
+                complaint=question or clarification_response,
                 user=request.user,
             )
+            with transaction.atomic():
+                locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
+                locked_session.status = "ESCALATED"
+                locked_session.version += 1
+                locked_session.save(update_fields=["status", "version", "updated_at"])
+
+                last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
+                DiagnosticEvent.objects.create(
+                    tenant=tenant,
+                    session=locked_session,
+                    seq_num=last_seq + 1,
+                    event_type=EVENT_OBSERVATION_RECORDED,
+                    actor_role="customer",
+                    payload={"observation": clarification_response or question, "hazard": True},
+                )
+                DiagnosticEvent.objects.create(
+                    tenant=tenant,
+                    session=locked_session,
+                    seq_num=last_seq + 2,
+                    event_type=EVENT_SESSION_ESCALATED,
+                    actor_role="system",
+                    payload={"reason": "Safety hazard detected in customer input", "warning": hazard_warning},
+                )
+
             interaction = CustomerInteraction.objects.create(
                 tenant=tenant,
                 created_by=request.user,
                 customer=customer,
                 site=site,
                 asset=asset,
-                question=question,
+                question=combined_text or question,
                 answer=hazard_warning,
                 source_refs=[],
             )
@@ -464,10 +533,7 @@ class CustomerSupportQueryView(APIView):
             return Response(contract)
 
         # Step 2: Symptom Ambiguity / Clarification Check
-        clarification_response = request.data.get("clarification_response", "").strip()
-        combined_question = f"{question} - {clarification_response}" if clarification_response else question
-
-        is_vague, clarif_q, clarif_opts = check_for_vague_complaint(question)
+        is_vague, clarif_q, clarif_opts = check_for_vague_complaint(question, asset=asset)
         if is_vague and not clarification_response:
             session = get_or_create_customer_session(
                 tenant=tenant,
@@ -496,6 +562,32 @@ class CustomerSupportQueryView(APIView):
                 clarification_options=clarif_opts,
             )
             return Response(contract)
+
+        # If user answered clarification, bind and persist clarification event to session
+        if clarification_response:
+            session = get_or_create_customer_session(
+                tenant=tenant,
+                customer=customer,
+                site=site,
+                asset=asset,
+                complaint=question,
+                user=request.user,
+            )
+            with transaction.atomic():
+                locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
+                last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
+                DiagnosticEvent.objects.create(
+                    tenant=tenant,
+                    session=locked_session,
+                    seq_num=last_seq + 1,
+                    event_type=EVENT_CLARIFICATION_RECORDED,
+                    actor_role="customer",
+                    payload={"question": question, "clarification": clarification_response},
+                )
+                locked_session.version += 1
+                locked_session.save(update_fields=["version", "updated_at"])
+
+        combined_question = f"{question} - {clarification_response}" if clarification_response else question
 
         # Step 3: Run RAG in Customer Mode (category-independent, customer-safe)
         rag_res = ask_rag(
@@ -595,15 +687,39 @@ class CustomerSupportResolveView(APIView):
         if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Check for linked active DiagnosticSession
+        # Safety Guard: Check if interaction or session has an active hazard or escalation
+        is_hazard, _ = check_for_safety_hazard(interaction.question or "")
+        if is_hazard or "IMMEDIATE SAFETY RISK" in (interaction.answer or ""):
+            return Response(
+                {"detail": "Cannot resolve an interaction with an active safety hazard. Certified technician dispatch required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if interaction.escalated_call_id:
+            return Response(
+                {"detail": "Cannot resolve an interaction that has already been escalated to service call."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         session = None
         if interaction.asset_id:
-            session = DiagnosticSession.objects.filter(
-                tenant=tenant,
-                customer=interaction.customer,
-                asset=interaction.asset,
-                status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
-            ).order_by("-updated_at").first()
+            session = (
+                DiagnosticSession.objects.filter(
+                    tenant=tenant,
+                    customer=interaction.customer,
+                    asset=interaction.asset,
+                )
+                .exclude(status="RESOLVED")
+                .order_by("-updated_at")
+                .first()
+            )
+
+            if session:
+                if session.status in ("ESCALATED", "ABANDONED"):
+                    return Response(
+                        {"detail": f"Cannot resolve session in terminal status '{session.status}'. Certified technician service required."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
         resolve_customer_session(
             tenant=tenant,
@@ -643,8 +759,10 @@ class CustomerSupportEscalateView(APIView):
         if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Idempotent ticket creation with OneToOne constraint enforcement
-        call = create_call_from_interaction(interaction)
+        note = _clean_input(request.data.get("note") or request.data.get("customer_note"))
+
+        # Idempotent ticket creation with OneToOne constraint enforcement and customer observation preservation
+        call = create_call_from_interaction(interaction, customer_note=note)
         return Response({
             "call_id": call.id,
             "servy_id": call.servy_id,

@@ -149,9 +149,18 @@ export function CustomerSupportPage() {
   }
 
   function handleResumeSession() {
-    if (activeSessionNotice?.complaint) {
-      setQuery(activeSessionNotice.complaint);
-      submitDiagnosticQuery(activeSessionNotice.complaint);
+    if (activeSessionNotice) {
+      if (activeSessionNotice.complaint) {
+        setQuery(activeSessionNotice.complaint);
+      }
+      if (activeSessionNotice.contract) {
+        setResult(activeSessionNotice.contract);
+        setActiveSessionNotice(null);
+        return;
+      }
+      if (activeSessionNotice.complaint) {
+        setQuery(activeSessionNotice.complaint);
+      }
     }
   }
 
@@ -285,10 +294,15 @@ export function CustomerSupportPage() {
             <Ticket size={18} /> Service Ticket Created: #{escalationResult.servy_id}
           </div>
           <p style={{ fontSize: '0.85rem', marginBottom: '6px' }}>
-            A certified service technician has been assigned to your case. Your original issue and diagnostic observations have been safely handed off.
+            {escalationResult.status === 'assigned'
+              ? 'A certified service technician has been assigned to your case. Your diagnostic history has been safely handed off.'
+              : 'Your service request has been logged and queued for technician dispatch.'}
           </p>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            Status: <strong>{escalationResult.status?.toUpperCase() || 'ASSIGNED'}</strong> | Priority: <strong>{escalationResult.priority?.toUpperCase() || 'NORMAL'}</strong>
+            Status: <strong>{escalationResult.status?.toUpperCase() || 'OPEN'}</strong> | Priority: <strong>{escalationResult.priority?.toUpperCase() || 'NORMAL'}</strong>
+            {escalationResult.technician && escalationResult.technician !== 'Unassigned' && (
+              <span> | Technician: <strong>{escalationResult.technician}</strong></span>
+            )}
           </div>
         </div>
       )}
@@ -668,16 +682,26 @@ export function CustomerSupportPage() {
                     🚨 TECHNICIAN-ONLY WORK REQUIRED (DO NOT ATTEMPT)
                   </div>
                   <p style={{ fontSize: '0.82rem', color: '#7f1d1d', marginBottom: '10px' }}>
-                    The following procedures require internal cabinet access, mains voltage handling, or certified calibration tools:
+                    The following procedures require certified service technician tools, calibration equipment, or internal cabinet access:
                   </p>
                   <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#991b1b' }}>
                     {result.technician_only_actions.map((tech, idx) => (
                       <li key={idx} style={{ marginBottom: '6px' }}>
-                        <strong>{tech.action}</strong>
-                        {tech.warning && <span style={{ fontSize: '0.78rem', opacity: 0.9 }}> ({tech.warning})</span>}
+                        <strong>{tech.action || 'Certified technician service required.'}</strong>
+                        {tech.warning && <span style={{ fontSize: '0.78rem', opacity: 0.9 }}> — {tech.warning}</span>}
                       </li>
                     ))}
                   </ul>
+                  <div style={{ marginTop: '12px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      onClick={() => handleEscalate('Technician-only procedure required')}
+                      disabled={escalating || escalationResult}
+                    >
+                      <Ticket size={14} style={{ marginRight: '4px' }} /> Request Technician Dispatch
+                    </button>
+                  </div>
                 </div>
               )}
 

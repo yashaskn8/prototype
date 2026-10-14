@@ -96,28 +96,89 @@ def create_service_call_record(
     raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
 
 
-def create_call_from_interaction(interaction):
+def create_call_from_interaction(interaction, customer_note: str = ""):
+    from core.models import CustomerInteraction, DiagnosticEvent, DiagnosticSession
+    from core.services.customer_diagnostic import check_for_safety_hazard
+
     interaction.refresh_from_db()
     if interaction.escalated_call_id:
         return interaction.escalated_call
 
     tenant = interaction.tenant
+
+    # Incident-level fast check: if active session or active open service call exists for this customer & asset, reuse ticket
+    if interaction.asset_id:
+        existing_session = DiagnosticSession.objects.filter(
+            tenant=tenant,
+            customer=interaction.customer,
+            asset=interaction.asset,
+            escalated_call__isnull=False,
+        ).order_by("-updated_at").first()
+        if existing_session and existing_session.escalated_call:
+            return existing_session.escalated_call
+
+        existing_call = ServiceCall.objects.filter(
+            tenant=tenant,
+            customer=interaction.customer,
+            asset=interaction.asset,
+            status__in=["open", "assigned", "in_progress"],
+        ).order_by("-created_at").first()
+        if existing_call:
+            return existing_call
+
     zone = interaction.site.zone if interaction.site else None
     branch = zone.branch if zone and zone.branch else None
     technician = choose_technician(tenant, branch=branch, zone=zone)
-    priority = "normal"
+
+    # Server-authoritative priority: safety hazards receive critical SLA priority
+    is_hazard, _ = check_for_safety_hazard(interaction.question or "")
+    if is_hazard or "IMMEDIATE SAFETY RISK" in (interaction.answer or ""):
+        priority = "critical"
+    else:
+        priority = "normal"
+
     sla = _sla_for(tenant, priority)
     now = timezone.now()
 
     for attempt in range(5):
         try:
             with transaction.atomic():
-                from core.models import CustomerInteraction, DiagnosticEvent, DiagnosticSession
-                locked = CustomerInteraction.objects.filter(id=interaction.id).first()
+                locked = CustomerInteraction.objects.select_for_update().filter(id=interaction.id).first()
                 if not locked:
                     raise ValueError("Interaction record not found.")
                 if locked.escalated_call_id:
                     return locked.escalated_call
+
+                # Incident-level check under lock: ensure exactly one ServiceCall per incident
+                session = None
+                if locked.asset_id:
+                    session = (
+                        DiagnosticSession.objects.select_for_update()
+                        .filter(
+                            tenant=tenant,
+                            customer=locked.customer,
+                            asset=locked.asset,
+                        )
+                        .exclude(status="RESOLVED")
+                        .order_by("-updated_at")
+                        .first()
+                    )
+                    if session and session.escalated_call_id:
+                        return session.escalated_call
+
+                    existing_call = ServiceCall.objects.select_for_update().filter(
+                        tenant=tenant,
+                        customer=locked.customer,
+                        asset=locked.asset,
+                        status__in=["open", "assigned", "in_progress"],
+                    ).order_by("-created_at").first()
+                    if existing_call:
+                        if session and not session.escalated_call_id:
+                            session.escalated_call = existing_call
+                            session.status = "ESCALATED"
+                            session.version += 1
+                            session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
+                        return existing_call
 
                 ref_list = []
                 if interaction.source_refs:
@@ -130,10 +191,13 @@ def create_call_from_interaction(interaction):
                 # Keep the customer's authentic original reported complaint clean as primary complaint
                 authentic_complaint = (interaction.question or "").strip()
 
-                # Separate diagnostic guidance, references, and audit trail into technician notes
+                clean_note = (customer_note or "").strip()[:500]
+
+                # Separate diagnostic guidance, references, and customer observations into technician notes
                 tech_notes = (
                     f"Customer AI Self-Service Escalation at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
                     f"Customer Original Complaint:\n{authentic_complaint}\n\n"
+                    f"Customer Escalation Observation / Note:\n{clean_note or 'None provided'}\n\n"
                     f"Sources Cited:\n{ref_text}\n\n"
                     f"AI Diagnostic Guidance Provided:\n{interaction.answer[:3000]}"
                 )
@@ -158,34 +222,54 @@ def create_call_from_interaction(interaction):
                 locked.escalated_call = call
                 locked.save(update_fields=["resolved", "escalated_call"])
 
-                # Link active DiagnosticSession if one exists for this customer & asset
-                if interaction.asset_id:
-                    session = DiagnosticSession.objects.filter(
+                # Link active DiagnosticSession and record explicit observation event
+                if session and not session.escalated_call_id:
+                    session.escalated_call = call
+                    session.status = "ESCALATED"
+                    session.version += 1
+                    session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
+                elif locked.asset_id and not session:
+                    session = DiagnosticSession.objects.create(
                         tenant=tenant,
-                        customer=interaction.customer,
-                        asset=interaction.asset,
-                        status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
-                    ).order_by("-updated_at").first()
-                    if session and not session.escalated_call_id:
-                        session.escalated_call = call
-                        session.status = "ESCALATED"
-                        session.version += 1
-                        session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
+                        customer=locked.customer,
+                        site=locked.site,
+                        asset=locked.asset,
+                        complaint=authentic_complaint,
+                        status="ESCALATED",
+                        escalated_call=call,
+                        version=1,
+                    )
 
-                        last_seq = session.events.count()
+                    if clean_note:
+                        last_seq = session.events.aggregate(m=Max("seq_num"))["m"] or 0
                         DiagnosticEvent.objects.create(
                             tenant=tenant,
                             session=session,
                             seq_num=last_seq + 1,
-                            event_type="SESSION_ESCALATED",
+                            event_type="OBSERVATION_RECORDED",
                             actor_role="customer",
                             payload={
-                                "reason": "Escalated from Customer AI Support",
-                                "service_call_id": call.id,
-                                "servy_id": call.servy_id,
+                                "observation": clean_note,
+                                "outcome": "UNABLE_TO_PERFORM" if "unable" in clean_note.lower() else "CUSTOMER_NOTE",
                                 "interaction_id": interaction.id,
                             },
                         )
+
+                    last_seq = session.events.aggregate(m=Max("seq_num"))["m"] or 0
+                    DiagnosticEvent.objects.create(
+                        tenant=tenant,
+                        session=session,
+                        seq_num=last_seq + 1,
+                        event_type="SESSION_ESCALATED",
+                        actor_role="customer",
+                        payload={
+                            "reason": "Escalated from Customer AI Support",
+                            "service_call_id": call.id,
+                            "servy_id": call.servy_id,
+                            "interaction_id": interaction.id,
+                            "customer_note": clean_note,
+                        },
+                    )
 
                 interaction.refresh_from_db()
                 return call
@@ -200,4 +284,3 @@ def create_call_from_interaction(interaction):
     if interaction.escalated_call_id:
         return interaction.escalated_call
     raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
-

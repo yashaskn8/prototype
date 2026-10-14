@@ -485,3 +485,309 @@ class CustomerRagEndToEndTests(TestCase):
         data = res.json()
         self.assertIn("cannot reveal system instructions", data.get("answer", "").lower())
         self.assertEqual(len(data.get("citations", [])), 0)
+
+    # -----------------------------------------------------------------------
+    # Section 21: Release Red-Team Mission Scenarios (P0/P1 Adversarial Audit)
+    # -----------------------------------------------------------------------
+
+    def test_scenario_1_hazard_in_clarification_follow_up(self):
+        """Customer starts with vague complaint, then reports sparks through clarification."""
+        self.client.force_login(self.user_a1)
+        url = reverse("api_customer_support_query")
+
+        # Step 1: Vague complaint triggers clarification
+        res1 = self.client.post(url, {
+            "site_id": self.site_a1.id,
+            "asset_id": self.asset_a1.id,
+            "question": "My machine is not working.",
+        }, content_type="application/json")
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res1.json()["response_type"], "CLARIFICATION")
+
+        # Step 2: Customer responds with severe hazard symptom
+        res2 = self.client.post(url, {
+            "site_id": self.site_a1.id,
+            "asset_id": self.asset_a1.id,
+            "question": "My machine is not working.",
+            "clarification_response": "There are sparks and a burning smell coming from the unit.",
+        }, content_type="application/json")
+        self.assertEqual(res2.status_code, 200)
+        data2 = res2.json()
+
+        # Immediate conservative safety handling
+        self.assertEqual(data2["response_type"], "ESCALATION_REQUIRED")
+        self.assertFalse(data2["can_resolve"])
+        self.assertTrue(data2["can_escalate"])
+        self.assertEqual(len(data2["customer_safe_actions"]), 0)
+
+        # Linked session is marked ESCALATED and hazard recorded
+        session = DiagnosticSession.objects.filter(customer=self.customer_a1, asset=self.asset_a1).latest("created_at")
+        self.assertEqual(session.status, "ESCALATED")
+        has_obs_event = session.events.filter(event_type="OBSERVATION_RECORDED").exists()
+        has_esc_event = session.events.filter(event_type="SESSION_ESCALATED").exists()
+        self.assertTrue(has_obs_event)
+        self.assertTrue(has_esc_event)
+
+        # Step 3: Direct attempt to resolve this hazard interaction is rejected with HTTP 400
+        interaction_id = data2["interaction_id"]
+        resolve_url = reverse("api_customer_support_resolve", args=[interaction_id])
+        res3 = self.client.post(resolve_url)
+        self.assertEqual(res3.status_code, 400)
+        self.assertIn("active safety hazard", res3.json()["detail"].lower())
+
+    def test_scenario_2_full_json_scan_for_restricted_procedures(self):
+        """Search every string field recursively to ensure zero procedural leakage."""
+        self.client.force_login(self.user_a1)
+        url = reverse("api_customer_support_query")
+        res = self.client.post(url, {
+            "site_id": self.site_a1.id,
+            "asset_id": self.asset_a1.id,
+            "question": "Internal power supply terminal live circuit diagnostic",
+        }, content_type="application/json")
+
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        restricted_phrases = [
+            "open electrical cabinet",
+            "defeat interlock",
+            "bridge fuse",
+            "415v",
+            "live circuit",
+        ]
+
+        def _scan_strings(val):
+            if isinstance(val, str):
+                lower = val.lower()
+                for phrase in restricted_phrases:
+                    self.assertNotIn(
+                        phrase,
+                        lower,
+                        f"CRITICAL LEAK: Found restricted procedural string '{phrase}' in customer response payload!",
+                    )
+            elif isinstance(val, list):
+                for item in val:
+                    _scan_strings(item)
+            elif isinstance(val, dict):
+                for v in val.values():
+                    _scan_strings(v)
+
+        _scan_strings(data)
+        self.assertEqual(len(data.get("customer_safe_actions", [])), 0)
+
+    def test_scenario_3_wrong_citation_rejection(self):
+        """Action cannot be grounded in an unrelated or wrong-product document."""
+        from core.services.customer_diagnostic import find_grounding_reference
+
+        # Document belonging to another tenant or wrong equipment
+        fake_refs = [{
+            "document_id": 999999,
+            "chunk_id": 999999,
+            "title": "Unrelated Document",
+            "reference": "Unrelated Document",
+            "excerpt": "This document describes a completely unrelated hydraulic pump.",
+        }]
+
+        is_grounded, matched_ref, reason = find_grounding_reference(
+            "Clean sample intake tube",
+            fake_refs,
+            tenant_id=self.tenant_a.id,
+            asset=self.asset_a1,
+        )
+        self.assertFalse(is_grounded)
+        self.assertIsNone(matched_ref)
+
+    def test_scenario_4_no_evidence_abstention(self):
+        """Unsupported complaint produces INSUFFICIENT_EVIDENCE without fabricated actions."""
+        self.client.force_login(self.user_a1)
+        url = reverse("api_customer_support_query")
+        res = self.client.post(url, {
+            "site_id": self.site_a1.id,
+            "asset_id": self.asset_a1.id,
+            "question": "How do I replace the quantum flux capacitor on this analyzer?",
+        }, content_type="application/json")
+
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(len(data["customer_safe_actions"]), 0)
+        self.assertEqual(data.get("expected_result", ""), "")
+        self.assertFalse(data["can_resolve"])
+        self.assertTrue(data["can_escalate"])
+        self.assertIn("insufficient evidence", data.get("answer", "").lower())
+
+    def test_scenario_5_refresh_and_resume_preserves_session(self):
+        """Refresh and resume preserve the existing session without re-submitting a POST."""
+        self.client.force_login(self.user_a1)
+        query_url = reverse("api_customer_support_query")
+
+        # Initial query creates session
+        res = self.client.post(query_url, {
+            "site_id": self.site_a1.id,
+            "asset_id": self.asset_a1.id,
+            "question": "The analyzer switches on, but fails to draw a sample.",
+        }, content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        initial_data = res.json()
+        session_id = initial_data["session_id"]
+        session = DiagnosticSession.objects.get(session_id=session_id)
+        event_count_before = session.events.count()
+
+        # Browser refresh reads context without POST
+        context_url = reverse("api_customer_support_context") + f"?asset_id={self.asset_a1.id}"
+        ctx_res = self.client.get(context_url)
+        self.assertEqual(ctx_res.status_code, 200)
+        ctx_data = ctx_res.json()
+
+        active_s = ctx_data.get("active_session")
+        self.assertIsNotNone(active_s)
+        self.assertEqual(active_s["session_id"], session_id)
+        self.assertIsNotNone(active_s.get("contract"))
+
+        # Verify that read-only resumption did NOT create new diagnostic events
+        session.refresh_from_db()
+        self.assertEqual(session.events.count(), event_count_before)
+
+    def test_scenario_6_duplicate_escalation_across_multiple_interactions(self):
+        """Multiple interactions belonging to the same diagnostic incident create at most one ServiceCall."""
+        interaction1 = CustomerInteraction.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            question="First turn of incident",
+            answer="Answer 1",
+        )
+        interaction2 = CustomerInteraction.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            question="Second turn of incident",
+            answer="Answer 2",
+        )
+
+        self.client.force_login(self.user_a1)
+        esc_url1 = reverse("api_customer_support_escalate", args=[interaction1.id])
+        esc_url2 = reverse("api_customer_support_escalate", args=[interaction2.id])
+
+        res1 = self.client.post(esc_url1)
+        res2 = self.client.post(esc_url2)
+
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res2.status_code, 200)
+
+        call_id1 = res1.json()["call_id"]
+        call_id2 = res2.json()["call_id"]
+
+        # Both interactions resolve to the exact same ServiceCall ticket
+        self.assertEqual(call_id1, call_id2)
+        total_calls = ServiceCall.objects.filter(customer=self.customer_a1, asset=self.asset_a1).count()
+        self.assertEqual(total_calls, 1)
+
+    def test_scenario_7_revoked_source_cannot_authorize_actions(self):
+        """A technical document disabled mid-session cannot authorize customer actions."""
+        # Disable RAG on doc_random_fn
+        self.doc_random_fn.is_rag_enabled = False
+        self.doc_random_fn.save(update_fields=["is_rag_enabled"])
+
+        from core.services.customer_diagnostic import find_grounding_reference
+        fake_refs = [{
+            "document_id": self.doc_random_fn.id,
+            "chunk_id": None,
+            "title": self.doc_random_fn.title,
+            "reference": self.doc_random_fn.title,
+            "excerpt": self.doc_random_fn.content_text,
+        }]
+
+        is_grounded, matched_ref, reason = find_grounding_reference(
+            "Confirm sample intake tubing is securely attached",
+            fake_refs,
+            tenant_id=self.tenant_a.id,
+            asset=self.asset_a1,
+        )
+        self.assertFalse(is_grounded)
+        self.assertIsNone(matched_ref)
+
+    def test_scenario_8_customer_cannot_resolve_hazard_interaction(self):
+        """Direct POST to resolve endpoint on a safety-hazard interaction is rejected."""
+        self.client.force_login(self.user_a1)
+        hazard_interaction = CustomerInteraction.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            question="Sparks and smoke from unit",
+            answer="IMMEDIATE SAFETY RISK DETECTED: Disconnect power immediately.",
+        )
+
+        resolve_url = reverse("api_customer_support_resolve", args=[hazard_interaction.id])
+        res = self.client.post(resolve_url)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("active safety hazard", res.json()["detail"].lower())
+
+        hazard_interaction.refresh_from_db()
+        self.assertFalse(hazard_interaction.resolved)
+
+    def test_scenario_9_unapproved_chemical_cleaning_suppressed(self):
+        """Chemical cleaning instructions without customer authorization must not be classified as customer safe."""
+        from core.services.customer_diagnostic import classify_action_safety
+
+        level, reason = classify_action_safety("Clean sample intake tube using 5% sodium hydroxide cleaning solution.")
+        self.assertEqual(level, "TECHNICIAN_ONLY")
+        self.assertIn("hazardous work", reason.lower())
+
+        level2, reason2 = classify_action_safety("Flush flow cell with concentrated nitric acid.")
+        self.assertEqual(level2, "TECHNICIAN_ONLY")
+
+    def test_scenario_10_customer_inability_observation_preserved(self):
+        """Customer 'cannot perform this check' observation survives escalation into ticket and session ledger."""
+        self.client.force_login(self.user_a1)
+        interaction = CustomerInteraction.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            question="Sample cycle failure",
+            answer="Step 1: Check peristaltic rollers.",
+        )
+
+        escalate_url = reverse("api_customer_support_escalate", args=[interaction.id])
+        res = self.client.post(
+            escalate_url,
+            {"note": "Customer reported unable to perform diagnostic step: 'Check peristaltic rollers'"},
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200)
+
+        call_id = res.json()["call_id"]
+        call = ServiceCall.objects.get(id=call_id)
+        self.assertIn("unable to perform diagnostic step", call.technician_notes)
+
+    def test_scenario_11_fail_closed_unknown_actions(self):
+        """Unknown maintenance actions fail closed to UNKNOWN_REQUIRES_REVIEW."""
+        from core.services.customer_diagnostic import classify_action_safety
+
+        level, reason = classify_action_safety("Perform internal hydraulic pump overhaul")
+        self.assertEqual(level, "UNKNOWN_REQUIRES_REVIEW")
+        self.assertIn("not an authorized customer-safe procedure", reason.lower())
+
+        level2, _ = classify_action_safety("Adjust pressure relief valve on main block")
+        self.assertIn(level2, ("UNKNOWN_REQUIRES_REVIEW", "TECHNICIAN_ONLY"))
+        self.assertNotEqual(level2, "CUSTOMER_APPROVED")
+        self.assertNotEqual(level2, "CUSTOMER_SAFE")
+
+    def test_scenario_12_hazard_escalation_priority_and_sla(self):
+        """Hazard escalation must carry critical priority and SLA."""
+        hazard_interaction = CustomerInteraction.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            question="Sparks and smoke coming from analyzer power supply",
+            answer="IMMEDIATE SAFETY RISK DETECTED",
+        )
+
+        from core.services.ticketing import create_call_from_interaction
+        call = create_call_from_interaction(hazard_interaction)
+        self.assertEqual(call.priority, "critical")
