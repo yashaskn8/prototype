@@ -861,14 +861,15 @@ class RealCompanyDataIsolationTests(TestCase):
         self.assertNotIn("..", safe_win)
         self.assertNotIn("\\", safe_win)
 
-        # Oversized download rejected
+        # Oversized download rejected with IngestionSecurityError
+        from core.services.starlly_ingest import IngestionSecurityError
         oversized_resp = MagicMock()
         oversized_resp.status_code = 200
         oversized_resp.headers = {"Content-Length": "50000000"}  # 50MB
         oversized_resp.iter_content.return_value = [b"A" * 65536] * 200
         with patch("requests.get", return_value=oversized_resp):
-            content = fetch_attachment_content("https://starlly.sgp1.digitaloceanspaces.com/files/big.pdf")
-            self.assertEqual(content, "")
+            with self.assertRaises(IngestionSecurityError):
+                fetch_attachment_content("https://starlly.sgp1.digitaloceanspaces.com/files/big.pdf")
 
     # -----------------------------------------------------------------------
     # 30. Synthetic document inside real tenant rejected by retrieve query
