@@ -42,6 +42,7 @@ def ask_rag(*, tenant, question, asset, customer=None, include_confidential=Fals
             "doc_type": r.doc_type,
             "score": round(r.score, 4),
             "source_url": r.source_url,
+            "model_version": getattr(r, "model_version", "minilm"),
         }
         for r in results
     ]

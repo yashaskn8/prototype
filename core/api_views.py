@@ -30,6 +30,15 @@ from core.services.indexing import index_document
 from core.services.document_loader import UnsafeDocumentError
 from core.services.chroma_store import queue_chroma_deletion
 from core.services.excel_io import export_calls_xlsx, import_calls_xlsx
+from core.services.starlly_api import (
+    get_starlly_client,
+    StarllyConfigurationError,
+    StarllyAuthenticationError,
+    StarllyTimeoutError,
+    StarllyConnectionError,
+    StarllyNotFoundError,
+    StarllyApiError,
+)
 from core.forms import MAX_KB_UPLOAD_BYTES
 
 logger = logging.getLogger("servy.api")
@@ -1637,3 +1646,125 @@ class UsersListView(APIView):
             "id", "full_name", "role", "email", "phone", "branch__name", "zone__name", "is_active"
         ))
         return Response({"users": staff})
+
+
+# ----------------------------------------------------------------------
+# External Integrations: Starlly API
+# ----------------------------------------------------------------------
+class ExternalAssetsListView(APIView):
+    """Fetch and view external asset records from Starlly API.
+
+    Adheres strictly to tenant isolation and does NOT overwrite or mutate
+    local Servy assets without explicit approval.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        ctx = require_api_context(request)
+        if ctx["role"] not in (STAFF_ROLES | {"superuser"}):
+            return Response(
+                {"detail": "External asset integration is restricted to internal staff."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        tenant = ctx["tenant"]
+
+        # Parse query parameters safely
+        limit_param = request.query_params.get("limit")
+        offset_param = request.query_params.get("offset")
+        search_param = request.query_params.get("search") or request.query_params.get("q")
+
+        limit = None
+        offset = None
+        if limit_param is not None:
+            try:
+                limit = max(1, min(100, int(limit_param)))
+            except (ValueError, TypeError):
+                return Response({"detail": "Invalid limit parameter."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if offset_param is not None:
+            try:
+                offset = max(0, int(offset_param))
+            except (ValueError, TypeError):
+                return Response({"detail": "Invalid offset parameter."}, status=status.HTTP_400_BAD_REQUEST)
+
+        client = get_starlly_client()
+
+        try:
+            result = client.fetch_assets(limit=limit, offset=offset, search=search_param)
+        except StarllyConfigurationError as exc:
+            return Response(
+                {
+                    "error": "Configuration Blocker",
+                    "detail": str(exc),
+                    "is_blocker": True,
+                    "is_configured": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except StarllyAuthenticationError as exc:
+            return Response(
+                {
+                    "error": "Starlly Authentication Failed",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except StarllyTimeoutError as exc:
+            return Response(
+                {
+                    "error": "Starlly API Timeout",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+        except StarllyConnectionError as exc:
+            return Response(
+                {
+                    "error": "Starlly API Unavailable",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except StarllyApiError as exc:
+            return Response(
+                {
+                    "error": "Starlly API Error",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Cross-reference with existing local tenant assets (READ-ONLY check, zero DB writes)
+        raw_assets = result.get("assets", [])
+        incoming_codes = [a.get("code") for a in raw_assets if a.get("code")]
+        local_assets_by_code = {
+            a.asset_code: a.id
+            for a in Asset.objects.filter(tenant=tenant, asset_code__in=incoming_codes)
+        }
+
+        enriched_assets = []
+        for asset in raw_assets:
+            code = asset.get("code")
+            local_id = local_assets_by_code.get(code)
+            enriched_asset = dict(asset)
+            enriched_asset["is_synced"] = bool(local_id)
+            enriched_asset["local_asset_id"] = local_id
+            enriched_asset["tenant_id"] = tenant.id
+            enriched_asset["tenant_name"] = tenant.name
+            enriched_assets.append(enriched_asset)
+
+        return Response({
+            "assets": enriched_assets,
+            "count": result.get("count", len(enriched_assets)),
+            "total_returned": len(enriched_assets),
+            "organisation_id": result.get("organisation_id"),
+            "tenant": {
+                "id": tenant.id,
+                "name": tenant.name,
+                "slug": tenant.slug,
+            },
+            "limit": limit,
+            "offset": offset,
+            "sync_status": "read_only",
+        })

@@ -2,6 +2,24 @@ from pathlib import Path
 import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env if present (supporting both project root and workspace root)
+for _env_candidate in [BASE_DIR.parent / ".env", BASE_DIR / ".env"]:
+    if _env_candidate.is_file():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(_env_candidate, override=True)
+        except Exception:
+            try:
+                with open(_env_candidate, "r", encoding="utf-8") as _f:
+                    for _line in _f:
+                        _line = _line.strip()
+                        if _line and not _line.startswith("#") and "=" in _line:
+                            _k, _v = _line.split("=", 1)
+                            os.environ[_k.strip()] = _v.strip().strip("'\"")
+            except Exception:
+                pass
+
 DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
 _default_secret = "servy-rag-local-demo-secret-key-change-me"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", _default_secret)
@@ -145,3 +163,21 @@ SERVY_MAX_IMPORT_ROWS = int(os.getenv("SERVY_MAX_IMPORT_ROWS", "10000"))
 SERVY_MAX_XLSX_UNCOMPRESSED_BYTES = int(os.getenv("SERVY_MAX_XLSX_UNCOMPRESSED_BYTES", str(30 * 1024 * 1024)))
 SERVY_RAG_RATE_LIMIT_PER_MINUTE = int(os.getenv("SERVY_RAG_RATE_LIMIT_PER_MINUTE", "20"))
 SERVY_ALLOW_REMOTE_LLM = os.getenv("SERVY_ALLOW_REMOTE_LLM", "0") == "1"
+
+# Embedding model selection. Active production model stays MiniLM unless both
+# the experimental flag is set AND the matching index has passed verification.
+SERVY_EMBEDDING_MODEL = os.getenv("SERVY_EMBEDDING_MODEL", "minilm")
+SERVY_EXPERIMENTAL_EMBEDDING_MODEL = os.getenv("SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
+SERVY_USE_EXPERIMENTAL_RAG = os.getenv("SERVY_USE_EXPERIMENTAL_RAG", "0") == "1"
+# Verified from Hugging Face API on 2026-10-14 (BAAI/bge-small-en-v1.5, MIT).
+SERVY_BGE_SMALL_REVISION = os.getenv("SERVY_BGE_SMALL_REVISION", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
+SERVY_EMBEDDING_DEVICE = os.getenv("SERVY_EMBEDDING_DEVICE", "cpu")
+SERVY_EMBEDDING_BATCH_SIZE = int(os.getenv("SERVY_EMBEDDING_BATCH_SIZE", "8"))
+SERVY_RERANKER_ENABLED = os.getenv("SERVY_RERANKER_ENABLED", "0") == "1"
+SERVY_ML_ARTIFACTS_DIR = BASE_DIR / "ml_artifacts"
+
+# Starlly API Integration
+STARLLY_API_BASE_URL = os.getenv("STARLLY_API_BASE_URL", "").rstrip("/")
+STARLLY_API_KEY = os.getenv("STARLLY_API_KEY", "")
+STARLLY_ORGANISATION_ID = os.getenv("STARLLY_ORGANISATION_ID", "")
+STARLLY_API_KEY_ID = os.getenv("STARLLY_API_KEY_ID", "")

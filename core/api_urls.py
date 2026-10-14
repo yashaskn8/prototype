@@ -63,4 +63,7 @@ urlpatterns = [
     path("part-requests/", api_views.PartRequestsListView.as_view(), name="api_part_requests"),
     path("operations/", api_views.OperationsListView.as_view(), name="api_operations"),
     path("users/", api_views.UsersListView.as_view(), name="api_users"),
+
+    # External Integrations (Starlly)
+    path("external/assets/", api_views.ExternalAssetsListView.as_view(), name="api_external_assets"),
 ]

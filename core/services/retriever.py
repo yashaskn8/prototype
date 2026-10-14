@@ -15,7 +15,7 @@ from django.conf import settings
 
 from core.models import KnowledgeChunk, KnowledgeDocument, ServiceResolutionIndex
 from .vectors import embed_text, cosine_sparse
-from .identifiers import extract_error_codes, extract_identifiers
+from .identifiers import extract_error_codes, extract_identifiers, extract_document_ids
 
 
 @dataclass
@@ -32,6 +32,7 @@ class RetrievedChunk:
     source_url: str
     confidential: bool
     service_call_id: int | None = None
+    model_version: str = "minilm"
 
     @property
     def reference(self):
@@ -45,7 +46,7 @@ class RetrievedResultList(list):
         self.retrieval_backend = retrieval_backend
 
 
-def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False):
+def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None):
     qs = KnowledgeChunk.objects.filter(
         tenant=tenant,
         document__is_rag_enabled=True,
@@ -65,37 +66,31 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
     if asset and asset.product:
         product = asset.product
-        category = product.category
-        domain = category.domain if category else None
-        # Strict hierarchy scoping: exact asset > product > category > domain > general fleet
-        # Disallow documents explicitly tied to a DIFFERENT product or DIFFERENT asset
-        scope = Q(document__asset=asset) | Q(document__asset__isnull=True, document__product=product)
-        if category:
-            scope |= Q(document__asset__isnull=True, document__product__isnull=True, document__category=category)
-        if domain:
-            scope |= Q(
-                document__asset__isnull=True,
-                document__product__isnull=True,
-                document__category__isnull=True,
-                document__domain=domain,
-            )
-        scope |= Q(
-            document__asset__isnull=True,
-            document__product__isnull=True,
-            document__category__isnull=True,
-            document__domain__isnull=True,
+        # Hierarchy & Category-Independent Scoping:
+        # 1. Exact asset-bound documents: document__asset=asset
+        # 2. Product-bound documents: document__asset__isnull=True, document__product=product
+        # 3. Fleet/unassigned documents within tenant (documents not bound to a different product or different asset):
+        #    document__asset__isnull=True, document__product__isnull=True
+        scope = (
+            Q(document__asset=asset)
+            | Q(document__asset__isnull=True, document__product=product)
+            | Q(document__asset__isnull=True, document__product__isnull=True)
         )
+        if query_doc_ids:
+            scope |= Q(document__id__in=query_doc_ids)
         qs = qs.filter(scope)
     elif asset:
-        qs = qs.filter(Q(document__asset=asset) | Q(document__asset__isnull=True, document__product__isnull=True))
+        scope = Q(document__asset=asset) | Q(document__asset__isnull=True, document__product__isnull=True)
+        if query_doc_ids:
+            scope |= Q(document__id__in=query_doc_ids)
+        qs = qs.filter(scope)
     else:
-        # NO asset context: restrict to unscoped/general fleet documents only.
-        # Asset-specific or product-specific documents must NOT appear when
-        # there is no asset context (Defect #9).
-        qs = qs.filter(
-            document__asset__isnull=True,
-            document__product__isnull=True,
-        )
+        # NO asset context: restrict to unscoped/general fleet documents only
+        # unless an explicit document ID is requested
+        scope = Q(document__asset__isnull=True, document__product__isnull=True)
+        if query_doc_ids:
+            scope |= Q(document__id__in=query_doc_ids)
+        qs = qs.filter(scope)
     return qs[:3000]
 
 
@@ -199,7 +194,8 @@ def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: st
 # ---------------------------------------------------------------------------
 
 def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
-                             query_identifiers, asset, customer, min_score):
+                             query_identifiers, asset, customer, min_score,
+                             query_doc_ids=None):
     """Score all candidates using sparse/local embeddings.
 
     Returns list of (rank_score, RetrievedChunk) tuples sorted by score descending.
@@ -214,6 +210,8 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
         # BEFORE metadata bonus can apply (Defect #3 fix)
         base_score = (0.72 * content_score) + (0.28 * scope_score)
         id_boost = _identifier_boost(query_identifiers, chunk.text, chunk.heading)
+        if query_doc_ids and d.id in query_doc_ids:
+            id_boost = max(id_boost, 0.60)
 
         # Content relevance gate (Defect #3 fix): candidate must pass minimum content match
         # before metadata bonus can apply. Exact identifier matches are always relevant.
@@ -253,7 +251,8 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 
 def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                             evidence_text, query_identifiers, asset,
-                            customer, tenant, top_k, min_score):
+                            customer, tenant, top_k, min_score,
+                            query_doc_ids=None):
     """Score candidates using ChromaDB dense embeddings.
 
     Authorization is enforced BEFORE ranking by passing allowed_doc_ids into
@@ -262,13 +261,21 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
     rescuing irrelevant content (Defect #3 fix).
     """
     try:
-        from .chroma_store import get_sentence_transformer, get_dense_collection
-        model = get_sentence_transformer()
+        from django.conf import settings
+        use_experimental = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
+        profile_key = (
+            getattr(settings, "SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
+            if use_experimental
+            else getattr(settings, "SERVY_EMBEDDING_MODEL", "minilm")
+        )
+        from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
+        profile = get_profile(profile_key)
+        model = load_model(profile)
         if model is None or not allowed_doc_ids:
             return []
 
-        dense_coll = get_dense_collection()
-        query_embedding = model.encode(evidence_text, normalize_embeddings=True).tolist()
+        dense_coll = get_collection(profile, create=False)
+        query_embedding = encode_queries(profile, model, [evidence_text])[0].tolist()
 
         # Phase 3: Authorization-before-ranking — pass allowed_doc_ids into
         # Chroma filter so unauthorized documents cannot crowd out authorized
@@ -314,13 +321,19 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 d = matched_chunk.document
                 sim = max(0.0, 1.0 - float(dist))
                 id_boost = _identifier_boost(query_identifiers, matched_chunk.text, matched_chunk.heading)
+                if query_doc_ids and d.id in query_doc_ids:
+                    id_boost = max(id_boost, 0.60)
 
                 # Content relevance gate (Defect #3 fix): if semantic similarity is too low
                 # and no identifier matches, metadata bonus cannot rescue the document.
                 if sim < DENSE_RELEVANCE_GATE and id_boost <= 0.0:
                     continue
 
-                if sim < 0.58 and id_boost <= 0.0:
+                if getattr(profile, "content_first", False):
+                    # In content-first mode, rely primarily on semantic content match.
+                    # Bounded metadata bonus is strictly capped.
+                    boost = min(0.05, _calculate_metadata_bonus(d, matched_chunk, asset, customer) * 0.25)
+                elif sim < 0.58 and id_boost <= 0.0:
                     boost = 0.0
                 else:
                     boost = _calculate_metadata_bonus(d, matched_chunk, asset, customer)
@@ -341,6 +354,7 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     doc_type=d.get_doc_type_display(),
                     source_url=d.source_url,
                     confidential=d.is_confidential,
+                    model_version=profile.key,
                 ))
 
         scored.sort(key=lambda r: r.score, reverse=True)
@@ -434,16 +448,51 @@ def retrieve(
     dynamic_query_text = "\n".join(query_parts).strip()
 
     evidence_text = f"{question or ''}".strip()
+
+    # Engineer Copilot enrichment: when the technician asks a vague follow-up
+    # question like "what could be the reason", the bare question has zero
+    # content similarity to any knowledge chunk and every candidate fails the
+    # content relevance gate.  Enrich the evidence text with the original
+    # customer complaint from the service call so the embedding inherits the
+    # technical symptom terms (e.g. "milk analyzer not working").
+    if service_call and service_call.complaint_text:
+        # Extract just the first line of the original customer complaint.
+        # complaint_text may contain the full AI diagnostic dump appended
+        # during escalation; we only want the short symptom description.
+        raw_complaint = service_call.complaint_text.strip()
+        # The escalation format prepends "Customer issue:\n<original question>"
+        # followed by "\n\nAI diagnostic guidance..." — extract only the
+        # customer issue portion.
+        if "Customer issue:" in raw_complaint:
+            after = raw_complaint.split("Customer issue:", 1)[1]
+            # Take up to the first double-newline or "AI diagnostic" marker
+            for sep in ["\n\nAI diagnostic", "\n\nDIAGNOSTIC", "\n\nSource documents"]:
+                if sep in after:
+                    after = after.split(sep, 1)[0]
+            complaint_core = after.strip()
+        else:
+            # Fallback: use the first non-empty line of complaint_text
+            complaint_core = raw_complaint.split("\n")[0].strip()
+
+        # Only enrich if the complaint core adds meaningful terms not already
+        # in the question (avoid duplicating when the question IS the complaint)
+        if complaint_core and complaint_core.lower() not in evidence_text.lower():
+            evidence_text = f"{complaint_core} — {evidence_text}"
+
     evidence_vector = embed_text(evidence_text)
     scope_vector = embed_text(dynamic_query_text)
 
     # Extract technical identifiers from the query for exact matching
     query_identifiers = extract_identifiers(question or "")
     query_error_codes = extract_error_codes(question or "")
+    query_doc_ids = extract_document_ids(question or "")
 
     # Step 1: Django determines candidate pool according to tenant, customer,
     # confidentiality, and asset scope
-    candidates = list(_knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=True))
+    candidates = list(_knowledge_candidates(
+        tenant, asset, customer, include_confidential,
+        allow_failed=True, query_doc_ids=query_doc_ids,
+    ))
     allowed_chunks_by_id = {c.id: c for c in candidates}
     allowed_doc_ids = {c.document_id for c in candidates}
     # For dense retrieval, only INDEXED documents have valid Chroma embeddings
@@ -461,6 +510,7 @@ def retrieve(
     sparse_results = _sparse_score_candidates(
         candidates, evidence_vector, scope_vector,
         query_identifiers, asset, customer, min_score,
+        query_doc_ids=query_doc_ids,
     )
 
     # 2b: Dense retrieval (may fail gracefully)
@@ -468,6 +518,7 @@ def retrieve(
         candidates, allowed_doc_ids, allowed_chunks_by_id,
         evidence_text, query_identifiers, asset, customer,
         tenant, top_k, min_score,
+        query_doc_ids=query_doc_ids,
     )
 
     # 2c: Fuse results using RRF
@@ -561,4 +612,11 @@ def retrieve(
         per_source[key] = per_source.get(key, 0) + 1
         if len(selected) >= top_k:
             break
+
+    try:
+        from core.ml.reranker import rerank_candidates
+        selected = rerank_candidates(evidence_text, selected, top_k=top_k)
+    except Exception as exc:
+        logger.warning("Reranker step skipped due to error: %s", exc)
+
     return RetrievedResultList(selected, retrieval_backend=retrieval_backend)

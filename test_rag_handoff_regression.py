@@ -1,4 +1,4 @@
-﻿"""
+"""
 Regression tests for Customer RAG -> Service Call handoff defects.
 
 Tests cover:

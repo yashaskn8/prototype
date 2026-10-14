@@ -77,6 +77,20 @@ def extract_part_numbers(text: str) -> Set[str]:
     return parts
 
 
+def extract_document_ids(text: str) -> Set[int]:
+    """Extract explicit document ID references from text, e.g. 'document 12', 'doc #4', 'doc 42'."""
+    text = (text or "").strip()
+    if not text:
+        return set()
+    doc_ids = set()
+    for m in re.finditer(r"\b(?:doc(?:ument)?|doc_id|manual)\s*(?:#|id|no\.?)?\s*(\d+)\b", text, re.IGNORECASE):
+        try:
+            doc_ids.add(int(m.group(1)))
+        except ValueError:
+            pass
+    return doc_ids
+
+
 def query_identifiers_not_in_sources(query: str, source_texts: list) -> Set[str]:
     """Find identifiers in the query that do not appear in any source text.
 
