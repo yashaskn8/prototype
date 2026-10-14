@@ -120,11 +120,13 @@ class RealCompanyDataIsolationTests(TestCase):
             asset=self.real_asset,
             title="Split AC Unit 2T Troubleshooting Manual",
             doc_type="troubleshooting",
+            checksum_sha256="9e5d2d9e772dc71a849fa5cd1b7512b60f0f417f6832e0cdc77a879ab301e8d1",
             is_rag_enabled=True,
             is_confidential=False,
             disable_sharing=False,
             index_status="INDEXED",
         )
+        self.real_doc.provenance_verified = True
         from core.services.vectors import embed_text
         chunk_text = "CHECK FIRST\n- Confirm electrical power is supplied to the indoor unit.\n- Inspect the washable air filter for heavy dust accumulation.\n\nSTEP-BY-STEP TROUBLESHOOTING\nStep 1: Clean exterior and wipe dust filter with clean water.\nWhy: Restores necessary airflow across the evaporator coil.\nStep 2: Restart the unit using the main power switch.\nWhy: Resets internal microcontroller safety lockout.\n\nEXPECTED RESULT\nIndoor blower motor resumes normal air delivery within 3 minutes.\n\nSTOP AND ESCALATE IF\n- Unusual burning smell or smoke is detected.\n- Error code E4 persists on the front panel."
         emb = embed_text(chunk_text)
@@ -1021,3 +1023,8 @@ class RealCompanyDataIsolationTests(TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             delete_document_vectors(company_doc, allow_company_purge=False)
         self.assertIn("Zero-deletion violation", str(ctx.exception))
+
+        # Attempt to delete company document vectors WITH purge override must ALSO be blocked
+        with self.assertRaises(RuntimeError) as ctx2:
+            delete_document_vectors(company_doc, allow_company_purge=True)
+        self.assertIn("Zero-deletion violation", str(ctx2.exception))

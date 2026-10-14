@@ -49,9 +49,12 @@ class RetrievedResultList(list):
 def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False):
     from .customer_isolation import get_customer_data_mode, is_real_tenant
     mode = get_customer_data_mode()
-    if not staff_mode and mode == "verified_real_only":
-        if not is_real_tenant(tenant):
-            return KnowledgeChunk.objects.none()
+    is_real = is_real_tenant(tenant)
+    is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
+
+    # In verified_real_only mode, customer queries on non-real tenants return nothing
+    if not staff_mode and is_real_customer_query and not is_real:
+        return KnowledgeChunk.objects.none()
 
     qs = KnowledgeChunk.objects.filter(
         tenant=tenant,
@@ -62,7 +65,7 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
         "document__category", "document__domain", "document__customer",
     )
 
-    if not staff_mode and mode == "verified_real_only":
+    if not staff_mode and is_real:
         from .customer_isolation import is_verified_real_document
         qs = qs.exclude(document__title__icontains="synthetic")\
                .exclude(document__tags__icontains="synthetic")\
@@ -113,18 +116,26 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
 
 def _resolution_candidates(tenant, asset, customer, staff_mode):
-    from .customer_isolation import get_customer_data_mode, is_real_tenant
+    from .customer_isolation import get_customer_data_mode, is_real_tenant, is_verified_real_service_call
     mode = get_customer_data_mode()
-    if not staff_mode and mode == "verified_real_only":
-        if not is_real_tenant(tenant):
-            return ServiceResolutionIndex.objects.none()
+    is_real = is_real_tenant(tenant)
+    is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
+    if not staff_mode and is_real_customer_query and not is_real:
+        return []
 
     qs = ServiceResolutionIndex.objects.filter(tenant=tenant).select_related(
         "service_call", "service_call__asset", "service_call__asset__product", "service_call__customer"
     )
 
-    if not staff_mode and mode == "verified_real_only":
-        qs = qs.exclude(service_call__servy_id__startswith="SRV-SYN-").exclude(service_call__servy_id__startswith="DUMMY-")
+    if not staff_mode and is_real:
+        # Defense in depth: exclude obvious synthetic identifiers at DB level
+        qs = qs.exclude(
+            service_call__servy_id__startswith="SRV-SYN-"
+        ).exclude(
+            service_call__servy_id__startswith="DUMMY-"
+        ).exclude(
+            service_call__servy_id__startswith="SYN-"
+        )
 
     if asset:
         if asset.product_id:
@@ -133,7 +144,13 @@ def _resolution_candidates(tenant, asset, customer, staff_mode):
             qs = qs.filter(service_call__asset=asset)
     if customer and not staff_mode:
         qs = qs.filter(service_call__customer=customer)
-    return qs[:1500]
+
+    candidates = list(qs[:1500])
+    if not staff_mode and is_real and mode == "verified_real_only":
+        # Positive provenance verification: exclude any service call that fails positive verification
+        candidates = [c for c in candidates if is_verified_real_service_call(c.service_call)]
+
+    return candidates
 
 
 import logging
@@ -294,7 +311,8 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         mode = get_customer_data_mode()
         use_experimental = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
         is_real = is_real_tenant(tenant)
-        if not staff_mode and mode == "verified_real_only" and not is_real:
+        is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
+        if not staff_mode and is_real_customer_query and not is_real:
             return []
         if is_real:
             profile_key = "company-bge-small" if use_experimental else "company-minilm"
@@ -552,13 +570,17 @@ def retrieve(
     )
 
     # 2b: Dense retrieval (may fail gracefully)
-    dense_results = _dense_score_candidates(
-        candidates, allowed_doc_ids, allowed_chunks_by_id,
-        evidence_text, query_identifiers, asset, customer,
-        tenant, top_k, min_score,
-        query_doc_ids=query_doc_ids,
-        staff_mode=staff_mode,
-    )
+    try:
+        dense_results = _dense_score_candidates(
+            candidates, allowed_doc_ids, allowed_chunks_by_id,
+            evidence_text, query_identifiers, asset, customer,
+            tenant, top_k, min_score,
+            query_doc_ids=query_doc_ids,
+            staff_mode=staff_mode,
+        )
+    except Exception as exc:
+        logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+        dense_results = []
 
     # 2c: Fuse results using RRF
     if dense_results and sparse_results:
@@ -573,6 +595,12 @@ def retrieve(
     else:
         results = []
         retrieval_backend = "fallback"
+
+    # Defense-in-depth: Ensure NO chunk from outside allowed_doc_ids can leak
+    results = [
+        r for r in results
+        if r.source_kind != "knowledge_document" or r.document_id in allowed_doc_ids
+    ]
 
     logger.info(
         "retrieval_backend = %s (retrieved %d knowledge chunks, "

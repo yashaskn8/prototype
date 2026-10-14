@@ -515,7 +515,10 @@ def build_structured_diagnostic_contract(
                 "doc_type": doc_type,
             })
 
-    if is_hazard:
+    raw_lower = (raw_answer or "").lower()
+    if is_hazard or "immediate safety risk" in raw_lower or "safety risk detected" in raw_lower:
+        if not hazard_warning:
+            hazard_warning = "Immediate safety risk detected. Stop equipment operation and request an authorized service technician."
         res = {
             "response_type": "ESCALATION_REQUIRED",
             "interaction_id": interaction.id,

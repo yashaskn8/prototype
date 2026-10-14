@@ -41,6 +41,7 @@ from core.services.vectors import embed_text
 # ---------------------------------------------------------------------------
 
 RAG_TEST_SETTINGS = {
+    "SERVY_CUSTOMER_DATA_MODE": "test_isolated",
     "SERVY_RAG_MIN_SCORE": 0.0,
     "SERVY_RAG_TOP_K": 10,
     "SERVY_ALLOW_REMOTE_LLM": False,

@@ -154,13 +154,43 @@ def fetch_attachment_content(file_url: str, timeout: int = 20) -> tuple[bytes, s
 
     sha = hashlib.sha256(content).hexdigest()
 
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
+    # Format-aware bounded extraction: distinguish PDF vs TXT/UTF-8
+    if content.startswith(b"%PDF-"):
+        import io
         try:
-            text = content.decode("latin-1")
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            if getattr(reader, "is_encrypted", False):
+                raise IngestionSecurityError("Encrypted PDF technical manuals are not supported.")
+            pages_text = []
+            max_pages = 200
+            for idx, page in enumerate(reader.pages[:max_pages]):
+                p_text = page.extract_text() or ""
+                if p_text.strip():
+                    pages_text.append(p_text.strip())
+            text = "\n\n".join(pages_text).strip()
+        except IngestionSecurityError:
+            raise
         except Exception as err:
-            raise IngestionSecurityError(f"Could not decode text content: {err}")
+            raise IngestionSecurityError(f"Corrupt or malformed PDF structure: {err}")
+
+        if not text or len(text.strip()) < 20:
+            raise IngestionSecurityError(
+                "Empty extraction: Scanned or image-only PDF without extractable text layer. "
+                "Optical Character Recognition (OCR) is not authorized for unverified ingestion."
+            )
+    else:
+        # Check for unsupported binary files (contain null bytes)
+        if b"\x00" in content[:4096]:
+            raise IngestionSecurityError("Downloaded content contains binary null bytes and is not an authorized text or PDF format.")
+
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = content.decode("cp1252")
+            except Exception as err:
+                raise IngestionSecurityError(f"Could not decode text content: {err}")
 
     if not text.strip():
         raise ValueError("Extracted text content from attachment is blank.")
@@ -414,6 +444,7 @@ def ingest_starlly_real_data(
 
         # 4. Ingest Assets (Non-Destructive: Create-Only, No Overwriting)
         asset_record_cache: Dict[str, Asset] = {}
+        conflicted_ext_ids: set = set()
         for a_data in assets_data:
             code = (a_data.get("code") or "").strip()
             name = (a_data.get("name") or "").strip()
@@ -444,8 +475,12 @@ def ingest_starlly_real_data(
                     ingest_report["conflicts"].append({
                         "type": "ASSET_CONFLICT_REQUIRES_REVIEW",
                         "asset_code": code,
+                        "external_id": ext_id,
                         "reasons": conflict_reasons,
                     })
+                    # Do NOT associate incoming attachments or site installations to this conflicting asset
+                    conflicted_ext_ids.add(ext_id)
+                    continue
 
                 # Strictly preserve existing asset without mutation
                 ingest_report["assets_already_existed"] += 1
@@ -488,6 +523,9 @@ def ingest_starlly_real_data(
         # 5. Ingest Attachments as KnowledgeDocuments (Non-Destructive)
         for a_data in assets_data:
             ext_id = str(a_data.get("id"))
+            if ext_id in conflicted_ext_ids:
+                # Skip importing attachments for conflicting external assets
+                continue
             asset = asset_record_cache.get(ext_id)
             if not asset:
                 continue
@@ -548,15 +586,39 @@ def ingest_starlly_real_data(
 
                 clean_title = f"{asset.name} - {safe_name.replace('.txt', '').replace('_', ' ').strip()}"
 
-                # Store file in local media storage safely without overwriting
+                # Store file in local media storage safely and atomically without overwriting
                 media_rel_dir = Path("knowledge") / str(tenant.id) / f"{timezone.now():%Y/%m}"
-                media_abs_dir = Path(settings.MEDIA_ROOT) / media_rel_dir
+                media_abs_dir = (Path(settings.MEDIA_ROOT) / media_rel_dir).resolve()
+                root_media = Path(settings.MEDIA_ROOT).resolve()
+                if not str(media_abs_dir).startswith(str(root_media)):
+                    raise IngestionSecurityError(f"Directory traversal detected in media path: {media_abs_dir}")
+
                 media_abs_dir.mkdir(parents=True, exist_ok=True)
                 local_file_name = sanitize_attachment_filename(safe_name, sha_prefix=sha)
-                local_file_path = media_abs_dir / local_file_name
+                local_file_path = (media_abs_dir / local_file_name).resolve()
+
+                if not str(local_file_path).startswith(str(media_abs_dir)):
+                    raise IngestionSecurityError(f"Path traversal detected in file name: {local_file_name}")
+
+                if local_file_path.is_symlink():
+                    raise IngestionSecurityError(f"Symlink destination rejected: {local_file_path}")
 
                 if not local_file_path.exists():
-                    local_file_path.write_bytes(raw_bytes)
+                    import uuid
+                    tmp_file = media_abs_dir / f".tmp_{uuid.uuid4().hex}_{local_file_name}"
+                    try:
+                        tmp_file.write_bytes(raw_bytes)
+                        tmp_sha = hashlib.sha256(tmp_file.read_bytes()).hexdigest()
+                        if tmp_sha != sha:
+                            raise IngestionSecurityError("Temporary staged file content hash mismatch.")
+                        os.replace(tmp_file, local_file_path)
+                    except Exception as err:
+                        if tmp_file.exists():
+                            try:
+                                tmp_file.unlink()
+                            except Exception:
+                                pass
+                        raise IngestionSecurityError(f"Atomic file write failed: {err}")
 
                 doc = KnowledgeDocument.objects.create(
                     tenant=tenant,

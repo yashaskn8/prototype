@@ -1,5 +1,5 @@
 import io
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
@@ -12,6 +12,7 @@ from core.models import (
 )
 
 
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated")
 class AssetExperienceTests(TestCase):
     def setUp(self):
         # Create Tenants

@@ -72,11 +72,12 @@ def get_sparse_collection():
 def delete_document_vectors(document_id: Any, allow_company_purge: bool = False):
     """Purge chunk vectors for a given document.
     Zero-deletion contract: Real company vectors are strictly protected from deletion.
+    Purge overrides are unconditionally rejected for real company data.
     """
     from core.models import KnowledgeDocument
     doc_id = document_id.id if hasattr(document_id, "id") else int(document_id)
     doc = KnowledgeDocument.objects.filter(id=doc_id).select_related("tenant").first()
-    if doc and is_real_company_tenant(doc.tenant) and not allow_company_purge:
+    if doc and is_real_company_tenant(doc.tenant):
         logger.warning("Zero-deletion contract: Refusing to purge real company vectors for document %s", doc_id)
         raise RuntimeError(f"Zero-deletion violation: Refusing to purge real company vectors for document {doc_id}")
 
@@ -85,13 +86,6 @@ def delete_document_vectors(document_id: Any, allow_company_purge: bool = False)
         dense_coll.delete(where={"document_id": doc_id})
     except Exception as exc:
         logger.warning("Error deleting document %s from dense collection: %s", doc_id, exc)
-
-    if allow_company_purge:
-        try:
-            company_coll = get_company_dense_collection()
-            company_coll.delete(where={"document_id": doc_id})
-        except Exception as exc:
-            logger.warning("Error deleting document %s from company collection: %s", doc_id, exc)
 
     try:
         sparse_coll = get_sparse_collection()
@@ -105,6 +99,52 @@ def delete_document_vectors(document_id: Any, allow_company_purge: bool = False)
     except Exception as exc:
         logger.debug("Error removing BGE vectors for doc %s: %s", document_id, exc)
 
+
+def get_document_retrieval_readiness(document_id: Any) -> Dict[str, Any]:
+    """Truthfully report readiness across retrieval backends without modifying existing vectors."""
+    from core.models import KnowledgeDocument
+    doc_id = document_id.id if hasattr(document_id, "id") else int(document_id)
+    doc = KnowledgeDocument.objects.filter(id=doc_id).select_related("tenant", "asset").first()
+    if not doc:
+        return {"status": "NOT_FOUND", "customer_serving_eligible": False}
+
+    chunks_count = doc.chunks.count()
+    has_chunks = chunks_count > 0
+    parsed = bool(doc.content_text and has_chunks)
+    sparse_ready = has_chunks and all(c.embedding for c in doc.chunks.all())
+
+    minilm_ready = False
+    try:
+        coll = get_company_dense_collection() if is_real_company_tenant(doc.tenant) else get_dense_collection()
+        res = coll.get(where={"document_id": doc.id}, limit=1)
+        minilm_ready = bool(res and res.get("ids"))
+    except Exception:
+        minilm_ready = False
+
+    bge_ready = False
+    try:
+        from core.ml.embeddings import get_profile, get_collection
+        bge_profile = get_profile("company-bge-small" if is_real_company_tenant(doc.tenant) else "bge-small")
+        bge_coll = get_collection(bge_profile, create=False)
+        bge_res = bge_coll.get(where={"document_id": doc.id}, limit=1)
+        bge_ready = bool(bge_res and bge_res.get("ids"))
+    except Exception:
+        bge_ready = False
+
+    from core.services.customer_isolation import is_verified_real_document
+    customer_eligible = is_verified_real_document(doc) if is_real_company_tenant(doc.tenant) else (doc.is_rag_enabled and not doc.is_confidential)
+
+    return {
+        "document_id": doc.id,
+        "title": doc.title,
+        "parsed_successfully": parsed,
+        "sparse_index_ready": sparse_ready,
+        "minilm_vectors_ready": minilm_ready,
+        "bge_vectors_ready": bge_ready,
+        "customer_serving_eligible": customer_eligible,
+        "index_status": doc.index_status,
+        "index_error": doc.index_error,
+    }
 
 
 def sync_document_to_chroma(document_id: int):
@@ -137,9 +177,9 @@ def sync_document_to_chroma(document_id: int):
     model = get_sentence_transformer()
     if model is None:
         KnowledgeDocument.objects.filter(id=document_id).update(
-            index_status="INDEXED",
+            index_status="FAILED",
             indexed_at=timezone.now(),
-            index_error="Indexed with sparse fallback only (SentenceTransformer unavailable)"
+            index_error="Dense index failed: SentenceTransformer model unavailable. Dense vectors not indexed."
         )
         return False
 

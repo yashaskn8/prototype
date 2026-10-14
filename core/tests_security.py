@@ -21,7 +21,7 @@ from core.services.rag import ask_rag
 from core.services.retriever import retrieve
 
 
-@override_settings(SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated", SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
 class SecurityAndIsolationTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -207,6 +207,7 @@ class SecurityAndIsolationTests(TestCase):
             _validate_llm_endpoint()
 
 
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated")
 class ProtectedKnowledgeDownloadTests(TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

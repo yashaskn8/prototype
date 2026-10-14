@@ -8,6 +8,7 @@ Enforces Phase 4 strict real-only customer data policy:
 - Ensures fail-closed rejection with zero silent fallback to dummy data
 """
 
+import hashlib
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from django.conf import settings
@@ -79,6 +80,19 @@ VERIFIED_REAL_PROVENANCE_REGISTRY = {
         "Urban Mall Group": {"source_system": "starlly", "source_org": "273", "tenant_slug": "skydream", "client_type": "enterprise", "status": "active"},
     },
     "documents": {
+        # Split AC Unit 2T (SKY-AST-00001)
+        "9e5d2d9e772dc71a849fa5cd1b7512b60f0f417f6832e0cdc77a879ab301e8d1": {"asset_code": "SKY-AST-00001", "doc_type": "troubleshooting", "status": "active"},
+        "c4765a1c4e695ae10963a2390597ae7c0b3f24cc2c0a61ca32c7efc44c6bb1ac": {"asset_code": "SKY-AST-00001", "doc_type": "maintenance", "status": "active"},
+        "28837acbce2e7374c482a5c6658eb1da6707ae559554b434e2660a535d7fefaf": {"asset_code": "SKY-AST-00001", "doc_type": "installation", "status": "active"},
+        # VRF Outdoor Module (SKY-AST-00002)
+        "18f14f21cee126012d7997f38f4abc385f59ff9497622a5aa68b9d55f3b1ca30": {"asset_code": "SKY-AST-00002", "doc_type": "troubleshooting", "status": "active"},
+        "4aa0c57dd3bc68394efd167434b15685dac97a4b6efe689e60019aeced1cf629": {"asset_code": "SKY-AST-00002", "doc_type": "maintenance", "status": "active"},
+        "b65b4037c6b315c6675d7e95d543be1ca002eca6e46a68fc01ee20f63de7dc91": {"asset_code": "SKY-AST-00002", "doc_type": "installation", "status": "active"},
+        # Ductable AC 5T (SKY-AST-00003)
+        "75abb20b207a2738abd6922e71107150db27f9265252ea1ff20abe77885f8b59": {"asset_code": "SKY-AST-00003", "doc_type": "troubleshooting", "status": "active"},
+        "225b7d7821b9613fbeb7bbceb4d35405006f85b6d965df756dc14093dd3d4df0": {"asset_code": "SKY-AST-00003", "doc_type": "maintenance", "status": "active"},
+        "33fe98bd9e80f17744f2fd307caf31c067c564a17506510ac4a127dce08e6f95": {"asset_code": "SKY-AST-00003", "doc_type": "installation", "status": "active"},
+        # Dairy Analyzers
         "5b29b63486d34e2694b2f447f551c6ef031972f3dcfd0fc96839aa6ba70e30bb": {"asset_code": "SKY-AST-00004", "doc_type": "user_guide", "status": "active"},
         "65e0da9b6a0668b9287c8ec1702f741369aa64b819f71c484f938ef67253b26c": {"asset_code": "SKY-AST-00004", "doc_type": "troubleshooting", "status": "active"},
         "dfcb1a3a41b212f719460595333ea647ea37cb45ef130f1d53086392cecb2e9d": {"asset_code": "SKY-AST-00004", "doc_type": "maintenance", "status": "active"},
@@ -214,22 +228,29 @@ def is_verified_real_document(doc: Any) -> bool:
     if any(kw in desc for kw in ("synthetic", "dummy", "fake", "fixture", "mock")):
         return False
 
-    # Provenance check: Must have authentic SHA-256 checksum or verified source provenance
-    checksum = getattr(doc, "checksum_sha256", "") or ""
-    registry = VERIFIED_REAL_PROVENANCE_REGISTRY.get("documents", {})
-    if checksum and checksum in registry:
-        return True
-
-    # Check explicit verified provenance markers
+    # Check explicit verified provenance markers set by trusted test harness or secure ingest
     if getattr(doc, "provenance_verified", False):
         return True
-    if "verified starlly technical reference" in desc:
-        return True
-    if "approved technical reference" in desc or "approved" in title:
-        return True
 
-    # Bound to a verified real tenant and verified real asset with index_status INDEXED
-    if is_verified_real_tenant(tenant) and is_verified_real_asset(asset) and getattr(doc, "index_status", "") == "INDEXED":
+    # Provenance check: Must have authentic SHA-256 checksum bound to the exact asset in the verified registry
+    checksum = (getattr(doc, "checksum_sha256", "") or "").strip().lower()
+    registry = VERIFIED_REAL_PROVENANCE_REGISTRY.get("documents", {})
+    if checksum and checksum in registry:
+        entry = registry[checksum]
+        if entry.get("status") != "active":
+            return False
+        # Exact asset code binding: checksum must be registered for this specific asset code
+        asset_code = getattr(asset, "asset_code", "")
+        if isinstance(asset, dict):
+            asset_code = asset.get("asset_code", "")
+        if asset_code != entry.get("asset_code"):
+            return False
+        # Content integrity verification: if content_text is present, it must hash to the checksum
+        content_text = getattr(doc, "content_text", "")
+        if content_text:
+            calc_sha = hashlib.sha256(content_text.encode("utf-8", errors="ignore")).hexdigest().lower()
+            if calc_sha != checksum:
+                return False
         return True
 
     return False
@@ -287,10 +308,55 @@ def is_synthetic_customer(customer: Any) -> bool:
     return False
 
 
-def is_synthetic_service_call(call: Any) -> bool:
-    """Identify whether a ServiceCall is synthetic/demo."""
+def is_verified_real_service_call(call: Any) -> bool:
+    """Positively verify that a ServiceCall has authentic real company provenance.
+    Requires:
+      - Bound to an authorized real company tenant
+      - Bound to a verified real customer
+      - Bound to a verified real asset
+      - Appropriate lifecycle status ('closed' or 'marked_for_closure')
+      - Not a synthetic injection (no synthetic prefixes or dummy keywords)
+    """
     if not call:
         return False
+    tenant = getattr(call, "tenant", None)
+    if not is_verified_real_tenant(tenant):
+        return False
+
+    customer = getattr(call, "customer", None)
+    if not customer or not is_verified_real_customer(customer):
+        return False
+
+    asset = getattr(call, "asset", None)
+    if not asset or not is_verified_real_asset(asset):
+        return False
+
+    servy_id_str = str(getattr(call, "servy_id", "") or "").upper()
+    if any(servy_id_str.startswith(p) for p in SYNTHETIC_CALL_PREFIXES):
+        return False
+
+    # Check text fields for synthetic markers
+    complaint_type = (getattr(call, "complaint_type", "") or "").lower()
+    complaint_text = (getattr(call, "complaint_text", "") or "").lower()
+    resolution_text = (getattr(call, "resolution_text", "") or "").lower()
+    for kw in ("synthetic", "dummy", "fake", "fixture", "mock"):
+        if kw in complaint_type or kw in complaint_text or kw in resolution_text:
+            return False
+
+    # Appropriate lifecycle status for historical resolution guidance
+    status = getattr(call, "status", "")
+    if status not in ("closed", "marked_for_closure"):
+        return False
+
+    return True
+
+
+def is_synthetic_service_call(call: Any) -> bool:
+    """Identify whether a ServiceCall is synthetic/demo or lacks positive provenance."""
+    if not call:
+        return False
+    if get_customer_data_mode() == "verified_real_only":
+        return not is_verified_real_service_call(call)
     servy_id = str(getattr(call, "servy_id", "") or "").upper()
     if any(servy_id.startswith(p) for p in SYNTHETIC_CALL_PREFIXES):
         return True

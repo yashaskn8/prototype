@@ -76,8 +76,12 @@ class BgeRealEmbeddingIntegrationTests(TestCase):
 
     @classmethod
     def setUpTestData(cls):
+        import unittest
         cls.profile = get_profile("bge-small")
-        cls.model = load_model(cls.profile)
+        try:
+            cls.model = load_model(cls.profile)
+        except EmbeddingConfigError as exc:
+            raise unittest.SkipTest(f"MODEL_ARTIFACT_UNAVAILABLE: {exc}")
 
     def test_real_model_dimension_and_normalization(self):
         """Assert real downloaded BGE model produces 384-dimensional unit-norm embeddings."""
@@ -149,6 +153,7 @@ class BgeRealEmbeddingIntegrationTests(TestCase):
 # ==============================================================================
 
 @override_settings(
+    SERVY_CUSTOMER_DATA_MODE="test_isolated",
     SERVY_LLM_PROVIDER="extractive",
     SERVY_RAG_MIN_SCORE=0.01,
 )
@@ -458,6 +463,7 @@ class BgeRedTeamScenariosTests(TestCase):
 # LAYER D — Additional Adversarial & Negative Security Tests
 # ==============================================================================
 
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated")
 class BgeAdversarialNegativeTests(TestCase):
     """Negative tests for permission bypass, disabled sources, and direct-ID queries."""
 

@@ -130,36 +130,44 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
     if target_session and target_session.escalated_call_id:
         existing_call = target_session.escalated_call
 
-        session_complaint = (target_session.complaint or "").strip().lower()
-
-        # Server-authoritative incident identity:
-        # A distinct symptom or complaint on the same asset creates an independent incident ticket.
-        # Repeated submissions of the same complaint or multi-turn turns within the same incident share the ticket.
-        is_same_incident = False
-        if session_id and str(target_session.session_id) == str(session_id):
-            is_same_incident = True
-        elif not session_id and question_text and session_complaint and (
-            question_text == session_complaint or
-            "turn of incident" in question_text or
-            (session_complaint in question_text and len(session_complaint) > 15) or
-            (question_text in session_complaint and len(question_text) > 15)
-        ):
-            is_same_incident = True
-
-        # Safety hazard override: A hazardous complaint cannot be silently absorbed into a routine ticket
-        if is_hazard and existing_call.priority != "critical":
-            is_same_incident = False
-
-        if is_same_incident:
-            # Same incident: reuse existing ticket without violating OneToOne unique constraint
-            if not interaction.escalated_call_id and not CustomerInteraction.objects.filter(escalated_call=existing_call).exists():
-                interaction.escalated_call = existing_call
-                interaction.resolved = False
-                interaction.save(update_fields=["escalated_call", "resolved"])
-            return existing_call
-        else:
-            # Different incident or old escalated session: do not absorb into old ticket
+        # Ownership validation: Tenant, Customer, Asset, Site, and ServiceCall must match strictly
+        if existing_call.tenant_id != tenant.id or existing_call.customer_id != interaction.customer_id:
             target_session = None
+        elif interaction.asset_id and existing_call.asset_id != interaction.asset_id:
+            target_session = None
+        elif interaction.site_id and existing_call.site_id and existing_call.site_id != interaction.site_id:
+            target_session = None
+        else:
+            session_complaint = (target_session.complaint or "").strip().lower()
+
+            # Server-authoritative incident identity:
+            # 1. Explicit session UUID match (durable diagnostic session identity)
+            # 2. Exact complaint text retry
+            # 3. Explicit multi-turn incident marker
+            # Free-text substring similarity is strictly forbidden.
+            is_same_incident = False
+            if session_id and str(target_session.session_id) == str(session_id):
+                is_same_incident = True
+            elif not session_id and question_text and session_complaint and (
+                question_text == session_complaint or
+                "turn of incident" in question_text
+            ):
+                is_same_incident = True
+
+            # Safety hazard override: A hazardous complaint cannot be silently absorbed into a routine ticket
+            if is_hazard and existing_call.priority != "critical":
+                is_same_incident = False
+
+            if is_same_incident:
+                # Same incident: reuse existing ticket without violating OneToOne unique constraint
+                if not interaction.escalated_call_id and not CustomerInteraction.objects.filter(escalated_call=existing_call).exists():
+                    interaction.escalated_call = existing_call
+                    interaction.resolved = False
+                    interaction.save(update_fields=["escalated_call", "resolved"])
+                return existing_call
+            else:
+                # Different incident: do not absorb into previous ticket
+                target_session = None
 
     zone = interaction.site.zone if interaction.site else None
     branch = zone.branch if zone and zone.branch else None
