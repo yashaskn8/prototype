@@ -64,7 +64,77 @@ TEMPLATES = [{
 WSGI_APPLICATION = "servy_rag.wsgi.application"
 ASGI_APPLICATION = "servy_rag.asgi.application"
 
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3", "OPTIONS": {"timeout": 20}}}
+# ----------------------------------------------------------------------
+# Authoritative Relational Database Configuration: MySQL-First Architecture
+# ----------------------------------------------------------------------
+# MySQL is the authoritative relational database for Servy.
+# Production startup strictly requires MySQL.
+
+SERVY_DB_ENGINE = os.getenv("SERVY_DB_ENGINE", "mysql").lower().strip()
+
+if SERVY_DB_ENGINE == "mysql":
+    # Ensure MySQL driver is registered (mysqlclient C-extension preferred, PyMySQL fallback)
+    try:
+        import MySQLdb  # mysqlclient
+    except ImportError:
+        try:
+            import pymysql
+            pymysql.install_as_MySQLdb()
+        except ImportError:
+            raise RuntimeError(
+                "Neither 'mysqlclient' nor 'pymysql' is installed. "
+                "Install mysqlclient (pip install mysqlclient) or PyMySQL (pip install pymysql) "
+                "to connect to the authoritative Servy MySQL database."
+            )
+
+    MYSQL_HOST = os.getenv("MYSQL_HOST", os.getenv("SERVY_DB_HOST", "127.0.0.1")).strip()
+    MYSQL_PORT = int(os.getenv("MYSQL_PORT", os.getenv("SERVY_DB_PORT", "3306")))
+    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", os.getenv("SERVY_DB_NAME", "servy")).strip()
+    MYSQL_USER = os.getenv("MYSQL_USER", os.getenv("SERVY_DB_USER", "servy_app")).strip()
+    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", os.getenv("SERVY_DB_PASSWORD", "")).strip()
+
+    MYSQL_OPTIONS = {
+        "charset": "utf8mb4",
+        "init_command": (
+            "SET sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ZERO_DATE,NO_ZERO_IN_DATE';"
+            "SET default_storage_engine=INNODB;"
+        ),
+        "connect_timeout": int(os.getenv("MYSQL_CONNECT_TIMEOUT", "10")),
+    }
+
+    MYSQL_SSL_CA = os.getenv("MYSQL_SSL_CA", "").strip()
+    if MYSQL_SSL_CA:
+        MYSQL_OPTIONS["ssl"] = {"ca": MYSQL_SSL_CA}
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.mysql",
+            "NAME": MYSQL_DATABASE,
+            "USER": MYSQL_USER,
+            "PASSWORD": MYSQL_PASSWORD,
+            "HOST": MYSQL_HOST,
+            "PORT": MYSQL_PORT,
+            "OPTIONS": MYSQL_OPTIONS,
+            "CONN_MAX_AGE": int(os.getenv("MYSQL_CONN_MAX_AGE", "60")),
+            "TEST": {
+                "CHARSET": "utf8mb4",
+                "COLLATION": "utf8mb4_unicode_ci",
+            },
+        }
+    }
+elif SERVY_DB_ENGINE == "sqlite3":
+    # Allowed strictly when explicitly specified for test isolation or offline review
+    if not DEBUG and os.getenv("CI") != "true":
+        raise RuntimeError("SQLite backend is strictly prohibited when DJANGO_DEBUG=0. MySQL is required.")
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {"timeout": 20},
+        }
+    }
+else:
+    raise RuntimeError(f"Unsupported database engine '{SERVY_DB_ENGINE}'. Servy requires MySQL ('mysql').")
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

@@ -849,9 +849,10 @@ class CustomerSupportEscalateView(APIView):
             return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
 
         note = _clean_input(request.data.get("note") or request.data.get("customer_note"))
+        session_id = _clean_input(request.data.get("session_id"))
 
         # Idempotent ticket creation with OneToOne constraint enforcement and customer observation preservation
-        call = create_call_from_interaction(interaction, customer_note=note)
+        call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
         return Response({
             "call_id": call.id,
             "servy_id": call.servy_id,
@@ -1883,7 +1884,7 @@ class KnowledgeDownloadView(APIView):
 
 
 class KnowledgeDeleteView(APIView):
-    """Delete KB document from SQLite and purge vector index from Chroma."""
+    """Delete KB document from relational database (MySQL) and purge vector index from Chroma."""
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, pk):

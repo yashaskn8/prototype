@@ -74,6 +74,72 @@ def sanitize_attachment_filename(filename: str, sha_prefix: str = "") -> str:
     return clean
 
 
+def atomic_exclusive_write(target_path: Path, raw_bytes: bytes, expected_sha: str) -> str:
+    """Safely and exclusively writes raw_bytes to target_path with guaranteed zero-overwrite.
+    Works reliably across Windows and Linux.
+    Returns:
+      'CREATED': File was exclusively created.
+      'ALREADY_EXISTS': File already exists with identical SHA-256 hash.
+      'CONFLICT_REQUIRES_REVIEW': File already exists with differing content/hash.
+    """
+    target_path = Path(target_path).resolve()
+    if target_path.exists():
+        existing_sha = hashlib.sha256(target_path.read_bytes()).hexdigest()
+        if existing_sha == expected_sha:
+            return "ALREADY_EXISTS"
+        return "CONFLICT_REQUIRES_REVIEW"
+
+    media_dir = target_path.parent
+    media_dir.mkdir(parents=True, exist_ok=True)
+    import uuid
+    tmp_file = media_dir / f".tmp_{uuid.uuid4().hex}_{target_path.name}"
+
+    try:
+        tmp_file.write_bytes(raw_bytes)
+        staged_sha = hashlib.sha256(tmp_file.read_bytes()).hexdigest()
+        if staged_sha != expected_sha:
+            raise IngestionSecurityError(
+                f"Temporary staged file content hash mismatch: expected {expected_sha}, got {staged_sha}"
+            )
+
+        # Cross-platform atomic exclusive creation (zero-overwrite guarantee)
+        if os.name == "nt":
+            # Windows: os.rename fails with FileExistsError if destination exists
+            try:
+                os.rename(str(tmp_file), str(target_path))
+                return "CREATED"
+            except FileExistsError:
+                pass
+        else:
+            # POSIX: os.link creates hard link exclusively (O_EXCL) without overwrite
+            try:
+                os.link(str(tmp_file), str(target_path))
+                tmp_file.unlink(missing_ok=True)
+                return "CREATED"
+            except (FileExistsError, OSError):
+                pass
+
+        # Fallback exclusive create mode
+        try:
+            with open(target_path, "xb") as dst:
+                dst.write(raw_bytes)
+            return "CREATED"
+        except FileExistsError:
+            pass
+
+        # If destination exists after concurrency, verify bytes without overwriting
+        existing_sha = hashlib.sha256(target_path.read_bytes()).hexdigest()
+        if existing_sha == expected_sha:
+            return "ALREADY_EXISTS"
+        return "CONFLICT_REQUIRES_REVIEW"
+    finally:
+        if tmp_file.exists():
+            try:
+                tmp_file.unlink()
+            except Exception:
+                pass
+
+
 def validate_attachment_url(url: str) -> str:
     """Validate attachment download URL against approved storage hosts.
 
@@ -603,22 +669,16 @@ def ingest_starlly_real_data(
                 if local_file_path.is_symlink():
                     raise IngestionSecurityError(f"Symlink destination rejected: {local_file_path}")
 
-                if not local_file_path.exists():
-                    import uuid
-                    tmp_file = media_abs_dir / f".tmp_{uuid.uuid4().hex}_{local_file_name}"
-                    try:
-                        tmp_file.write_bytes(raw_bytes)
-                        tmp_sha = hashlib.sha256(tmp_file.read_bytes()).hexdigest()
-                        if tmp_sha != sha:
-                            raise IngestionSecurityError("Temporary staged file content hash mismatch.")
-                        os.replace(tmp_file, local_file_path)
-                    except Exception as err:
-                        if tmp_file.exists():
-                            try:
-                                tmp_file.unlink()
-                            except Exception:
-                                pass
-                        raise IngestionSecurityError(f"Atomic file write failed: {err}")
+                # Atomic exclusive file publishing with zero-overwrite guarantee
+                write_status = atomic_exclusive_write(local_file_path, raw_bytes, sha)
+                if write_status == "CONFLICT_REQUIRES_REVIEW":
+                    ingest_report["conflicts"].append({
+                        "type": "FILE_CONFLICT_REQUIRES_REVIEW",
+                        "file": local_file_name,
+                        "asset_code": asset.asset_code,
+                        "reason": "Destination file already exists with conflicting content. Existing bytes preserved.",
+                    })
+                    continue
 
                 doc = KnowledgeDocument.objects.create(
                     tenant=tenant,

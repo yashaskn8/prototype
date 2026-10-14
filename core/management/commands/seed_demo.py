@@ -157,6 +157,14 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         random.seed(26)
         if options["reset"]:
+            from core.security import is_protected_database
+            from django.core.management.base import CommandError
+            if is_protected_database():
+                raise CommandError(
+                    "DESTRUCTIVE OPERATION BLOCKED: seed_demo --reset is prohibited on protected databases. "
+                    "Resetting demo tenants causes cascading deletions of business data. "
+                    "To seed initial data safely without deleting existing records, omit the --reset flag."
+                )
             Tenant.objects.filter(slug__in=["starlly-tester", "aerobuild-demo"]).delete()
 
         tenant, tenant_created = Tenant.objects.get_or_create(name="Starlly Tester", slug="starlly-tester")

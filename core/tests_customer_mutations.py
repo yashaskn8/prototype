@@ -161,6 +161,15 @@ class CustomerRagMutationTests(TestCase):
     def test_endpoint_mutation_disabling_incident_deduplication_creates_duplicate_tickets(self):
         """Mutation 4: Demonstrates that removing incident-level deduplication creates redundant ServiceCalls."""
         self.client.force_login(self.user)
+        session = DiagnosticSession.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer,
+            site=self.site,
+            asset=self.asset,
+            complaint="Incident turns",
+            status="ACTIVE",
+            version=1,
+        )
         interaction1 = CustomerInteraction.objects.create(
             tenant=self.tenant_a, customer=self.customer, site=self.site, asset=self.asset,
             question="First turn of incident", answer="Answer 1"
@@ -173,9 +182,9 @@ class CustomerRagMutationTests(TestCase):
         esc_url1 = reverse("api_customer_support_escalate", args=[interaction1.id])
         esc_url2 = reverse("api_customer_support_escalate", args=[interaction2.id])
 
-        # Baseline: Both requests escalate to the exact same ServiceCall
-        res1 = self.client.post(esc_url1)
-        res2 = self.client.post(esc_url2)
+        # Baseline: Both requests escalate to the exact same ServiceCall via session_id
+        res1 = self.client.post(esc_url1, {"session_id": str(session.session_id)}, format="json")
+        res2 = self.client.post(esc_url2, {"session_id": str(session.session_id)}, format="json")
         self.assertEqual(res1.status_code, 200)
         self.assertEqual(res2.status_code, 200)
         self.assertEqual(res1.json()["call_id"], res2.json()["call_id"])

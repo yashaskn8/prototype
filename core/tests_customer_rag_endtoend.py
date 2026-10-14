@@ -650,6 +650,15 @@ class CustomerRagEndToEndTests(TestCase):
 
     def test_scenario_6_duplicate_escalation_across_multiple_interactions(self):
         """Multiple interactions belonging to the same diagnostic incident create at most one ServiceCall."""
+        session = DiagnosticSession.objects.create(
+            tenant=self.tenant_a,
+            customer=self.customer_a1,
+            site=self.site_a1,
+            asset=self.asset_a1,
+            complaint="Multiple turn incident",
+            status="ACTIVE",
+            version=1,
+        )
         interaction1 = CustomerInteraction.objects.create(
             tenant=self.tenant_a,
             customer=self.customer_a1,
@@ -671,8 +680,8 @@ class CustomerRagEndToEndTests(TestCase):
         esc_url1 = reverse("api_customer_support_escalate", args=[interaction1.id])
         esc_url2 = reverse("api_customer_support_escalate", args=[interaction2.id])
 
-        res1 = self.client.post(esc_url1)
-        res2 = self.client.post(esc_url2)
+        res1 = self.client.post(esc_url1, {"session_id": str(session.session_id)}, format="json")
+        res2 = self.client.post(esc_url2, {"session_id": str(session.session_id)}, format="json")
 
         self.assertEqual(res1.status_code, 200)
         self.assertEqual(res2.status_code, 200)

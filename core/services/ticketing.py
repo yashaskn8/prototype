@@ -5,7 +5,7 @@ from django.db import IntegrityError, OperationalError, transaction
 from django.db.models import Count, Q, Max
 from django.utils import timezone
 
-from core.models import ServiceCall, StaffProfile, SLAPolicy
+from core.models import ServiceCall, StaffProfile, SLAPolicy, Tenant
 
 
 def choose_technician(tenant, branch=None, zone=None):
@@ -65,6 +65,9 @@ def create_service_call_record(
     for attempt in range(max_attempts):
         try:
             with transaction.atomic():
+                # Acquire exclusive lock on the Tenant row under InnoDB (select_for_update)
+                # to serialize ticket ID allocation per tenant, eliminating race conditions.
+                Tenant.objects.select_for_update().filter(id=tenant.id).first()
                 last_id = ServiceCall.objects.filter(tenant=tenant).aggregate(m=Max("servy_id"))["m"] or 42830
                 call = ServiceCall.objects.create(
                     tenant=tenant,
@@ -107,9 +110,11 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
     tenant = interaction.tenant
 
     # Incident-level deduplication with strict multi-tenant and asset verification:
+    # Incident identity is strictly server-authoritative via session UUID.
+    # Natural-language text matching and heuristic substring checks are strictly forbidden.
     target_session = None
     if session_id:
-        # Prevent user-supplied session ID from binding to another customer's or asset's session
+        # Validate tenant, customer, and session ownership
         target_session = DiagnosticSession.objects.filter(
             tenant=tenant,
             customer=interaction.customer,
@@ -117,14 +122,7 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
         ).first()
         if interaction.asset_id and target_session and target_session.asset_id != interaction.asset_id:
             target_session = None
-    elif interaction.asset_id:
-        target_session = DiagnosticSession.objects.filter(
-            tenant=tenant,
-            customer=interaction.customer,
-            asset=interaction.asset,
-        ).order_by("-updated_at").first()
 
-    question_text = (interaction.question or "").strip().lower()
     is_hazard, _ = check_for_safety_hazard(interaction.question or "")
 
     if target_session and target_session.escalated_call_id:
@@ -137,37 +135,19 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
             target_session = None
         elif interaction.site_id and existing_call.site_id and existing_call.site_id != interaction.site_id:
             target_session = None
-        else:
-            session_complaint = (target_session.complaint or "").strip().lower()
-
-            # Server-authoritative incident identity:
-            # 1. Explicit session UUID match (durable diagnostic session identity)
-            # 2. Exact complaint text retry
-            # 3. Explicit multi-turn incident marker
-            # Free-text substring similarity is strictly forbidden.
-            is_same_incident = False
-            if session_id and str(target_session.session_id) == str(session_id):
-                is_same_incident = True
-            elif not session_id and question_text and session_complaint and (
-                question_text == session_complaint or
-                "turn of incident" in question_text
-            ):
-                is_same_incident = True
-
+        elif existing_call.status in ("resolved", "closed") or target_session.status in ("RESOLVED", "CLOSED"):
+            # Existing resolved incident followed by a new incident produces a new ticket
+            target_session = None
+        elif is_hazard and existing_call.priority != "critical":
             # Safety hazard override: A hazardous complaint cannot be silently absorbed into a routine ticket
-            if is_hazard and existing_call.priority != "critical":
-                is_same_incident = False
-
-            if is_same_incident:
-                # Same incident: reuse existing ticket without violating OneToOne unique constraint
-                if not interaction.escalated_call_id and not CustomerInteraction.objects.filter(escalated_call=existing_call).exists():
-                    interaction.escalated_call = existing_call
-                    interaction.resolved = False
-                    interaction.save(update_fields=["escalated_call", "resolved"])
-                return existing_call
-            else:
-                # Different incident: do not absorb into previous ticket
-                target_session = None
+            target_session = None
+        else:
+            # Same session incident retry: reuse existing ticket without violating OneToOne unique constraint
+            if not interaction.escalated_call_id and not CustomerInteraction.objects.filter(escalated_call=existing_call).exists():
+                interaction.escalated_call = existing_call
+                interaction.resolved = False
+                interaction.save(update_fields=["escalated_call", "resolved"])
+            return existing_call
 
     zone = interaction.site.zone if interaction.site else None
     branch = zone.branch if zone and zone.branch else None

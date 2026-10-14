@@ -106,12 +106,20 @@ def get_document_retrieval_readiness(document_id: Any) -> Dict[str, Any]:
     doc_id = document_id.id if hasattr(document_id, "id") else int(document_id)
     doc = KnowledgeDocument.objects.filter(id=doc_id).select_related("tenant", "asset").first()
     if not doc:
-        return {"status": "NOT_FOUND", "customer_serving_eligible": False}
+        return {
+            "status": "NOT_FOUND",
+            "parsed_successfully": False,
+            "sparse_index_ready": False,
+            "minilm_vectors_ready": False,
+            "bge_vectors_ready": False,
+            "source_provenance_status": "UNKNOWN",
+            "customer_serving_eligible": False,
+        }
 
     chunks_count = doc.chunks.count()
     has_chunks = chunks_count > 0
     parsed = bool(doc.content_text and has_chunks)
-    sparse_ready = has_chunks and all(c.embedding for c in doc.chunks.all())
+    sparse_ready = has_chunks and all(bool(c.embedding) for c in doc.chunks.all())
 
     minilm_ready = False
     try:
@@ -132,15 +140,31 @@ def get_document_retrieval_readiness(document_id: Any) -> Dict[str, Any]:
         bge_ready = False
 
     from core.services.customer_isolation import is_verified_real_document
-    customer_eligible = is_verified_real_document(doc) if is_real_company_tenant(doc.tenant) else (doc.is_rag_enabled and not doc.is_confidential)
+    if is_real_company_tenant(doc.tenant):
+        source_verified = is_verified_real_document(doc)
+        source_provenance_status = "VERIFIED" if source_verified else "UNVERIFIED"
+        customer_eligible = source_verified
+    else:
+        source_provenance_status = "SYNTHETIC_OR_DEMO"
+        customer_eligible = bool(doc.is_rag_enabled and not doc.is_confidential)
+
+    parse_status = "PARSED" if parsed else "UNPARSED"
+    sparse_index_status = "INDEXED" if sparse_ready else "NOT_INDEXED"
+    minilm_index_status = "INDEXED" if minilm_ready else "NOT_INDEXED"
+    bge_index_status = "INDEXED" if bge_ready else "NOT_INDEXED"
 
     return {
         "document_id": doc.id,
         "title": doc.title,
         "parsed_successfully": parsed,
+        "parse_status": parse_status,
         "sparse_index_ready": sparse_ready,
+        "sparse_index_status": sparse_index_status,
         "minilm_vectors_ready": minilm_ready,
+        "minilm_index_status": minilm_index_status,
         "bge_vectors_ready": bge_ready,
+        "bge_index_status": bge_index_status,
+        "source_provenance_status": source_provenance_status,
         "customer_serving_eligible": customer_eligible,
         "index_status": doc.index_status,
         "index_error": doc.index_error,
@@ -148,7 +172,7 @@ def get_document_retrieval_readiness(document_id: Any) -> Dict[str, Any]:
 
 
 def sync_document_to_chroma(document_id: int):
-    """Sync an indexed KnowledgeDocument from SQLite to ChromaDB.
+    """Sync an indexed KnowledgeDocument from the authoritative relational database (MySQL) to ChromaDB.
     Runs non-destructively: never deletes existing vectors.
     """
     from core.models import KnowledgeDocument
@@ -174,16 +198,16 @@ def sync_document_to_chroma(document_id: int):
         )
         return False
 
-    model = get_sentence_transformer()
-    if model is None:
-        KnowledgeDocument.objects.filter(id=document_id).update(
-            index_status="FAILED",
-            indexed_at=timezone.now(),
-            index_error="Dense index failed: SentenceTransformer model unavailable. Dense vectors not indexed."
-        )
-        return False
-
     try:
+        model = get_sentence_transformer()
+        if model is None:
+            KnowledgeDocument.objects.filter(id=document_id).update(
+                index_status="FAILED",
+                indexed_at=timezone.now(),
+                index_error="Dense index failed: SentenceTransformer model unavailable. Dense vectors not indexed."
+            )
+            return False
+
         # Stable chunk ID format: doc_{id}_v{version}_c{idx}
         version = doc.index_version
         ids = [f"doc_{doc.id}_v{version}_c{c.chunk_index}" for c in chunks]
@@ -257,22 +281,20 @@ def sync_document_to_chroma(document_id: int):
 
     except Exception as exc:
         logger.error("Failed to index doc %s to Chroma: %s", doc.id, exc, exc_info=True)
-        # IMPORTANT: Do NOT set index_status to FAILED here.  The SQLite
-        # sparse embeddings were created successfully by index_document() and
-        # must remain discoverable by the fallback retriever.  Only record
-        # the Chroma-specific failure in index_error.
+        # Truthful reporting: Dense index failed. Sparse index remains in relational database (MySQL)
+        # and discoverable by sparse fallback (allow_failed=True).
         KnowledgeDocument.objects.filter(id=document_id).update(
-            index_status="INDEXED",
-            index_error=f"Chroma sync failed: {str(exc)[:480]}; sparse index active"
+            index_status="FAILED",
+            index_error=f"Chroma sync failed: {str(exc)[:480]}; sparse index may be active"
         )
         return False
 
 
 def queue_chroma_sync(document_id: int):
-    """Queue synchronization to Chroma upon SQLite transaction commit."""
+    """Queue synchronization to Chroma upon relational database (MySQL) transaction commit."""
     transaction.on_commit(lambda: sync_document_to_chroma(document_id))
 
 
 def queue_chroma_deletion(document_id: int):
-    """Queue deletion from Chroma upon SQLite transaction commit."""
+    """Queue deletion from Chroma upon relational database (MySQL) transaction commit."""
     transaction.on_commit(lambda: delete_document_vectors(document_id))
