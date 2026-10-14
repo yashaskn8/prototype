@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feature/**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -41,7 +41,16 @@ jobs:
       - name: Red Team Offline Checks (Roles & Scoping)
         run: python red_team_offline.py
 
-      - name: Run All Core Tests (Unit, Security, RAG, Red-Team)
+      - name: Real-Company Isolation Tests
+        run: python manage.py test core.tests_real_company_isolation -v 2
+
+      - name: Customer RAG End-to-End Tests
+        run: python manage.py test core.tests_customer_rag_endtoend -v 2
+
+      - name: Customer RAG Mutation Tests
+        run: python manage.py test core.tests_customer_mutations -v 2
+
+      - name: Run All Core Tests
         run: python manage.py test core -v 2
 
   frontend-build-and-lint:

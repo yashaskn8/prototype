@@ -243,7 +243,7 @@ def check_for_vague_complaint(complaint: str, asset: Optional[Asset] = None) -> 
 # Industrial Safety Classification (Fail-Closed)
 # ---------------------------------------------------------------------------
 
-def classify_action_safety(step_text: str) -> Tuple[str, str]:
+def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tuple[str, str]:
     """
     Classify a troubleshooting action according to industrial safety boundaries.
     Returns (safety_level, reason_or_warning)
@@ -251,7 +251,7 @@ def classify_action_safety(step_text: str) -> Tuple[str, str]:
       - 'PROHIBITED': Violates basic safety principles (interlock defeat, tampering)
       - 'TECHNICIAN_ONLY': Dangerous or invasive, certified technician required
       - 'INFORMATIONAL_OBSERVATION': Non-invasive external check (visual, status, display)
-      - 'CUSTOMER_APPROVED': Authorized customer procedure
+      - 'CUSTOMER_APPROVED': Candidate customer procedure (must be positively grounded in verified manual)
       - 'UNKNOWN_REQUIRES_REVIEW': Fail-closed default for unverified actions
     """
     lower = (step_text or "").lower()
@@ -278,7 +278,21 @@ def classify_action_safety(step_text: str) -> Tuple[str, str]:
     # 4. Check for recognized safe operator actions
     for safe_act in APPROVED_OPERATOR_ACTIONS:
         if safe_act in lower:
-            return "CUSTOMER_APPROVED", "Approved operator procedure."
+            # Model-inapplicable or undocumented assets fail closed
+            if asset and not KnowledgeDocument.objects.filter(
+                tenant=asset.tenant,
+                asset=asset,
+                is_rag_enabled=True,
+                is_confidential=False,
+            ).exists() and not KnowledgeDocument.objects.filter(
+                tenant=asset.tenant,
+                product=asset.product,
+                asset__isnull=True,
+                is_rag_enabled=True,
+                is_confidential=False,
+            ).exists():
+                return "UNKNOWN_REQUIRES_REVIEW", f"Equipment '{asset.name}' has no authorized technical manual. Customer repair procedure cannot be approved."
+            return "CUSTOMER_APPROVED", "Candidate operator procedure pending deterministic manual grounding."
 
     # 5. Fail-Closed Default: Unknown actions require technician review
     return "UNKNOWN_REQUIRES_REVIEW", "Action is not an authorized customer-safe procedure. Certified technician review required."
@@ -293,6 +307,7 @@ def find_grounding_reference(
     retrieved_references: List[Dict[str, Any]],
     tenant_id: int,
     asset: Optional[Asset] = None,
+    customer: Optional[Customer] = None,
 ) -> Tuple[bool, Optional[Dict[str, Any]], str]:
     """
     Verifies that action_text is deterministically supported by an applicable, authorized,
@@ -317,7 +332,9 @@ def find_grounding_reference(
             doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).select_related("product").first()
             if not doc:
                 continue
-            if not doc.is_rag_enabled or doc.is_confidential:
+            if not doc.is_rag_enabled or doc.is_confidential or getattr(doc, "disable_sharing", False):
+                continue
+            if doc.customer_id and customer and doc.customer_id != customer.id:
                 continue
             if asset:
                 if doc.asset_id and doc.asset_id != asset.id:
@@ -586,7 +603,7 @@ def build_structured_diagnostic_contract(
 
         elif current_sec == "CHECK FIRST":
             clean_check = re.sub(r"^[-*•\d\.\)]\s*", "", stripped)
-            safety_level, reason = classify_action_safety(clean_check)
+            safety_level, reason = classify_action_safety(clean_check, asset=asset)
             if safety_level in ("TECHNICIAN_ONLY", "PROHIBITED"):
                 technician_only_actions.append({
                     "action_id": f"tech_check_{len(technician_only_actions) + 1}",
@@ -594,15 +611,16 @@ def build_structured_diagnostic_contract(
                     "warning": reason,
                 })
             elif safety_level in ("CUSTOMER_APPROVED", "INFORMATIONAL_OBSERVATION"):
-                # Non-invasive check
-                check_first.append(clean_check)
+                # Strict action-to-evidence grounding check: candidate check MUST be grounded in verified document
                 is_grounded, matched_ref, ground_reason = find_grounding_reference(
                     clean_check,
                     retrieved_references,
                     tenant_id,
                     asset,
+                    customer=interaction.customer,
                 )
                 if is_grounded and matched_ref:
+                    check_first.append(clean_check)
                     citation_label = matched_ref.get("reference") or matched_ref.get("title") or "Approved Technical Manual"
                     doc_id = matched_ref.get("document_id")
                     chunk_id = matched_ref.get("chunk_id")
@@ -617,6 +635,9 @@ def build_structured_diagnostic_contract(
                         "chunk_id": chunk_id,
                     })
                     step_num += 1
+                else:
+                    # Ungrounded candidate check fails closed; do NOT expose in check_first
+                    pass
 
         elif current_sec == "STEP-BY-STEP TROUBLESHOOTING":
             step_match = re.match(r"^Step\s*\d*\s*[-:]?\s*(.+)", stripped, re.IGNORECASE)
@@ -627,7 +648,7 @@ def build_structured_diagnostic_contract(
                 continue
 
             clean_action = re.sub(r"^[-*•\d\.\)]\s*", "", action_text)
-            safety_level, reason = classify_action_safety(clean_action)
+            safety_level, reason = classify_action_safety(clean_action, asset=asset)
 
             if safety_level in ("TECHNICIAN_ONLY", "PROHIBITED"):
                 technician_only_actions.append({
@@ -642,6 +663,7 @@ def build_structured_diagnostic_contract(
                     retrieved_references,
                     tenant_id,
                     asset,
+                    customer=interaction.customer,
                 )
                 if is_grounded and matched_ref:
                     citation_label = matched_ref.get("reference") or matched_ref.get("title") or "Approved Technical Manual"
@@ -772,17 +794,26 @@ def get_or_create_customer_session(
 
         if active_session:
             last_seq = active_session.events.aggregate(m=Max("seq_num"))["m"] or 0
+            if not active_session.complaint:
+                active_session.complaint = complaint
+                event_type = EVENT_COMPLAINT_RECORDED
+                payload = {"complaint": complaint}
+                update_fields = ["complaint", "version", "updated_at"]
+            else:
+                event_type = EVENT_OBSERVATION_RECORDED
+                payload = {"observation": complaint}
+                update_fields = ["version", "updated_at"]
+
             DiagnosticEvent.objects.create(
                 tenant=tenant,
                 session=active_session,
                 seq_num=last_seq + 1,
-                event_type=EVENT_COMPLAINT_RECORDED,
+                event_type=event_type,
                 actor_role="customer",
-                payload={"complaint": complaint},
+                payload=payload,
             )
-            active_session.complaint = complaint
             active_session.version += 1
-            active_session.save(update_fields=["complaint", "version", "updated_at"])
+            active_session.save(update_fields=update_fields)
             return active_session
 
         session = DiagnosticSession.objects.create(

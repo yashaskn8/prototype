@@ -21,14 +21,22 @@ from .embeddings import get_profile, load_model, get_collection, passage_text, E
 INDEX_VERSION = "v1"
 
 
-def _eligible_chunks():
+def _eligible_chunks(profile=None):
+    from django.conf import settings
     from core.models import KnowledgeChunk
-    return (KnowledgeChunk.objects
+    qs = (KnowledgeChunk.objects
             .filter(is_quarantined=False, document__is_rag_enabled=True, document__index_status="INDEXED")
             .exclude(text="")
             .select_related("document", "document__domain", "document__category",
                             "document__product", "document__asset")
             .order_by("document_id", "chunk_index"))
+    if profile is not None:
+        real_tenants = getattr(settings, "STARLLY_REAL_TENANTS", ["skydream"])
+        if profile.key.startswith("company"):
+            qs = qs.filter(tenant__slug__in=real_tenants)
+        else:
+            qs = qs.exclude(tenant__slug__in=real_tenants)
+    return qs
 
 
 def _chunk_key(c) -> str:
@@ -48,7 +56,8 @@ def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
         existing[cid] = (meta or {}).get("content_sha256")
 
     is_full_reconciliation = (limit is None)
-    chunks = list(_eligible_chunks()[:limit] if limit else _eligible_chunks())
+    chunks = list(_eligible_chunks(profile)[:limit] if limit else _eligible_chunks(profile))
+
     wanted_ids = set()
     todo = []
     for c in chunks:
@@ -192,7 +201,7 @@ def reconcile_index(profile_key: str = "bge-small", dry_run: bool = True) -> dic
     coll = get_collection(profile, create=False)
     got = coll.get(include=["metadatas"])
 
-    expected = {_chunk_key(c) for c in _eligible_chunks() if passage_text(profile, c).strip()}
+    expected = {_chunk_key(c) for c in _eligible_chunks(profile) if passage_text(profile, c).strip()}
     present = set(got["ids"])
     missing = expected - present
     orphans = present - expected
@@ -225,7 +234,8 @@ def verify_index(profile_key: str) -> dict:
     profile = get_profile(profile_key)
     coll = get_collection(profile, create=False)
     got = coll.get(include=["metadatas"])
-    expected = {_chunk_key(c) for c in _eligible_chunks() if passage_text(profile, c).strip()}
+    expected = {_chunk_key(c) for c in _eligible_chunks(profile) if passage_text(profile, c).strip()}
+
     present = set(got["ids"])
     wrong_model = [i for i, m in zip(got["ids"], got["metadatas"]) if m.get("embedding_model") != profile.model_id]
     chunk_ids = [m["chunk_id"] for m in got["metadatas"]]

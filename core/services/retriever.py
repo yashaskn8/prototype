@@ -46,7 +46,13 @@ class RetrievedResultList(list):
         self.retrieval_backend = retrieval_backend
 
 
-def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None):
+def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False):
+    from .customer_isolation import get_customer_data_mode, is_real_tenant
+    mode = get_customer_data_mode()
+    if not staff_mode and mode == "verified_real_only":
+        if not is_real_tenant(tenant):
+            return KnowledgeChunk.objects.none()
+
     qs = KnowledgeChunk.objects.filter(
         tenant=tenant,
         document__is_rag_enabled=True,
@@ -55,6 +61,9 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
         "document", "document__product", "document__asset",
         "document__category", "document__domain", "document__customer",
     )
+
+    if not staff_mode and mode == "verified_real_only":
+        qs = qs.exclude(document__title__icontains="synthetic").exclude(document__tags__icontains="synthetic").exclude(document__tags__icontains="dummy")
 
     if not include_confidential:
         qs = qs.filter(document__is_confidential=False)
@@ -95,9 +104,19 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
 
 def _resolution_candidates(tenant, asset, customer, staff_mode):
+    from .customer_isolation import get_customer_data_mode, is_real_tenant
+    mode = get_customer_data_mode()
+    if not staff_mode and mode == "verified_real_only":
+        if not is_real_tenant(tenant):
+            return ServiceResolutionIndex.objects.none()
+
     qs = ServiceResolutionIndex.objects.filter(tenant=tenant).select_related(
         "service_call", "service_call__asset", "service_call__asset__product", "service_call__customer"
     )
+
+    if not staff_mode and mode == "verified_real_only":
+        qs = qs.exclude(service_call__servy_id__startswith="SRV-SYN-").exclude(service_call__servy_id__startswith="DUMMY-")
+
     if asset:
         if asset.product_id:
             qs = qs.filter(Q(service_call__asset=asset) | Q(service_call__asset__product=asset.product))
@@ -252,7 +271,7 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                             evidence_text, query_identifiers, asset,
                             customer, tenant, top_k, min_score,
-                            query_doc_ids=None):
+                            query_doc_ids=None, staff_mode=False):
     """Score candidates using ChromaDB dense embeddings.
 
     Authorization is enforced BEFORE ranking by passing allowed_doc_ids into
@@ -262,13 +281,22 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
     """
     try:
         from django.conf import settings
+        from .customer_isolation import get_customer_data_mode, is_real_tenant
+        mode = get_customer_data_mode()
         use_experimental = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-        profile_key = (
-            getattr(settings, "SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
-            if use_experimental
-            else getattr(settings, "SERVY_EMBEDDING_MODEL", "minilm")
-        )
+        is_real = is_real_tenant(tenant)
+        if not staff_mode and mode == "verified_real_only" and not is_real:
+            return []
+        if is_real:
+            profile_key = "company-bge-small" if use_experimental else "company-minilm"
+        else:
+            profile_key = (
+                getattr(settings, "SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
+                if use_experimental
+                else getattr(settings, "SERVY_EMBEDDING_MODEL", "minilm")
+            )
         from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
+
         profile = get_profile(profile_key)
         model = load_model(profile)
         if model is None or not allowed_doc_ids:
@@ -492,6 +520,7 @@ def retrieve(
     candidates = list(_knowledge_candidates(
         tenant, asset, customer, include_confidential,
         allow_failed=True, query_doc_ids=query_doc_ids,
+        staff_mode=staff_mode,
     ))
     allowed_chunks_by_id = {c.id: c for c in candidates}
     allowed_doc_ids = {c.document_id for c in candidates}
@@ -519,6 +548,7 @@ def retrieve(
         evidence_text, query_identifiers, asset, customer,
         tenant, top_k, min_score,
         query_doc_ids=query_doc_ids,
+        staff_mode=staff_mode,
     )
 
     # 2c: Fuse results using RRF

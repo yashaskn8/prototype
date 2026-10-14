@@ -186,6 +186,7 @@ STARLLY_API_KEY_ID = os.getenv("STARLLY_API_KEY_ID", "")
 # Maps Servy tenant identifier (slug or ID) to authorized Starlly organisation ID.
 # Only explicitly mapped tenants can make calls to external Starlly endpoints.
 STARLLY_TENANT_ORGANISATION_MAP = {
+    "skydream": os.getenv("STARLLY_ORGANISATION_ID", "273"),
     "starlly-tester": os.getenv("STARLLY_ORGANISATION_ID", "273"),
 }
 _allowed_tenants_env = os.getenv("STARLLY_ALLOWED_TENANTS", "")
@@ -194,3 +195,9 @@ if _allowed_tenants_env:
         _t = _t.strip()
         if _t:
             STARLLY_TENANT_ORGANISATION_MAP[_t] = os.getenv("STARLLY_ORGANISATION_ID", "273")
+
+# Real company data isolation controls
+SERVY_CUSTOMER_DATA_MODE = os.getenv("SERVY_CUSTOMER_DATA_MODE", "verified_real_only")
+STARLLY_REAL_TENANTS = ["skydream"]
+STARLLY_REAL_ORGANISATIONS = ["273"]
+SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"

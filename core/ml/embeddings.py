@@ -52,6 +52,15 @@ PROFILES: Dict[str, EmbeddingProfile] = {
         dim=384, collection="servy_dense_bge_small_v1",
         query_prefix=BGE_QUERY_PREFIX, content_first=True,
     ),
+    "company-bge-small": EmbeddingProfile(
+        key="company-bge-small", model_id="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        dim=384, collection="servy_company_bge_small_v1",
+        query_prefix=BGE_QUERY_PREFIX, content_first=True,
+    ),
+    "company-minilm": EmbeddingProfile(
+        key="company-minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
+        collection="servy_company_dense_kb", content_first=False,
+    ),
 }
 
 
@@ -156,8 +165,8 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
     stored_meta = coll.metadata or {}
     stamped_model = stored_meta.get("servy_model")
 
-    # Legacy servy_dense_kb has no stamp; it is only ever paired with minilm.
-    if profile.key == "minilm":
+    # Legacy servy_dense_kb and company-minilm have no stamp; only ever paired with minilm.
+    if profile.key in ("minilm", "company-minilm"):
         if stamped_model and stamped_model != profile.model_id:
             raise EmbeddingConfigError(
                 f"Collection '{profile.collection}' belongs to model '{stamped_model}', not '{profile.model_id}'."

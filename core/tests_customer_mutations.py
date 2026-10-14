@@ -35,7 +35,7 @@ from core.services.customer_diagnostic import (
 )
 
 
-@override_settings(SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated", SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
 class CustomerRagMutationTests(TestCase):
     """Verifies that tests detect violations under mutated/compromised production conditions."""
 
@@ -123,7 +123,9 @@ class CustomerRagMutationTests(TestCase):
         self.assertEqual(data_real["response_type"], "ESCALATION_REQUIRED")
         self.assertFalse(data_real["can_resolve"])
 
-        # Mutated: disable hazard detection
+        # Mutated: disable hazard detection on fresh incident
+        DiagnosticSession.objects.filter(customer=self.customer, asset=self.asset).delete()
+        CustomerInteraction.objects.filter(customer=self.customer, asset=self.asset).delete()
         with patch("core.api_views.check_for_safety_hazard", return_value=(False, "")):
             res_mut = self.client.post(url, payload, content_type="application/json")
             self.assertEqual(res_mut.status_code, 200)

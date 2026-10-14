@@ -54,6 +54,14 @@ from core.diagnostics.schemas import (
     EVENT_OBSERVATION_RECORDED,
     EVENT_SESSION_ESCALATED,
 )
+from core.services.customer_isolation import (
+    get_customer_data_mode,
+    is_real_tenant,
+    is_synthetic_asset,
+    is_synthetic_customer,
+    validate_customer_serving_policy,
+)
+from rest_framework.exceptions import PermissionDenied
 from core.forms import MAX_KB_UPLOAD_BYTES
 
 logger = logging.getLogger("servy.api")
@@ -354,10 +362,31 @@ class CustomerSupportContextView(APIView):
         if not customer:
             return Response({"detail": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Enforce server-side real customer data isolation
+        try:
+            validate_customer_serving_policy(tenant=tenant, customer=customer)
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
         sites = list(Site.objects.filter(tenant=tenant, customer=customer).values("id", "name", "city"))
-        assets = list(Asset.objects.filter(tenant=tenant, customer=customer, status="active").select_related("product").values(
-            "id", "name", "asset_code", "site_id", "model_number", "product__name"
-        ))
+        assets_qs = Asset.objects.filter(tenant=tenant, customer=customer, status="active").select_related("product")
+        if get_customer_data_mode() == "verified_real_only":
+            assets = [
+                {
+                    "id": a.id,
+                    "name": a.name,
+                    "asset_code": a.asset_code,
+                    "site_id": a.site_id,
+                    "model_number": a.model_number,
+                    "product__name": a.product.name if a.product else None,
+                }
+                for a in assets_qs
+                if not is_synthetic_asset(a)
+            ]
+        else:
+            assets = list(assets_qs.values(
+                "id", "name", "asset_code", "site_id", "model_number", "product__name"
+            ))
 
         # Check for active resumable diagnostic session
         active_session_data = None
@@ -373,31 +402,34 @@ class CustomerSupportContextView(APIView):
 
         active_session = session_qs.first()
         if active_session:
-            latest_interaction = CustomerInteraction.objects.filter(
-                tenant=tenant,
-                customer=customer,
-                asset=active_session.asset,
-            ).order_by("-created_at").first()
+            if get_customer_data_mode() == "verified_real_only" and is_synthetic_asset(active_session.asset):
+                active_session_data = None
+            else:
+                latest_interaction = CustomerInteraction.objects.filter(
+                    tenant=tenant,
+                    customer=customer,
+                    asset=active_session.asset,
+                ).order_by("-created_at").first()
 
-            contract_data = None
-            if latest_interaction:
-                contract_data = build_structured_diagnostic_contract(
-                    interaction=latest_interaction,
-                    session=active_session,
-                    raw_answer=latest_interaction.answer or "",
-                    retrieved_references=latest_interaction.source_refs or [],
-                    is_hazard=("IMMEDIATE SAFETY RISK" in (latest_interaction.answer or "")),
-                    hazard_warning=(latest_interaction.answer if "IMMEDIATE SAFETY RISK" in (latest_interaction.answer or "") else ""),
-                )
+                contract_data = None
+                if latest_interaction:
+                    contract_data = build_structured_diagnostic_contract(
+                        interaction=latest_interaction,
+                        session=active_session,
+                        raw_answer=latest_interaction.answer or "",
+                        retrieved_references=latest_interaction.source_refs or [],
+                        is_hazard=("IMMEDIATE SAFETY RISK" in (latest_interaction.answer or "")),
+                        hazard_warning=(latest_interaction.answer if "IMMEDIATE SAFETY RISK" in (latest_interaction.answer or "") else ""),
+                    )
 
-            active_session_data = {
-                "session_id": str(active_session.session_id),
-                "asset_id": active_session.asset_id,
-                "status": active_session.status,
-                "version": active_session.version,
-                "complaint": active_session.complaint,
-                "contract": contract_data,
-            }
+                active_session_data = {
+                    "session_id": str(active_session.session_id),
+                    "asset_id": active_session.asset_id,
+                    "status": active_session.status,
+                    "version": active_session.version,
+                    "complaint": active_session.complaint,
+                    "contract": contract_data,
+                }
 
         return Response({
             "customer": {"id": customer.id, "name": customer.name},
@@ -445,6 +477,12 @@ class CustomerSupportQueryView(APIView):
         if not customer:
             return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Enforce server-side real customer data isolation
+        try:
+            validate_customer_serving_policy(tenant=tenant, customer=customer)
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
         site_id = request.data.get("site_id")
         asset_id = request.data.get("asset_id")
         question = _clean_input(request.data.get("question") or request.data.get("query"))
@@ -465,9 +503,25 @@ class CustomerSupportQueryView(APIView):
         except Asset.DoesNotExist:
             return Response({"detail": "Selected asset does not belong to this customer or site."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Step 1: Industrial Safety Hazard Check ACROSS ALL INPUTS
-        # Validates complaint, clarification response, and observation together before RAG
+        # Enforce asset-level real data isolation
+        try:
+            validate_customer_serving_policy(tenant=tenant, customer=customer, asset=asset)
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
+        # Step 1: Industrial Safety Hazard Check ACROSS ALL INPUTS AND PERSISTED FACTS
+        # Check active session / previous history for persisted hazard facts
+        existing_session = DiagnosticSession.objects.filter(
+            tenant=tenant,
+            customer=customer,
+            asset=asset,
+            status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "ESCALATED", "NO_PLAYBOOK_AVAILABLE"],
+        ).order_by("-updated_at").first()
+
         all_inputs = [question, clarification_response, user_observation]
+        if existing_session and existing_session.complaint:
+            all_inputs.append(existing_session.complaint)
+
         combined_text = " ".join(t for t in all_inputs if t)
 
         is_hazard, hazard_warning = check_for_safety_hazard(combined_text)
@@ -478,6 +532,24 @@ class CustomerSupportQueryView(APIView):
                     if is_h:
                         is_hazard, hazard_warning = is_h, h_w
                         break
+
+        # Check persisted session facts for prior hazard status on active session
+        if not is_hazard and existing_session:
+            facts = existing_session.facts_snapshot or {}
+            if facts.get("hazard"):
+                is_hazard = True
+                hazard_warning = facts.get("hazard_warning") or (
+                    "IMMEDIATE SAFETY RISK DETECTED: Symptoms previously reported indicate a hazardous electrical, thermal, or chemical condition. "
+                    "Disconnect main power immediately if it is safe to do so. Do not operate or open the equipment. "
+                    "An urgent technician service call should be dispatched."
+                )
+            elif existing_session.events.filter(event_type=EVENT_SESSION_ESCALATED, payload__hazard=True).exists():
+                is_hazard = True
+                hazard_warning = (
+                    "IMMEDIATE SAFETY RISK DETECTED: Symptoms previously reported indicate a hazardous electrical, thermal, or chemical condition. "
+                    "Disconnect main power immediately if it is safe to do so. Do not operate or open the equipment. "
+                    "An urgent technician service call should be dispatched."
+                )
 
         if is_hazard:
             session = get_or_create_customer_session(
@@ -490,9 +562,13 @@ class CustomerSupportQueryView(APIView):
             )
             with transaction.atomic():
                 locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
+                facts = locked_session.facts_snapshot or {}
+                facts["hazard"] = True
+                facts["hazard_warning"] = hazard_warning
+                locked_session.facts_snapshot = facts
                 locked_session.status = "ESCALATED"
                 locked_session.version += 1
-                locked_session.save(update_fields=["status", "version", "updated_at"])
+                locked_session.save(update_fields=["status", "version", "facts_snapshot", "updated_at"])
 
                 last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
                 DiagnosticEvent.objects.create(
@@ -687,6 +763,12 @@ class CustomerSupportResolveView(APIView):
         if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Enforce server-side real customer data isolation
+        try:
+            validate_customer_serving_policy(tenant=tenant, customer=interaction.customer, asset=interaction.asset)
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
         # Safety Guard: Check if interaction or session has an active hazard or escalation
         is_hazard, _ = check_for_safety_hazard(interaction.question or "")
         if is_hazard or "IMMEDIATE SAFETY RISK" in (interaction.answer or ""):
@@ -715,9 +797,10 @@ class CustomerSupportResolveView(APIView):
             )
 
             if session:
-                if session.status in ("ESCALATED", "ABANDONED"):
+                facts = session.facts_snapshot or {}
+                if facts.get("hazard") or session.status in ("ESCALATED", "ABANDONED"):
                     return Response(
-                        {"detail": f"Cannot resolve session in terminal status '{session.status}'. Certified technician service required."},
+                        {"detail": f"Cannot resolve session with safety hazard or in terminal status '{session.status}'. Certified technician service required."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
@@ -758,6 +841,12 @@ class CustomerSupportEscalateView(APIView):
 
         if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Enforce server-side real customer data isolation
+        try:
+            validate_customer_serving_policy(tenant=tenant, customer=interaction.customer, asset=interaction.asset)
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
 
         note = _clean_input(request.data.get("note") or request.data.get("customer_note"))
 
@@ -882,6 +971,10 @@ class SitesAssetsView(APIView):
         if role in CUSTOMER_ROLES:
             if not customer:
                 return Response({"detail": "Site not found or access denied."}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                validate_customer_serving_policy(tenant=tenant, customer=customer)
+            except PermissionDenied as pe:
+                return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
             site_qs = site_qs.filter(customer=customer)
 
         site = site_qs.first()
@@ -898,9 +991,21 @@ class SitesAssetsView(APIView):
         elif site.customer_id:
             asset_filter["customer"] = site.customer
 
-        assets = list(Asset.objects.filter(
-            **asset_filter
-        ).select_related("product").values("id", "name", "asset_code", "model_number", "product__name"))
+        assets_qs = Asset.objects.filter(**asset_filter).select_related("product")
+        if role in CUSTOMER_ROLES and get_customer_data_mode() == "verified_real_only":
+            assets = [
+                {
+                    "id": a.id,
+                    "name": a.name,
+                    "asset_code": a.asset_code,
+                    "model_number": a.model_number,
+                    "product__name": a.product.name if a.product else None,
+                }
+                for a in assets_qs
+                if not is_synthetic_asset(a)
+            ]
+        else:
+            assets = list(assets_qs.values("id", "name", "asset_code", "model_number", "product__name"))
 
         return Response({"assets": assets})
 
@@ -914,6 +1019,12 @@ class AssetsListView(APIView):
         tenant = ctx["tenant"]
         role = ctx["role"]
         customer = ctx["customer"]
+
+        if role in CUSTOMER_ROLES and get_customer_data_mode() == "verified_real_only":
+            try:
+                validate_customer_serving_policy(tenant=tenant, customer=customer)
+            except PermissionDenied:
+                return Response({"assets": []})
 
         qs = Asset.objects.filter(tenant=tenant).select_related("customer", "site", "product")
         if role in CUSTOMER_ROLES:
@@ -929,6 +1040,8 @@ class AssetsListView(APIView):
             "id", "name", "asset_code", "model_number", "serial_number",
             "status", "customer__name", "site__name", "product__name"
         ))
+        if role in CUSTOMER_ROLES and get_customer_data_mode() == "verified_real_only":
+            items = [a for a in items if not is_synthetic_asset(a)]
         return Response({"assets": items})
 
 

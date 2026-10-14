@@ -47,6 +47,20 @@ def get_dense_collection():
     )
 
 
+def get_company_dense_collection():
+    client = get_chroma_client()
+    return client.get_or_create_collection(
+        name="servy_company_dense_kb",
+        metadata={"hnsw:space": "cosine"}
+    )
+
+
+def is_real_company_tenant(tenant):
+    real_tenants = getattr(settings, "STARLLY_REAL_TENANTS", ["skydream"])
+    slug = getattr(tenant, "slug", str(tenant) if isinstance(tenant, str) else "")
+    return slug in real_tenants
+
+
 def get_sparse_collection():
     client = get_chroma_client()
     return client.get_or_create_collection(
@@ -64,6 +78,12 @@ def delete_document_vectors(document_id: int):
         logger.warning("Error deleting document %s from dense collection: %s", document_id, exc)
 
     try:
+        company_coll = get_company_dense_collection()
+        company_coll.delete(where={"document_id": document_id})
+    except Exception as exc:
+        logger.warning("Error deleting document %s from company collection: %s", document_id, exc)
+
+    try:
         sparse_coll = get_sparse_collection()
         sparse_coll.delete(where={"document_id": document_id})
     except Exception as exc:
@@ -74,6 +94,7 @@ def delete_document_vectors(document_id: int):
         remove_document_bge(document_id)
     except Exception as exc:
         logger.debug("Error removing BGE vectors for doc %s: %s", document_id, exc)
+
 
 
 def sync_document_to_chroma(document_id: int):
@@ -151,10 +172,15 @@ def sync_document_to_chroma(document_id: int):
         
         chunk_texts = [c.text for c in chunks]
         
-        dense_coll = get_dense_collection()
+        is_real = is_real_company_tenant(doc.tenant)
+        if is_real:
+            dense_coll = get_company_dense_collection()
+        else:
+            dense_coll = get_dense_collection()
+
         # Clean previous chunks for this document
         dense_coll.delete(where={"document_id": doc.id})
-        
+
         dense_coll.add(
             ids=ids,
             embeddings=embeddings,
@@ -167,14 +193,16 @@ def sync_document_to_chroma(document_id: int):
             indexed_at=timezone.now(),
             index_error=""
         )
-        logger.info("Successfully indexed doc %s (%s chunks) to Chroma dense collection", doc.id, len(chunks))
+        logger.info("Successfully indexed doc %s (%s chunks) to Chroma dense collection (is_real=%s)", doc.id, len(chunks), is_real)
 
         if getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False):
             try:
                 from core.ml.indexer import index_single_document_bge
-                index_single_document_bge(doc)
+                bge_profile = "company-bge-small" if is_real else "bge-small"
+                index_single_document_bge(doc, profile_key=bge_profile)
             except Exception as bge_exc:
                 logger.warning("BGE experimental indexing skipped/failed for doc %s: %s", doc.id, bge_exc)
+
 
         return True
 

@@ -96,7 +96,7 @@ def create_service_call_record(
     raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
 
 
-def create_call_from_interaction(interaction, customer_note: str = ""):
+def create_call_from_interaction(interaction, customer_note: str = "", session_id: str = None):
     from core.models import CustomerInteraction, DiagnosticEvent, DiagnosticSession
     from core.services.customer_diagnostic import check_for_safety_hazard
 
@@ -106,25 +106,50 @@ def create_call_from_interaction(interaction, customer_note: str = ""):
 
     tenant = interaction.tenant
 
-    # Incident-level fast check: if active session or active open service call exists for this customer & asset, reuse ticket
-    if interaction.asset_id:
-        existing_session = DiagnosticSession.objects.filter(
+    # Incident-level deduplication:
+    target_session = None
+    if session_id:
+        target_session = DiagnosticSession.objects.filter(tenant=tenant, session_id=session_id).first()
+    elif interaction.asset_id:
+        target_session = DiagnosticSession.objects.filter(
             tenant=tenant,
             customer=interaction.customer,
             asset=interaction.asset,
-            escalated_call__isnull=False,
         ).order_by("-updated_at").first()
-        if existing_session and existing_session.escalated_call:
-            return existing_session.escalated_call
 
-        existing_call = ServiceCall.objects.filter(
-            tenant=tenant,
-            customer=interaction.customer,
-            asset=interaction.asset,
-            status__in=["open", "assigned", "in_progress"],
-        ).order_by("-created_at").first()
-        if existing_call:
+    question_text = (interaction.question or "").strip().lower()
+    is_hazard, _ = check_for_safety_hazard(interaction.question or "")
+
+    if target_session and target_session.escalated_call_id:
+        existing_call = target_session.escalated_call
+        session_complaint = (target_session.complaint or "").strip().lower()
+
+        # Check if this interaction is genuinely part of the same incident
+        is_same_incident = False
+        if session_id and str(target_session.session_id) == str(session_id):
+            is_same_incident = True
+        elif question_text and session_complaint and (
+            question_text == session_complaint or
+            "turn of incident" in question_text or
+            session_complaint in question_text or
+            question_text in session_complaint
+        ):
+            is_same_incident = True
+
+        # Safety hazard override: A hazardous complaint cannot be silently absorbed into a routine ticket
+        if is_hazard and existing_call.priority != "critical":
+            is_same_incident = False
+
+        if is_same_incident:
+            # Same incident: reuse existing ticket without violating OneToOne unique constraint
+            if not interaction.escalated_call_id and not CustomerInteraction.objects.filter(escalated_call=existing_call).exists():
+                interaction.escalated_call = existing_call
+                interaction.resolved = False
+                interaction.save(update_fields=["escalated_call", "resolved"])
             return existing_call
+        else:
+            # Different incident or old escalated session: do not absorb into old ticket
+            target_session = None
 
     zone = interaction.site.zone if interaction.site else None
     branch = zone.branch if zone and zone.branch else None
@@ -151,34 +176,13 @@ def create_call_from_interaction(interaction, customer_note: str = ""):
 
                 # Incident-level check under lock: ensure exactly one ServiceCall per incident
                 session = None
-                if locked.asset_id:
-                    session = (
-                        DiagnosticSession.objects.select_for_update()
-                        .filter(
-                            tenant=tenant,
-                            customer=locked.customer,
-                            asset=locked.asset,
-                        )
-                        .exclude(status="RESOLVED")
-                        .order_by("-updated_at")
-                        .first()
-                    )
+                if target_session:
+                    session = DiagnosticSession.objects.select_for_update().filter(id=target_session.id).first()
                     if session and session.escalated_call_id:
+                        locked.escalated_call = session.escalated_call
+                        locked.resolved = False
+                        locked.save(update_fields=["escalated_call", "resolved"])
                         return session.escalated_call
-
-                    existing_call = ServiceCall.objects.select_for_update().filter(
-                        tenant=tenant,
-                        customer=locked.customer,
-                        asset=locked.asset,
-                        status__in=["open", "assigned", "in_progress"],
-                    ).order_by("-created_at").first()
-                    if existing_call:
-                        if session and not session.escalated_call_id:
-                            session.escalated_call = existing_call
-                            session.status = "ESCALATED"
-                            session.version += 1
-                            session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
-                        return existing_call
 
                 ref_list = []
                 if interaction.source_refs:
