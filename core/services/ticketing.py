@@ -48,6 +48,7 @@ def create_service_call_record(
     contact_phone="",
     contact_email="",
     call_type="Service",
+    technician_notes="",
     max_attempts=5,
 ) -> ServiceCall:
     """Safely create a ServiceCall handling concurrent servy_id allocation with retry."""
@@ -71,6 +72,7 @@ def create_service_call_record(
                     call_type=call_type,
                     complaint_type=complaint_type,
                     complaint_text=complaint_text,
+                    technician_notes=technician_notes,
                     customer=customer,
                     site=site,
                     asset=asset,
@@ -110,7 +112,7 @@ def create_call_from_interaction(interaction):
     for attempt in range(5):
         try:
             with transaction.atomic():
-                from core.models import CustomerInteraction
+                from core.models import CustomerInteraction, DiagnosticEvent, DiagnosticSession
                 locked = CustomerInteraction.objects.filter(id=interaction.id).first()
                 if not locked:
                     raise ValueError("Interaction record not found.")
@@ -125,17 +127,22 @@ def create_call_from_interaction(interaction):
                             ref_list.append(ref_title)
                 ref_text = "\n".join(f"- {ref}" for ref in ref_list) if ref_list else "- None cited"
 
-                complaint_body = (
-                    f"Customer issue:\n{interaction.question}\n\n"
-                    f"AI diagnostic guidance provided to customer (completion not confirmed):\n{interaction.answer}\n\n"
-                    f"Source documents used:\n{ref_text}\n\n"
-                    f"Customer reported that the issue was not resolved (escalated from Customer AI Support at {now.strftime('%Y-%m-%d %H:%M:%S UTC')})."
+                # Keep the customer's authentic original reported complaint clean as primary complaint
+                authentic_complaint = (interaction.question or "").strip()
+
+                # Separate diagnostic guidance, references, and audit trail into technician notes
+                tech_notes = (
+                    f"Customer AI Self-Service Escalation at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                    f"Customer Original Complaint:\n{authentic_complaint}\n\n"
+                    f"Sources Cited:\n{ref_text}\n\n"
+                    f"AI Diagnostic Guidance Provided:\n{interaction.answer[:3000]}"
                 )
 
                 call = create_service_call_record(
                     tenant=tenant,
                     complaint_type="AI Self-Service Escalation",
-                    complaint_text=complaint_body,
+                    complaint_text=authentic_complaint,
+                    technician_notes=tech_notes,
                     customer=interaction.customer,
                     site=interaction.site,
                     asset=interaction.asset,
@@ -150,6 +157,36 @@ def create_call_from_interaction(interaction):
                 locked.resolved = False
                 locked.escalated_call = call
                 locked.save(update_fields=["resolved", "escalated_call"])
+
+                # Link active DiagnosticSession if one exists for this customer & asset
+                if interaction.asset_id:
+                    session = DiagnosticSession.objects.filter(
+                        tenant=tenant,
+                        customer=interaction.customer,
+                        asset=interaction.asset,
+                        status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
+                    ).order_by("-updated_at").first()
+                    if session and not session.escalated_call_id:
+                        session.escalated_call = call
+                        session.status = "ESCALATED"
+                        session.version += 1
+                        session.save(update_fields=["escalated_call", "status", "version", "updated_at"])
+
+                        last_seq = session.events.count()
+                        DiagnosticEvent.objects.create(
+                            tenant=tenant,
+                            session=session,
+                            seq_num=last_seq + 1,
+                            event_type="SESSION_ESCALATED",
+                            actor_role="customer",
+                            payload={
+                                "reason": "Escalated from Customer AI Support",
+                                "service_call_id": call.id,
+                                "servy_id": call.servy_id,
+                                "interaction_id": interaction.id,
+                            },
+                        )
+
                 interaction.refresh_from_db()
                 return call
         except (IntegrityError, OperationalError):

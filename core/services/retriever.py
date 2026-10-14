@@ -578,37 +578,29 @@ def retrieve(
                 service_call_id=call.id,
             ))
 
-    # Step 4: Source Authority Ranking (Phase 6) — authoritative documentation
-    # (Tiers 1-3) always outranks historical cases (Tier 4) when addressing
-    # the same topic.  Apply a tier-based penalty to historical cases.
-    all_results = results + resolution_results
-    all_results.sort(key=lambda r: r.score, reverse=True)
+    # Step 4: Strict Source Authority Tiering — authoritative technical guidance
+    # (Knowledge Documents) strictly outranks historical cases (Service Calls).
+    # Historical anecdotes can NEVER authorize repair actions or outrank approved manuals.
+    all_results = sorted(
+        results + resolution_results,
+        key=lambda r: (0 if r.source_kind == "knowledge_document" else 1, -r.score)
+    )
 
-    # Apply authority tier demotion: if authoritative docs exist, penalize
-    # historical cases so they rank below authoritative content
-    has_authoritative = any(r.source_kind == "knowledge_document" for r in all_results)
-    if has_authoritative:
-        for r in all_results:
-            if r.source_kind == "past_resolution":
-                # Demote historical cases below authoritative documents
-                r.score = r.score * 0.6
-
-    all_results.sort(key=lambda r: r.score, reverse=True)
-
-    # Step 5: Diversity & deduplication: avoid returning multiple identical
-    # chunks from the same document/call
+    # Step 5: Diversity & content-level deduplication: avoid returning multiple identical
+    # chunks across duplicate versions of the same manual
     selected = []
     seen_texts = set()
     per_source = {}
     for item in all_results:
-        text_sig = item.text[:120].strip()
-        if text_sig in seen_texts:
+        # Normalize text signature (first 140 chars alphanumeric) for content-level deduplication
+        norm_sig = "".join(ch.lower() for ch in item.text[:140] if ch.isalnum())
+        if norm_sig in seen_texts:
             continue
         key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
         if per_source.get(key, 0) >= 2:
             continue
         selected.append(item)
-        seen_texts.add(text_sig)
+        seen_texts.add(norm_sig)
         per_source[key] = per_source.get(key, 0) + 1
         if len(selected) >= top_k:
             break

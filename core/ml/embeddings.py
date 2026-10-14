@@ -96,34 +96,121 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
                 f"Model '{profile.model_id}' not available locally. "
                 f"Run: python core/ml/download_bge.py ml_artifacts/bge_small_manifest.json ({exc})"
             ) from exc
-        actual = m.get_sentence_embedding_dimension()
+        actual = m.get_embedding_dimension() if hasattr(m, "get_embedding_dimension") else m.get_sentence_embedding_dimension()
         if actual != profile.dim:
             raise EmbeddingConfigError(f"{profile.model_id} dim {actual} != expected {profile.dim}")
         _models[profile.key] = m
         return m
 
 
+INDEX_SCHEMA_VERSION = "2.0"
+PASSAGE_FORMAT_VERSION = "heading_body_v1"
+
+
+@dataclass(frozen=True)
+class IndexManifest:
+    model_id: str
+    revision: str
+    dim: int
+    normalization: str
+    query_prefix: str
+    passage_format_version: str
+    index_schema_version: str
+    checkpoint_fingerprint: str = ""
+
+    def to_metadata(self) -> dict:
+        return {
+            "hnsw:space": self.normalization,
+            "servy_model": self.model_id,
+            "servy_revision": self.revision or "",
+            "servy_dim": int(self.dim),
+            "servy_query_prefix": self.query_prefix or "",
+            "servy_passage_format": self.passage_format_version,
+            "servy_schema_version": self.index_schema_version,
+            "servy_checkpoint_fp": self.checkpoint_fingerprint or "",
+        }
+
+
 def get_collection(profile: EmbeddingProfile, create: bool = True):
-    """Return the profile's collection; refuse to reuse a collection stamped by another model."""
+    """Return the profile's collection; refuse to reuse a collection stamped by another model
+    or having an incompatible manifest (revision, dimension, query_prefix, passage_format)."""
+    import hashlib
     from core.services.chroma_store import get_chroma_client
     client = get_chroma_client()
-    meta = {"hnsw:space": "cosine", "servy_model": profile.model_id, "servy_dim": profile.dim}
+    manifest = IndexManifest(
+        model_id=profile.model_id,
+        revision=profile.revision or "",
+        dim=profile.dim,
+        normalization="cosine",
+        query_prefix=profile.query_prefix or "",
+        passage_format_version=PASSAGE_FORMAT_VERSION if profile.content_first else "legacy_metadata_v0",
+        index_schema_version=INDEX_SCHEMA_VERSION,
+        checkpoint_fingerprint=profile.revision or (hashlib.sha256(profile.local_path.encode()).hexdigest()[:16] if profile.local_path else ""),
+    )
+    meta = manifest.to_metadata()
     if create:
         coll = client.get_or_create_collection(name=profile.collection, metadata=meta)
     else:
         coll = client.get_collection(profile.collection)
-    stamped = (coll.metadata or {}).get("servy_model")
+
+    stored_meta = coll.metadata or {}
+    stamped_model = stored_meta.get("servy_model")
+
     # Legacy servy_dense_kb has no stamp; it is only ever paired with minilm.
-    if stamped and stamped != profile.model_id:
-        raise EmbeddingConfigError(
-            f"Collection '{profile.collection}' belongs to model '{stamped}', not '{profile.model_id}'.")
-    if not stamped and profile.key != "minilm":
+    if profile.key == "minilm":
+        if stamped_model and stamped_model != profile.model_id:
+            raise EmbeddingConfigError(
+                f"Collection '{profile.collection}' belongs to model '{stamped_model}', not '{profile.model_id}'."
+            )
+        return coll
+
+    if not stamped_model:
         raise EmbeddingConfigError(f"Collection '{profile.collection}' is unstamped; refusing to use it.")
+
+    if stamped_model != profile.model_id:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' model mismatch: stamped '{stamped_model}', expected '{profile.model_id}'."
+        )
+
+    # Validate Dimension
+    stamped_dim = stored_meta.get("servy_dim")
+    if stamped_dim and int(stamped_dim) != profile.dim:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' dim mismatch: stamped {stamped_dim}, expected {profile.dim}."
+        )
+
+    # Validate Revision if present
+    stamped_rev = stored_meta.get("servy_revision")
+    if stamped_rev and profile.revision and stamped_rev != profile.revision:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' revision mismatch: stamped '{stamped_rev}', expected '{profile.revision}'."
+        )
+
+    # Validate Query Prefix
+    stamped_prefix = stored_meta.get("servy_query_prefix")
+    if stamped_prefix is not None and stamped_prefix != (profile.query_prefix or ""):
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' query prefix mismatch: stamped '{stamped_prefix}', expected '{profile.query_prefix}'."
+        )
+
+    # Validate Passage Format
+    stamped_format = stored_meta.get("servy_passage_format")
+    expected_format = PASSAGE_FORMAT_VERSION if profile.content_first else "legacy_metadata_v0"
+    if stamped_format and stamped_format != expected_format:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' passage format mismatch: stamped '{stamped_format}', expected '{expected_format}'."
+        )
+
     return coll
 
 
 def encode_queries(profile: EmbeddingProfile, model, queries):
     return model.encode([profile.query_prefix + q for q in queries],
+                        normalize_embeddings=True, batch_size=getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8))
+
+
+def encode_passages(profile: EmbeddingProfile, model, passages):
+    return model.encode(passages,
                         normalize_embeddings=True, batch_size=getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8))
 
 

@@ -65,6 +65,43 @@ class RegistryTests(TestCase):
         with self.assertRaises(E.EmbeddingConfigError):
             E.load_model(p)
 
+    def test_manifest_dimension_mismatch_rejected(self):
+        fake = mock.MagicMock(metadata={"servy_model": "BAAI/bge-small-en-v1.5", "servy_dim": 512})
+        client = mock.MagicMock(get_or_create_collection=mock.MagicMock(return_value=fake))
+        with mock.patch("core.services.chroma_store.get_chroma_client", return_value=client):
+            with self.assertRaises(E.EmbeddingConfigError) as ctx:
+                E.get_collection(E.get_profile("bge-small"))
+            self.assertIn("dim mismatch", str(ctx.exception))
+
+    def test_manifest_revision_mismatch_rejected(self):
+        fake = mock.MagicMock(metadata={
+            "servy_model": "BAAI/bge-small-en-v1.5", "servy_dim": 384,
+            "servy_revision": "old_outdated_revision_hash"
+        })
+        client = mock.MagicMock(get_or_create_collection=mock.MagicMock(return_value=fake))
+        with mock.patch("core.services.chroma_store.get_chroma_client", return_value=client):
+            with self.assertRaises(E.EmbeddingConfigError) as ctx:
+                E.get_collection(E.get_profile("bge-small"))
+            self.assertIn("revision mismatch", str(ctx.exception))
+
+    def test_partial_indexing_does_not_prune_unselected_chunks(self):
+        from core.ml.indexer import build_index
+        mock_coll = mock.MagicMock()
+        mock_coll.get.return_value = {
+            "ids": [f"chunk_{i}" for i in range(100)],
+            "metadatas": [{"content_sha256": "hash"} for _ in range(100)],
+        }
+        mock_coll.count.return_value = 100
+        mock_model = mock.MagicMock()
+
+        with mock.patch("core.ml.indexer.get_collection", return_value=mock_coll), \
+             mock.patch("core.ml.indexer.load_model", return_value=mock_model), \
+             mock.patch("core.ml.indexer._eligible_chunks", return_value=[]):
+            res = build_index("bge-small", limit=10)
+            self.assertFalse(res["is_full_reconciliation"])
+            # CRITICAL: coll.delete must NEVER be called during a partial indexing run
+            mock_coll.delete.assert_not_called()
+
 
 class ContentFirstTests(TestCase):
     def setUp(self):
@@ -101,7 +138,8 @@ class LabelValidationTests(TestCase):
 
     def _row(self, **kw):
         r = {"query_id": uuid.uuid4().hex, "query_text": "q", "tenant_id": self.t1.id,
-             "positive_chunk_ids": [self.c1.id], "negative_chunk_ids": [], "review_status": "approved"}
+             "positive_chunk_ids": [self.c1.id], "negative_chunk_ids": [], "review_status": "approved",
+             "reviewer": "auditor_1"}
         r.update(kw); return r
 
     def test_rejections(self):
@@ -134,6 +172,23 @@ class LabelValidationTests(TestCase):
         with self.assertRaises(ValueError):
             finetune([{"query_text": "q", "positive_text": "p", "review_status": "candidate"}],
                      [], "unused", "rev")
+
+    def test_provenance_resolution_and_approval_workflow(self):
+        from core.ml.labels import approve_label_candidate, resolve_provenance_verified_examples
+        cand = {"query_id": "q-101", "query_text": "check milk suction", "tenant_id": self.t1.id}
+        approved = approve_label_candidate(
+            cand, reviewer="Expert QA", positive_chunk_id=self.c1.id,
+            negative_chunk_ids=[self.c1b.id], source_group="sop-milk"
+        )
+        self.assertEqual(approved["review_status"], "approved")
+        self.assertEqual(approved["reviewer"], "Expert QA")
+        self.assertTrue(approved["source_content_hash"])
+
+        resolved = resolve_provenance_verified_examples([approved], require_approved=True)
+        self.assertEqual(len(resolved["verified_examples"]), 1)
+        ex = resolved["verified_examples"][0]
+        self.assertEqual(ex["positive_text"], self.c1.text)
+        self.assertEqual(ex["negative_text"], self.c1b.text)
 
 
 class ModelSmokeTests(TestCase):

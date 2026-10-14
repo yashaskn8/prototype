@@ -351,3 +351,127 @@ class ExternalAssetsApiViewTests(TestCase):
         data = response.json()
         self.assertEqual(data["error"], "Starlly API Timeout")
         self.assertNotIn("sk_test_dummy_key_12345", json.dumps(data))
+
+    @patch("core.services.starlly_api.requests.get")
+    def test_unmapped_tenant_rejected_before_network_call(self, mock_get):
+        """Unmapped tenant must receive 403 Forbidden without any outbound network call."""
+        other_tenant = Tenant.objects.create(name="Rogue Corp", slug="rogue-corp")
+        rogue_user = User.objects.create_user(username="rogue_tech", password="RoguePassword123!")
+        TenantMembership.objects.create(user=rogue_user, tenant=other_tenant, role="technician")
+
+        self.client.force_authenticate(user=rogue_user)
+        session = self.client.session
+        session["tenant_id"] = other_tenant.id
+        session.save()
+
+        response = self.client.get("/api/external/assets/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        data = response.json()
+        self.assertEqual(data["error"], "Tenant Access Denied")
+        self.assertIn("not authorized", data["detail"].lower())
+
+        # CRITICAL: Verify zero network calls were attempted
+        mock_get.assert_not_called()
+
+    @patch("core.services.starlly_api.requests.get")
+    def test_malicious_organisation_override_rejected(self, mock_get):
+        """Query parameter attempts to override org_id must be rejected with 403."""
+        self.client.force_authenticate(user=self.staff_user)
+        session = self.client.session
+        session["tenant_id"] = self.tenant.id
+        session.save()
+
+        response = self.client.get("/api/external/assets/?org_id=999")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        data = response.json()
+        self.assertEqual(data["error"], "Forbidden Override")
+        self.assertIn("override", data["detail"].lower())
+        mock_get.assert_not_called()
+
+    @patch("core.services.starlly_api.requests.get")
+    def test_foreign_organisation_asset_rejected_from_response(self, mock_get):
+        """Records returned from Starlly belonging to a foreign organisation are rejected."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_redirect = False
+        mock_resp.json.return_value = {
+            "results": [
+                {
+                    "id": 101, "name": "Valid Org Asset", "code": "VAL-001",
+                    "org_id": 273, "is_active": True,
+                },
+                {
+                    "id": 999, "name": "Foreign Org Asset", "code": "FOR-999",
+                    "org_id": 888, "is_active": True,  # Foreign organisation!
+                },
+            ],
+            "count": 2,
+        }
+        mock_get.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.staff_user)
+        session = self.client.session
+        session["tenant_id"] = self.tenant.id
+        session.save()
+
+        response = self.client.get("/api/external/assets/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        returned_ids = [a["id"] for a in data["assets"]]
+        self.assertIn(101, returned_ids)
+        self.assertNotIn(999, returned_ids)
+
+    @patch("core.services.starlly_api.requests.get")
+    def test_redirect_to_untrusted_host_rejected(self, mock_get):
+        """Redirect to untrusted hostname must fail immediately to prevent credential leaks."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 302
+        mock_resp.is_redirect = True
+        mock_resp.headers = {"Location": "https://evil-phishing-host.com/steal"}
+        mock_get.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.staff_user)
+        session = self.client.session
+        session["tenant_id"] = self.tenant.id
+        session.save()
+
+        response = self.client.get("/api/external/assets/")
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        data = response.json()
+        self.assertEqual(data["error"], "Starlly API Error")
+        self.assertIn("untrusted destination", data["detail"].lower())
+
+    @patch("core.services.starlly_api.requests.get")
+    def test_cross_tenant_asset_code_collision_does_not_leak_local_id(self, mock_get):
+        """Asset code match in another tenant must NEVER be marked as is_synced in this tenant."""
+        other_tenant = Tenant.objects.create(name="Other Tenant", slug="other-tenant")
+        other_cust = Customer.objects.create(tenant=other_tenant, name="Other Customer")
+        Asset.objects.create(
+            tenant=other_tenant, customer=other_cust, name="Collision Asset",
+            asset_code="SKY-AST-00002", status="active",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_redirect = False
+        mock_resp.json.return_value = {
+            "results": [
+                {"id": 333, "name": "Chiller", "code": "SKY-AST-00002", "org_id": 273},
+            ],
+            "count": 1,
+        }
+        mock_get.return_value = mock_resp
+
+        self.client.force_authenticate(user=self.staff_user)
+        session = self.client.session
+        session["tenant_id"] = self.tenant.id
+        session.save()
+
+        response = self.client.get("/api/external/assets/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.json()
+        asset_item = data["assets"][0]
+        # Tenant 1 does NOT have SKY-AST-00002 locally (only other_tenant has it)
+        self.assertFalse(asset_item["is_synced"])
+        self.assertIsNone(asset_item["local_asset_id"])
+        self.assertEqual(asset_item["tenant_id"], self.tenant.id)

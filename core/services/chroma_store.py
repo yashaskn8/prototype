@@ -56,7 +56,7 @@ def get_sparse_collection():
 
 
 def delete_document_vectors(document_id: int):
-    """Purge all chunk vectors for a given document from both Chroma collections."""
+    """Purge all chunk vectors for a given document from Chroma collections and BGE index."""
     try:
         dense_coll = get_dense_collection()
         dense_coll.delete(where={"document_id": document_id})
@@ -68,6 +68,12 @@ def delete_document_vectors(document_id: int):
         sparse_coll.delete(where={"document_id": document_id})
     except Exception as exc:
         logger.warning("Error deleting document %s from sparse collection: %s", document_id, exc)
+
+    try:
+        from core.ml.indexer import remove_document_bge
+        remove_document_bge(document_id)
+    except Exception as exc:
+        logger.debug("Error removing BGE vectors for doc %s: %s", document_id, exc)
 
 
 def sync_document_to_chroma(document_id: int):
@@ -162,6 +168,14 @@ def sync_document_to_chroma(document_id: int):
             index_error=""
         )
         logger.info("Successfully indexed doc %s (%s chunks) to Chroma dense collection", doc.id, len(chunks))
+
+        if getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False):
+            try:
+                from core.ml.indexer import index_single_document_bge
+                index_single_document_bge(doc)
+            except Exception as bge_exc:
+                logger.warning("BGE experimental indexing skipped/failed for doc %s: %s", doc.id, bge_exc)
+
         return True
 
     except Exception as exc:

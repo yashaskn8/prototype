@@ -18,7 +18,7 @@ from core.models import (
     Tenant, Customer, Site, Asset, Product, Project, ServiceCall, CallUpdate,
     KnowledgeDocument, KnowledgeChunk, CustomerInteraction, StaffProfile,
     TenantMembership, InventoryItem, PartRequest, OperationalZone,
-    ProductCategory, ProductDomain, Brand
+    ProductCategory, ProductDomain, Brand, DiagnosticSession
 )
 from core.security import (
     require_api_context, authorized_knowledge_queryset,
@@ -32,12 +32,22 @@ from core.services.chroma_store import queue_chroma_deletion
 from core.services.excel_io import export_calls_xlsx, import_calls_xlsx
 from core.services.starlly_api import (
     get_starlly_client,
+    get_authorized_org_for_tenant,
     StarllyConfigurationError,
     StarllyAuthenticationError,
     StarllyTimeoutError,
     StarllyConnectionError,
     StarllyNotFoundError,
     StarllyApiError,
+    StarllyTenantIsolationError,
+)
+from core.services.customer_diagnostic import (
+    build_structured_diagnostic_contract,
+    check_for_safety_hazard,
+    check_for_vague_complaint,
+    get_or_create_customer_session,
+    record_customer_action_presentation,
+    resolve_customer_session,
 )
 from core.forms import MAX_KB_UPLOAD_BYTES
 
@@ -344,10 +354,33 @@ class CustomerSupportContextView(APIView):
             "id", "name", "asset_code", "site_id", "model_number", "product__name"
         ))
 
+        # Check for active resumable diagnostic session
+        active_session_data = None
+        asset_id_param = request.query_params.get("asset_id")
+        session_qs = DiagnosticSession.objects.filter(
+            tenant=tenant,
+            customer=customer,
+            status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
+        ).order_by("-updated_at")
+
+        if asset_id_param:
+            session_qs = session_qs.filter(asset_id=asset_id_param)
+
+        active_session = session_qs.first()
+        if active_session:
+            active_session_data = {
+                "session_id": str(active_session.session_id),
+                "asset_id": active_session.asset_id,
+                "status": active_session.status,
+                "version": active_session.version,
+                "complaint": active_session.complaint,
+            }
+
         return Response({
             "customer": {"id": customer.id, "name": customer.name},
             "sites": sites,
             "assets": assets,
+            "active_session": active_session_data,
         })
 
 
@@ -399,10 +432,75 @@ class CustomerSupportQueryView(APIView):
         except Asset.DoesNotExist:
             return Response({"detail": "Selected asset does not belong to this customer or site."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Run RAG: Customer mode (no confidential KB, no service call context, customer-scoped)
+        # Step 1: Industrial Safety Hazard Check
+        is_hazard, hazard_warning = check_for_safety_hazard(question)
+        if is_hazard:
+            session = get_or_create_customer_session(
+                tenant=tenant,
+                customer=customer,
+                site=site,
+                asset=asset,
+                complaint=question,
+                user=request.user,
+            )
+            interaction = CustomerInteraction.objects.create(
+                tenant=tenant,
+                created_by=request.user,
+                customer=customer,
+                site=site,
+                asset=asset,
+                question=question,
+                answer=hazard_warning,
+                source_refs=[],
+            )
+            contract = build_structured_diagnostic_contract(
+                interaction=interaction,
+                session=session,
+                raw_answer=hazard_warning,
+                retrieved_references=[],
+                is_hazard=True,
+                hazard_warning=hazard_warning,
+            )
+            return Response(contract)
+
+        # Step 2: Symptom Ambiguity / Clarification Check
+        clarification_response = request.data.get("clarification_response", "").strip()
+        combined_question = f"{question} - {clarification_response}" if clarification_response else question
+
+        is_vague, clarif_q, clarif_opts = check_for_vague_complaint(question)
+        if is_vague and not clarification_response:
+            session = get_or_create_customer_session(
+                tenant=tenant,
+                customer=customer,
+                site=site,
+                asset=asset,
+                complaint=question,
+                user=request.user,
+            )
+            interaction = CustomerInteraction.objects.create(
+                tenant=tenant,
+                created_by=request.user,
+                customer=customer,
+                site=site,
+                asset=asset,
+                question=question,
+                answer=clarif_q,
+                source_refs=[],
+            )
+            contract = build_structured_diagnostic_contract(
+                interaction=interaction,
+                session=session,
+                raw_answer=clarif_q,
+                retrieved_references=[],
+                clarification_question=clarif_q,
+                clarification_options=clarif_opts,
+            )
+            return Response(contract)
+
+        # Step 3: Run RAG in Customer Mode (category-independent, customer-safe)
         rag_res = ask_rag(
             tenant=tenant,
-            question=question,
+            question=combined_question,
             asset=asset,
             customer=customer,
             include_confidential=False,
@@ -413,18 +511,37 @@ class CustomerSupportQueryView(APIView):
         retrieved_list = rag_res.get("retrieved", [])
         retrieval_backend = getattr(retrieved_list, "retrieval_backend", "fallback")
 
+        # Step 4: Reconcile with persistent DiagnosticSession
+        session = get_or_create_customer_session(
+            tenant=tenant,
+            customer=customer,
+            site=site,
+            asset=asset,
+            complaint=combined_question,
+            user=request.user,
+        )
+
         interaction = CustomerInteraction.objects.create(
             tenant=tenant,
             created_by=request.user,
             customer=customer,
             site=site,
             asset=asset,
-            question=question,
+            question=combined_question,
             answer=rag_res["answer"],
             source_refs=rag_res["references"],
         )
 
-        # Enrich past resolution references with full ServiceCall details
+        # Step 5: Build Authoritative Structured Contract & Filter Industrial Hazards
+        contract = build_structured_diagnostic_contract(
+            interaction=interaction,
+            session=session,
+            raw_answer=rag_res["answer"],
+            retrieved_references=rag_res["references"],
+        )
+        record_customer_action_presentation(session, contract["customer_safe_actions"], tenant)
+
+        # Enrich past resolution references with full ServiceCall details for backward compatibility
         past_res_call_ids = [
             r.get("service_call_id")
             for r in rag_res.get("references", [])
@@ -452,18 +569,13 @@ class CustomerSupportQueryView(APIView):
                     "score": r.get("score"),
                 })
 
-        return Response({
-            "interaction_id": interaction.id,
-            "answer": rag_res["answer"],
-            "references": rag_res["references"],
-            "past_resolutions": past_resolutions,
-            "engine": rag_res["engine"],
-            "retrieval_backend": retrieval_backend,
-        })
+        contract["past_resolutions"] = past_resolutions
+        contract["retrieval_backend"] = retrieval_backend
+        return Response(contract)
 
 
 class CustomerSupportResolveView(APIView):
-    """Mark customer interaction as resolved."""
+    """Mark customer interaction as resolved with clear distinction between customer-reported and verified repair."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
@@ -483,9 +595,31 @@ class CustomerSupportResolveView(APIView):
         if ctx["role"] in CUSTOMER_ROLES and interaction.customer_id != ctx["customer"].id:
             return Response({"detail": "Interaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        interaction.resolved = True
-        interaction.save(update_fields=["resolved"])
-        return Response({"status": "resolved", "interaction_id": interaction.id, "detail": "Marked as resolved. Thank you!"})
+        # Check for linked active DiagnosticSession
+        session = None
+        if interaction.asset_id:
+            session = DiagnosticSession.objects.filter(
+                tenant=tenant,
+                customer=interaction.customer,
+                asset=interaction.asset,
+                status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
+            ).order_by("-updated_at").first()
+
+        resolve_customer_session(
+            tenant=tenant,
+            customer=interaction.customer,
+            session=session,
+            interaction=interaction,
+            verified=False,
+        )
+
+        return Response({
+            "status": "resolved",
+            "interaction_id": interaction.id,
+            "session_id": str(session.session_id) if session else None,
+            "resolution_type": "customer_reported",
+            "detail": "Marked as resolved by customer. Thank you!",
+        })
 
 
 class CustomerSupportEscalateView(APIView):
@@ -1669,6 +1803,28 @@ class ExternalAssetsListView(APIView):
 
         tenant = ctx["tenant"]
 
+        # Reject unmapped tenants BEFORE making any external network request
+        authorized_org = get_authorized_org_for_tenant(tenant)
+        if not authorized_org:
+            return Response(
+                {
+                    "error": "Tenant Access Denied",
+                    "detail": f"Tenant '{tenant.slug}' is not authorized for Starlly external integrations.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Do not allow staff to override external organisation IDs through request parameters
+        query_org = request.query_params.get("org_id") or request.query_params.get("organisation_id")
+        if query_org is not None and str(query_org).strip() != str(authorized_org).strip():
+            return Response(
+                {
+                    "error": "Forbidden Override",
+                    "detail": "Organisational override via request parameters is strictly forbidden.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Parse query parameters safely
         limit_param = request.query_params.get("limit")
         offset_param = request.query_params.get("offset")
@@ -1688,10 +1844,18 @@ class ExternalAssetsListView(APIView):
             except (ValueError, TypeError):
                 return Response({"detail": "Invalid offset parameter."}, status=status.HTTP_400_BAD_REQUEST)
 
-        client = get_starlly_client()
+        client = get_starlly_client(tenant=tenant)
 
         try:
             result = client.fetch_assets(limit=limit, offset=offset, search=search_param)
+        except StarllyTenantIsolationError as exc:
+            return Response(
+                {
+                    "error": "Tenant Access Denied",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         except StarllyConfigurationError as exc:
             return Response(
                 {

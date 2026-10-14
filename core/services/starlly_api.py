@@ -52,12 +52,35 @@ class StarllyConnectionError(StarllyError):
     pass
 
 
+class StarllyTenantIsolationError(StarllyError):
+    """Raised when a Servy tenant is not authorized for external Starlly access."""
+    pass
+
+
 class StarllyApiError(StarllyError):
     """Raised when Starlly returns an unexpected response or 5xx error."""
     def __init__(self, message: str, status_code: Optional[int] = None, response_body: Any = None):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+
+
+def get_authorized_org_for_tenant(tenant) -> Optional[str]:
+    """Resolve and verify the authorized Starlly organisation ID for a given Servy tenant.
+
+    Returns the authorized organisation ID string, or None if the tenant is unmapped.
+    """
+    if tenant is None:
+        return None
+    mapping = getattr(settings, "STARLLY_TENANT_ORGANISATION_MAP", {})
+    tenant_slug = getattr(tenant, "slug", str(tenant) if isinstance(tenant, str) else "")
+    tenant_id = str(getattr(tenant, "id", ""))
+
+    if tenant_slug and tenant_slug in mapping:
+        return str(mapping[tenant_slug]).strip()
+    if tenant_id and tenant_id in mapping:
+        return str(mapping[tenant_id]).strip()
+    return None
 
 
 def mask_secret(secret: Optional[str]) -> str:
@@ -94,6 +117,15 @@ def validate_base_url(url: Optional[str]) -> str:
             f"Invalid URL scheme '{parsed.scheme}'. Starlly API base URL must use HTTPS (e.g. https://<tenant>.starlly.in).",
             is_blocker=True,
         )
+
+    # In production, require HTTPS strictly. Allow http only for localhost test mocks in DEBUG
+    if parsed.scheme.lower() == "http":
+        is_debug_localhost = getattr(settings, "DEBUG", False) and ("localhost" in parsed.netloc or "127.0.0.1" in parsed.netloc)
+        if not is_debug_localhost:
+            raise StarllyConfigurationError(
+                f"Insecure URL scheme '{parsed.scheme}'. Starlly API base URL must use HTTPS.",
+                is_blocker=True,
+            )
 
     netloc = parsed.netloc.lower()
     # Check for empty hostname or malformed hostname like '.starlly.in'
@@ -142,12 +174,27 @@ class StarllyApiClient:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         org_id: Optional[Union[str, int]] = None,
+        tenant: Any = None,
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
     ):
+        self._tenant = tenant
         # Resolve config from arguments -> Django settings -> os.environ
         resolved_url = base_url if base_url is not None else (getattr(settings, "STARLLY_API_BASE_URL", "") or os.getenv("STARLLY_API_BASE_URL", ""))
         resolved_key = api_key if api_key is not None else (getattr(settings, "STARLLY_API_KEY", "") or os.getenv("STARLLY_API_KEY", ""))
-        resolved_org = org_id if org_id is not None else (getattr(settings, "STARLLY_ORGANISATION_ID", "") or os.getenv("STARLLY_ORGANISATION_ID", ""))
+
+        if tenant is not None:
+            authorized_org = get_authorized_org_for_tenant(tenant)
+            if not authorized_org:
+                raise StarllyTenantIsolationError(
+                    f"Tenant '{getattr(tenant, 'slug', tenant)}' is not authorized for external Starlly integrations."
+                )
+            if org_id is not None and str(org_id) != str(authorized_org):
+                raise StarllyTenantIsolationError(
+                    f"Tenant '{getattr(tenant, 'slug', tenant)}' cannot access organisation '{org_id}'."
+                )
+            resolved_org = authorized_org
+        else:
+            resolved_org = org_id if org_id is not None else (getattr(settings, "STARLLY_ORGANISATION_ID", "") or os.getenv("STARLLY_ORGANISATION_ID", ""))
 
         self._base_url = str(resolved_url).strip()
         self._api_key = str(resolved_key).strip()
@@ -189,15 +236,6 @@ class StarllyApiClient:
 
         Endpoint: GET /api/external/assets/
         Authentication: Authorization: Api-Key <STARLLY_API_KEY>
-
-        Returns a dictionary:
-        {
-            "assets": list[dict],
-            "count": int,
-            "organisation_id": int | str | None,
-            "limit": int | None,
-            "offset": int | None,
-        }
         """
         # Validates base URL and API key
         endpoint_url = f"{self.base_url}/api/external/assets/"
@@ -218,6 +256,7 @@ class StarllyApiClient:
                 headers=headers,
                 params=params,
                 timeout=self._timeout,
+                allow_redirects=False,
             )
         except requests.Timeout as exc:
             logger.warning("Starlly Assets API timed out after %ds", self._timeout)
@@ -232,6 +271,19 @@ class StarllyApiClient:
         except requests.RequestException as exc:
             logger.error("Starlly Assets API request exception: %s", exc)
             raise StarllyApiError(f"HTTP request to Starlly failed: {exc}") from exc
+
+        # Handle Redirects (Prevent credential leakage to untrusted hosts)
+        is_redirect_code = getattr(response, "status_code", None) in (301, 302, 303, 307, 308)
+        if is_redirect_code:
+            target_location = str(getattr(response, "headers", {}).get("Location", "") or "").strip()
+            if target_location:
+                parsed_target = urlparse(target_location)
+                base_parsed = urlparse(endpoint_url)
+                if parsed_target.netloc and parsed_target.netloc.lower() != base_parsed.netloc.lower():
+                    logger.error("Redirect to untrusted host rejected: %s", parsed_target.netloc)
+                    raise StarllyApiError("Redirect to untrusted destination rejected to prevent credential leakage.")
+                if parsed_target.scheme and parsed_target.scheme.lower() != "https":
+                    raise StarllyApiError("Insecure redirect downgraded to HTTP rejected.")
 
         # Handle HTTP Status
         if response.status_code in (401, 403):
@@ -281,15 +333,18 @@ class StarllyApiClient:
         else:
             raise StarllyApiError(f"Unexpected payload type '{type(payload).__name__}' from Starlly Assets API.")
 
-        # Filter by org_id if configured
+        # Filter and validate by org_id
         filtered_assets = []
         for asset in raw_assets:
             if not isinstance(asset, dict):
                 continue
-            # Retain all original fields, preserving asset ID and organisation ownership
+            rec_org = asset.get("org_id") or asset.get("organisation_id") or asset.get("organization_id")
             if self._org_id:
-                asset_org = asset.get("org_id")
-                if asset_org is not None and str(asset_org) != str(self._org_id):
+                if rec_org is not None and str(rec_org) != str(self._org_id):
+                    logger.warning(
+                        "Rejecting asset record %s: unexpected organisation ID %s (expected %s)",
+                        asset.get("id"), rec_org, self._org_id
+                    )
                     continue
             filtered_assets.append(asset)
 
@@ -303,6 +358,6 @@ class StarllyApiClient:
         }
 
 
-def get_starlly_client() -> StarllyApiClient:
-    """Convenience factory for obtaining a StarllyApiClient instance."""
-    return StarllyApiClient()
+def get_starlly_client(tenant: Any = None) -> StarllyApiClient:
+    """Convenience factory for obtaining a StarllyApiClient instance bound to an authorized tenant."""
+    return StarllyApiClient(tenant=tenant)

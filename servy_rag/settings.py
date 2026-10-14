@@ -181,3 +181,16 @@ STARLLY_API_BASE_URL = os.getenv("STARLLY_API_BASE_URL", "").rstrip("/")
 STARLLY_API_KEY = os.getenv("STARLLY_API_KEY", "")
 STARLLY_ORGANISATION_ID = os.getenv("STARLLY_ORGANISATION_ID", "")
 STARLLY_API_KEY_ID = os.getenv("STARLLY_API_KEY_ID", "")
+
+# Starlly Tenant Authorization Mapping
+# Maps Servy tenant identifier (slug or ID) to authorized Starlly organisation ID.
+# Only explicitly mapped tenants can make calls to external Starlly endpoints.
+STARLLY_TENANT_ORGANISATION_MAP = {
+    "starlly-tester": os.getenv("STARLLY_ORGANISATION_ID", "273"),
+}
+_allowed_tenants_env = os.getenv("STARLLY_ALLOWED_TENANTS", "")
+if _allowed_tenants_env:
+    for _t in _allowed_tenants_env.split(","):
+        _t = _t.strip()
+        if _t:
+            STARLLY_TENANT_ORGANISATION_MAP[_t] = os.getenv("STARLLY_ORGANISATION_ID", "273")

@@ -51,10 +51,17 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     train_rows must contain query_text plus resolved 'positive_text' and optional
     'negative_text'. Unapproved rows are rejected unless synthetic_smoke_test=True.
     """
-    if not synthetic_smoke_test and any(r.get("review_status") != "approved" for r in train_rows):
-        raise ValueError("Refusing to train on labels that are not human-approved.")
+    if not synthetic_smoke_test:
+        from .labels import resolve_provenance_verified_examples
+        res_train = resolve_provenance_verified_examples(train_rows, require_approved=True)
+        if res_train["rejected"] or not res_train["verified_examples"]:
+            raise ValueError(f"Training data provenance validation failed: {res_train['rejected']}")
+        train_rows = res_train["verified_examples"]
+        if val_rows:
+            res_val = resolve_provenance_verified_examples(val_rows, require_approved=True)
+            val_rows = res_val["verified_examples"]
     if not train_rows:
-        raise ValueError("No training rows: BLOCKED - VERIFIED LABELS REQUIRED.")
+        raise ValueError("No training rows: BLOCKED — VERIFIED HUMAN LABELS REQUIRED.")
 
     import torch
     from datasets import Dataset
