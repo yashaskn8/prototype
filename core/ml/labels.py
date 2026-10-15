@@ -147,9 +147,24 @@ def validate_labels(rows: List[dict], require_approved: bool = True) -> dict:
                     reason = f"chunk {cid} quarantined or RAG-disabled"; break
                 if c.document.is_confidential and not r.get("allow_confidential", False):
                     reason = f"chunk {cid} is confidential and not permitted for general training"; break
-                # Check document provenance verification status
+                # Phase 3 (Operation 16.0): Require provenance for ALL training chunks.
+                # Missing provenance is NOT acceptable for production-eligible training data.
                 prov = prov_map.get((c.tenant_id, c.document_id))
-                if prov is not None:
+                if require_approved:
+                    if prov is None:
+                        reason = f"chunk {cid} document has no provenance record (required for approved training data)"
+                        break
+                    if prov.verification_status not in ("VERIFIED",):
+                        reason = f"chunk {cid} document has unverified provenance ({prov.verification_status or 'EMPTY'})"
+                        break
+                    if prov.revoked_at is not None:
+                        reason = f"chunk {cid} document provenance has been revoked"
+                        break
+                    if r.get("source_org") and prov.source_org != str(r.get("source_org")):
+                        reason = f"chunk {cid} document source organization mismatch ({prov.source_org} != {r.get('source_org')})"
+                        break
+                elif prov is not None:
+                    # Even for non-approved mode, reject actively revoked or unverified provenance
                     if prov.verification_status not in ("VERIFIED", "") or prov.revoked_at is not None:
                         reason = f"chunk {cid} document has unverified/revoked provenance ({prov.verification_status})"
                         break

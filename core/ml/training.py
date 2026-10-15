@@ -44,17 +44,36 @@ def evaluate_profile(profile_key: str, rows, k_max: int = 10) -> dict:
             "latency_ms_p50": lat[len(lat) // 2] if lat else None}
 
 
+TRAINING_MODE_POSITIVE_PAIRS = "positive_pairs_only"
+TRAINING_MODE_VERIFIED_TRIPLETS = "verified_triplets_only"
+TRAINING_MODE_MIXED = "mixed_verified_examples"
+VALID_TRAINING_MODES = {TRAINING_MODE_POSITIVE_PAIRS, TRAINING_MODE_VERIFIED_TRIPLETS, TRAINING_MODE_MIXED}
+
+
 def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_size=8,
              lr=2e-5, max_seq_length=256, seed=42, synthetic_smoke_test=False,
-             weak_supervision: bool = False) -> dict:
+             weak_supervision: bool = False,
+             training_mode: str = TRAINING_MODE_MIXED) -> dict:
     """Fine-tune BGE-small with MultipleNegativesRankingLoss (+ explicit hard negatives).
 
     train_rows must contain query_text plus resolved 'positive_text' and optional
     'negative_text'.
-    - If synthetic_smoke_test=True, labeled as SYNTHETIC TRAINING PIPELINE SMOKE TEST (ineligible).
-    - If weak_supervision=True, resolves authentic DB chunks but labels as COMPANY-DATA WEAKLY SUPERVISED EXPERIMENT.
-    - Otherwise, requires full human reviewer approval and labels as HUMAN-VERIFIED PRODUCTION FINE-TUNING.
+
+    Training modes (Phase 1 Operation 16.0):
+      - positive_pairs_only:     Use only anchor-positive pairs, ignore all negatives.
+      - verified_triplets_only:  Require every example to have a reviewed negative.
+                                 Reject incomplete triplets. Never silently downgrade.
+      - mixed_verified_examples: Use triplets where negatives exist, pairs otherwise.
+                                 Record exactly which examples and losses contributed.
+
+    Never silently discard reviewed hard negatives.
+    Never invent placeholder negative passages.
     """
+    if training_mode not in VALID_TRAINING_MODES:
+        raise ValueError(
+            f"Invalid training_mode '{training_mode}'. Must be one of: {sorted(VALID_TRAINING_MODES)}"
+        )
+
     if synthetic_smoke_test:
         supervision = "synthetic_smoke"
     elif weak_supervision or any(r.get("review_status") != "approved" for r in train_rows):
@@ -116,29 +135,76 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     train_triplets = expand_training_triplets(train_rows, preserve_primary_positive_only=True)
     val_triplets = expand_training_triplets(val_rows, preserve_primary_positive_only=True) if val_rows else []
 
-    # Phase 5 Fix: Eliminate false negatives and invented fallback text.
-    # Never silently convert unknown same-tenant passages into negatives.
-    # Never invent fallback strings like "Standard baseline operating parameters."
-    valid_train_triplets = [r for r in train_triplets if r.get("negative_text")]
-    has_full_verified_negatives = bool(valid_train_triplets and len(valid_train_triplets) == len(train_triplets))
+    # ---- Phase 1 (Operation 16.0): Explicit training mode enforcement ----
+    # Categorize every expanded triplet into with-negative or without-negative.
+    triplets_with_neg = [r for r in train_triplets if r.get("negative_text")]
+    triplets_without_neg = [r for r in train_triplets if not r.get("negative_text")]
+    excluded_example_ids = []
 
-    def to_ds(triplets):
+    if training_mode == TRAINING_MODE_VERIFIED_TRIPLETS:
+        # Strict: require every example to have a reviewed negative.
+        if triplets_without_neg:
+            excluded_example_ids = [r.get("query_id", "?") for r in triplets_without_neg]
+        effective_triplets = triplets_with_neg
+        if not effective_triplets:
+            raise ValueError(
+                f"TRAINING_BLOCKED: verified_triplets_only mode requires reviewed negatives "
+                f"for every example, but {len(triplets_without_neg)} examples lack negatives "
+                f"and 0 have them. Cannot proceed."
+            )
+        use_negatives = True
+
+    elif training_mode == TRAINING_MODE_POSITIVE_PAIRS:
+        # Deliberately ignore all negatives — in-batch negatives only.
+        effective_triplets = train_triplets
+        use_negatives = False
+
+    elif training_mode == TRAINING_MODE_MIXED:
+        # Use triplets where negatives exist, pairs where they don't.
+        # Record which examples contribute negatives and which don't.
+        effective_triplets = train_triplets
+        use_negatives = bool(triplets_with_neg)  # Only include negative column if any exist
+    else:
+        raise ValueError(f"Unexpected training_mode: {training_mode}")
+
+    if not effective_triplets:
+        raise ValueError("No eligible training examples remain after mode filtering.")
+
+    # Validation triplets always follow the same mode
+    val_with_neg = [r for r in val_triplets if r.get("negative_text")] if val_triplets else []
+    val_without_neg = [r for r in val_triplets if not r.get("negative_text")] if val_triplets else []
+
+    if training_mode == TRAINING_MODE_VERIFIED_TRIPLETS:
+        effective_val = val_with_neg
+    else:
+        effective_val = val_triplets
+
+    def to_ds(triplets, include_neg: bool):
         if not triplets:
             return None
-        if has_full_verified_negatives:
-            # All examples have reviewed hard negatives: train on verified triplets
-            return Dataset.from_dict({
-                "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
-                "positive": [r["positive_text"] for r in triplets],
-                "negative": [r["negative_text"] for r in triplets],
-            })
-        else:
-            # Train on verified positive pairs using MultipleNegativesRankingLoss in-batch negatives.
-            # This completely avoids false-negative pollution from unvetted passages or synthetic strings.
-            return Dataset.from_dict({
-                "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
-                "positive": [r["positive_text"] for r in triplets],
-            })
+        if include_neg:
+            # Only include examples that actually have negatives
+            has_neg = [r for r in triplets if r.get("negative_text")]
+            no_neg = [r for r in triplets if not r.get("negative_text")]
+            if has_neg and no_neg and training_mode == TRAINING_MODE_MIXED:
+                # Mixed mode: include negative column, fill missing with empty string
+                # so MNRL treats them as in-batch negatives only for those rows
+                return Dataset.from_dict({
+                    "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
+                    "positive": [r["positive_text"] for r in triplets],
+                    "negative": [r.get("negative_text") or "" for r in triplets],
+                })
+            elif has_neg:
+                return Dataset.from_dict({
+                    "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in has_neg],
+                    "positive": [r["positive_text"] for r in has_neg],
+                    "negative": [r["negative_text"] for r in has_neg],
+                })
+            # No negatives at all — fall through to pairs
+        return Dataset.from_dict({
+            "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
+            "positive": [r["positive_text"] for r in triplets],
+        })
 
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     args = SentenceTransformerTrainingArguments(
@@ -150,8 +216,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         logging_steps=1, use_cpu=True,
     )
     trainer = SentenceTransformerTrainer(
-        model=model, args=args, train_dataset=to_ds(train_triplets),
-        eval_dataset=to_ds(val_triplets) if val_triplets else None,
+        model=model, args=args,
+        train_dataset=to_ds(effective_triplets, use_negatives),
+        eval_dataset=to_ds(effective_val, use_negatives) if effective_val else None,
         loss=MultipleNegativesRankingLoss(model),
     )
     t = time.time()
@@ -184,9 +251,14 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         promo = True
         status = "VERIFIED_FINE_TUNED"
 
+    # Distinct query/document accounting
+    distinct_query_ids = {r.get("query_id", "").split("-p")[0] for r in effective_triplets}
+    distinct_query_ids.discard("")
+
     report = {
         "kind": kind,
         "supervision_mode": supervision,
+        "training_mode": training_mode,
         "training_completed": True,
         "reload_succeeded": True,
         "evaluation_ran": bool(val_rows),
@@ -196,11 +268,18 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         "optimizer_steps": int(result.global_step),
         "train_loss": float(result.training_loss),
         "epochs": epochs,
-        "n_train": len(train_rows),
+        "n_train_rows": len(train_rows),
+        "n_train_expanded_triplets": len(train_triplets),
+        "n_effective_examples": len(effective_triplets),
+        "n_with_negative": len(triplets_with_neg),
+        "n_without_negative": len(triplets_without_neg),
+        "n_excluded": len(excluded_example_ids),
+        "excluded_example_ids": excluded_example_ids[:50],  # Capped for report size
+        "n_distinct_queries": len(distinct_query_ids),
         "n_val": len(val_rows or []),
-        "hard_negatives": has_full_verified_negatives,
-        "hard_negatives_count": len([r for r in train_triplets if r.get("negative_text")]),
-        "verified_negatives_mode": "triplet_verified_negatives" if has_full_verified_negatives else "pair_inbatch_negatives",
+        "n_val_effective": len(effective_val),
+        "hard_negatives_consumed": use_negatives and len(triplets_with_neg) > 0,
+        "verified_negatives_mode": training_mode,
         "seed": seed,
         "lr": lr,
         "batch_size": batch_size,

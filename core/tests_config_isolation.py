@@ -81,8 +81,12 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
     def test_database_engine_setting_matches(self):
         """SERVY_DB_ENGINE setting attribute must reflect the resolved engine."""
         from django.conf import settings
-        expected = os.getenv("SERVY_DB_ENGINE", "mysql")
-        self.assertEqual(settings.SERVY_DB_ENGINE, expected)
+        db_engine = settings.DATABASES["default"]["ENGINE"]
+        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
+        if "sqlite" in db_engine:
+            self.assertEqual(configured, "sqlite3")
+        else:
+            self.assertEqual(configured, "mysql")
 
     def test_subprocess_sqlite_isolation(self):
         """Verify in an isolated subprocess that SERVY_DB_ENGINE=sqlite3 selects SQLite."""

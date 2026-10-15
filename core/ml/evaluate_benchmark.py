@@ -326,19 +326,20 @@ def evaluate_track_b_serving(
     t0_start = time.perf_counter()
 
     orig_exp = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-    orig_gate = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.38)
-    import core.services.retriever as rm
-    orig_rm_gate = getattr(rm, "DENSE_RELEVANCE_GATE", 0.38)
+    orig_gate = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)
 
     try:
         if pipeline_mode in ("experimental_bge", "bge"):
             setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", True)
         elif pipeline_mode in ("threshold_ablation_gate_055", "production_baseline"):
+            # Phase 5 (Operation 16.0): Correctly labeled as THRESHOLD ABLATION,
+            # not historical production baseline. Both variants run the CURRENT
+            # retrieval implementation with different gate settings.
             setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-            rm.DENSE_RELEVANCE_GATE = 0.55  # Ablation gate: 0.55 threshold
+            setattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)
         elif pipeline_mode in ("calibrated_hybrid_gate_038", "corrected_hybrid"):
             setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-            rm.DENSE_RELEVANCE_GATE = 0.38  # Calibrated gate: 0.38 threshold
+            setattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.38)
         else:
             raise ValueError(f"Unknown mode {pipeline_mode}")
 
@@ -392,15 +393,22 @@ def evaluate_track_b_serving(
             evidence_supported = is_direct
 
             ranked_cids = [rc.chunk_id for rc in retrieved_chunks if rc.chunk_id]
-            # Strictly derived from system direct/abstain response; ZERO label leakage
-            serving_ranked_cids = ranked_cids if is_direct else []
+            # Phase 6 (Operation 16.0): Separate retrieval from abstention metrics.
+            # Retrieval metrics (Hit@K, MRR, nDCG) use the actual ranked chunk IDs
+            # from the retriever, regardless of whether answer generation abstained.
+            # This prevents conflating retrieval recall with answer-policy behavior.
+            #
+            # Abstention is tracked separately below as a policy outcome.
 
             rec = {
                 "query_id": qid,
-                "ranked_chunk_ids": serving_ranked_cids,
+                "ranked_chunk_ids": ranked_cids,  # Always the actual retrieval results
                 "relevant_chunk_ids": list(rel_ids),
                 "latency_ms": latency_ms,
                 "is_unsupported": is_abstain,
+                # Separate abstention tracking
+                "answer_mode": answer_mode,
+                "generation_abstained": not is_direct,
             }
             eval_records.append(rec)
 
@@ -479,7 +487,7 @@ def evaluate_track_b_serving(
     finally:
         # Exception-safe restoration: always restore process-global settings
         setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", orig_exp)
-        rm.DENSE_RELEVANCE_GATE = orig_rm_gate
+        setattr(settings, "SERVY_DENSE_RELEVANCE_GATE", orig_gate)
 
     current_mem, peak_mem = tracemalloc.get_traced_memory()
     tracemalloc.stop()

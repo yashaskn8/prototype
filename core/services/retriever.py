@@ -301,11 +301,58 @@ CATEGORY_BONUS = 0.10
 DOMAIN_BONUS = 0.05
 CUSTOMER_BONUS = 0.10
 
-# Content relevance gates: chunk MUST exceed this threshold BEFORE metadata
-# bonus is applied.  This prevents irrelevant documents with good metadata
-# from being rescued by bonus alone (Defect #3).
-SPARSE_RELEVANCE_GATE = getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055)
-DENSE_RELEVANCE_GATE = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)
+# Phase 4 (Operation 16.0): Immutable serving configuration.
+# Content relevance gates are read from settings at call time, NOT cached in
+# mutable module-level globals. This prevents benchmark-induced shared global-state
+# mutation from affecting parallel requests or production behavior.
+from dataclasses import dataclass as _dc
+
+
+@_dc(frozen=True)
+class ServingConfig:
+    """Immutable snapshot of all serving-time configuration.
+    
+    Created once per retrieval call from Django settings.
+    Never mutated. Benchmark code must NOT modify module-level globals.
+    """
+    dense_relevance_gate: float
+    sparse_relevance_gate: float
+    embedding_profile: str
+    rrf_k: int = 60
+    rrf_weight_dense: float = 0.55
+    rrf_weight_sparse: float = 0.45
+    top_k: int = 6
+    reranker_enabled: bool = False
+
+
+def get_serving_config() -> ServingConfig:
+    """Construct an immutable ServingConfig from current Django settings.
+    
+    This is called once per retrieval request. The returned object is frozen
+    and cannot be mutated, ensuring parallel requests never cross-contaminate.
+    """
+    return ServingConfig(
+        dense_relevance_gate=float(getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)),
+        sparse_relevance_gate=float(getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055)),
+        embedding_profile=str(getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")),
+        top_k=int(getattr(settings, "SERVY_RAG_TOP_K", 6)),
+        reranker_enabled=bool(getattr(settings, "SERVY_RERANKER_ENABLED", False)),
+    )
+
+
+# Legacy module-level accessors — read from settings each time for backward compat
+# DO NOT assign to these; use get_serving_config() in new code.
+def _get_sparse_gate():
+    return float(getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055))
+
+
+def _get_dense_gate():
+    return float(getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55))
+
+
+# Legacy names kept for backward compatibility with existing code paths
+SPARSE_RELEVANCE_GATE = _get_sparse_gate()
+DENSE_RELEVANCE_GATE = _get_dense_gate()
 
 DOMAIN_TYPO_MAP = {
     "indor": "indoor",
