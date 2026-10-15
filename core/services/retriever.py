@@ -14,7 +14,7 @@ from django.db.models import Q
 from django.conf import settings
 
 from core.models import KnowledgeChunk, KnowledgeDocument, ServiceResolutionIndex
-from .vectors import embed_text, cosine_sparse
+from .vectors import embed_text, cosine_sparse, compute_bm25_scores, compute_char_ngram_scores
 from .identifiers import extract_error_codes, extract_identifiers, extract_document_ids
 
 
@@ -33,6 +33,16 @@ class RetrievedChunk:
     confidential: bool
     service_call_id: int | None = None
     model_version: str = "minilm"
+    dense_score: float | None = None
+    dense_rank: int | None = None
+    sparse_score: float | None = None
+    sparse_rank: int | None = None
+    exact_identifier_match: bool = False
+    applicable_equipment_context: bool = False
+    fusion_score: float | None = None
+    fusion_rank: int | None = None
+    reranker_score: float | None = None
+    final_rank: int | None = None
 
     @property
     def reference(self):
@@ -54,6 +64,9 @@ def is_authorized_candidate(
     asset=None,
     include_confidential=False,
     staff_mode=False,
+    allow_failed=False,
+    backend="all",
+    verified_doc_ids=None,
 ) -> bool:
     """Canonical server-side authorization predicate for retrieved candidates.
 
@@ -61,7 +74,7 @@ def is_authorized_candidate(
     1. Authorized tenant
     2. Authorized customer
     3. Authorized asset / product hierarchy
-    4. Document visibility (is_rag_enabled=True, index_status valid)
+    4. Document visibility (is_rag_enabled=True, backend-specific index_status valid)
     5. Confidentiality (if not include_confidential, is_confidential=False)
     6. Chunk quarantine state (is_quarantined=False)
     7. Revocation status (revoked_at is None)
@@ -82,8 +95,24 @@ def is_authorized_candidate(
         return False
 
     # 3. Document visibility & index state
-    if not doc.is_rag_enabled or doc.index_status not in ("INDEXED", "INDEXING"):
+    if not doc.is_rag_enabled:
         return False
+
+    if backend == "dense":
+        # Dense index requires complete synchronization (INDEXED)
+        if doc.index_status != "INDEXED":
+            return False
+    elif backend == "sparse" or allow_failed:
+        # Sparse index may be valid even if dense synchronization failed
+        if doc.index_status not in ("INDEXED", "INDEXING", "FAILED"):
+            return False
+        # Sparse retriever requires text or sparse embedding to exist
+        if not (chunk.text or chunk.content_embedding or chunk.embedding):
+            return False
+    else:
+        if doc.index_status not in ("INDEXED", "INDEXING"):
+            return False
+
     if getattr(doc, "revoked_at", None) is not None:
         return False
 
@@ -118,13 +147,16 @@ def is_authorized_candidate(
     from .customer_isolation import get_customer_data_mode, is_real_tenant, is_verified_real_document
     mode = get_customer_data_mode()
     if not staff_mode and is_real_tenant(tenant) and mode == "verified_real_only":
-        if not is_verified_real_document(doc):
+        if verified_doc_ids is not None:
+            if doc.id not in verified_doc_ids:
+                return False
+        elif not is_verified_real_document(doc, allow_failed=allow_failed):
             return False
 
     return True
 
 
-def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False):
+def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False, backend="all"):
     from .customer_isolation import get_customer_data_mode, is_real_tenant
     mode = get_customer_data_mode()
     is_real = is_real_tenant(tenant)
@@ -143,6 +175,7 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
         "document__category", "document__domain", "document__customer",
     )
 
+    verified_doc_ids = None
     if not staff_mode and is_real:
         from .customer_isolation import is_verified_real_document
         qs = qs.exclude(document__title__icontains="synthetic")\
@@ -152,7 +185,7 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
                .exclude(document__description__icontains="dummy")
         # Positive provenance enforcement: only allow documents satisfying is_verified_real_document
         doc_candidates = KnowledgeDocument.objects.filter(tenant=tenant)
-        verified_doc_ids = {d.id for d in doc_candidates if is_verified_real_document(d)}
+        verified_doc_ids = {d.id for d in doc_candidates if is_verified_real_document(d, allow_failed=allow_failed)}
         qs = qs.filter(document_id__in=verified_doc_ids)
 
     if not include_confidential:
@@ -167,11 +200,6 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
     if asset and asset.product:
         product = asset.product
-        # Hierarchy Scoping:
-        # 1. Exact asset-bound documents: document__asset=asset
-        # 2. Product-bound documents: document__asset__isnull=True, document__product=product
-        # 3. Fleet/unassigned documents within tenant: document__asset__isnull=True, document__product__isnull=True
-        # Explicit document IDs NEVER broaden scope; they are search hints, not authorization grants.
         scope = (
             Q(document__asset=asset)
             | Q(document__asset__isnull=True, document__product=product)
@@ -187,7 +215,8 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
         qs = qs.filter(scope)
 
     # Pre-filter candidate list to those passing canonical authorization predicate
-    candidates = list(qs[:3000])
+    # Eliminate the [:3000] slice limitation (Part 7)
+    candidates = list(qs)
     return [
         c for c in candidates
         if is_authorized_candidate(
@@ -197,6 +226,9 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
             asset=asset,
             include_confidential=include_confidential,
             staff_mode=staff_mode,
+            allow_failed=allow_failed,
+            backend=backend,
+            verified_doc_ids=verified_doc_ids,
         )
     ]
 
@@ -311,13 +343,12 @@ def _calculate_metadata_bonus(document, chunk, asset, customer) -> float:
 
 def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: str) -> float:
     """Give a deterministic boost when the chunk contains an exact identifier
-    that the query explicitly asks about."""
+    that the query explicitly asks about, parsed through the same canonical extractor."""
     if not query_identifiers:
         return 0.0
-    combined = f"{chunk_heading} {chunk_text}".upper()
-    for qid in query_identifiers:
-        if qid.upper() in combined:
-            return 0.40  # Strong boost for exact identifier match
+    chunk_identifiers = extract_identifiers(f"{chunk_heading or ''} {chunk_text or ''}")
+    if query_identifiers & chunk_identifiers:
+        return 0.40  # Strong boost for exact identifier match
     return 0.0
 
 
@@ -327,16 +358,34 @@ def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: st
 
 def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
                              query_identifiers, asset, customer, min_score,
-                             query_doc_ids=None):
-    """Score all candidates using sparse/local embeddings.
+                             query_doc_ids=None, evidence_text=None):
+    """Score all candidates using hybrid lexical scoring (BM25 + character n-grams + sparse hashing).
 
-    Returns list of (rank_score, RetrievedChunk) tuples sorted by score descending.
+    Returns list of RetrievedChunk tuples sorted by score descending with explicit sparse_rank.
     """
     scored = []
-    for chunk in candidates:
+    chunk_texts = [_format_chunk_text(c) for c in candidates]
+    bm25_scores = compute_bm25_scores(evidence_text, chunk_texts) if evidence_text else [0.0] * len(candidates)
+    char_scores = compute_char_ngram_scores(evidence_text, chunk_texts) if evidence_text else [0.0] * len(candidates)
+
+    for i, chunk in enumerate(candidates):
         d = chunk.document
-        content_score = cosine_sparse(evidence_vector, chunk.content_embedding or chunk.embedding)
+        hashing_content = cosine_sparse(evidence_vector, chunk.content_embedding or chunk.embedding)
         scope_score = cosine_sparse(scope_vector, chunk.embedding)
+
+        # Lexical score blends BM25 (exact keyword match) and char n-grams (misspelling/morphology robustness)
+        bm25_val = bm25_scores[i] if i < len(bm25_scores) else 0.0
+        char_val = char_scores[i] if i < len(char_scores) else 0.0
+
+        # Background char-ngram threshold: character overlap below 0.22 is random English noise
+        effective_char = char_val if char_val >= 0.22 else 0.0
+        if bm25_val > 0.0:
+            # Exact words matched: BM25 with term coverage governs, with bounded char assistance
+            lexical_content = max(bm25_val, min(bm25_val * 1.5, effective_char * 0.5))
+        else:
+            # Zero exact words matched: pure misspelling/typo recovery mode
+            lexical_content = effective_char
+        content_score = max(hashing_content, lexical_content)
 
         # Content relevance gate: candidate must have minimum content match
         # BEFORE metadata bonus can apply (Defect #3 fix)
@@ -350,7 +399,8 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
         if content_score < SPARSE_RELEVANCE_GATE and id_boost <= 0.0:
             continue
 
-        if content_score < 0.08 and id_boost <= 0.0:
+        # Prevent single-word distractors from receiving metadata bonus alone
+        if content_score < 0.15 and id_boost <= 0.0:
             boost = 0.0
         else:
             boost = _calculate_metadata_bonus(d, chunk, asset, customer)
@@ -371,9 +421,14 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
             doc_type=d.get_doc_type_display(),
             source_url=d.source_url,
             confidential=d.is_confidential,
+            sparse_score=final_score,
+            exact_identifier_match=(id_boost > 0.0),
+            applicable_equipment_context=(boost > 0.0),
         ))
 
     scored.sort(key=lambda r: r.score, reverse=True)
+    for i, r in enumerate(scored, 1):
+        r.sparse_rank = i
     return scored
 
 
@@ -467,6 +522,7 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     asset=asset,
                     include_confidential=include_confidential,
                     staff_mode=staff_mode,
+                    backend="dense",
                 ):
                     continue
 
@@ -507,9 +563,14 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     source_url=d.source_url,
                     confidential=d.is_confidential,
                     model_version=profile.key,
+                    dense_score=final_score,
+                    exact_identifier_match=(id_boost > 0.0),
+                    applicable_equipment_context=(boost > 0.0),
                 ))
 
         scored.sort(key=lambda r: r.score, reverse=True)
+        for i, r in enumerate(scored, 1):
+            r.dense_rank = i
         return scored
 
     except Exception as exc:
@@ -527,40 +588,54 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_sparse=0.45):
     """Fuse dense and sparse ranked lists using RRF.
 
-    RRF(d) = w_dense / (K + rank_dense(d)) + w_sparse / (K + rank_sparse(d))
+    RRF(d) = sum(w_i / (K + rank_i(d))) for all lists i where d appears.
+    Only lists in which the document appears may contribute to that document's fusion score.
+    Missing-list entries must NOT receive phantom contributions.
     """
-    # Build rank maps (1-indexed)
-    dense_ranks = {}
+    dense_map = {}
     for i, r in enumerate(dense_results, 1):
         key = (r.source_kind, r.source_id)
-        if key not in dense_ranks:
-            dense_ranks[key] = i
+        if key not in dense_map:
+            r.dense_score = r.score
+            r.dense_rank = i
+            dense_map[key] = r
 
-    sparse_ranks = {}
+    sparse_map = {}
     for i, r in enumerate(sparse_results, 1):
         key = (r.source_kind, r.source_id)
-        if key not in sparse_ranks:
-            sparse_ranks[key] = i
+        if key not in sparse_map:
+            r.sparse_score = r.score
+            r.sparse_rank = i
+            sparse_map[key] = r
 
-    # Collect all unique chunks
-    all_chunks = {}
-    for r in dense_results + sparse_results:
-        key = (r.source_kind, r.source_id)
-        if key not in all_chunks:
-            all_chunks[key] = r
-
-    # Compute RRF scores
+    # Collect all unique chunks preserving discovery order
+    all_keys = list(dict.fromkeys(list(dense_map.keys()) + list(sparse_map.keys())))
     fused = []
-    absent_rank = max(len(dense_results), len(sparse_results)) + 100
-    for key, chunk in all_chunks.items():
-        d_rank = dense_ranks.get(key, absent_rank)
-        s_rank = sparse_ranks.get(key, absent_rank)
-        rrf_rank_score = (w_dense / (RRF_K + d_rank)) + (w_sparse / (RRF_K + s_rank))
-        # Keep chunk.score as the calibrated similarity+bonus score
-        fused.append((rrf_rank_score, chunk))
 
-    fused.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in fused]
+    for key in all_keys:
+        d_item = dense_map.get(key)
+        s_item = sparse_map.get(key)
+        base_item = d_item if d_item is not None else s_item
+        if d_item is not None and s_item is not None:
+            base_item.sparse_score = s_item.sparse_score
+            base_item.sparse_rank = s_item.sparse_rank
+            base_item.exact_identifier_match = d_item.exact_identifier_match or s_item.exact_identifier_match
+            base_item.applicable_equipment_context = d_item.applicable_equipment_context or s_item.applicable_equipment_context
+
+        rrf_score = 0.0
+        if base_item.dense_rank is not None:
+            rrf_score += w_dense / (RRF_K + base_item.dense_rank)
+        if base_item.sparse_rank is not None:
+            rrf_score += w_sparse / (RRF_K + base_item.sparse_rank)
+
+        base_item.fusion_score = rrf_score
+        base_item.score = rrf_score
+        fused.append(base_item)
+
+    fused.sort(key=lambda x: x.fusion_score, reverse=True)
+    for i, item in enumerate(fused, 1):
+        item.fusion_rank = i
+    return fused
 
 
 # ---------------------------------------------------------------------------
@@ -664,12 +739,13 @@ def retrieve(
         candidates, evidence_vector, scope_vector,
         query_identifiers, asset, customer, min_score,
         query_doc_ids=query_doc_ids,
+        evidence_text=evidence_text,
     )
 
     # 2b: Dense retrieval (may fail gracefully)
     try:
         dense_results = _dense_score_candidates(
-            candidates, allowed_doc_ids, allowed_chunks_by_id,
+            dense_candidates, dense_doc_ids, dense_chunks_by_id,
             evidence_text, query_identifiers, asset, customer,
             tenant, top_k, min_score,
             query_doc_ids=query_doc_ids,
@@ -685,9 +761,19 @@ def retrieve(
         results = _reciprocal_rank_fusion(dense_results, sparse_results)
         retrieval_backend = "hybrid"
     elif dense_results:
+        for i, r in enumerate(dense_results, 1):
+            r.dense_score = r.score
+            r.dense_rank = i
+            r.fusion_score = r.score
+            r.fusion_rank = i
         results = dense_results
         retrieval_backend = "semantic"
     elif sparse_results:
+        for i, r in enumerate(sparse_results, 1):
+            r.sparse_score = r.score
+            r.sparse_rank = i
+            r.fusion_score = r.score
+            r.fusion_rank = i
         results = sparse_results
         retrieval_backend = "fallback"
     else:
@@ -748,29 +834,43 @@ def retrieve(
     # Step 4: Strict Source Authority Tiering — authoritative technical guidance
     # (Knowledge Documents) strictly outranks historical cases (Service Calls).
     # Historical anecdotes can NEVER authorize repair actions or outrank approved manuals.
-    all_results = sorted(
-        results + resolution_results,
-        key=lambda r: (0 if r.source_kind == "knowledge_document" else 1, -r.score)
-    )
+    # Preserve the exact fused ranking of knowledge documents!
+    sorted_resolutions = sorted(resolution_results, key=lambda r: -r.score)
+    all_results = list(results) + sorted_resolutions
 
-    # Step 5: Diversity & content-level deduplication: avoid returning multiple identical
-    # chunks across duplicate versions of the same manual
+    # Step 5: Diversity & content-level deduplication
     selected = []
-    seen_texts = set()
+    seen_chunk_keys = set()
+    seen_content_hashes = set()
     per_source = {}
+    max_per_source = getattr(settings, "SERVY_MAX_CHUNKS_PER_SOURCE", top_k)
+
     for item in all_results:
-        # Normalize text signature (first 140 chars alphanumeric) for content-level deduplication
-        norm_sig = "".join(ch.lower() for ch in item.text[:140] if ch.isalnum())
-        if norm_sig in seen_texts:
+        chunk_key = (item.source_kind, item.document_id, item.chunk_id)
+        if chunk_key in seen_chunk_keys and item.chunk_id is not None:
             continue
-        key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
-        if per_source.get(key, 0) >= 2:
+
+        # Full content normalization hash (avoids collapsing distinct sections with identical intro)
+        norm_text = "".join(item.text.lower().split())
+        content_hash = hash(norm_text)
+        if content_hash in seen_content_hashes:
             continue
+
+        source_key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
+        if item.source_kind == "past_resolution" and per_source.get(source_key, 0) >= 2:
+            continue
+        if item.source_kind == "knowledge_document" and per_source.get(source_key, 0) >= max_per_source:
+            continue
+
         selected.append(item)
-        seen_texts.add(norm_sig)
-        per_source[key] = per_source.get(key, 0) + 1
+        seen_chunk_keys.add(chunk_key)
+        seen_content_hashes.add(content_hash)
+        per_source[source_key] = per_source.get(source_key, 0) + 1
         if len(selected) >= top_k:
             break
+
+    for i, item in enumerate(selected, 1):
+        item.final_rank = i
 
     try:
         from core.ml.reranker import rerank_candidates

@@ -136,10 +136,13 @@ class LabelValidationTests(TestCase):
         self.cq = KnowledgeChunk.objects.create(tenant=self.t1, document=d1, chunk_index=2, text="q",
                                                 embedding={}, is_quarantined=True)
 
+        from django.utils import timezone
+        self.now_str = timezone.now().isoformat()
+
     def _row(self, **kw):
         r = {"query_id": uuid.uuid4().hex, "query_text": "q", "tenant_id": self.t1.id,
              "positive_chunk_ids": [self.c1.id], "negative_chunk_ids": [], "review_status": "approved",
-             "reviewer": "auditor_1"}
+             "reviewer": "Staff Diagnostics Auditor", "reviewed_at": self.now_str}
         r.update(kw); return r
 
     def test_rejections(self):
@@ -177,11 +180,11 @@ class LabelValidationTests(TestCase):
         from core.ml.labels import approve_label_candidate, resolve_provenance_verified_examples
         cand = {"query_id": "q-101", "query_text": "check milk suction", "tenant_id": self.t1.id}
         approved = approve_label_candidate(
-            cand, reviewer="Expert QA", positive_chunk_id=self.c1.id,
+            cand, reviewer="Staff Diagnostics Auditor", positive_chunk_id=self.c1.id,
             negative_chunk_ids=[self.c1b.id], source_group="sop-milk"
         )
         self.assertEqual(approved["review_status"], "approved")
-        self.assertEqual(approved["reviewer"], "Expert QA")
+        self.assertEqual(approved["reviewer"], "Staff Diagnostics Auditor")
         self.assertTrue(approved["source_content_hash"])
 
         resolved = resolve_provenance_verified_examples([approved], require_approved=True)
@@ -189,6 +192,18 @@ class LabelValidationTests(TestCase):
         ex = resolved["verified_examples"][0]
         self.assertEqual(ex["positive_text"], self.c1.text)
         self.assertEqual(ex["negative_text"], self.c1b.text)
+
+    def test_rejected_unauthorized_reviewers(self):
+        from core.ml.labels import is_authorized_reviewer, approve_label_candidate
+        # Disallowed and synthetic reviewers
+        for bad in ["auto", "bot", "synthetic_agent", "dummy_user", "unknown", "system", "anonymous", "none", "self-approved", "unauthorized_stranger"]:
+            self.assertFalse(is_authorized_reviewer(bad))
+            with self.assertRaises(ValueError):
+                approve_label_candidate(
+                    {"query_id": "q-bad", "query_text": "test", "tenant_id": self.t1.id},
+                    reviewer=bad,
+                    positive_chunk_id=self.c1.id,
+                )
 
 
 class ModelSmokeTests(TestCase):

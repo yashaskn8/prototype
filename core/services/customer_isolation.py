@@ -90,9 +90,23 @@ def register_test_verified_provenance(obj: Any) -> None:
     _TEST_VERIFIED_OBJECTS.add((model_name, obj_id))
 
 
+from functools import lru_cache
+
+@lru_cache(maxsize=2048)
+def _get_cached_provenance_record(tenant_id: int, local_object_type: str, local_object_id: int):
+    """Cached lookup for database-backed SourceProvenanceRecord to eliminate N+1 queries."""
+    from core.models import SourceProvenanceRecord
+    return SourceProvenanceRecord.objects.filter(
+        tenant_id=tenant_id,
+        local_object_type=local_object_type,
+        local_object_id=local_object_id,
+    ).first()
+
+
 def clear_test_verified_provenance() -> None:
-    """Clear all test-authorized objects."""
+    """Clear all test-authorized objects and provenance caches."""
     _TEST_VERIFIED_OBJECTS.clear()
+    _get_cached_provenance_record.cache_clear()
 
 
 def is_test_verified_object(model_name: str, obj_id: Any) -> bool:
@@ -217,21 +231,18 @@ def is_verified_real_asset(asset: Any) -> bool:
 
     # Durable database-backed SourceProvenanceRecord check with strict verification
     try:
-        from core.models import SourceProvenanceRecord
         if tenant and asset_id:
-            prov = SourceProvenanceRecord.objects.filter(
-                tenant=tenant,
-                local_object_type="Asset",
-                local_object_id=asset_id,
-                verification_status="VERIFIED",
-                revoked_at__isnull=True,
-            ).first()
-            if prov:
-                if prov.asset_code and prov.asset_code != code_clean:
-                    return False
-                if ext_id and prov.external_id != str(ext_id):
-                    return False
-                return True
+            tenant_id = getattr(tenant, "id", None) or (tenant if isinstance(tenant, int) else None)
+            if tenant_id:
+                prov = _get_cached_provenance_record(tenant_id, "Asset", int(asset_id))
+                if prov:
+                    if prov.verification_status != "VERIFIED" or prov.revoked_at is not None:
+                        return False
+                    if prov.asset_code and prov.asset_code != code_clean:
+                        return False
+                    if ext_id and prov.external_id != str(ext_id):
+                        return False
+                    return True
     except Exception:
         pass
 
@@ -320,7 +331,7 @@ def is_verified_real_customer(customer: Any) -> bool:
     return False
 
 
-def is_verified_real_document(doc: Any) -> bool:
+def is_verified_real_document(doc: Any, allow_failed: bool = False) -> bool:
     """Positively verify that a KnowledgeDocument has authentic company provenance.
     Requires:
       - Bound to an authorized real company tenant
@@ -339,7 +350,8 @@ def is_verified_real_document(doc: Any) -> bool:
         return False
     if getattr(doc, "disable_sharing", False):
         return False
-    if getattr(doc, "index_status", "") not in ("INDEXED", "INDEXING"):
+    allowed_statuses = ("INDEXED", "INDEXING", "FAILED") if allow_failed else ("INDEXED", "INDEXING")
+    if getattr(doc, "index_status", "") not in allowed_statuses:
         return False
 
     # Positive Asset Binding
@@ -374,31 +386,28 @@ def is_verified_real_document(doc: Any) -> bool:
     # Check durable database-backed SourceProvenanceRecord with fail-closed integrity
     has_db_provenance = False
     try:
-        from core.models import SourceProvenanceRecord
-        if tenant:
-            prov = SourceProvenanceRecord.objects.filter(
-                tenant=tenant,
-                local_object_type="KnowledgeDocument",
-                local_object_id=doc_id,
-            ).first()
-            if prov:
-                # If record is unverified or revoked, immediately fail closed
-                if prov.verification_status != "VERIFIED" or prov.revoked_at is not None:
-                    return False
-                # If checksum recorded, fail closed on mismatch
-                if prov.checksum_sha256 and checksum and prov.checksum_sha256.lower() != checksum.lower():
-                    return False
-                # If asset_code bound in provenance, fail closed on mismatch
-                doc_asset_code = getattr(asset, "asset_code", "") or (asset.get("asset_code", "") if isinstance(asset, dict) else "")
-                if prov.asset_code and doc_asset_code and prov.asset_code.upper() != doc_asset_code.upper():
-                    return False
-                # Separate extracted text checksum verification if available
-                content_text_val = getattr(doc, "content_text", "")
-                if prov.extracted_text_sha256 and content_text_val:
-                    calc_text_sha = hashlib.sha256(content_text_val.encode("utf-8", errors="ignore")).hexdigest().lower()
-                    if calc_text_sha != prov.extracted_text_sha256.lower():
+        if tenant and doc_id:
+            tenant_id = getattr(tenant, "id", None) or (tenant if isinstance(tenant, int) else None)
+            if tenant_id:
+                prov = _get_cached_provenance_record(tenant_id, "KnowledgeDocument", int(doc_id))
+                if prov:
+                    # If record is unverified or revoked, immediately fail closed
+                    if prov.verification_status != "VERIFIED" or prov.revoked_at is not None:
                         return False
-                has_db_provenance = True
+                    # If checksum recorded, fail closed on mismatch
+                    if prov.checksum_sha256 and checksum and prov.checksum_sha256.lower() != checksum.lower():
+                        return False
+                    # If asset_code bound in provenance, fail closed on mismatch
+                    doc_asset_code = getattr(asset, "asset_code", "") or (asset.get("asset_code", "") if isinstance(asset, dict) else "")
+                    if prov.asset_code and doc_asset_code and prov.asset_code.upper() != doc_asset_code.upper():
+                        return False
+                    # Separate extracted text checksum verification if available
+                    content_text_val = getattr(doc, "content_text", "")
+                    if prov.extracted_text_sha256 and content_text_val:
+                        calc_text_sha = hashlib.sha256(content_text_val.encode("utf-8", errors="ignore")).hexdigest().lower()
+                        if calc_text_sha != prov.extracted_text_sha256.lower():
+                            return False
+                    has_db_provenance = True
     except Exception:
         pass
 

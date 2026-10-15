@@ -663,7 +663,7 @@ def build_structured_diagnostic_contract(
         # Check doc validity
         if doc_id:
             doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).first()
-            if not doc or not doc.is_rag_enabled or doc.is_confidential:
+            if not doc or not doc.is_rag_enabled or doc.is_confidential or getattr(doc, "revoked_at", None) is not None:
                 continue
 
         key = (doc_id, chunk_id, title, heading)
@@ -918,6 +918,7 @@ def build_structured_diagnostic_contract(
             summary = "No approved customer troubleshooting procedures could be verified for this issue."
             stop_conditions = ["No manufacturer-approved customer self-service steps are available. Please request an authorized service technician."]
             answer_text = "INSUFFICIENT EVIDENCE: No approved customer diagnostic procedures exist in the Knowledge Base for this issue on this equipment. Please escalate to a certified service technician."
+            validated_citations = []
         expected_result = ""
         can_resolve = False
     elif technician_only_actions and not customer_safe_actions:

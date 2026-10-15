@@ -53,7 +53,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     # Check for identifier-based abstention: if query mentions a specific
     # error code not found in any retrieved source, abstain.
     from .identifiers import query_identifiers_not_in_sources
-    source_texts = [r.text for r in retrieved]
+    source_texts = [f"{r.heading or ''} {r.text or ''}" for r in retrieved]
     missing_ids = query_identifiers_not_in_sources(question or "", source_texts)
     if missing_ids:
         missing_str = ", ".join(sorted(missing_ids))
@@ -64,18 +64,23 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     if not terms:
         terms = raw_terms
 
-    # Check evidence relevance against question terms and metadata
-    matched_chunks = []
+    # Check evidence relevance against question terms and metadata.
+    # The retriever has ALREADY performed hybrid ranking (dense + lexical + BM25 + fault-code boost + RRF).
+    # Token overlap must NOT overwrite or invert the retriever's authoritative fused rank.
+    # We filter to chunks with valid content grounding (terms overlap or exact identifier match)
+    # while strictly preserving the retriever's ranking order.
+    relevant_chunks = []
     for r in retrieved:
         words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", f"{r.heading} {r.text}".lower())}
         overlap = len(terms & words)
-        matched_chunks.append((overlap, r))
+        has_id_match = getattr(r, "exact_identifier_match", False)
+        if overlap > 0 or has_id_match:
+            relevant_chunks.append(r)
 
-    if not matched_chunks:
+    if not relevant_chunks:
         return INSUFFICIENT_EVIDENCE_MESSAGE
 
-    matched_chunks.sort(key=lambda x: (x[0], x[1].score), reverse=True)
-    primary_chunk = matched_chunks[0][1]
+    primary_chunk = relevant_chunks[0]
 
     # 1. DIAGNOSTIC SUMMARY
     asset_name = asset.name if asset else "the selected equipment"
@@ -95,7 +100,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
 
     seen_sentences = set()
 
-    for _, chunk in matched_chunks[:4]:
+    for chunk in relevant_chunks[:4]:
         raw_lines = chunk.text.split("\n")
         sentences = []
         for line in raw_lines:
@@ -208,7 +213,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
 
     output.append("VERIFIED REFERENCES")
     seen_refs = set()
-    for _, chunk in matched_chunks[:5]:
+    for chunk in relevant_chunks[:5]:
         ref_label = f"{chunk.reference} ({chunk.doc_type})"
         if ref_label not in seen_refs:
             seen_refs.add(ref_label)
