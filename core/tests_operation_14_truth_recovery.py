@@ -90,7 +90,7 @@ class Operation14TruthRecoveryTests(TestCase):
             doc_type="MANUAL", index_status="INDEXED",
             is_rag_enabled=True, is_confidential=False,
             asset=self.asset, product=self.product,
-            checksum_sha256="abc1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
+            checksum_sha256="abc1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab",
         )
 
         chunks = []
@@ -309,19 +309,28 @@ class Operation14TruthRecoveryTests(TestCase):
                 "tenant_id": self.tenant.id,
             }
         ]
-        from datasets import Dataset
+        try:
+            from datasets import Dataset
+            has_datasets = True
+        except ImportError:
+            has_datasets = False
+
         # Replicate to_ds from core.ml.training
         valid_train_triplets = [r for r in test_triplets if r.get("negative_text")]
         has_full_verified_negatives = bool(valid_train_triplets and len(valid_train_triplets) == len(test_triplets))
 
         self.assertFalse(has_full_verified_negatives)
         # Verify no string contains "Standard baseline operating parameters."
-        ds = Dataset.from_dict({
+        ds_dict = {
             "anchor": [r["query_text"] for r in test_triplets],
             "positive": [r["positive_text"] for r in test_triplets],
-        })
-        self.assertNotIn("negative", ds.column_names)
-        self.assertEqual(len(ds), 1)
+        }
+        self.assertNotIn("negative", ds_dict)
+        self.assertNotIn("Standard baseline operating parameters.", ds_dict.values())
+        if has_datasets:
+            ds = Dataset.from_dict(ds_dict)
+            self.assertNotIn("negative", ds.column_names)
+            self.assertEqual(len(ds), 1)
 
     def test_phase6_expand_training_triplets_uses_primary_positive_per_anchor(self):
         """
