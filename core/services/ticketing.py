@@ -201,7 +201,7 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
                     f"Customer Original Complaint:\n{authentic_complaint}\n\n"
                     f"Customer Escalation Observation / Note:\n{clean_note or 'None provided'}\n\n"
                     f"Sources Cited:\n{ref_text}\n\n"
-                    f"AI Diagnostic Guidance Provided:\n{interaction.answer[:3000]}"
+                    f"AI diagnostic guidance provided (completion not confirmed):\n{interaction.answer[:3000]}"
                 )
 
                 call = create_service_call_record(

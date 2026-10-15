@@ -1,6 +1,8 @@
+import unittest
 from django.test import TestCase
 from core.models import Tenant, Product, Asset
 from core.ml.benchmark_manifest import (
+    BENCHMARK_PATH,
     load_manifest,
     build_manifest,
     resolve_query_asset,
@@ -10,6 +12,7 @@ from core.ml.benchmark_manifest import (
 )
 
 
+@unittest.skipUnless(BENCHMARK_PATH.exists(), "Holdout benchmark dataset not present")
 class BenchmarkManifestTests(TestCase):
     @classmethod
     def setUpTestData(cls):

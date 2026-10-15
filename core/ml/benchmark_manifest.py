@@ -19,7 +19,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-BENCHMARK_PATH = BASE_DIR / "private_training_data" / "frozen_independent_holdout_benchmark.jsonl"
+CANDIDATE_PATHS = [
+    BASE_DIR / "private_training_data" / "frozen_independent_holdout_benchmark.jsonl",
+    BASE_DIR / "sample_data" / "frozen_independent_holdout_benchmark.jsonl",
+]
+BENCHMARK_PATH = next((p for p in CANDIDATE_PATHS if p.exists()), CANDIDATE_PATHS[0])
 MANIFEST_PATH = BASE_DIR / "ml_artifacts" / "benchmark_accounting_manifest.json"
 
 ROLE_RELEVANCE = "RELEVANCE_EVALUATION"

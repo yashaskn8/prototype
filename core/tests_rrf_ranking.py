@@ -95,7 +95,6 @@ class RRFUnitFormulaTests(SimpleTestCase):
 
 @override_settings(
     SERVY_CUSTOMER_DATA_MODE="test_isolated",
-    SERVY_RAG_MIN_SCORE=0.0,
     SERVY_ALLOW_REMOTE_LLM=False,
     CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
 )

@@ -126,3 +126,66 @@ def compute_metrics(
         result["abstention_accuracy"] = round(abstention_correct / abstention_total, 4)
 
     return result
+
+
+def check_chunk_boundaries(
+    chunk_meta: Dict[str, Any],
+    query_tenant_id: int,
+    customer: Any = None,
+    asset: Any = None,
+) -> Dict[str, Any]:
+    """Inspect a single retrieved chunk against all 5 retrieval-level boundaries."""
+    tenant_id = chunk_meta.get("tenant_id")
+    customer_id = chunk_meta.get("customer_id")
+    asset_id = chunk_meta.get("asset_id")
+    product_id = chunk_meta.get("product_id")
+    model_number = chunk_meta.get("model_number")
+
+    unauthorized_tenant = (tenant_id is not None and tenant_id != query_tenant_id)
+
+    unauthorized_customer = False
+    if customer:
+        cust_id = getattr(customer, "id", customer)
+        if customer_id is not None and customer_id != cust_id:
+            unauthorized_customer = True
+    elif customer_id is not None:
+        unauthorized_customer = True
+
+    wrong_asset = False
+    if asset:
+        a_id = getattr(asset, "id", None)
+        if asset_id is not None and asset_id != a_id:
+            wrong_asset = True
+
+    wrong_product = False
+    if asset:
+        p_id = getattr(asset, "product_id", None)
+        if p_id is not None and product_id is not None and product_id != p_id:
+            wrong_product = True
+
+    wrong_model = False
+    if asset and getattr(asset, "model_number", None):
+        a_model = str(asset.model_number).lower().strip()
+        if model_number and str(model_number).lower().strip() != a_model:
+            wrong_model = True
+
+    if (asset_id is not None and asset and asset_id == getattr(asset, "id", None)) or (
+        product_id is not None and asset and product_id == getattr(asset, "product_id", None)
+    ):
+        applicability = "CORRECTLY_SCOPED"
+    elif asset_id is None and product_id is None:
+        applicability = "GENERAL_LEGITIMATELY_APPLICABLE"
+    elif wrong_asset or wrong_product or wrong_model:
+        applicability = "INCORRECTLY_SCOPED"
+    else:
+        applicability = "UNKNOWN_APPLICABILITY"
+
+    return {
+        "unauthorized_tenant": unauthorized_tenant,
+        "unauthorized_customer": unauthorized_customer,
+        "wrong_product": wrong_product,
+        "wrong_model": wrong_model,
+        "wrong_asset": wrong_asset,
+        "applicability": applicability,
+    }
+

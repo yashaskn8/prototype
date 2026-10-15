@@ -48,10 +48,42 @@ def tokenize_words(text: str, filter_stopwords: bool = True) -> List[str]:
     return words
 
 
+@lru_cache(maxsize=8192)
+def _get_doc_tokens(text: str) -> tuple:
+    """Precompute and cache tokenization and term counts for a chunk text."""
+    tokens = tokenize_words(text, filter_stopwords=False)
+    counts: Dict[str, int] = {}
+    for t in tokens:
+        counts[t] = counts.get(t, 0) + 1
+    return tuple(tokens), counts, len(tokens)
+
+
+@lru_cache(maxsize=8192)
+def _get_char_ngrams(text: str, n_min: int = 3, n_max: int = 5) -> tuple:
+    """Precompute and cache character n-grams with word-boundary padding and L2 norm."""
+    text = (text or "").strip().lower()
+    if not text:
+        return {}, 0.0
+
+    words = re.findall(r"\b[A-Za-z0-9_\-]+\b", text)
+    counts: Dict[str, int] = {}
+    for w in words:
+        padded = f" {w} "
+        L = len(padded)
+        for n in range(n_min, min(n_max + 1, L + 1)):
+            for i in range(L - n + 1):
+                ng = padded[i:i+n]
+                counts[ng] = counts.get(ng, 0) + 1
+
+    norm = math.sqrt(sum(v * v for v in counts.values()))
+    return counts, norm
+
+
 def compute_bm25_scores(query: str, corpus_texts: List[str], k1: float = 1.5, b: float = 0.75) -> List[float]:
     """True BM25 implementation (Lucene/BM25Plus smoothed) over authorized corpus texts.
 
     Returns normalized scores scaled by query term coverage in range [0, 1].
+    Uses precomputed cached token statistics to eliminate per-query tokenization overhead.
     """
     if not query or not corpus_texts:
         return [0.0] * len(corpus_texts)
@@ -60,31 +92,29 @@ def compute_bm25_scores(query: str, corpus_texts: List[str], k1: float = 1.5, b:
     if not tokenized_query:
         return [0.0] * len(corpus_texts)
 
-    tokenized_corpus = [tokenize_words(doc, filter_stopwords=False) for doc in corpus_texts]
     n_docs = len(corpus_texts)
-    doc_lens = [len(doc) for doc in tokenized_corpus]
+    doc_data = [_get_doc_tokens(doc) for doc in corpus_texts]
+    doc_lens = [d[2] for d in doc_data]
     avg_len = sum(doc_lens) / max(1, n_docs)
 
-    # Document frequencies
+    # Document frequencies across candidate corpus
     df: Dict[str, int] = {}
-    for doc in tokenized_corpus:
-        for term in set(doc):
-            df[term] = df.get(term, 0) + 1
+    query_term_set = set(tokenized_query)
+    for _, counts, _ in doc_data:
+        for term in query_term_set:
+            if term in counts:
+                df[term] = df.get(term, 0) + 1
 
     scores = []
-    n_query_terms = len(set(tokenized_query))
-    for doc, doc_len in zip(tokenized_corpus, doc_lens):
-        doc_term_counts: Dict[str, int] = {}
-        for term in doc:
-            doc_term_counts[term] = doc_term_counts.get(term, 0) + 1
-
+    n_query_terms = len(query_term_set)
+    for _, counts, doc_len in doc_data:
         matched_query_terms = 0
         raw_score = 0.0
-        for q_term in set(tokenized_query):
-            if q_term not in doc_term_counts:
+        for q_term in query_term_set:
+            if q_term not in counts:
                 continue
             matched_query_terms += 1
-            tf = doc_term_counts[q_term]
+            tf = counts[q_term]
             term_df = df.get(q_term, 0)
             idf = math.log(1.0 + (n_docs - term_df + 0.5) / (term_df + 0.5))
             num = tf * (k1 + 1.0)
@@ -99,9 +129,10 @@ def compute_bm25_scores(query: str, corpus_texts: List[str], k1: float = 1.5, b:
 
 
 def compute_char_ngram_scores(query: str, corpus_texts: List[str], ngram_range=(3, 5)) -> List[float]:
-    """Character n-gram TF-IDF cosine similarity for typo and misspelling recovery.
+    """Character n-gram cosine similarity for typo and misspelling recovery.
 
-    Returns similarity scores in range [0, 1].
+    Computes cosine similarity in range [0, 1] using cached character n-gram counts
+    without the expensive TfidfVectorizer fit_transform bottleneck.
     Filters stop-words from query so common functional words don't create false overlap.
     """
     if not query or not corpus_texts:
@@ -111,11 +142,18 @@ def compute_char_ngram_scores(query: str, corpus_texts: List[str], ngram_range=(
     if not clean_query:
         return [0.0] * len(corpus_texts)
 
-    try:
-        vec = TfidfVectorizer(analyzer="char_wb", ngram_range=ngram_range, lowercase=True)
-        tfidf_matrix = vec.fit_transform(corpus_texts)
-        q_vec = vec.transform([clean_query])
-        sims = (tfidf_matrix * q_vec.T).toarray().flatten()
-        return [round(float(s), 6) for s in sims]
-    except Exception:
+    q_counts, q_norm = _get_char_ngrams(clean_query, ngram_range[0], ngram_range[1])
+    if q_norm == 0.0:
         return [0.0] * len(corpus_texts)
+
+    scores = []
+    for doc in corpus_texts:
+        d_counts, d_norm = _get_char_ngrams(doc, ngram_range[0], ngram_range[1])
+        if d_norm == 0.0:
+            scores.append(0.0)
+            continue
+        dot = sum(c * d_counts.get(ng, 0) for ng, c in q_counts.items())
+        sim = dot / (q_norm * d_norm)
+        scores.append(round(float(sim), 6))
+
+    return scores

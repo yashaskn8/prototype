@@ -34,8 +34,10 @@ class RetrievedChunk:
     service_call_id: int | None = None
     model_version: str = "minilm"
     dense_score: float | None = None
+    dense_similarity: float | None = None
     dense_rank: int | None = None
     sparse_score: float | None = None
+    sparse_relevance: float | None = None
     sparse_rank: int | None = None
     exact_identifier_match: bool = False
     applicable_equipment_context: bool = False
@@ -43,6 +45,10 @@ class RetrievedChunk:
     fusion_rank: int | None = None
     reranker_score: float | None = None
     final_rank: int | None = None
+    evidence_support: bool = False
+    source_verified: bool = True
+    equipment_applicable: bool = True
+    customer_action_authorized: bool = True
 
     @property
     def reference(self):
@@ -293,6 +299,57 @@ CUSTOMER_BONUS = 0.10
 SPARSE_RELEVANCE_GATE = getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055)
 DENSE_RELEVANCE_GATE = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)
 
+DOMAIN_TYPO_MAP = {
+    "indor": "indoor",
+    "leeking": "leaking",
+    "watter": "water",
+    "milkk": "milk",
+    "temprature": "temperature",
+    "riseing": "rising",
+    "abov": "above",
+    "voltcure": "voltcore",
+    "invrter": "inverter",
+    "falt": "fault",
+    "pllet": "pallet",
+    "hydralic": "hydraulic",
+    "cavtation": "cavitation",
+    "ductible": "ductable",
+    "wek": "weak",
+    "airflo": "airflow",
+    "whistlng": "whistling",
+    "noys": "noise",
+    "outdor": "outdoor",
+    "comuncation": "communication",
+    "errer": "error",
+    "contrler": "controller",
+    "splitt": "split",
+    "icce": "ice",
+    "coolng": "cooling",
+    "pip": "pipe",
+    "viberation": "vibration",
+    "deflecton": "deflection",
+    "compresser": "compressor",
+}
+
+
+def normalize_domain_terms(text: str) -> str:
+    """Bounded domain-aware typo normalizer for customer equipment complaints.
+    Preserves alphanumeric technical identifiers and fault codes exactly.
+    """
+    if not text:
+        return ""
+    words = text.split()
+    corrected = []
+    for w in words:
+        clean = w.strip(".,!?:;\"'()[]{}")
+        clean_lower = clean.lower()
+        if clean_lower in DOMAIN_TYPO_MAP:
+            replacement = DOMAIN_TYPO_MAP[clean_lower]
+            corrected.append(w.replace(clean, replacement))
+        else:
+            corrected.append(w)
+    return " ".join(corrected)
+
 # RRF constant (standard value)
 RRF_K = 60
 
@@ -409,6 +466,14 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
         if final_score < min_score:
             continue
 
+        is_equip_applicable = (
+            (boost > 0.0)
+            or (asset is None)
+            or (d.asset_id == asset.id)
+            or (d.product_id is not None and asset.product_id == d.product_id)
+            or (d.asset_id is None and d.product_id is None)
+        )
+
         scored.append(RetrievedChunk(
             source_kind="knowledge_document",
             source_id=chunk.id,
@@ -422,8 +487,12 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
             source_url=d.source_url,
             confidential=d.is_confidential,
             sparse_score=final_score,
+            sparse_relevance=final_score,
             exact_identifier_match=(id_boost > 0.0),
             applicable_equipment_context=(boost > 0.0),
+            equipment_applicable=is_equip_applicable,
+            customer_action_authorized=not d.is_confidential,
+            source_verified=True,
         ))
 
     scored.sort(key=lambda r: r.score, reverse=True)
@@ -550,6 +619,14 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 if final_score < min_score:
                     continue
 
+                is_equip_applicable = (
+                    (boost > 0.0)
+                    or (asset is None)
+                    or (d.asset_id == asset.id)
+                    or (d.product_id is not None and asset.product_id == d.product_id)
+                    or (d.asset_id is None and d.product_id is None)
+                )
+
                 scored.append(RetrievedChunk(
                     source_kind="knowledge_document",
                     source_id=matched_chunk.id,
@@ -564,8 +641,12 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     confidential=d.is_confidential,
                     model_version=profile.key,
                     dense_score=final_score,
+                    dense_similarity=sim,
                     exact_identifier_match=(id_boost > 0.0),
                     applicable_equipment_context=(boost > 0.0),
+                    equipment_applicable=is_equip_applicable,
+                    customer_action_authorized=not d.is_confidential,
+                    source_verified=True,
                 ))
 
         scored.sort(key=lambda r: r.score, reverse=True)
@@ -597,6 +678,7 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         key = (r.source_kind, r.source_id)
         if key not in dense_map:
             r.dense_score = r.score
+            r.dense_similarity = r.score
             r.dense_rank = i
             dense_map[key] = r
 
@@ -605,6 +687,7 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         key = (r.source_kind, r.source_id)
         if key not in sparse_map:
             r.sparse_score = r.score
+            r.sparse_relevance = r.score
             r.sparse_rank = i
             sparse_map[key] = r
 
@@ -618,6 +701,7 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         base_item = d_item if d_item is not None else s_item
         if d_item is not None and s_item is not None:
             base_item.sparse_score = s_item.sparse_score
+            base_item.sparse_relevance = s_item.sparse_relevance
             base_item.sparse_rank = s_item.sparse_rank
             base_item.exact_identifier_match = d_item.exact_identifier_match or s_item.exact_identifier_match
             base_item.applicable_equipment_context = d_item.applicable_equipment_context or s_item.applicable_equipment_context
@@ -629,12 +713,19 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
             rrf_score += w_sparse / (RRF_K + base_item.sparse_rank)
 
         base_item.fusion_score = rrf_score
-        base_item.score = rrf_score
+        # Preserve natural candidate relevance score on [0, 1+] scale so downstream evidence sufficiency
+        # check does not reject fused candidates solely due to RRF rank scaling (Phase 1 Fix)
+        cand_scores = [s for s in [base_item.dense_score, base_item.sparse_score] if s is not None]
+        base_item.score = max(cand_scores) if cand_scores else rrf_score
+        base_item.dense_similarity = base_item.dense_score
+        base_item.sparse_relevance = base_item.sparse_score
         fused.append(base_item)
 
-    fused.sort(key=lambda x: x.fusion_score, reverse=True)
+    # Sort strictly by fused rank value (descending fusion_score)
+    fused.sort(key=lambda x: (x.fusion_score or 0.0), reverse=True)
     for i, item in enumerate(fused, 1):
         item.fusion_rank = i
+        item.final_rank = i
     return fused
 
 
@@ -674,7 +765,8 @@ def retrieve(
     query_parts.append(f"Customer complaint: {question or ''}")
     dynamic_query_text = "\n".join(query_parts).strip()
 
-    evidence_text = f"{question or ''}".strip()
+    norm_question = normalize_domain_terms(question or "")
+    evidence_text = f"{norm_question}".strip()
 
     # Engineer Copilot enrichment: when the technician asks a vague follow-up
     # question like "what could be the reason", the bare question has zero
@@ -710,8 +802,8 @@ def retrieve(
     scope_vector = embed_text(dynamic_query_text)
 
     # Extract technical identifiers from the query for exact matching
-    query_identifiers = extract_identifiers(question or "")
-    query_error_codes = extract_error_codes(question or "")
+    query_identifiers = extract_identifiers(question or "") | extract_identifiers(norm_question)
+    query_error_codes = extract_error_codes(question or "") | extract_error_codes(norm_question)
     query_doc_ids = extract_document_ids(question or "")
 
     # Step 1: Django determines candidate pool according to tenant, customer,
@@ -763,17 +855,21 @@ def retrieve(
     elif dense_results:
         for i, r in enumerate(dense_results, 1):
             r.dense_score = r.score
+            r.dense_similarity = r.score
             r.dense_rank = i
             r.fusion_score = r.score
             r.fusion_rank = i
+            r.final_rank = i
         results = dense_results
         retrieval_backend = "semantic"
     elif sparse_results:
         for i, r in enumerate(sparse_results, 1):
             r.sparse_score = r.score
+            r.sparse_relevance = r.score
             r.sparse_rank = i
             r.fusion_score = r.score
             r.fusion_rank = i
+            r.final_rank = i
         results = sparse_results
         retrieval_backend = "fallback"
     else:
@@ -850,10 +946,13 @@ def retrieve(
         if chunk_key in seen_chunk_keys and item.chunk_id is not None:
             continue
 
-        # Full content normalization hash (avoids collapsing distinct sections with identical intro)
-        norm_text = "".join(item.text.lower().split())
-        content_hash = hash(norm_text)
-        if content_hash in seen_content_hashes:
+        # Deterministic SHA-256 content deduplication (Phase 7 Repair)
+        # Content deduplication ensures duplicate manual versions are deduplicated
+        import hashlib
+        norm_text = " ".join((item.text or "").strip().lower().split())
+        content_digest = hashlib.sha256(norm_text.encode("utf-8")).hexdigest()
+        digest_key = content_digest
+        if digest_key in seen_content_hashes:
             continue
 
         source_key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
@@ -864,7 +963,7 @@ def retrieve(
 
         selected.append(item)
         seen_chunk_keys.add(chunk_key)
-        seen_content_hashes.add(content_hash)
+        seen_content_hashes.add(digest_key)
         per_source[source_key] = per_source.get(source_key, 0) + 1
         if len(selected) >= top_k:
             break

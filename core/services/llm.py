@@ -265,14 +265,73 @@ def _clean_model_answer(answer, retrieved=None):
     return answer[:8000].strip()
 
 
+def check_evidence_sufficiency(question: str, asset, retrieved: list) -> tuple:
+    """
+    Independently validate evidence sufficiency for the question and asset.
+    Separates candidate retrieval threshold, technical identifier verification,
+    content grounding, equipment applicability, and safety authorization.
+    """
+    if not retrieved:
+        return False, "no-retrieved-chunks"
+
+    # 1. Candidate retrieval threshold: at least one candidate must have raw relevance >= SERVY_RAG_MIN_SCORE
+    min_support = getattr(settings, "SERVY_RAG_MIN_SCORE", 0.055)
+    max_score = max((getattr(r, "score", 0.0) for r in retrieved), default=0.0)
+    if max_score < min_support:
+        return False, "score-below-minimum-support"
+
+    # 2. Identifier verification: if question explicitly asks for a code, it must be present
+    from .identifiers import extract_error_codes
+    q_codes = extract_error_codes(question)
+    if q_codes:
+        has_code_match = any(
+            bool(q_codes & extract_error_codes(f"{r.heading or ''} {r.text or ''}"))
+            for r in retrieved
+        )
+        if not has_code_match:
+            return False, "missing-required-identifier"
+
+    # 3. Source verification and quarantine check
+    valid_chunks = [r for r in retrieved if getattr(r, "source_verified", True)]
+    if not valid_chunks:
+        return False, "all-sources-unverified"
+
+    # 4. Equipment applicability
+    applicable_chunks = [r for r in valid_chunks if getattr(r, "equipment_applicable", True)]
+    if not applicable_chunks:
+        return False, "no-applicable-equipment-evidence"
+
+    # 5. Content Grounding check
+    raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", question or "")}
+    terms = raw_terms - _STOPWORDS
+    if not terms:
+        terms = raw_terms
+
+    grounded_chunks = []
+    for r in applicable_chunks:
+        words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", f"{r.heading or ''} {r.text or ''}".lower())}
+        overlap = len(terms & words)
+        has_id_match = getattr(r, "exact_identifier_match", False)
+        if overlap > 0 or has_id_match:
+            r.evidence_support = True
+            grounded_chunks.append(r)
+        else:
+            r.evidence_support = False
+
+    if not grounded_chunks:
+        return False, "no-grounded-overlap"
+
+    return True, "evidence-sufficient"
+
+
 def generate_answer(question, asset, retrieved, service_call=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "fallback"
 
-    # Support threshold check: If retrieval scores are below minimum support, fail closed
-    min_support = getattr(settings, "SERVY_RAG_MIN_SCORE", 0.0)
-    max_score = max((getattr(r, "score", 0.0) for r in retrieved), default=0.0)
-    if max_score < min_support:
+    # Evidence sufficiency check (Phase 1 Fix):
+    # Validates candidate score, technical identifier presence, equipment applicability, and grounded content.
+    is_sufficient, reason = check_evidence_sufficiency(question, asset, retrieved)
+    if not is_sufficient:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
 
     context_blocks = []
