@@ -230,6 +230,7 @@ def sync_document_to_chroma(document_id: int):
         metadatas = [{
             "document_id": int(doc.id),
             "tenant_id": int(doc.tenant_id),
+            "chunk_id": int(c.id),
             "chunk_index": int(c.chunk_index),
             "is_confidential": bool(doc.is_confidential),
             "customer_id": int(doc.customer_id) if doc.customer_id else 0,

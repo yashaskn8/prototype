@@ -46,9 +46,9 @@ class RetrievedChunk:
     reranker_score: float | None = None
     final_rank: int | None = None
     evidence_support: bool = False
-    source_verified: bool = True
-    equipment_applicable: bool = True
-    customer_action_authorized: bool = True
+    source_verified: bool = False
+    equipment_applicable: bool = False
+    customer_action_authorized: bool = False
 
     @property
     def reference(self):
@@ -135,19 +135,10 @@ def is_authorized_candidate(
             if not asset or doc.customer_id != getattr(asset, "customer_id", None):
                 return False
 
-    # 6. Asset & Equipment scoping
-    if asset:
-        # Document bound to a different asset is strictly rejected
-        if doc.asset_id is not None and doc.asset_id != asset.id:
-            return False
-        # Document bound to a different product is strictly rejected
-        if doc.product_id is not None:
-            if not asset.product_id or doc.product_id != asset.product_id:
-                return False
-    else:
-        # Unscoped query: only tenant-wide general documents allowed
-        if doc.asset_id is not None or doc.product_id is not None:
-            return False
+    # 6. Asset & Equipment scoping (canonical 5-level hierarchy)
+    from .knowledge_scope import is_chunk_applicable_to_asset
+    if not is_chunk_applicable_to_asset(chunk, asset):
+        return False
 
     # 7. Real company provenance verification
     from .customer_isolation import get_customer_data_mode, is_real_tenant, is_verified_real_document
@@ -204,20 +195,36 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
     elif not staff_mode:
         qs = qs.filter(document__customer__isnull=True)
 
-    if asset and asset.product:
-        product = asset.product
-        scope = (
-            Q(document__asset=asset)
-            | Q(document__asset__isnull=True, document__product=product)
-            | Q(document__asset__isnull=True, document__product__isnull=True)
+    if asset:
+        product = getattr(asset, "product", None)
+        category = getattr(product, "category", None) if product else None
+        domain = getattr(category, "domain", None) if category else None
+
+        scope = Q(document__asset=asset)
+        if product:
+            scope |= Q(document__asset__isnull=True, document__product=product)
+        if category:
+            scope |= Q(document__asset__isnull=True, document__product__isnull=True, document__category=category)
+        if domain:
+            scope |= Q(
+                document__asset__isnull=True,
+                document__product__isnull=True,
+            ) & (Q(document__domain=domain) | Q(document__category__domain=domain))
+        scope |= Q(
+            document__asset__isnull=True,
+            document__product__isnull=True,
+            document__category__isnull=True,
+            document__domain__isnull=True,
         )
-        qs = qs.filter(scope)
-    elif asset:
-        scope = Q(document__asset=asset) | Q(document__asset__isnull=True, document__product__isnull=True)
         qs = qs.filter(scope)
     else:
         # NO asset context: restrict strictly to unscoped/general fleet documents
-        scope = Q(document__asset__isnull=True, document__product__isnull=True)
+        scope = Q(
+            document__asset__isnull=True,
+            document__product__isnull=True,
+            document__category__isnull=True,
+            document__domain__isnull=True,
+        )
         qs = qs.filter(scope)
 
     # Pre-filter candidate list to those passing canonical authorization predicate
@@ -329,6 +336,7 @@ DOMAIN_TYPO_MAP = {
     "viberation": "vibration",
     "deflecton": "deflection",
     "compresser": "compressor",
+    "coyl": "coil",
 }
 
 
@@ -466,12 +474,21 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
         if final_score < min_score:
             continue
 
-        is_equip_applicable = (
-            (boost > 0.0)
-            or (asset is None)
-            or (d.asset_id == asset.id)
-            or (d.product_id is not None and asset.product_id == d.product_id)
-            or (d.asset_id is None and d.product_id is None)
+        from .knowledge_scope import is_chunk_applicable_to_asset
+        is_equip_applicable = is_chunk_applicable_to_asset(chunk, asset)
+
+        from .customer_isolation import is_real_tenant, is_verified_real_document
+        is_verified = (
+            is_verified_real_document(d, allow_failed=True)
+            if is_real_tenant(d.tenant)
+            else bool(d.is_rag_enabled and not d.is_confidential and d.checksum_sha256)
+        )
+        action_authorized = bool(
+            is_verified
+            and is_equip_applicable
+            and not d.is_confidential
+            and d.is_rag_enabled
+            and not getattr(chunk, "is_quarantined", False)
         )
 
         scored.append(RetrievedChunk(
@@ -491,8 +508,8 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
             exact_identifier_match=(id_boost > 0.0),
             applicable_equipment_context=(boost > 0.0),
             equipment_applicable=is_equip_applicable,
-            customer_action_authorized=not d.is_confidential,
-            source_verified=True,
+            customer_action_authorized=action_authorized,
+            source_verified=is_verified,
         ))
 
     scored.sort(key=lambda r: r.score, reverse=True)
@@ -619,12 +636,21 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 if final_score < min_score:
                     continue
 
-                is_equip_applicable = (
-                    (boost > 0.0)
-                    or (asset is None)
-                    or (d.asset_id == asset.id)
-                    or (d.product_id is not None and asset.product_id == d.product_id)
-                    or (d.asset_id is None and d.product_id is None)
+                from .knowledge_scope import is_chunk_applicable_to_asset
+                is_equip_applicable = is_chunk_applicable_to_asset(matched_chunk, asset)
+
+                from .customer_isolation import is_real_tenant, is_verified_real_document
+                is_verified = (
+                    is_verified_real_document(d, allow_failed=False)
+                    if is_real
+                    else bool(d.is_rag_enabled and not d.is_confidential and d.checksum_sha256)
+                )
+                action_authorized = bool(
+                    is_verified
+                    and is_equip_applicable
+                    and not d.is_confidential
+                    and d.is_rag_enabled
+                    and not getattr(matched_chunk, "is_quarantined", False)
                 )
 
                 scored.append(RetrievedChunk(
@@ -645,8 +671,8 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     exact_identifier_match=(id_boost > 0.0),
                     applicable_equipment_context=(boost > 0.0),
                     equipment_applicable=is_equip_applicable,
-                    customer_action_authorized=not d.is_confidential,
-                    source_verified=True,
+                    customer_action_authorized=action_authorized,
+                    source_verified=is_verified,
                 ))
 
         scored.sort(key=lambda r: r.score, reverse=True)

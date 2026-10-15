@@ -18,12 +18,23 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from core.ml.benchmark_registry import (
+    load_and_verify_benchmark,
+    get_evaluation_provenance_metadata,
+    DEFAULT_BENCHMARK_ID,
+    REGISTERED_BENCHMARKS,
+    ROLE_INDEPENDENT_HOLDOUT,
+    ROLE_SOFTWARE_REGRESSION_FIXTURE,
+    BenchmarkIntegrityError,
+)
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-CANDIDATE_PATHS = [
-    BASE_DIR / "private_training_data" / "frozen_independent_holdout_benchmark.jsonl",
-    BASE_DIR / "sample_data" / "frozen_independent_holdout_benchmark.jsonl",
-]
-BENCHMARK_PATH = next((p for p in CANDIDATE_PATHS if p.exists()), CANDIDATE_PATHS[0])
+# Explicit path to the canonical independent holdout benchmark
+BENCHMARK_PATH = REGISTERED_BENCHMARKS["servy-real-holdout-v1"].file_path
+# If private_training_data does not exist, point to regression fixture path
+if not BENCHMARK_PATH.exists():
+    BENCHMARK_PATH = REGISTERED_BENCHMARKS["servy-ci-regression-fixture-v1"].file_path
+
 MANIFEST_PATH = BASE_DIR / "ml_artifacts" / "benchmark_accounting_manifest.json"
 
 ROLE_RELEVANCE = "RELEVANCE_EVALUATION"
@@ -48,10 +59,13 @@ CATEGORY_TO_PRIMARY_ROLE = {
 }
 
 
-def build_manifest() -> Dict[str, Any]:
-    """Parse the raw frozen benchmark and construct the complete accounting manifest."""
-    with open(BENCHMARK_PATH, "r", encoding="utf-8") as f:
-        raw_rows = [json.loads(line) for line in f if line.strip()]
+def build_manifest(dataset_id: Optional[str] = None) -> Dict[str, Any]:
+    """Load verified benchmark from the registry and construct the complete accounting manifest."""
+    if dataset_id is None:
+        dataset_id = "servy-real-holdout-v1" if (BASE_DIR / "private_training_data" / "frozen_independent_holdout_benchmark.jsonl").exists() else "servy-ci-regression-fixture-v1"
+
+    verified = load_and_verify_benchmark(dataset_id)
+    raw_rows = verified["cases"]
 
     cases = []
     category_counts = {}
@@ -89,7 +103,14 @@ def build_manifest() -> Dict[str, Any]:
         tenant_counts[tid] = tenant_counts.get(tid, 0) + 1
 
     manifest = {
-        "manifest_version": "10.0-audited",
+        "manifest_version": "12.0-audited",
+        "dataset_id": verified["dataset_id"],
+        "dataset_role": verified["dataset_role"],
+        "population_name": verified["population_name"],
+        "sha256_digest": verified["sha256_digest"],
+        "source_file": verified["source_file"],
+        "scorable_count": len(cases),
+        "unscorable_count": 0,
         "total_benchmark_cases": len(cases),
         "primary_denominators": {
             "relevance_queries": role_counts[ROLE_RELEVANCE],

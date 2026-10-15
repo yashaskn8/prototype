@@ -69,12 +69,14 @@ def is_authorized_safety_approver(reviewer_identity: str, tenant_id: Optional[in
         if ident_lower == auth.strip().lower():
             return True
 
-    # Check against database User model (must be active staff/superuser, not a generic account)
+    # Check against database User model:
+    # Requires explicit permission ("core.can_approve_industrial_safety") or superuser.
+    # Generic staff accounts without explicit safety authority are strictly rejected.
     try:
         from django.contrib.auth import get_user_model
         User = get_user_model()
         user = User.objects.filter(username=ident, is_active=True).first()
-        if user and (user.is_staff or user.is_superuser):
+        if user and (user.is_superuser or user.has_perm("core.can_approve_industrial_safety")):
             # Verify user has not been flagged as training-only
             if not any(k in user.username.lower() for k in PROHIBITED_REVIEWER_KEYWORDS):
                 return True

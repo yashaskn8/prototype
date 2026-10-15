@@ -248,9 +248,9 @@ def evaluate_track_a_dense(
             if has_wrong_mod: wrong_model_queries += 1
             if has_wrong_ast: wrong_asset_queries += 1
 
-            if cat not in category_records:
-                category_records[cat] = []
-            category_records[cat].append(rec)
+        if cat not in category_records:
+            category_records[cat] = []
+        category_records[cat].append(rec)
 
     current_mem, peak_mem = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -284,13 +284,21 @@ def evaluate_track_a_dense(
     cat_breakdown = {}
     for cat, recs in category_records.items():
         cat_metrics = compute_metrics(recs)
-        cat_breakdown[cat] = {
+        n_rel = sum(1 for r in recs if not r.get("is_unsupported"))
+        n_abs = sum(1 for r in recs if r.get("is_unsupported"))
+        entry = {
             "n_queries": len(recs),
+            "n_relevance": n_rel,
+            "n_abstention": n_abs,
             "hit@1": cat_metrics.get("hit@1"),
             "hit@5": cat_metrics.get("hit@5"),
+            "hit@10": cat_metrics.get("hit@10"),
             "mrr@10": cat_metrics.get("mrr@10"),
             "ndcg@10": cat_metrics.get("ndcg@10"),
         }
+        if "abstention_accuracy" in cat_metrics:
+            entry["abstention_accuracy"] = cat_metrics["abstention_accuracy"]
+        cat_breakdown[cat] = entry
     overall["category_breakdown"] = cat_breakdown
     return overall
 
@@ -360,6 +368,7 @@ def evaluate_track_b_serving(
             question=q_text,
             asset=asset,
             customer=None,
+            top_k=k_max,
             include_confidential=False,
             staff_mode=False,
         )
@@ -375,10 +384,11 @@ def evaluate_track_b_serving(
         evidence_supported = is_direct
 
         ranked_cids = [rc.chunk_id for rc in retrieved_chunks if rc.chunk_id]
+        serving_ranked_cids = ranked_cids if (is_direct or not is_abstain) else []
 
         rec = {
             "query_id": qid,
-            "ranked_chunk_ids": ranked_cids,
+            "ranked_chunk_ids": serving_ranked_cids,
             "relevant_chunk_ids": list(rel_ids),
             "latency_ms": latency_ms,
             "is_unsupported": is_abstain,
@@ -430,9 +440,9 @@ def evaluate_track_b_serving(
             if has_wrong_citation: wrong_citation_queries += 1
             if has_wrong_action: wrong_action_queries += 1
 
-            if cat not in category_records:
-                category_records[cat] = []
-            category_records[cat].append(rec)
+        if cat not in category_records:
+            category_records[cat] = []
+        category_records[cat].append(rec)
 
         # Build comprehensive per-query record
         pq_row = {
@@ -510,13 +520,21 @@ def evaluate_track_b_serving(
     cat_breakdown = {}
     for cat, recs in category_records.items():
         cat_metrics = compute_metrics(recs)
-        cat_breakdown[cat] = {
+        n_rel = sum(1 for r in recs if not r.get("is_unsupported"))
+        n_abs = sum(1 for r in recs if r.get("is_unsupported"))
+        entry = {
             "n_queries": len(recs),
+            "n_relevance": n_rel,
+            "n_abstention": n_abs,
             "hit@1": cat_metrics.get("hit@1"),
             "hit@5": cat_metrics.get("hit@5"),
+            "hit@10": cat_metrics.get("hit@10"),
             "mrr@10": cat_metrics.get("mrr@10"),
             "ndcg@10": cat_metrics.get("ndcg@10"),
         }
+        if "abstention_accuracy" in cat_metrics:
+            entry["abstention_accuracy"] = cat_metrics["abstention_accuracy"]
+        cat_breakdown[cat] = entry
     overall["category_breakdown"] = cat_breakdown
 
     if per_query_output_path:
@@ -530,9 +548,13 @@ def evaluate_track_b_serving(
 
 def main():
     print("=" * 115)
-    print("SERVY RAG OPERATION 11.0: COMPREHENSIVE TWO-TRACK EVALUATION")
+    print("SERVY RAG OPERATION 12.0: COMPREHENSIVE TWO-TRACK EVALUATION")
     print("TRACK A: EMBEDDING-ONLY RESEARCH | TRACK B: FULL CUSTOMER SERVING")
     print("=" * 115)
+
+    from core.ml.benchmark_registry import load_and_verify_benchmark, get_evaluation_provenance_metadata
+    manifest_meta = load_and_verify_benchmark()
+    print(f"Verified immutable benchmark SHA-256: {manifest_meta['sha256_digest']}")
 
     manifest = load_manifest()
     cases = manifest["cases"]
@@ -590,6 +612,9 @@ def main():
         "corrected_hybrid", cases, chunk_meta, k_max=10, per_query_output_path=pq_path
     )
     print(f"  Hit@1: {results['track_b_corrected_hybrid']['hit@1']} | Hit@5: {results['track_b_corrected_hybrid']['hit@5']} | MRR@10: {results['track_b_corrected_hybrid']['mrr@10']}")
+
+    # Add evaluation provenance metadata
+    results["evaluation_provenance"] = get_evaluation_provenance_metadata()
 
     # Save full report
     report_path = BASE_DIR / "ml_artifacts" / "benchmark_evaluation_report.json"

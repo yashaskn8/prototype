@@ -512,23 +512,26 @@ def find_grounding_reference(
         if not doc.is_rag_enabled or doc.is_confidential or getattr(doc, "disable_sharing", False):
             continue
         if doc.index_status not in ("INDEXED", "INDEXING"):
-            continue
+            if doc.index_status == "FAILED":
+                # Sparse fallback consistency: check if chunk has verified text or embedding content
+                if not (chunk.text or chunk.content_embedding or chunk.embedding):
+                    continue
+            else:
+                continue
 
         # Customer isolation
         if doc.customer_id and customer and doc.customer_id != customer.id:
             continue
 
-        # Asset and product hierarchy applicability
-        if asset:
-            if doc.asset_id and doc.asset_id != asset.id:
-                continue
-            if doc.product_id and asset.product_id and doc.product_id != asset.product_id:
-                continue
+        # Asset and equipment hierarchy applicability (canonical 5-level hierarchy)
+        from core.services.knowledge_scope import is_document_applicable_to_asset
+        if not is_document_applicable_to_asset(doc, asset):
+            continue
 
         # Real-only provenance verification
         from .customer_isolation import get_customer_data_mode, is_verified_real_document
         if get_customer_data_mode() == "verified_real_only":
-            if not is_verified_real_document(doc):
+            if not is_verified_real_document(doc, allow_failed=True):
                 continue
 
         # Check prompt injection on the persisted chunk text
