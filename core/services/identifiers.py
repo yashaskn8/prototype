@@ -8,7 +8,7 @@ when an identifier is not found in authorized sources.
 """
 
 import re
-from typing import Set
+from typing import Set, Tuple
 
 # Unicode dashes: ASCII hyphen, figure dash, en-dash, em-dash, horizontal bar, minus sign
 DASH_CHARS = r"[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212]"
@@ -98,18 +98,43 @@ def extract_document_ids(text: str) -> Set[int]:
     return doc_ids
 
 
+def extract_all_technical_identifiers(text: str) -> Set[str]:
+    """Extract all technical identifiers (error codes, part numbers, alphanumeric IDs)."""
+    text = (text or "").strip()
+    if not text:
+        return set()
+    return extract_error_codes(text) | extract_part_numbers(text) | extract_identifiers(text)
+
+
+def match_canonical_identifiers(query_identifiers: Set[str], candidate_text: str) -> Tuple[Set[str], Set[str]]:
+    """Match query technical identifiers canonically against candidate text with token boundaries.
+
+    Returns (matched_identifiers, missing_identifiers).
+    """
+    if not query_identifiers:
+        return set(), set()
+    candidate_ids = extract_all_technical_identifiers(candidate_text)
+    # Compare on a dash-insensitive canonical key so "E-04" == "E04" but "E04" != "E040".
+    def _key(s: str) -> str:
+        return re.sub(DASH_CHARS, "", s).upper()
+    cand_keys = {_key(c) for c in candidate_ids}
+    matched = {q for q in query_identifiers if _key(q) in cand_keys}
+    missing = set(query_identifiers) - matched
+    return matched, missing
+
+
 def query_identifiers_not_in_sources(query: str, source_texts: list) -> Set[str]:
     """Find identifiers in the query that do not appear in any source text.
 
     Uses exact canonical set difference instead of naive substring matching,
     preventing prefix collisions and Unicode dash mismatches.
     """
-    query_ids = extract_error_codes(query)
+    query_ids = extract_all_technical_identifiers(query)
     if not query_ids:
         return set()
 
     source_codes = set()
     for text in source_texts:
         if text:
-            source_codes.update(extract_error_codes(text))
+            source_codes.update(extract_all_technical_identifiers(text))
     return query_ids - source_codes

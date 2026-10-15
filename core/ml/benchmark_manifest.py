@@ -130,12 +130,44 @@ def build_manifest(dataset_id: Optional[str] = None) -> Dict[str, Any]:
     return manifest
 
 
-def load_manifest() -> Dict[str, Any]:
-    """Load cached manifest or build if not present."""
+def load_manifest(dataset_id: Optional[str] = None) -> Dict[str, Any]:
+    """Load cached manifest or build if not present.
+
+    Verifies the cached manifest's sha256_digest matches the actual benchmark
+    file on disk. Rebuilds automatically if the digest is stale or missing.
+    """
     if not MANIFEST_PATH.exists():
-        return build_manifest()
+        return build_manifest(dataset_id)
     with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        manifest = json.load(f)
+
+    # Verify digest against actual benchmark file
+    cached_digest = manifest.get("sha256_digest", "")
+    cached_dataset_id = manifest.get("dataset_id", "")
+    if dataset_id and cached_dataset_id != dataset_id:
+        logger.warning(
+            "Manifest dataset_id mismatch: cached '%s' vs requested '%s'. Rebuilding.",
+            cached_dataset_id, dataset_id,
+        )
+        return build_manifest(dataset_id)
+
+    if cached_digest:
+        import hashlib
+        source_file = manifest.get("source_file", "")
+        source_path = Path(source_file) if source_file else None
+        if source_path and source_path.exists():
+            actual_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            if actual_digest != cached_digest:
+                logger.warning(
+                    "Manifest sha256 mismatch: cached '%s' vs actual '%s'. Rebuilding.",
+                    cached_digest[:16], actual_digest[:16],
+                )
+                return build_manifest(dataset_id or cached_dataset_id)
+        elif source_path and not source_path.exists():
+            logger.warning("Manifest source file '%s' no longer exists. Rebuilding.", source_file)
+            return build_manifest(dataset_id)
+
+    return manifest
 
 
 def resolve_query_asset(tenant_id: int, equip_name: str) -> Optional[Any]:

@@ -124,6 +124,8 @@ def evaluate_track_a_dense(
     models = {}
     collections = {}
 
+    # Track model load failures explicitly instead of silently skipping
+    model_load_failures = {}  # tid -> error message
     for tid, t in tenants.items():
         pkey = _resolve_profile_for_tenant(model_family, t)
         if pkey:
@@ -132,8 +134,8 @@ def evaluate_track_a_dense(
                 profiles[tid] = p
                 models[tid] = load_model(p)
                 collections[tid] = get_collection(p, create=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                model_load_failures[tid] = f"MODEL_LOAD_FAILED: {pkey}: {exc}"
 
     load_time_ms = (time.perf_counter() - t0_start) * 1000
 
@@ -164,9 +166,10 @@ def evaluate_track_a_dense(
             continue
 
         if tid not in profiles:
+            reason = model_load_failures.get(tid, f"Model {model_family} not supported for tenant {tid} (separated population)")
             unscorable_cases.append({
                 "query_id": qid,
-                "reason": f"Model {model_family} not supported for tenant {tid} (separated population)",
+                "reason": reason,
             })
             continue
 
@@ -324,158 +327,159 @@ def evaluate_track_b_serving(
 
     orig_exp = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
     orig_gate = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.38)
-
-    if pipeline_mode in ("experimental_bge", "bge"):
-        setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", True)
-    elif pipeline_mode in ("threshold_ablation_gate_055", "production_baseline"):
-        setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-        import core.services.retriever as rm
-        rm.DENSE_RELEVANCE_GATE = 0.55  # Ablation gate: 0.55 threshold
-    elif pipeline_mode in ("calibrated_hybrid_gate_038", "corrected_hybrid"):
-        setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-        import core.services.retriever as rm
-        rm.DENSE_RELEVANCE_GATE = 0.38  # Calibrated gate: 0.38 threshold
-    else:
-        raise ValueError(f"Unknown mode {pipeline_mode}")
-
-    tenants = {t.id: t for t in Tenant.objects.all()}
-    load_time_ms = (time.perf_counter() - t0_start) * 1000
-
-    eval_records = []
-    category_records = {}
-    per_query_rows = []
-
-    unauthorized_tenant_queries = 0
-    unauthorized_customer_queries = 0
-    wrong_product_queries = 0
-    wrong_model_queries = 0
-    wrong_asset_queries = 0
-    wrong_citation_queries = 0
-    wrong_action_queries = 0
-    total_supported = 0
-
-    for c in cases:
-        qid = c["query_id"]
-        q_text = c["query_text"]
-        tid = c["tenant_id"]
-        cat = c["category"]
-        is_abstain = c["expected_abstain"]
-        rel_ids = set(c["positive_chunk_ids"])
-        equip_name = c["equipment"]
-
-        tenant = tenants.get(tid)
-        asset = resolve_query_asset(tid, equip_name)
-
-        t0_q = time.perf_counter()
-        rag_res = ask_rag(
-            tenant=tenant,
-            question=q_text,
-            asset=asset,
-            customer=None,
-            top_k=k_max,
-            include_confidential=False,
-            staff_mode=False,
-        )
-        latency_ms = (time.perf_counter() - t0_q) * 1000
-
-        retrieved_chunks = rag_res.get("retrieved", [])
-        answer_text = rag_res.get("answer", "")
-        engine = rag_res.get("engine", "")
-        references = rag_res.get("references", [])
-
-        is_direct = bool(engine != "policy-guard" and answer_text != INSUFFICIENT_EVIDENCE_MESSAGE)
-        answer_mode = "DIRECT_ANSWER" if is_direct else "ABSTAIN"
-        evidence_supported = is_direct
-
-        ranked_cids = [rc.chunk_id for rc in retrieved_chunks if rc.chunk_id]
-        # Strictly derived from system direct/abstain response; ZERO label leakage
-        serving_ranked_cids = ranked_cids if is_direct else []
-
-        rec = {
-            "query_id": qid,
-            "ranked_chunk_ids": serving_ranked_cids,
-            "relevant_chunk_ids": list(rel_ids),
-            "latency_ms": latency_ms,
-            "is_unsupported": is_abstain,
-        }
-        eval_records.append(rec)
-
-        # Per-query diagnostic accounting
-        first_rel_rank = None
-        for i, cid in enumerate(ranked_cids, 1):
-            if cid in rel_ids:
-                first_rel_rank = i
-                break
-
-        top_chunk = retrieved_chunks[0] if retrieved_chunks else None
-        cited_cids = [ref.get("chunk_id") for ref in references if ref.get("chunk_id")]
-
-        has_unauth_tenant = False
-        has_unauth_cust = False
-        has_wrong_prod = False
-        has_wrong_mod = False
-        has_wrong_ast = False
-        has_wrong_citation = False
-        has_wrong_action = False
-
-        for cid in ranked_cids:
-            meta = chunk_meta.get(cid, {})
-            b = check_chunk_boundaries(meta, tid, customer=None, asset=asset)
-            if b["unauthorized_tenant"]: has_unauth_tenant = True
-            if b["unauthorized_customer"]: has_unauth_cust = True
-            if b["wrong_product"]: has_wrong_prod = True
-            if b["wrong_model"]: has_wrong_mod = True
-            if b["wrong_asset"]: has_wrong_ast = True
-
-        for ccid in cited_cids:
-            meta = chunk_meta.get(ccid, {})
-            b = check_chunk_boundaries(meta, tid, customer=None, asset=asset)
-            if b["unauthorized_tenant"] or b["wrong_product"] or b["wrong_asset"]:
-                has_wrong_citation = True
-                if is_direct:
-                    has_wrong_action = True
-
-        if not is_abstain:
-            total_supported += 1
-            if has_unauth_tenant: unauthorized_tenant_queries += 1
-            if has_unauth_cust: unauthorized_customer_queries += 1
-            if has_wrong_prod: wrong_product_queries += 1
-            if has_wrong_mod: wrong_model_queries += 1
-            if has_wrong_ast: wrong_asset_queries += 1
-            if has_wrong_citation: wrong_citation_queries += 1
-            if has_wrong_action: wrong_action_queries += 1
-
-        if cat not in category_records:
-            category_records[cat] = []
-        category_records[cat].append(rec)
-
-        # Build comprehensive per-query record
-        pq_row = {
-            "query_id": qid,
-            "tenant_id": tid,
-            "category": cat,
-            "primary_evaluation_role": c.get("primary_evaluation_role"),
-            "equipment": equip_name,
-            "expected_abstain": is_abstain,
-            "positive_chunk_ids": list(rel_ids),
-            "retrieved_chunk_ids": ranked_cids[:5],
-            "first_relevant_rank": first_rel_rank,
-            "top_score": round(top_chunk.score, 4) if top_chunk else None,
-            "top_fusion_score": round(top_chunk.fusion_score, 6) if top_chunk and top_chunk.fusion_score else None,
-            "top_dense_sim": round(top_chunk.dense_similarity, 4) if top_chunk and top_chunk.dense_similarity else None,
-            "top_sparse_rel": round(top_chunk.sparse_relevance, 4) if top_chunk and top_chunk.sparse_relevance else None,
-            "answer_mode": answer_mode,
-            "evidence_support": evidence_supported,
-            "cited_chunk_ids": cited_cids,
-            "passed_relevance": bool(first_rel_rank == 1) if not is_abstain else None,
-            "passed_abstention": bool(len(ranked_cids) == 0 or not evidence_supported) if is_abstain else None,
-        }
-        per_query_rows.append(pq_row)
-
-    # Restore settings
-    setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", orig_exp)
     import core.services.retriever as rm
-    rm.DENSE_RELEVANCE_GATE = orig_gate
+    orig_rm_gate = getattr(rm, "DENSE_RELEVANCE_GATE", 0.38)
+
+    try:
+        if pipeline_mode in ("experimental_bge", "bge"):
+            setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", True)
+        elif pipeline_mode in ("threshold_ablation_gate_055", "production_baseline"):
+            setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
+            rm.DENSE_RELEVANCE_GATE = 0.55  # Ablation gate: 0.55 threshold
+        elif pipeline_mode in ("calibrated_hybrid_gate_038", "corrected_hybrid"):
+            setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
+            rm.DENSE_RELEVANCE_GATE = 0.38  # Calibrated gate: 0.38 threshold
+        else:
+            raise ValueError(f"Unknown mode {pipeline_mode}")
+
+        tenants = {t.id: t for t in Tenant.objects.all()}
+        load_time_ms = (time.perf_counter() - t0_start) * 1000
+
+        eval_records = []
+        category_records = {}
+        per_query_rows = []
+
+        unauthorized_tenant_queries = 0
+        unauthorized_customer_queries = 0
+        wrong_product_queries = 0
+        wrong_model_queries = 0
+        wrong_asset_queries = 0
+        wrong_citation_queries = 0
+        wrong_action_queries = 0
+        total_supported = 0
+
+        for c in cases:
+            qid = c["query_id"]
+            q_text = c["query_text"]
+            tid = c["tenant_id"]
+            cat = c["category"]
+            is_abstain = c["expected_abstain"]
+            rel_ids = set(c["positive_chunk_ids"])
+            equip_name = c["equipment"]
+
+            tenant = tenants.get(tid)
+            asset = resolve_query_asset(tid, equip_name)
+
+            t0_q = time.perf_counter()
+            rag_res = ask_rag(
+                tenant=tenant,
+                question=q_text,
+                asset=asset,
+                customer=None,
+                top_k=k_max,
+                include_confidential=False,
+                staff_mode=False,
+            )
+            latency_ms = (time.perf_counter() - t0_q) * 1000
+
+            retrieved_chunks = rag_res.get("retrieved", [])
+            answer_text = rag_res.get("answer", "")
+            engine = rag_res.get("engine", "")
+            references = rag_res.get("references", [])
+
+            is_direct = bool(engine != "policy-guard" and answer_text != INSUFFICIENT_EVIDENCE_MESSAGE)
+            answer_mode = "DIRECT_ANSWER" if is_direct else "ABSTAIN"
+            evidence_supported = is_direct
+
+            ranked_cids = [rc.chunk_id for rc in retrieved_chunks if rc.chunk_id]
+            # Strictly derived from system direct/abstain response; ZERO label leakage
+            serving_ranked_cids = ranked_cids if is_direct else []
+
+            rec = {
+                "query_id": qid,
+                "ranked_chunk_ids": serving_ranked_cids,
+                "relevant_chunk_ids": list(rel_ids),
+                "latency_ms": latency_ms,
+                "is_unsupported": is_abstain,
+            }
+            eval_records.append(rec)
+
+            # Per-query diagnostic accounting
+            first_rel_rank = None
+            for i, cid in enumerate(ranked_cids, 1):
+                if cid in rel_ids:
+                    first_rel_rank = i
+                    break
+
+            top_chunk = retrieved_chunks[0] if retrieved_chunks else None
+            cited_cids = [ref.get("chunk_id") for ref in references if ref.get("chunk_id")]
+
+            has_unauth_tenant = False
+            has_unauth_cust = False
+            has_wrong_prod = False
+            has_wrong_mod = False
+            has_wrong_ast = False
+            has_wrong_citation = False
+            has_wrong_action = False
+
+            for cid in ranked_cids:
+                meta = chunk_meta.get(cid, {})
+                b = check_chunk_boundaries(meta, tid, customer=None, asset=asset)
+                if b["unauthorized_tenant"]: has_unauth_tenant = True
+                if b["unauthorized_customer"]: has_unauth_cust = True
+                if b["wrong_product"]: has_wrong_prod = True
+                if b["wrong_model"]: has_wrong_mod = True
+                if b["wrong_asset"]: has_wrong_ast = True
+
+            for ccid in cited_cids:
+                meta = chunk_meta.get(ccid, {})
+                b = check_chunk_boundaries(meta, tid, customer=None, asset=asset)
+                if b["unauthorized_tenant"] or b["wrong_product"] or b["wrong_asset"]:
+                    has_wrong_citation = True
+                    if is_direct:
+                        has_wrong_action = True
+
+            if not is_abstain:
+                total_supported += 1
+                if has_unauth_tenant: unauthorized_tenant_queries += 1
+                if has_unauth_cust: unauthorized_customer_queries += 1
+                if has_wrong_prod: wrong_product_queries += 1
+                if has_wrong_mod: wrong_model_queries += 1
+                if has_wrong_ast: wrong_asset_queries += 1
+                if has_wrong_citation: wrong_citation_queries += 1
+                if has_wrong_action: wrong_action_queries += 1
+
+            if cat not in category_records:
+                category_records[cat] = []
+            category_records[cat].append(rec)
+
+            # Build comprehensive per-query record
+            pq_row = {
+                "query_id": qid,
+                "tenant_id": tid,
+                "category": cat,
+                "primary_evaluation_role": c.get("primary_evaluation_role"),
+                "equipment": equip_name,
+                "expected_abstain": is_abstain,
+                "positive_chunk_ids": list(rel_ids),
+                "retrieved_chunk_ids": ranked_cids[:5],
+                "first_relevant_rank": first_rel_rank,
+                "top_score": round(top_chunk.score, 4) if top_chunk else None,
+                "top_fusion_score": round(top_chunk.fusion_score, 6) if top_chunk and top_chunk.fusion_score else None,
+                "top_dense_sim": round(top_chunk.dense_similarity, 4) if top_chunk and top_chunk.dense_similarity else None,
+                "top_sparse_rel": round(top_chunk.sparse_relevance, 4) if top_chunk and top_chunk.sparse_relevance else None,
+                "answer_mode": answer_mode,
+                "evidence_support": evidence_supported,
+                "cited_chunk_ids": cited_cids,
+                "passed_relevance": bool(first_rel_rank == 1) if not is_abstain else None,
+                "passed_abstention": bool(len(ranked_cids) == 0 or not evidence_supported) if is_abstain else None,
+            }
+            per_query_rows.append(pq_row)
+
+    finally:
+        # Exception-safe restoration: always restore process-global settings
+        setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", orig_exp)
+        rm.DENSE_RELEVANCE_GATE = orig_rm_gate
 
     current_mem, peak_mem = tracemalloc.get_traced_memory()
     tracemalloc.stop()

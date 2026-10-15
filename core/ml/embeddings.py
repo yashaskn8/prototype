@@ -10,6 +10,7 @@ so current production behaviour and data are untouched.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,6 +153,29 @@ INDEX_SCHEMA_VERSION = "2.0"
 PASSAGE_FORMAT_VERSION = "heading_body_v1"
 
 
+def compute_checkpoint_fingerprint(checkpoint_path: str, *, short: bool = True) -> str:
+    """Compute a content-based SHA-256 fingerprint of an entire checkpoint directory.
+
+    Hashes every regular file's relative path and bytes in sorted order, producing
+    a deterministic digest that changes when any model weight, config, or tokenizer
+    file changes. If the path does not exist, returns the empty string.
+    """
+    p = Path(checkpoint_path)
+    if not p.exists():
+        return ""
+    h = hashlib.sha256()
+    if p.is_file():
+        h.update(p.name.encode())
+        h.update(p.read_bytes())
+    else:
+        for f in sorted(p.rglob("*")):
+            if f.is_file():
+                h.update(str(f.relative_to(p)).encode())
+                h.update(f.read_bytes())
+    digest = h.hexdigest()
+    return digest[:16] if short else digest
+
+
 @dataclass(frozen=True)
 class IndexManifest:
     model_id: str
@@ -179,9 +203,15 @@ class IndexManifest:
 def get_collection(profile: EmbeddingProfile, create: bool = True):
     """Return the profile's collection; refuse to reuse a collection stamped by another model
     or having an incompatible manifest (revision, dimension, query_prefix, passage_format)."""
-    import hashlib
     from core.services.chroma_store import get_chroma_client
     client = get_chroma_client()
+
+    # Compute real content-based fingerprint for local checkpoints
+    if profile.local_path:
+        cp_fp = compute_checkpoint_fingerprint(profile.local_path)
+    else:
+        cp_fp = profile.revision or ""
+
     manifest = IndexManifest(
         model_id=profile.model_id,
         revision=profile.revision or "",
@@ -190,7 +220,7 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
         query_prefix=profile.query_prefix or "",
         passage_format_version=PASSAGE_FORMAT_VERSION if profile.content_first else "legacy_metadata_v0",
         index_schema_version=INDEX_SCHEMA_VERSION,
-        checkpoint_fingerprint=profile.revision or (hashlib.sha256(profile.local_path.encode()).hexdigest()[:16] if profile.local_path else ""),
+        checkpoint_fingerprint=cp_fp,
     )
     meta = manifest.to_metadata()
     if create:

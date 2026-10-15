@@ -149,7 +149,14 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
 
     # 2. Exact Identifier / Error Code Check:
     if q_codes:
-        matching_codes = [c for c in q_codes if c.lower() in chunk_text]
+        from core.services.identifiers import extract_all_technical_identifiers, match_canonical_identifiers
+        canon_q = set()
+        for c in q_codes:
+            canon_q |= (extract_all_technical_identifiers(str(c)) or {str(c).upper()})
+        matched, missing = match_canonical_identifiers(canon_q, chunk_text)
+        matching_codes = sorted(matched)
+        if matching_codes and missing:
+            return False, f"PARTIAL_IDENTIFIER_MATCH: missing {', '.join(sorted(missing))}"
         if matching_codes:
             # Substantive claim check: if query has 3+ content terms, at least 1 must also be in chunk
             if len(terms) >= 3:

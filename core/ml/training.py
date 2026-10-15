@@ -72,7 +72,11 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         train_rows = res_train["verified_examples"]
         if val_rows:
             res_val = resolve_provenance_verified_examples(val_rows, require_approved=False)
+            if res_val["rejected"]:
+                raise ValueError(f"Validation data provenance validation failed: {res_val['rejected']}")
             val_rows = res_val["verified_examples"]
+            if not val_rows:
+                raise ValueError("Validation rows were provided but all were rejected during provenance verification.")
     else:
         from .labels import resolve_provenance_verified_examples
         res_train = resolve_provenance_verified_examples(train_rows, require_approved=True)
@@ -81,7 +85,11 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         train_rows = res_train["verified_examples"]
         if val_rows:
             res_val = resolve_provenance_verified_examples(val_rows, require_approved=True)
+            if res_val["rejected"]:
+                raise ValueError(f"Validation data provenance validation failed: {res_val['rejected']}")
             val_rows = res_val["verified_examples"]
+            if not val_rows:
+                raise ValueError("Validation rows were provided but all were rejected during provenance verification.")
 
     if not train_rows:
         raise ValueError("No training rows: BLOCKED — VALID TRAINING DATA REQUIRED.")
@@ -179,6 +187,10 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     report = {
         "kind": kind,
         "supervision_mode": supervision,
+        "training_completed": True,
+        "reload_succeeded": True,
+        "evaluation_ran": bool(val_rows),
+        "promotion_approved": False,
         "promotion_eligible": promo,
         "training_status": status,
         "optimizer_steps": int(result.global_step),
@@ -186,7 +198,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         "epochs": epochs,
         "n_train": len(train_rows),
         "n_val": len(val_rows or []),
-        "hard_negatives": has_neg,
+        "hard_negatives": has_full_verified_negatives,
+        "hard_negatives_count": len([r for r in train_triplets if r.get("negative_text")]),
+        "verified_negatives_mode": "triplet_verified_negatives" if has_full_verified_negatives else "pair_inbatch_negatives",
         "seed": seed,
         "lr": lr,
         "batch_size": batch_size,
@@ -196,5 +210,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         "reload_dim": int(vec.shape[1]),
         "seconds": round(time.time() - t, 1),
     }
-    (out_dir / "run_report.json").write_text(json.dumps(report, indent=2))
+    # Atomic report writing
+    report_file = out_dir / "run_report.json"
+    temp_report = out_dir / "run_report.json.tmp"
+    temp_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    temp_report.replace(report_file)
     return report

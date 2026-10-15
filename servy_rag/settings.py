@@ -3,12 +3,15 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load environment variables from .env if present (supporting both project root and workspace root)
+# Load environment variables from .env if present (supporting both project root and workspace root).
+# IMPORTANT: override=False ensures explicit process-level environment variables
+# (e.g. SERVY_DB_ENGINE=sqlite3 set in the shell) are NEVER silently overwritten
+# by values from .env files. This is critical for local test isolation.
 for _env_candidate in [BASE_DIR.parent / ".env", BASE_DIR / ".env"]:
     if _env_candidate.is_file():
         try:
             from dotenv import load_dotenv
-            load_dotenv(_env_candidate, override=True)
+            load_dotenv(_env_candidate, override=False)
         except Exception:
             try:
                 with open(_env_candidate, "r", encoding="utf-8") as _f:
@@ -16,7 +19,8 @@ for _env_candidate in [BASE_DIR.parent / ".env", BASE_DIR / ".env"]:
                         _line = _line.strip()
                         if _line and not _line.startswith("#") and "=" in _line:
                             _k, _v = _line.split("=", 1)
-                            os.environ[_k.strip()] = _v.strip().strip("'\"")
+                            # Only set if not already defined in process environment
+                            os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
             except Exception:
                 pass
 

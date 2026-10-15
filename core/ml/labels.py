@@ -219,6 +219,10 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
             raw_neg = [r.get("negative_chunk_id")]
         neg_ids = raw_neg or []
         neg_chunks = [chunks.get(nid) for nid in neg_ids if chunks.get(nid)]
+        if len(neg_chunks) != len(neg_ids):
+            missing_nids = [nid for nid in neg_ids if nid not in chunks]
+            rejected.append((qid, f"negative chunk(s) {missing_nids} not found in database"))
+            continue
         
         pos_texts = [pc.text for pc in pos_chunks]
         neg_texts = [nc.text for nc in neg_chunks]
