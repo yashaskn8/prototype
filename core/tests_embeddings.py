@@ -193,6 +193,33 @@ class LabelValidationTests(TestCase):
         self.assertEqual(ex["positive_text"], self.c1.text)
         self.assertEqual(ex["negative_text"], self.c1b.text)
 
+    def test_multi_positive_and_multi_negative_preservation(self):
+        from core.ml.labels import resolve_provenance_verified_examples, expand_training_triplets
+        c1c = KnowledgeChunk.objects.create(tenant=self.t1, document=self.c1.document, chunk_index=3, text="chunk c", embedding={})
+        c1d = KnowledgeChunk.objects.create(tenant=self.t1, document=self.c1.document, chunk_index=4, text="chunk d", embedding={})
+        
+        row = self._row(
+            positive_chunk_ids=[self.c1.id, c1c.id],
+            negative_chunk_ids=[self.c1b.id, c1d.id],
+        )
+        resolved = resolve_provenance_verified_examples([row], require_approved=True)
+        self.assertEqual(len(resolved["verified_examples"]), 1)
+        ex = resolved["verified_examples"][0]
+        self.assertEqual(len(ex["positive_chunk_ids"]), 2)
+        self.assertEqual(len(ex["positive_texts"]), 2)
+        self.assertEqual(len(ex["negative_chunk_ids"]), 2)
+        self.assertEqual(len(ex["negative_texts"]), 2)
+        self.assertIn("chunk c", ex["positive_texts"])
+        self.assertIn("chunk d", ex["negative_texts"])
+
+        triplets = expand_training_triplets([ex])
+        # 2 positives * 2 negatives = 4 triplets
+        self.assertEqual(len(triplets), 4)
+        for t in triplets:
+            self.assertIsNotNone(t["positive_text"])
+            self.assertIsNotNone(t["negative_text"])
+            self.assertEqual(t["tenant_id"], self.t1.id)
+
     def test_rejected_unauthorized_reviewers(self):
         from core.ml.labels import is_authorized_reviewer, approve_label_candidate
         # Disallowed and synthetic reviewers

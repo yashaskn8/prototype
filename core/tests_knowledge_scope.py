@@ -125,6 +125,14 @@ class KnowledgeScopeHierarchyTests(TestCase):
             tenant=cls.tenant, document=cls.doc_elec, chunk_index=0, heading="High Voltage", text="Electrical guide."
         )
 
+        cls.doc_cat_heating = KnowledgeDocument.objects.create(
+            tenant=cls.tenant, category=cls.cat_heating, title="Heating Category Standards",
+            is_rag_enabled=True, checksum_sha256="hash-cat-heating",
+        )
+        cls.chunk_cat_heating = KnowledgeChunk.objects.create(
+            tenant=cls.tenant, document=cls.doc_cat_heating, chunk_index=0, heading="Heating Standards", text="Heating standards only."
+        )
+
     def test_level_1_exact_asset_inheritance(self):
         """For Chiller #1, all 5 levels (Asset, Product, Category, Domain, General) apply."""
         ctx = {"tenant": self.tenant, "role": "customer", "customer": self.customer}
@@ -140,6 +148,7 @@ class KnowledgeScopeHierarchyTests(TestCase):
         # Foreign product/category/domain documents must be strictly excluded
         self.assertNotIn(self.doc_boiler.id, doc_ids)
         self.assertNotIn(self.doc_elec.id, doc_ids)
+        self.assertNotIn(self.doc_cat_heating.id, doc_ids)
 
     def test_cross_asset_exclusion(self):
         """Chiller #2 shares product/category/domain but NOT exact asset doc of Chiller #1."""
@@ -165,6 +174,15 @@ class KnowledgeScopeHierarchyTests(TestCase):
         self.assertIn(self.doc_dom.id, doc_ids)
         self.assertIn(self.doc_gen.id, doc_ids)
 
+    def test_cross_category_same_domain_rejection(self):
+        """Heating category documents must NOT match Cooling category assets even in same HVAC domain."""
+        ctx = {"tenant": self.tenant, "role": "customer", "customer": self.customer}
+        qs = get_applicable_knowledge_queryset(self.asset_chiller_1, ctx)
+        doc_ids = set(qs.values_list("id", flat=True))
+        self.assertNotIn(self.doc_cat_heating.id, doc_ids)
+        self.assertFalse(is_document_applicable_to_asset(self.doc_cat_heating, self.asset_chiller_1))
+        self.assertFalse(is_chunk_applicable_to_asset(self.chunk_cat_heating, self.asset_chiller_1))
+
     def test_unscoped_query_allows_only_fleet_general(self):
         """When asset is None, ONLY Fleet General documents are returned."""
         ctx = {"tenant": self.tenant, "role": "customer", "customer": self.customer}
@@ -182,6 +200,7 @@ class KnowledgeScopeHierarchyTests(TestCase):
         all_docs = [
             self.doc_asset, self.doc_prod, self.doc_cat,
             self.doc_dom, self.doc_gen, self.doc_boiler, self.doc_elec,
+            self.doc_cat_heating,
         ]
 
         # Test Chiller #1

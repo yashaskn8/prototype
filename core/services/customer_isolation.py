@@ -254,6 +254,19 @@ def is_verified_real_asset(asset: Any) -> bool:
     return False
 
 
+def is_verified_real_product(product: Any) -> bool:
+    """Positively verify that a product belongs to an authorized real company tenant and is not synthetic."""
+    if not product:
+        return False
+    tenant = getattr(product, "tenant", None)
+    if tenant and not is_verified_real_tenant(tenant):
+        return False
+    name = (getattr(product, "name", "") or "").strip().lower()
+    if not name or any(kw in name for kw in ("synthetic", "dummy", "fake", "fixture", "mock")):
+        return False
+    return True
+
+
 def is_verified_real_customer(customer: Any) -> bool:
     """Positively verify that a customer has authentic server-controlled provenance.
     Requires:
@@ -354,10 +367,28 @@ def is_verified_real_document(doc: Any, allow_failed: bool = False) -> bool:
     if getattr(doc, "index_status", "") not in allowed_statuses:
         return False
 
-    # Positive Asset Binding
+    # Positive Equipment Scope Binding (5-level canonical hierarchy: asset, product, category, domain, fleet)
     asset = getattr(doc, "asset", None)
-    if not asset or not is_verified_real_asset(asset):
-        return False
+    product = getattr(doc, "product", None)
+    category = getattr(doc, "category", None)
+    domain = getattr(doc, "domain", None)
+
+    if asset:
+        if not is_verified_real_asset(asset):
+            return False
+    elif product:
+        if not is_verified_real_product(product):
+            return False
+    elif category:
+        c_tenant = getattr(category, "tenant_id", None) or getattr(category, "tenant", None)
+        doc_t = getattr(tenant, "id", None) or tenant
+        if c_tenant and doc_t and c_tenant != doc_t:
+            return False
+    elif domain:
+        d_tenant = getattr(domain, "tenant_id", None) or getattr(domain, "tenant", None)
+        doc_t = getattr(tenant, "id", None) or tenant
+        if d_tenant and doc_t and d_tenant != doc_t:
+            return False
 
     # Check for synthetic markers
     title = (getattr(doc, "title", "") or "").lower()

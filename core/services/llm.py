@@ -125,7 +125,7 @@ def extract_technical_numbers(text: str) -> set:
     return with_units | standalone
 
 
-def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set) -> tuple[bool, str]:
+def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set, require_code_if_present: bool = True) -> tuple[bool, str]:
     """Deterministically evaluate claim-level factual support for a retrieved passage.
 
     Rejects single-token casual overlap on complex queries.
@@ -138,9 +138,12 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
     chunk_text = f"{getattr(chunk, 'heading', '') or ''} {getattr(chunk, 'text', '') or ''}".lower()
     chunk_words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{2,}", chunk_text)}
 
-    # 1. Numerical Threshold Check:
+    # 1. Numerical Threshold Check (boundary-aware matching):
     if q_numbers:
-        missing_numbers = [num for num in q_numbers if num not in chunk_text]
+        missing_numbers = [
+            num for num in q_numbers
+            if not re.search(r"(?<!\d)" + re.escape(num) + r"(?!\d)", chunk_text)
+        ]
         if missing_numbers:
             return False, f"MISSING_NUMERICAL_THRESHOLD: {', '.join(missing_numbers)}"
 
@@ -148,7 +151,14 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
     if q_codes:
         matching_codes = [c for c in q_codes if c.lower() in chunk_text]
         if matching_codes:
+            # Substantive claim check: if query has 3+ content terms, at least 1 must also be in chunk
+            if len(terms) >= 3:
+                overlap = terms & chunk_words
+                if len(overlap) < 1:
+                    return False, f"IDENTIFIER_MATCH_BUT_UNGROUNDED_CLAIM: code {matching_codes[0]} found but no claim terms matched"
             return True, f"EXACT_IDENTIFIER_MATCH: {', '.join(matching_codes)}"
+        elif require_code_if_present:
+            return False, f"MISSING_IDENTIFIER: {', '.join(q_codes)}"
 
     # 3. Content Terms Overlap Check:
     overlap = terms & chunk_words
@@ -202,9 +212,8 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     # We filter to chunks with valid claim support while strictly preserving the retriever's ranking order.
     relevant_chunks = []
     for r in retrieved:
-        is_supported, _ = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers)
-        has_id_match = getattr(r, "exact_identifier_match", False)
-        if is_supported or has_id_match:
+        is_supported, _ = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers, require_code_if_present=False)
+        if is_supported:
             r.evidence_support = True
             relevant_chunks.append(r)
         else:

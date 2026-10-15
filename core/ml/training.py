@@ -104,13 +104,36 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
                                 device="cpu", local_files_only=True)
     model.max_seq_length = max_seq_length
 
-    has_neg = all(r.get("negative_text") for r in train_rows)
-    def to_ds(rows):
-        d = {"anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in rows],
-             "positive": [r["positive_text"] for r in rows]}
-        if has_neg:
-            d["negative"] = [r["negative_text"] for r in rows]
-        return Dataset.from_dict(d)
+    from .labels import expand_training_triplets
+    train_triplets = expand_training_triplets(train_rows)
+    val_triplets = expand_training_triplets(val_rows) if val_rows else []
+
+    # Preserve all valid hard negatives
+    has_any_neg = any(r.get("negative_text") for r in train_triplets)
+
+    def to_ds(triplets):
+        if not triplets:
+            return None
+        if has_any_neg:
+            anchors, positives, negatives = [], [], []
+            for r in triplets:
+                neg = r.get("negative_text")
+                if not neg:
+                    # Provide an explicit safe tenant negative so no hard negatives are dropped
+                    from core.models import KnowledgeChunk
+                    safe_neg = KnowledgeChunk.objects.filter(
+                        tenant_id=r["tenant_id"], is_quarantined=False
+                    ).exclude(text=r["positive_text"]).first()
+                    neg = safe_neg.text if safe_neg else "Standard baseline operating parameters."
+                anchors.append(BGE_QUERY_PREFIX + r["query_text"])
+                positives.append(r["positive_text"])
+                negatives.append(neg)
+            return Dataset.from_dict({"anchor": anchors, "positive": positives, "negative": negatives})
+        else:
+            return Dataset.from_dict({
+                "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
+                "positive": [r["positive_text"] for r in triplets],
+            })
 
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     args = SentenceTransformerTrainingArguments(
@@ -122,8 +145,8 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         logging_steps=1, use_cpu=True,
     )
     trainer = SentenceTransformerTrainer(
-        model=model, args=args, train_dataset=to_ds(train_rows),
-        eval_dataset=to_ds(val_rows) if val_rows else None,
+        model=model, args=args, train_dataset=to_ds(train_triplets),
+        eval_dataset=to_ds(val_triplets) if val_triplets else None,
         loss=MultipleNegativesRankingLoss(model),
     )
     t = time.time()

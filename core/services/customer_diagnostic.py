@@ -686,6 +686,7 @@ def build_structured_diagnostic_contract(
         if not hazard_warning:
             hazard_warning = "Immediate safety risk detected. Stop equipment operation and request an authorized service technician."
         res = {
+            "response_mode": "IMMEDIATE_SAFETY_ESCALATION",
             "response_type": "ESCALATION_REQUIRED",
             "interaction_id": interaction.id,
             "session_id": str(session.session_id) if session else None,
@@ -716,6 +717,7 @@ def build_structured_diagnostic_contract(
 
     if clarification_question:
         res = {
+            "response_mode": "CLARIFICATION_REQUIRED",
             "response_type": "CLARIFICATION",
             "interaction_id": interaction.id,
             "session_id": str(session.session_id) if session else None,
@@ -743,6 +745,7 @@ def build_structured_diagnostic_contract(
     raw_lower = (raw_answer or "").lower()
     if "cannot reveal system instructions" in raw_lower or (raw_answer or "").startswith("I can help with product"):
         return {
+            "response_mode": "POLICY_BLOCKED",
             "response_type": "POLICY_VIOLATION",
             "interaction_id": interaction.id,
             "session_id": str(session.session_id) if session else None,
@@ -912,11 +915,13 @@ def build_structured_diagnostic_contract(
     # Truthful Response Type Determination
     if not customer_safe_actions and not check_first:
         if technician_only_actions:
+            response_mode = "TECHNICIAN_ESCALATION_REQUIRED"
             response_type = "ESCALATION_REQUIRED"
             summary = "All documented technical procedures require certified technician tools or training."
             stop_conditions = ["All documented technical steps require certified technician tools or training. Please request service."]
             answer_text = "DIAGNOSTIC SUMMARY\nAll documented technical steps require certified technician tools or training.\n\nSTOP AND ESCALATE IF\n- Please request an authorized service technician."
         else:
+            response_mode = "INSUFFICIENT_EVIDENCE"
             response_type = "INSUFFICIENT_EVIDENCE"
             summary = "No approved customer troubleshooting procedures could be verified for this issue."
             stop_conditions = ["No manufacturer-approved customer self-service steps are available. Please request an authorized service technician."]
@@ -925,6 +930,7 @@ def build_structured_diagnostic_contract(
         expected_result = ""
         can_resolve = False
     elif technician_only_actions and not customer_safe_actions:
+        response_mode = "TECHNICIAN_ESCALATION_REQUIRED"
         response_type = "ESCALATION_REQUIRED"
         summary = "All documented technical steps require certified technician tools or training."
         stop_conditions = ["All documented technical steps require certified technician tools or training. Please request service."]
@@ -932,6 +938,7 @@ def build_structured_diagnostic_contract(
         expected_result = ""
         can_resolve = False
     else:
+        response_mode = "ANSWER_WITH_VERIFIED_EVIDENCE"
         response_type = "DIAGNOSTIC_GUIDANCE"
         can_resolve = True
         if not summary:
@@ -953,6 +960,7 @@ def build_structured_diagnostic_contract(
         answer_text = "\n\n".join(answer_parts)
 
     res = {
+        "response_mode": response_mode,
         "response_type": response_type,
         "interaction_id": interaction.id,
         "session_id": str(session.session_id) if session else None,

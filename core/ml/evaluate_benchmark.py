@@ -212,10 +212,6 @@ def evaluate_track_a_dense(
 
         distances = res["distances"][0] if res and res.get("distances") and res["distances"] else []
 
-        # For abstain/unsupported queries, simulate dense thresholding
-        if is_abstain and distances and distances[0] > 0.40:
-            ranked_cids = []
-
         rec = {
             "query_id": qid,
             "ranked_chunk_ids": ranked_cids,
@@ -321,16 +317,16 @@ def evaluate_track_b_serving(
     orig_exp = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
     orig_gate = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.38)
 
-    if pipeline_mode == "experimental_bge":
+    if pipeline_mode in ("experimental_bge", "bge"):
         setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", True)
-    elif pipeline_mode == "production_baseline":
+    elif pipeline_mode in ("threshold_ablation_gate_055", "production_baseline"):
         setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
         import core.services.retriever as rm
-        rm.DENSE_RELEVANCE_GATE = 0.55  # Legacy uncalibrated gate
-    elif pipeline_mode == "corrected_hybrid":
+        rm.DENSE_RELEVANCE_GATE = 0.55  # Ablation gate: 0.55 threshold
+    elif pipeline_mode in ("calibrated_hybrid_gate_038", "corrected_hybrid"):
         setattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
         import core.services.retriever as rm
-        rm.DENSE_RELEVANCE_GATE = 0.38  # Calibrated gate
+        rm.DENSE_RELEVANCE_GATE = 0.38  # Calibrated gate: 0.38 threshold
     else:
         raise ValueError(f"Unknown mode {pipeline_mode}")
 
@@ -384,7 +380,8 @@ def evaluate_track_b_serving(
         evidence_supported = is_direct
 
         ranked_cids = [rc.chunk_id for rc in retrieved_chunks if rc.chunk_id]
-        serving_ranked_cids = ranked_cids if (is_direct or not is_abstain) else []
+        # Strictly derived from system direct/abstain response; ZERO label leakage
+        serving_ranked_cids = ranked_cids if is_direct else []
 
         rec = {
             "query_id": qid,

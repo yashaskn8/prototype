@@ -185,44 +185,57 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
     verified_examples = []
     for r in valid_rows:
         qid = r.get("query_id")
-        pos_id = r["positive_chunk_ids"][0]
-        pos_chunk = chunks.get(pos_id)
-        if not pos_chunk:
-            rejected.append((qid, f"positive chunk {pos_id} not found in database"))
+        raw_pos = r.get("positive_chunk_ids")
+        if raw_pos is None and r.get("positive_chunk_id") is not None:
+            raw_pos = [r.get("positive_chunk_id")]
+        pos_ids = raw_pos or []
+        if not pos_ids:
+            rejected.append((qid, "no positive chunk IDs"))
             continue
 
-        # Content hash check
-        computed_hash = hashlib.sha256(pos_chunk.text.encode("utf-8")).hexdigest()
+        pos_chunks = [chunks.get(pid) for pid in pos_ids if chunks.get(pid)]
+        if len(pos_chunks) != len(pos_ids):
+            missing_pids = [pid for pid in pos_ids if pid not in chunks]
+            rejected.append((qid, f"positive chunk(s) {missing_pids} not found in database"))
+            continue
+
+        primary_pos = pos_chunks[0]
+        # Content hash check on primary positive chunk
+        computed_hash = hashlib.sha256(primary_pos.text.encode("utf-8")).hexdigest()
         expected_hash = r.get("source_content_hash")
         if expected_hash and computed_hash != expected_hash:
-            rejected.append((qid, f"positive chunk {pos_id} text has changed since approval (hash mismatch)"))
+            rejected.append((qid, f"positive chunk {primary_pos.id} text has changed since approval (hash mismatch)"))
             continue
 
         # Document version check
         expected_ver = r.get("document_version")
-        if expected_ver and pos_chunk.document.index_version != expected_ver:
-            rejected.append((qid, f"document version mismatch (expected {expected_ver}, got {pos_chunk.document.index_version})"))
+        if expected_ver and primary_pos.document.index_version != expected_ver:
+            rejected.append((qid, f"document version mismatch (expected {expected_ver}, got {primary_pos.document.index_version})"))
             continue
 
-        # Resolve negative text if present
-        neg_text = None
-        if r.get("negative_chunk_ids"):
-            neg_id = r["negative_chunk_ids"][0]
-            neg_chunk = chunks.get(neg_id)
-            if neg_chunk:
-                neg_text = neg_chunk.text
+        # Resolve all negative chunks if present
+        raw_neg = r.get("negative_chunk_ids")
+        if raw_neg is None and r.get("negative_chunk_id") is not None:
+            raw_neg = [r.get("negative_chunk_id")]
+        neg_ids = raw_neg or []
+        neg_chunks = [chunks.get(nid) for nid in neg_ids if chunks.get(nid)]
+        
+        pos_texts = [pc.text for pc in pos_chunks]
+        neg_texts = [nc.text for nc in neg_chunks]
 
         verified_examples.append({
             "query_id": qid,
             "query_text": r["query_text"],
             "tenant_id": r["tenant_id"],
-            "positive_chunk_id": pos_id,
-            "positive_chunk_ids": [pos_id],
-            "negative_chunk_ids": r.get("negative_chunk_ids") or ([] if not r.get("negative_chunk_id") else [r.get("negative_chunk_id")]),
-            "positive_document_id": pos_chunk.document_id,
-            "positive_text": pos_chunk.text,
-            "negative_text": neg_text,
-            "source_group": r.get("source_group") or str(pos_chunk.document_id),
+            "positive_chunk_id": primary_pos.id,
+            "positive_chunk_ids": pos_ids,
+            "positive_texts": pos_texts,
+            "negative_chunk_ids": [nc.id for nc in neg_chunks],
+            "negative_texts": neg_texts,
+            "positive_document_id": primary_pos.document_id,
+            "positive_text": pos_texts[0],
+            "negative_text": neg_texts[0] if neg_texts else None,
+            "source_group": r.get("source_group") or str(primary_pos.document_id),
             "reviewer": r.get("reviewer"),
             "reviewed_at": r.get("reviewed_at"),
             "source_content_hash": computed_hash,
@@ -231,6 +244,42 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
         })
 
     return {"verified_examples": verified_examples, "rejected": rejected}
+
+
+def expand_training_triplets(verified_examples: List[dict]) -> List[dict]:
+    """Expands multi-positive and multi-negative examples into individual training triplets.
+    Ensures every reviewed hard negative and valid positive passage is preserved during training.
+    """
+    triplets = []
+    for ex in verified_examples:
+        pos_texts = ex.get("positive_texts") or ([ex.get("positive_text")] if ex.get("positive_text") else [])
+        neg_texts = ex.get("negative_texts") or ([ex.get("negative_text")] if ex.get("negative_text") else [])
+        qid = ex.get("query_id")
+        qtext = ex.get("query_text")
+        tenant_id = ex.get("tenant_id")
+        source_group = ex.get("source_group")
+
+        for p_idx, ptext in enumerate(pos_texts):
+            if neg_texts:
+                for n_idx, ntext in enumerate(neg_texts):
+                    triplets.append({
+                        "query_id": f"{qid}-p{p_idx}-n{n_idx}",
+                        "query_text": qtext,
+                        "positive_text": ptext,
+                        "negative_text": ntext,
+                        "tenant_id": tenant_id,
+                        "source_group": source_group,
+                    })
+            else:
+                triplets.append({
+                    "query_id": f"{qid}-p{p_idx}",
+                    "query_text": qtext,
+                    "positive_text": ptext,
+                    "negative_text": None,
+                    "tenant_id": tenant_id,
+                    "source_group": source_group,
+                })
+    return triplets
 
 
 def approve_label_candidate(candidate: dict, reviewer: str, positive_chunk_id: int,

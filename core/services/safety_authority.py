@@ -62,7 +62,6 @@ def is_authorized_safety_approver(reviewer_identity: str, tenant_id: Optional[in
             "Director of Product Safety",
             "Senior Industrial Safety Auditor",
             "dr-yashas-kn",
-            "admin",
         ],
     )
     for auth in authorized_approvers:

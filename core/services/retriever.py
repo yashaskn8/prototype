@@ -543,7 +543,16 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
         if not staff_mode and is_real_customer_query and not is_real:
             return []
-        if is_real:
+
+        # Explicit serving model profile selection (Operation 13.0)
+        serving_profile = getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
+        if serving_profile in ("company-bge-ft", "bge-small-ft"):
+            profile_key = "company-bge-ft"
+        elif serving_profile in ("company-bge-small", "bge-small"):
+            profile_key = "company-bge-small" if is_real else "bge-small"
+        elif serving_profile in ("company-minilm", "minilm"):
+            profile_key = "company-minilm" if is_real else "minilm"
+        elif is_real:
             profile_key = "company-bge-small" if use_experimental else "company-minilm"
         else:
             profile_key = (
@@ -563,31 +572,37 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
         # Phase 3: Authorization-before-ranking — pass allowed_doc_ids into
         # Chroma filter so unauthorized documents cannot crowd out authorized
-        # chunks in the top-N retrieved (Defect #2 fix).
+        # chunks in the top-N retrieved.
         doc_id_list = [int(did) for did in allowed_doc_ids]
 
-        # Chroma has a limit on $in list size; batch if necessary
-        if len(doc_id_list) > 500:
-            # For very large authorized sets, filter by tenant only and
-            # revalidate afterwards (defense-in-depth)
-            chroma_where = {"tenant_id": int(tenant.id)}
-        else:
+        # Scalable candidate retrieval (Operation 13.0):
+        # Batch document IDs into slices of <= 400 so Chroma $in limits are respected
+        # while preventing unauthorized candidate dilution.
+        batch_size = 400
+        doc_id_batches = [doc_id_list[i : i + batch_size] for i in range(0, len(doc_id_list), batch_size)]
+        n_per_batch = min(top_k * 4, 30)
+
+        all_metas = []
+        all_dists = []
+        for batch_ids in doc_id_batches:
             chroma_where = {
                 "$and": [
                     {"tenant_id": int(tenant.id)},
-                    {"document_id": {"$in": doc_id_list}},
+                    {"document_id": {"$in": batch_ids}},
                 ]
             }
-
-        chroma_res = dense_coll.query(
-            query_embeddings=[query_embedding],
-            n_results=min(top_k * 4, 30),
-            where=chroma_where,
-        )
+            res = dense_coll.query(
+                query_embeddings=[query_embedding],
+                n_results=min(n_per_batch, max(len(batch_ids), 1)),
+                where=chroma_where,
+            )
+            if res and res.get("metadatas") and res["metadatas"][0]:
+                all_metas.extend(res["metadatas"][0])
+                all_dists.extend(res["distances"][0])
 
         scored = []
-        if chroma_res and chroma_res.get("metadatas") and chroma_res["metadatas"][0]:
-            for meta, dist in zip(chroma_res["metadatas"][0], chroma_res["distances"][0]):
+        if all_metas:
+            for meta, dist in zip(all_metas, all_dists):
                 doc_id = meta.get("document_id")
                 chunk_idx = meta.get("chunk_index", 0)
 
@@ -991,16 +1006,23 @@ def retrieve(
         seen_chunk_keys.add(chunk_key)
         seen_content_hashes.add(digest_key)
         per_source[source_key] = per_source.get(source_key, 0) + 1
-        if len(selected) >= top_k:
+        # Bounded candidate pool for reranking (Operation 13.0)
+        # Collect up to 3x top_k so reranker can recover relevant passages
+        rerank_pool_limit = max(top_k * 3, 24)
+        if len(selected) >= rerank_pool_limit:
             break
-
-    for i, item in enumerate(selected, 1):
-        item.final_rank = i
 
     try:
         from core.ml.reranker import rerank_candidates
         selected = rerank_candidates(evidence_text, selected, top_k=top_k)
     except Exception as exc:
         logger.warning("Reranker step skipped due to error: %s", exc)
+        selected = selected[:top_k]
+
+    if len(selected) > top_k:
+        selected = selected[:top_k]
+
+    for i, item in enumerate(selected, 1):
+        item.final_rank = i
 
     return RetrievedResultList(selected, retrieval_backend=retrieval_backend)

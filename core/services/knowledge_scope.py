@@ -67,7 +67,9 @@ def get_applicable_knowledge_queryset(asset: Optional[Any], ctx: Dict[str, Any])
             scope |= Q(
                 asset__isnull=True,
                 product__isnull=True,
-            ) & (Q(domain=domain) | Q(category__domain=domain))
+                category__isnull=True,
+                domain=domain,
+            )
         # Fleet general: unscoped to any asset/product/category/domain
         scope |= Q(
             asset__isnull=True,
@@ -128,7 +130,9 @@ def get_applicable_chunks_queryset(asset: Optional[Any], ctx: Dict[str, Any]) ->
             scope |= Q(
                 document__asset__isnull=True,
                 document__product__isnull=True,
-            ) & (Q(document__domain=domain) | Q(document__category__domain=domain))
+                document__category__isnull=True,
+                document__domain=domain,
+            )
         scope |= Q(
             document__asset__isnull=True,
             document__product__isnull=True,
@@ -155,8 +159,7 @@ def is_document_applicable_to_asset(document: Optional[Any], asset: Optional[Any
     - Level 1: doc.asset_id == asset.id
     - Level 2: doc.asset_id is None and doc.product_id == asset.product_id
     - Level 3: doc.asset_id is None and doc.product_id is None and doc.category_id == asset.product.category_id
-    - Level 4: doc.asset_id is None and doc.product_id is None and doc.domain_id == asset.product.category.domain_id
-               (including documents categorized within the same domain)
+    - Level 4: doc.asset_id is None and doc.product_id is None and doc.category_id is None and doc.domain_id == asset.product.category.domain_id
     - Level 5: doc.asset_id is None and doc.product_id is None and doc.category_id is None and doc.domain_id is None (Fleet General)
 
     Fails closed on any mismatch, cross-equipment assignment, or foreign hierarchy level.
@@ -168,8 +171,6 @@ def is_document_applicable_to_asset(document: Optional[Any], asset: Optional[Any
     doc_product_id = getattr(document, "product_id", None)
     doc_category_id = getattr(document, "category_id", None)
     doc_domain_id = getattr(document, "domain_id", None)
-    if doc_domain_id is None and hasattr(document, "category") and document.category:
-        doc_domain_id = getattr(document.category, "domain_id", None)
 
     # If query has NO asset context: only Level 5 (Fleet General) documents are applicable
     if asset is None:
@@ -197,16 +198,11 @@ def is_document_applicable_to_asset(document: Optional[Any], asset: Optional[Any
     if doc_product_id is not None:
         return bool(product_id is not None and doc_product_id == product_id)
 
-    # Level 3: Category match
+    # Level 3: Category match (strictly requires matching category; never falls back to domain)
     if doc_category_id is not None:
-        if category_id is not None and doc_category_id == category_id:
-            return True
-        # Level 4 fallback: check if document belongs to the same domain
-        if domain_id is not None and doc_domain_id == domain_id:
-            return True
-        return False
+        return bool(category_id is not None and doc_category_id == category_id)
 
-    # Level 4: Domain match
+    # Level 4: Domain match (only for documents without category restriction)
     if doc_domain_id is not None:
         return bool(domain_id is not None and doc_domain_id == domain_id)
 

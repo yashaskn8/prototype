@@ -286,7 +286,7 @@ class BgeRedTeamScenariosTests(TestCase):
         doc_ids = [r["document_id"] for r in res["references"]]
         self.assertIn(doc_no_cat.id, doc_ids)
 
-    # Scenario 8: Incorrect manual category tag does not block content discovery
+    # Scenario 8: Cross-category documents within same domain must not leak across equipment (Category Specificity)
     def test_scenario_08_wrong_category_discovered_by_content(self):
         wrong_cat = ProductCategory.objects.create(tenant=self.t1, domain=self.p_milk.category.domain, name="Wrong Category")
         doc_wrong_cat = KnowledgeDocument.objects.create(
@@ -298,7 +298,7 @@ class BgeRedTeamScenariosTests(TestCase):
         index_document(doc_wrong_cat)
         res = ask_rag(tenant=self.t1, question="peristaltic pump motor optical strobe tool", asset=self.a_milk)
         doc_ids = [r["document_id"] for r in res["references"]]
-        self.assertIn(doc_wrong_cat.id, doc_ids)
+        self.assertNotIn(doc_wrong_cat.id, doc_ids)
 
     # Scenario 9: Exact asset ID queries
     def test_scenario_09_exact_asset_id_query(self):

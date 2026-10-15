@@ -24,6 +24,7 @@ ROLE_INDEPENDENT_HOLDOUT = "INDEPENDENT_HOLDOUT"
 ROLE_SOFTWARE_REGRESSION_FIXTURE = "SOFTWARE_REGRESSION_FIXTURE"
 
 HOLDOUT_SHA256 = "f516a183d510a275de5856cb9d26eefc055181223d28cc8630db914613508dda"
+CI_REGRESSION_FIXTURE_SHA256 = "0c3d1cbc7ac332aa58597cdf212d6225d5fd4a4b6c188a0734cc82d8c437df14"
 
 
 class BenchmarkIntegrityError(Exception):
@@ -53,14 +54,18 @@ REGISTERED_BENCHMARKS: Dict[str, BenchmarkSpec] = {
     "servy-ci-regression-fixture-v1": BenchmarkSpec(
         dataset_id="servy-ci-regression-fixture-v1",
         role=ROLE_SOFTWARE_REGRESSION_FIXTURE,
-        expected_sha256=HOLDOUT_SHA256,
+        expected_sha256=CI_REGRESSION_FIXTURE_SHA256,
         file_path=BASE_DIR / "sample_data" / "frozen_independent_holdout_benchmark.jsonl",
         population_name="Sanitized Public Software Regression Fixture",
-        description="Public software regression fixture for CI pipelines (identical digest, labeled as regression test).",
+        description="Public software regression fixture for CI pipelines (authentic digest, labeled as regression test).",
     ),
 }
 
-DEFAULT_BENCHMARK_ID = "servy-real-holdout-v1"
+DEFAULT_BENCHMARK_ID = (
+    "servy-real-holdout-v1"
+    if (BASE_DIR / "private_training_data" / "frozen_independent_holdout_benchmark.jsonl").exists()
+    else "servy-ci-regression-fixture-v1"
+)
 
 
 def compute_file_sha256(path: Path) -> str:
