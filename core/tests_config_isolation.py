@@ -41,16 +41,22 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
     def test_sqlite_engine_selected_when_env_says_sqlite(self):
         """SERVY_DB_ENGINE=sqlite3 in process env must select SQLite backend."""
         from django.conf import settings
+        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
         engine = settings.DATABASES["default"]["ENGINE"]
-        self.assertIn("sqlite3", engine,
-                       f"Expected SQLite backend but got: {engine}")
+        if configured == "sqlite3":
+            self.assertIn("sqlite3", engine, f"Expected SQLite backend but got: {engine}")
+            self.assertNotIn("mysql", engine)
+        else:
+            self.assertIn("mysql", engine, f"Expected MySQL backend in CI but got: {engine}")
 
     def test_sqlite_test_db_is_memory(self):
         """SQLite test database must be :memory: for isolation."""
         from django.conf import settings
+        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
+        if configured != "sqlite3":
+            self.skipTest("Skipped in MySQL CI environment (running with MySQL backend)")
         test_name = settings.DATABASES["default"].get("TEST", {}).get("NAME")
-        self.assertEqual(test_name, ":memory:",
-                         f"SQLite test db should be :memory:, got: {test_name}")
+        self.assertEqual(test_name, ":memory:", f"SQLite test db should be :memory:, got: {test_name}")
 
     def test_debug_mode_reads_from_env(self):
         """DEBUG must be derived from DJANGO_DEBUG environment variable.
@@ -66,14 +72,40 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
     def test_no_mysql_driver_imported_in_sqlite_mode(self):
         """In SQLite mode, MySQLdb/pymysql should NOT be required."""
         from django.conf import settings
+        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
+        if configured != "sqlite3":
+            self.skipTest("Skipped in MySQL CI environment")
         engine = settings.DATABASES["default"]["ENGINE"]
-        self.assertNotIn("mysql", engine,
-                         "MySQL engine should not be active in sqlite3 mode")
+        self.assertNotIn("mysql", engine, "MySQL engine should not be active in sqlite3 mode")
 
     def test_database_engine_setting_matches(self):
         """SERVY_DB_ENGINE setting attribute must reflect the resolved engine."""
         from django.conf import settings
-        self.assertEqual(settings.SERVY_DB_ENGINE, "sqlite3")
+        expected = os.getenv("SERVY_DB_ENGINE", "mysql")
+        self.assertEqual(settings.SERVY_DB_ENGINE, expected)
+
+    def test_subprocess_sqlite_isolation(self):
+        """Verify in an isolated subprocess that SERVY_DB_ENGINE=sqlite3 selects SQLite."""
+        import subprocess
+        script = (
+            "import os, django\n"
+            "os.environ['SERVY_DB_ENGINE'] = 'sqlite3'\n"
+            "os.environ['DJANGO_DEBUG'] = '1'\n"
+            "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')\n"
+            "django.setup()\n"
+            "from django.conf import settings\n"
+            "print('ENGINE=' + settings.DATABASES['default']['ENGINE'])\n"
+            "print('TEST_DB=' + str(settings.DATABASES['default'].get('TEST', {}).get('NAME')))\n"
+        )
+        res = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        self.assertEqual(res.returncode, 0, f"Subprocess failed: {res.stderr}")
+        self.assertIn("ENGINE=django.db.backends.sqlite3", res.stdout)
+        self.assertIn("TEST_DB=:memory:", res.stdout)
 
 
 class SettingsProductionGuardTests(unittest.TestCase):
