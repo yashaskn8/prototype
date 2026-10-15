@@ -706,7 +706,7 @@ def build_structured_diagnostic_contract(
             }],
             "expected_result": "",
             "stop_conditions": [hazard_warning],
-            "citations": validated_citations,
+            "citations": [],
             "can_resolve": False,
             "can_escalate": True,
             "answer": f"DIAGNOSTIC SUMMARY\n{hazard_warning}\n\nSTOP AND ESCALATE IF\n- {hazard_warning}",
@@ -732,11 +732,11 @@ def build_structured_diagnostic_contract(
             "technician_only_actions": [],
             "expected_result": "",
             "stop_conditions": ["If you are unsure or unable to inspect the equipment, request a service technician."],
-            "citations": validated_citations,
+            "citations": [],
             "can_resolve": False,
             "can_escalate": True,
             "answer": f"DIAGNOSTIC SUMMARY\n{clarification_question}",
-            "references": retrieved_references,
+            "references": [],
             "engine": "clarification-controller",
         }
         return sanitize_customer_payload(res)
@@ -959,6 +959,25 @@ def build_structured_diagnostic_contract(
             answer_parts.append("STOP AND ESCALATE IF\n" + "\n".join(f"- {s}" for s in stop_conditions))
         answer_text = "\n\n".join(answer_parts)
 
+    # Phase 15 Fix: Citation integrity — only cite evidence that actually grounded the customer action/answer.
+    # Unused candidates or technician-only escalations must not attach false customer citations.
+    if response_mode == "ANSWER_WITH_VERIFIED_EVIDENCE":
+        grounding_pairs = {
+            (act.get("document_id"), act.get("chunk_id"))
+            for act in customer_safe_actions
+            if act.get("document_id")
+        }
+        if grounding_pairs:
+            final_citations = [
+                c for c in validated_citations
+                if (c.get("document_id"), c.get("chunk_id")) in grounding_pairs
+                or (c.get("document_id") in {p[0] for p in grounding_pairs} and not c.get("chunk_id"))
+            ]
+        else:
+            final_citations = validated_citations[:1] if validated_citations else []
+    else:
+        final_citations = []
+
     res = {
         "response_mode": response_mode,
         "response_type": response_type,
@@ -975,7 +994,7 @@ def build_structured_diagnostic_contract(
         "technician_only_actions": technician_only_actions,
         "expected_result": expected_result,
         "stop_conditions": stop_conditions,
-        "citations": validated_citations,
+        "citations": final_citations,
         "can_resolve": can_resolve,
         "can_escalate": True,
         "answer": answer_text,

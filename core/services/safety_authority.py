@@ -34,10 +34,12 @@ TECHNICIAN_HAZARDS = {
 def is_authorized_safety_approver(reviewer_identity: str, tenant_id: Optional[int] = None) -> bool:
     """
     Verify whether a reviewer has explicit, positive industrial safety approval authority.
-    Rejects:
-    - Training reviewers attempting to authorize physical procedures
-    - Synthetic, bot, or automated actors
-    - Unvetted reviewer strings
+    Phase 3 Hardening:
+    - Never treat arbitrary strings or titles as proof of authority.
+    - Requires active authenticated database User principal.
+    - Requires explicit 'core.can_approve_industrial_safety' permission or superuser.
+    - Strictly segregates training reviewers and synthetic actors.
+    - Validates tenant binding when tenant_id is specified.
     """
     if not reviewer_identity or not isinstance(reviewer_identity, str):
         return False
@@ -53,36 +55,40 @@ def is_authorized_safety_approver(reviewer_identity: str, tenant_id: Optional[in
         if prohibited in ident_lower:
             return False
 
-    # Check authorized safety approvers list
-    authorized_approvers = getattr(
-        settings,
-        "SERVY_AUTHORIZED_SAFETY_APPROVERS",
-        [
-            "Certified OEM Safety Engineer",
-            "Director of Product Safety",
-            "Senior Industrial Safety Auditor",
-            "dr-yashas-kn",
-        ],
-    )
-    for auth in authorized_approvers:
-        if ident_lower == auth.strip().lower():
-            return True
-
     # Check against database User model:
-    # Requires explicit permission ("core.can_approve_industrial_safety") or superuser.
-    # Generic staff accounts without explicit safety authority are strictly rejected.
+    # Requires active User principal.
     try:
         from django.contrib.auth import get_user_model
         User = get_user_model()
-        user = User.objects.filter(username=ident, is_active=True).first()
-        if user and (user.is_superuser or user.has_perm("core.can_approve_industrial_safety")):
-            # Verify user has not been flagged as training-only
-            if not any(k in user.username.lower() for k in PROHIBITED_REVIEWER_KEYWORDS):
-                return True
+        user = User.objects.filter(username__iexact=ident, is_active=True).first()
     except Exception:
-        pass
+        user = None
 
-    return False
+    if not user:
+        # Caller-supplied title string, unauthenticated name, or inactive account
+        # cannot independently grant safety approval authority.
+        return False
+
+    # Gate 1: Prohibited keyword check on verified user record
+    if any(k in user.username.lower() for k in PROHIBITED_REVIEWER_KEYWORDS):
+        return False
+
+    # Gate 2: Explicit safety approval permission
+    if not (user.is_superuser or user.has_perm("core.can_approve_industrial_safety")):
+        return False
+
+    # Gate 3: Tenant scope validation
+    if tenant_id is not None and not user.is_superuser:
+        has_membership = user.tenant_memberships.filter(tenant_id=tenant_id).exists()
+        if not has_membership:
+            user_tenant = getattr(user, "tenant_id", None)
+            if user_tenant is None and hasattr(user, "profile"):
+                user_tenant = getattr(user.profile, "tenant_id", None)
+            if user_tenant != tenant_id and not (hasattr(user, "staff_profile") and user.staff_profile.tenant_id == tenant_id):
+                logger.warning("Safety approver '%s' rejected: no active membership for tenant %s", ident, tenant_id)
+                return False
+
+    return True
 
 
 def validate_procedure_safety_approval(

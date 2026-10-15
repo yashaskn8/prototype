@@ -183,32 +183,40 @@ def evaluate_track_a_dense(
             include_confidential=False,
             staff_mode=False,
         )
+        authorized_chunk_ids = {chunk.id for chunk in authorized_candidates}
         allowed_doc_ids = list({chunk.document_id for chunk in authorized_candidates})
 
         t0_q = time.perf_counter()
-        emb = encode_queries(p, m, [q_text])[0].tolist()
+        if not allowed_doc_ids:
+            # Phase 10 Fix: Fail closed to empty result set if no authorized candidates exist.
+            # Never broaden scope to a tenant-only fallback.
+            ranked_cids = []
+            latency_ms = 0.0
+            res = None
+        else:
+            emb = encode_queries(p, m, [q_text])[0].tolist()
+            where_filter = {
+                "$and": [
+                    {"tenant_id": int(tid)},
+                    {"document_id": {"$in": allowed_doc_ids}},
+                ]
+            }
 
-        where_filter = {
-            "$and": [
-                {"tenant_id": int(tid)},
-                {"document_id": {"$in": allowed_doc_ids}},
-            ]
-        } if allowed_doc_ids else {"tenant_id": int(tid)}
+            res = coll.query(
+                query_embeddings=[emb],
+                n_results=k_max,
+                where=where_filter,
+                include=["metadatas", "distances"],
+            )
+            latency_ms = (time.perf_counter() - t0_q) * 1000
 
-        res = coll.query(
-            query_embeddings=[emb],
-            n_results=k_max,
-            where=where_filter,
-            include=["metadatas", "distances"],
-        )
-        latency_ms = (time.perf_counter() - t0_q) * 1000
-
-        ranked_cids = []
-        if res and res.get("metadatas") and res["metadatas"][0]:
-            for meta in res["metadatas"][0]:
-                cid = meta.get("chunk_id") or chunk_lookup.get((meta.get("document_id"), meta.get("chunk_index")))
-                if cid:
-                    ranked_cids.append(cid)
+            ranked_cids = []
+            if res and res.get("metadatas") and res["metadatas"][0]:
+                for meta in res["metadatas"][0]:
+                    cid = meta.get("chunk_id") or chunk_lookup.get((meta.get("document_id"), meta.get("chunk_index")))
+                    # Phase 10 Fix: Post-validate against authorized chunk IDs, not only document IDs
+                    if cid and cid in authorized_chunk_ids:
+                        ranked_cids.append(cid)
 
         distances = res["distances"][0] if res and res.get("distances") and res["distances"] else []
 

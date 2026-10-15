@@ -111,11 +111,58 @@ class IndustrialSafetyAuthorityTests(TestCase):
             "Superuser with 'training' keyword must fail closed",
         )
 
-    def test_settings_authorized_safety_approvers(self):
-        """Standard authorized safety titles from settings must pass."""
-        self.assertTrue(is_authorized_safety_approver("Certified OEM Safety Engineer"))
-        self.assertTrue(is_authorized_safety_approver("Director of Product Safety"))
-        self.assertTrue(is_authorized_safety_approver("Senior Industrial Safety Auditor"))
+    def test_settings_authorized_safety_titles_without_active_user_are_rejected(self):
+        """Phase 3 Hardening: Submitting an allowlisted title string without an active permitted user fails closed."""
+        self.assertFalse(
+            is_authorized_safety_approver("Certified OEM Safety Engineer"),
+            "Arbitrary user submitting allowlisted title string without active DB account must be rejected",
+        )
+        self.assertFalse(
+            is_authorized_safety_approver("Director of Product Safety"),
+            "Role title without active DB user must be rejected",
+        )
+        self.assertFalse(
+            is_authorized_safety_approver("Senior Industrial Safety Auditor"),
+            "Unauthenticated title must be rejected",
+        )
+
+    def test_inactive_account_with_safety_permission_is_rejected(self):
+        """Inactive user account with historical permission must fail closed."""
+        inactive_user = User.objects.create_user(
+            username="former_safety_lead",
+            password="testpassword123",
+            is_staff=True,
+            is_active=False,
+        )
+        inactive_user.user_permissions.add(self.safety_perm)
+        self.assertFalse(
+            is_authorized_safety_approver("former_safety_lead"),
+            "Inactive account must never have active safety approval authority",
+        )
+
+    def test_cross_tenant_approver_is_rejected(self):
+        """A user bound to tenant A cannot approve procedures for tenant B."""
+        from core.models import Tenant, TenantMembership
+        tenant_1 = Tenant.objects.create(name="Tenant One", slug="tenant-1")
+        tenant_2 = Tenant.objects.create(name="Tenant Two", slug="tenant-2")
+
+        tenant_approver = User.objects.create_user(
+            username="tenant_a_approver",
+            password="testpassword123",
+            is_staff=True,
+            is_superuser=False,
+        )
+        tenant_approver.user_permissions.add(self.safety_perm)
+        TenantMembership.objects.create(user=tenant_approver, tenant=tenant_1, role="ADMIN")
+
+        # Approval on tenant 1 should succeed
+        self.assertTrue(is_authorized_safety_approver("tenant_a_approver", tenant_id=tenant_1.id))
+        # Approval on tenant 2 must be rejected
+        self.assertFalse(is_authorized_safety_approver("tenant_a_approver", tenant_id=tenant_2.id))
+
+    def test_forged_reviewer_name_is_rejected(self):
+        """Forged non-existent reviewer name must be rejected."""
+        self.assertFalse(is_authorized_safety_approver("forged_lead_engineer_smith"))
 
     def test_unvetted_arbitrary_strings_rejected(self):
         """Arbitrary strings must be rejected."""
@@ -124,8 +171,8 @@ class IndustrialSafetyAuthorityTests(TestCase):
         self.assertFalse(is_authorized_safety_approver("   "))
         self.assertFalse(is_authorized_safety_approver(None))
 
-    def test_validate_procedure_safety_approval_rejects_unauthorized_approver(self):
-        """validate_procedure_safety_approval must reject procedures reviewed by unauthorized actors."""
+    def test_validate_procedure_safety_approval_matrix(self):
+        """Comprehensive verification of validate_procedure_safety_approval against all Phase 3 gates."""
         mock_doc = MagicMock()
         mock_doc.is_rag_enabled = True
         mock_doc.is_confidential = False
@@ -146,7 +193,7 @@ class IndustrialSafetyAuthorityTests(TestCase):
         mock_app.procedure_keywords = ["reset", "power"]
         mock_app.procedure_id = "PROC-PWR-001"
 
-        # Case 1: Prohibited training annotator reviewer
+        # Case 1: Prohibited training annotator reviewer fails closed
         mock_app.reviewer_identity = "training_annotator_42"
         mock_app.approval_evidence = "Verified against OEM manual section 4.1"
         is_valid, classification, reason = validate_procedure_safety_approval(
@@ -156,24 +203,69 @@ class IndustrialSafetyAuthorityTests(TestCase):
         self.assertEqual(classification, "UNKNOWN_REQUIRES_REVIEW")
         self.assertIn("lacks authorized safety approval clearance", reason)
 
-        # Case 2: Generic staff without safety authority
-        mock_app.reviewer_identity = "generic_staff_tech"
+        # Case 2: Generic staff without safety authority fails closed
         User.objects.create_user(
-            username="generic_staff_tech",
+            username="generic_staff_tech_2",
             password="testpassword123",
             is_staff=True,
             is_superuser=False,
         )
+        mock_app.reviewer_identity = "generic_staff_tech_2"
         is_valid, classification, reason = validate_procedure_safety_approval(
             mock_app, "Turn off power switch and reset breaker"
         )
         self.assertFalse(is_valid)
         self.assertEqual(classification, "UNKNOWN_REQUIRES_REVIEW")
 
-        # Case 3: Legitimate authorized safety approver
-        mock_app.reviewer_identity = "Director of Product Safety"
+        # Case 3: Arbitrary allowlisted title string without real DB account fails closed
+        mock_app.reviewer_identity = "Certified OEM Safety Engineer"
+        is_valid, classification, reason = validate_procedure_safety_approval(
+            mock_app, "Turn off power switch and reset breaker"
+        )
+        self.assertFalse(is_valid)
+        self.assertEqual(classification, "UNKNOWN_REQUIRES_REVIEW")
+
+        # Case 4: Legitimate permitted safety approver with active user account succeeds
+        valid_approver = User.objects.create_user(
+            username="director_of_safety_user",
+            password="testpassword123",
+            is_staff=True,
+            is_superuser=False,
+        )
+        valid_approver.user_permissions.add(self.safety_perm)
+        mock_app.reviewer_identity = "director_of_safety_user"
         is_valid, classification, reason = validate_procedure_safety_approval(
             mock_app, "Turn off power switch and reset breaker"
         )
         self.assertTrue(is_valid)
         self.assertEqual(classification, "CUSTOMER_APPROVED")
+
+        # Case 5: Revoked approval is rejected with PROHIBITED
+        mock_app.revoked_at = timezone.now()
+        mock_app.approval_status = "REVOKED"
+        is_valid, classification, reason = validate_procedure_safety_approval(
+            mock_app, "Turn off power switch and reset breaker"
+        )
+        self.assertFalse(is_valid)
+        self.assertEqual(classification, "PROHIBITED")
+        mock_app.revoked_at = None
+        mock_app.approval_status = "APPROVED"
+
+        # Case 6: Expired approval is rejected
+        mock_app.expiration_date = timezone.now() - timezone.timedelta(days=1)
+        is_valid, classification, reason = validate_procedure_safety_approval(
+            mock_app, "Turn off power switch and reset breaker"
+        )
+        self.assertFalse(is_valid)
+        self.assertEqual(classification, "UNKNOWN_REQUIRES_REVIEW")
+        self.assertIn("expired", reason)
+        mock_app.expiration_date = timezone.now() + timezone.timedelta(days=365)
+
+        # Case 7: Procedure version mismatch / replay of old approval after procedure changes
+        mock_doc.index_version = "2.0"  # Procedure document updated to 2.0 while approval is for 1.0
+        is_valid, classification, reason = validate_procedure_safety_approval(
+            mock_app, "Turn off power switch and reset breaker"
+        )
+        self.assertFalse(is_valid)
+        self.assertEqual(classification, "UNKNOWN_REQUIRES_REVIEW")
+        self.assertIn("version", reason)

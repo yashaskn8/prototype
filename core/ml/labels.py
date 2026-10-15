@@ -246,9 +246,14 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
     return {"verified_examples": verified_examples, "rejected": rejected}
 
 
-def expand_training_triplets(verified_examples: List[dict]) -> List[dict]:
-    """Expands multi-positive and multi-negative examples into individual training triplets.
-    Ensures every reviewed hard negative and valid positive passage is preserved during training.
+def expand_training_triplets(verified_examples: List[dict], preserve_primary_positive_only: bool = False) -> List[dict]:
+    """Expands verified examples into training triplets while preventing in-batch false negative collisions.
+    Phase 6 Fix:
+    Under MultipleNegativesRankingLoss, all positive passages in a batch serve as negatives for other queries.
+    If a query anchor appears multiple times with alternative positive passages (P1 and P2), the loss
+    function treats P2 as a false negative when evaluating P1 for that query.
+    By default (preserve_primary_positive_only=True), each query anchor is paired with its primary reviewed
+    positive passage and verified hard negatives, eliminating intra-query false negative collisions.
     """
     triplets = []
     for ex in verified_examples:
@@ -259,7 +264,11 @@ def expand_training_triplets(verified_examples: List[dict]) -> List[dict]:
         tenant_id = ex.get("tenant_id")
         source_group = ex.get("source_group")
 
-        for p_idx, ptext in enumerate(pos_texts):
+        if not pos_texts or not qtext:
+            continue
+
+        selected_positives = [pos_texts[0]] if preserve_primary_positive_only else pos_texts
+        for p_idx, ptext in enumerate(selected_positives):
             if neg_texts:
                 for n_idx, ntext in enumerate(neg_texts):
                     triplets.append({

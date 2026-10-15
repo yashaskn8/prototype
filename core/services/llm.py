@@ -486,8 +486,9 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     grounded_chunks = []
     for r in applicable_chunks:
         is_supported, reason = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers)
-        has_id_match = getattr(r, "exact_identifier_match", False)
-        if is_supported or has_id_match:
+        # Phase 2 Fix: Enforce strict separation between retrieval signals and evidence verification.
+        # An exact-identifier match (ranking signal) must NEVER override failed claim support.
+        if is_supported:
             r.evidence_support = True
             grounded_chunks.append(r)
         else:
@@ -501,8 +502,10 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
             grounded_chunks=[],
         )
 
-    # 6. Industrial Procedure Approval: check if customer action is authorized
-    approved_chunks = [r for r in grounded_chunks if getattr(r, "customer_action_authorized", True)]
+    # 6. Industrial Procedure Approval (Phase 4 Fix):
+    # Customer physical action authorization defaults strictly to False.
+    # It cannot be inferred from document trust or candidate scoring.
+    approved_chunks = [r for r in grounded_chunks if getattr(r, "customer_action_authorized", False)]
 
     return EvidenceSufficiencyResult(
         is_sufficient=True, reason="evidence-sufficient",

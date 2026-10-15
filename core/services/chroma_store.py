@@ -227,6 +227,7 @@ def sync_document_to_chroma(document_id: int):
 
         embeddings = model.encode(texts_to_embed, normalize_embeddings=True).tolist()
 
+        import hashlib
         metadatas = [{
             "document_id": int(doc.id),
             "tenant_id": int(doc.tenant_id),
@@ -239,6 +240,9 @@ def sync_document_to_chroma(document_id: int):
             "title": str(doc.title)[:200],
             "heading": str(c.heading)[:200],
             "doc_type": str(doc.doc_type),
+            "document_version": str(version or "1.0"),
+            "content_sha256": hashlib.sha256(c.text.encode("utf-8")).hexdigest(),
+            "embedding_model": "all-MiniLM-L6-v2",
         } for c in chunks]
 
         chunk_texts = [c.text for c in chunks]
@@ -249,18 +253,15 @@ def sync_document_to_chroma(document_id: int):
         else:
             dense_coll = get_dense_collection()
 
-        # Non-destructive vector addition: do NOT delete previous vectors
-        existing = dense_coll.get(ids=ids)
-        existing_ids = set(existing.get("ids") or [])
-        new_indices = [i for i, cid in enumerate(ids) if cid not in existing_ids]
-
-        if new_indices:
-            dense_coll.add(
-                ids=[ids[i] for i in new_indices],
-                embeddings=[embeddings[i] for i in new_indices],
-                documents=[chunk_texts[i] for i in new_indices],
-                metadatas=[metadatas[i] for i in new_indices]
-            )
+        # Phase 11 Fix: Non-destructive versioned reconciliation.
+        # Use upsert so that modified content refreshes vectors and metadata rather than
+        # silently preserving stale embeddings under add-only skip semantics.
+        dense_coll.upsert(
+            ids=ids,
+            embeddings=embeddings,
+            documents=chunk_texts,
+            metadatas=metadatas,
+        )
 
         KnowledgeDocument.objects.filter(id=document_id).update(
             index_status="INDEXED",

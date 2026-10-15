@@ -49,6 +49,7 @@ class RetrievedChunk:
     source_verified: bool = False
     equipment_applicable: bool = False
     customer_action_authorized: bool = False
+    source_eligible: bool = False
 
     @property
     def reference(self):
@@ -483,13 +484,14 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
             if is_real_tenant(d.tenant)
             else bool(d.is_rag_enabled and not d.is_confidential and d.checksum_sha256)
         )
-        action_authorized = bool(
-            is_verified
-            and is_equip_applicable
+        is_eligible = bool(
+            d.is_rag_enabled
             and not d.is_confidential
-            and d.is_rag_enabled
             and not getattr(chunk, "is_quarantined", False)
         )
+        # customer_action_authorized must NEVER be granted merely from document eligibility.
+        # It defaults to False and can only be authorized by ProcedureApproval through safety authority.
+        action_authorized = False
 
         scored.append(RetrievedChunk(
             source_kind="knowledge_document",
@@ -510,6 +512,7 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
             equipment_applicable=is_equip_applicable,
             customer_action_authorized=action_authorized,
             source_verified=is_verified,
+            source_eligible=is_eligible,
         ))
 
     scored.sort(key=lambda r: r.score, reverse=True)
@@ -563,6 +566,16 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
 
         profile = get_profile(profile_key)
+        # Phase 7 Fix: Enforce model promotion gating at serving time
+        if not getattr(profile, "promotion_eligible", False) and not staff_mode:
+            logger.warning(
+                "Embedding profile '%s' is not promotion eligible (training_status='%s'). "
+                "Rejecting unpromoted model and falling back to authorized baseline profile.",
+                profile.key, getattr(profile, "training_status", "unknown"),
+            )
+            profile_key = "company-minilm" if is_real else "minilm"
+            profile = get_profile(profile_key)
+
         model = load_model(profile)
         if model is None or not allowed_doc_ids:
             return []
@@ -575,16 +588,24 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         # chunks in the top-N retrieved.
         doc_id_list = [int(did) for did in allowed_doc_ids]
 
-        # Scalable candidate retrieval (Operation 13.0):
-        # Batch document IDs into slices of <= 400 so Chroma $in limits are respected
-        # while preventing unauthorized candidate dilution.
+        # Scalable candidate retrieval (Phase 1 Fix):
+        # Choose Chroma result depth based on authorized chunk count and bounded retrieval budget.
+        # NEVER cap vector hits by the number of document IDs (prevents multi-chunk recall suppression).
         batch_size = 400
         doc_id_batches = [doc_id_list[i : i + batch_size] for i in range(0, len(doc_id_list), batch_size)]
-        n_per_batch = min(top_k * 4, 30)
+        fusion_budget = min(max(top_k * 6, 40), 200)
 
-        all_metas = []
-        all_dists = []
+        # Map (doc_id, chunk_index) -> KnowledgeChunk for O(1) post-query lookup and verification
+        candidates_by_doc_chunk = {(c.document_id, c.chunk_index): c for c in candidates}
+        # Deduplicate results across overlapping batches: key -> (metadata, distance)
+        best_matches = {}
+
         for batch_ids in doc_id_batches:
+            batch_chunk_count = sum(1 for (did, _) in candidates_by_doc_chunk.keys() if did in batch_ids)
+            if batch_chunk_count == 0:
+                continue
+            n_results = min(fusion_budget, max(batch_chunk_count, 1))
+
             chroma_where = {
                 "$and": [
                     {"tenant_id": int(tenant.id)},
@@ -593,27 +614,26 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
             }
             res = dense_coll.query(
                 query_embeddings=[query_embedding],
-                n_results=min(n_per_batch, max(len(batch_ids), 1)),
+                n_results=n_results,
                 where=chroma_where,
             )
             if res and res.get("metadatas") and res["metadatas"][0]:
-                all_metas.extend(res["metadatas"][0])
-                all_dists.extend(res["distances"][0])
+                for meta, dist in zip(res["metadatas"][0], res["distances"][0]):
+                    doc_id = meta.get("document_id")
+                    chunk_idx = meta.get("chunk_index", 0)
+                    if doc_id not in allowed_doc_ids:
+                        continue
+                    key = (doc_id, chunk_idx)
+                    if key not in candidates_by_doc_chunk:
+                        # Vector in Chroma is stale or unassociated with authorized candidate
+                        continue
+                    if key not in best_matches or dist < best_matches[key][1]:
+                        best_matches[key] = (meta, dist)
 
         scored = []
-        if all_metas:
-            for meta, dist in zip(all_metas, all_dists):
-                doc_id = meta.get("document_id")
-                chunk_idx = meta.get("chunk_index", 0)
-
-                # Defense-in-depth: revalidate authorization on every row
-                if doc_id not in allowed_doc_ids:
-                    continue
-
-                matched_chunk = next(
-                    (c for c in candidates if c.document_id == doc_id and c.chunk_index == chunk_idx),
-                    None,
-                )
+        if best_matches:
+            for (doc_id, chunk_idx), (meta, dist) in best_matches.items():
+                matched_chunk = candidates_by_doc_chunk.get((doc_id, chunk_idx))
                 if not matched_chunk or matched_chunk.is_quarantined:
                     continue
                 if not is_authorized_candidate(
@@ -660,13 +680,14 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     if is_real
                     else bool(d.is_rag_enabled and not d.is_confidential and d.checksum_sha256)
                 )
-                action_authorized = bool(
-                    is_verified
-                    and is_equip_applicable
+                is_eligible = bool(
+                    d.is_rag_enabled
                     and not d.is_confidential
-                    and d.is_rag_enabled
                     and not getattr(matched_chunk, "is_quarantined", False)
                 )
+                # Phase 4 Fix: customer_action_authorized must NEVER be granted merely from document eligibility.
+                # Only procedure-specific safety authority may authorize customer actions.
+                action_authorized = False
 
                 scored.append(RetrievedChunk(
                     source_kind="knowledge_document",
@@ -688,6 +709,7 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     equipment_applicable=is_equip_applicable,
                     customer_action_authorized=action_authorized,
                     source_verified=is_verified,
+                    source_eligible=is_eligible,
                 ))
 
         scored.sort(key=lambda r: r.score, reverse=True)
