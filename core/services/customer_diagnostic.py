@@ -397,8 +397,8 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
     if asset:
         try:
             from core.models import ProcedureApproval
+            from core.services.safety_authority import validate_procedure_safety_approval
             tenant = getattr(asset, "tenant", None)
-            now = timezone.now()
             if tenant:
                 approvals = ProcedureApproval.objects.filter(
                     tenant=tenant,
@@ -407,65 +407,11 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
                     revoked_at__isnull=True,
                 ).select_related("document", "source_chunk")
                 for app in approvals:
-                    # Gate 1: Revocation
-                    if app.revoked_at is not None:
-                        continue
-                    # Gate 2: Effective and expiration dates
-                    if app.effective_date and app.effective_date > now:
-                        continue
-                    if app.expiration_date and app.expiration_date < now:
-                        continue
-                    # Gate 3: Applicable asset scope
-                    if app.asset_scope != "*" and app.asset_scope != asset_code:
-                        continue
-                    # Gate 4: Exact equipment model match
-                    if app.equipment_model and app.equipment_model != "*":
-                        if not asset_model or app.equipment_model.strip().lower() != asset_model.strip().lower():
-                            continue
-                    # Gate 5: Equipment manufacturer match
-                    if app.equipment_manufacturer and app.equipment_manufacturer != "*":
-                        if not asset_mfr or app.equipment_manufacturer.strip().lower() != str(asset_mfr).strip().lower():
-                            continue
-                    # Gate 6: Source document identity and integrity
-                    if not app.document or not app.document.is_rag_enabled or app.document.is_confidential:
-                        continue
-                    if app.document_version and getattr(app.document, "index_version", None):
-                        if str(app.document_version) != str(app.document.index_version):
-                            continue
-
-                    # Gate 7: Independently authenticated approval authority and evidence
-                    from core.ml.labels import is_authorized_reviewer
-                    if not app.reviewer_identity or not is_authorized_reviewer(app.reviewer_identity, tenant.id):
-                        continue
-                    evidence = (app.approval_evidence or "").strip().lower()
-                    if len(evidence) < 10 or any(p in evidence for p in ("placeholder", "test", "dummy", "self-approved", "n/a")):
-                        continue
-
-                    # Gate 8: Safety Prerequisites Check
-                    prereqs = app.prerequisites or []
-                    hazardous_prereqs = {"live_circuit", "open_cabinet", "bypass_interlock", "high_voltage", "refrigerant_gauge", "three_phase"}
-                    if any(p.lower() in hazardous_prereqs for p in prereqs if isinstance(p, str)):
-                        return "TECHNICIAN_ONLY", f"Procedure requires certified technician safety prerequisites ({', '.join(prereqs)})."
-
-                    # Gate 9: Keywords match
-                    keywords = app.procedure_keywords or []
-                    if not any(kw in lower for kw in keywords):
-                        continue
-
-                    # Gate 10: Secondary unsafe step check in procedure text
-                    has_prohibited = any(kw in lower for kw in PROHIBITED_KEYWORDS)
-                    has_tech_hazard = any(kw in lower for kw in TECHNICIAN_ONLY_KEYWORDS)
-                    if has_prohibited:
-                        return "PROHIBITED", "Procedure contains prohibited safety violations or bypass steps."
-                    if has_tech_hazard:
-                        return "TECHNICIAN_ONLY", "Procedure contains hazardous secondary work requiring a certified technician."
-
-                    # Gate 11: Procedure approval hazards check
-                    app_hazards = app.hazards or []
-                    if any(h in ("electrical", "three_phase", "refrigerant", "chemical", "pressure", "high_voltage") for h in app_hazards):
-                        return "TECHNICIAN_ONLY", f"Procedure involves certified technician-only hazards ({', '.join(app_hazards)})."
-
-                    return "CUSTOMER_APPROVED", f"Authorized customer procedure ({app.procedure_id}) with verified manufacturer approval."
+                    is_valid, classification, reason = validate_procedure_safety_approval(app, lower, asset=asset, tenant=tenant)
+                    if is_valid:
+                        return classification, reason
+                    elif classification in ("TECHNICIAN_ONLY", "PROHIBITED"):
+                        return classification, reason
         except Exception:
             pass
 
@@ -600,6 +546,7 @@ def find_grounding_reference(
             verified_ref["chunk_id"] = chunk.id
             verified_ref["heading"] = chunk.heading or ""
             verified_ref["text"] = chunk.text
+            verified_ref["document_version"] = str(getattr(doc, "index_version", "1.0") or "1.0")
             return True, verified_ref, "VALID"
 
     return False, None, "ACTION_NOT_GROUNDED_IN_CHUNKS"
@@ -869,15 +816,23 @@ def build_structured_diagnostic_contract(
                     citation_label = matched_ref.get("reference") or matched_ref.get("title") or "Approved Technical Manual"
                     doc_id = matched_ref.get("document_id")
                     chunk_id = matched_ref.get("chunk_id")
+                    doc_ver = matched_ref.get("document_version") or "1.0"
+                    excerpt = (matched_ref.get("text") or "")[:240].strip()
                     customer_safe_actions.append({
                         "action_id": f"step_{step_num}",
                         "step_number": step_num,
                         "action": clean_check,
+                        "claim_text": clean_check,
                         "why": "",
                         "safety_classification": safety_level,
                         "citation_ref": citation_label,
                         "document_id": doc_id,
                         "chunk_id": chunk_id,
+                        "document_version": doc_ver,
+                        "excerpt": excerpt,
+                        "evidence_verification_status": "VERIFIED",
+                        "applicability": f"Asset {asset.asset_code} (Model {asset.model_number})" if asset and asset.asset_code else "Applicable",
+                        "audience": "customer",
                     })
                     step_num += 1
                 else:
@@ -914,15 +869,23 @@ def build_structured_diagnostic_contract(
                     citation_label = matched_ref.get("reference") or matched_ref.get("title") or "Approved Technical Manual"
                     doc_id = matched_ref.get("document_id")
                     chunk_id = matched_ref.get("chunk_id")
+                    doc_ver = matched_ref.get("document_version") or "1.0"
+                    excerpt = (matched_ref.get("text") or "")[:240].strip()
                     customer_safe_actions.append({
                         "action_id": f"step_{step_num}",
                         "step_number": step_num,
                         "action": clean_action,
+                        "claim_text": clean_action,
                         "why": "",
                         "safety_classification": safety_level,
                         "citation_ref": citation_label,
                         "document_id": doc_id,
                         "chunk_id": chunk_id,
+                        "document_version": doc_ver,
+                        "excerpt": excerpt,
+                        "evidence_verification_status": "VERIFIED",
+                        "applicability": f"Asset {asset.asset_code} (Model {asset.model_number})" if asset and asset.asset_code else "Applicable",
+                        "audience": "customer",
                     })
                     step_num += 1
                 else:

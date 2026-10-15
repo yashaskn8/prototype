@@ -46,6 +46,84 @@ class RetrievedResultList(list):
         self.retrieval_backend = retrieval_backend
 
 
+def is_authorized_candidate(
+    chunk,
+    *,
+    tenant,
+    customer=None,
+    asset=None,
+    include_confidential=False,
+    staff_mode=False,
+) -> bool:
+    """Canonical server-side authorization predicate for retrieved candidates.
+
+    Every candidate MUST satisfy all mandatory constraints:
+    1. Authorized tenant
+    2. Authorized customer
+    3. Authorized asset / product hierarchy
+    4. Document visibility (is_rag_enabled=True, index_status valid)
+    5. Confidentiality (if not include_confidential, is_confidential=False)
+    6. Chunk quarantine state (is_quarantined=False)
+    7. Revocation status (revoked_at is None)
+    8. Positive provenance in verified_real_only mode
+    """
+    if not chunk:
+        return False
+    doc = getattr(chunk, "document", None)
+    if not doc:
+        return False
+
+    # 1. Tenant boundary
+    if chunk.tenant_id != tenant.id or doc.tenant_id != tenant.id:
+        return False
+
+    # 2. Chunk quarantine state
+    if getattr(chunk, "is_quarantined", False):
+        return False
+
+    # 3. Document visibility & index state
+    if not doc.is_rag_enabled or doc.index_status not in ("INDEXED", "INDEXING"):
+        return False
+    if getattr(doc, "revoked_at", None) is not None:
+        return False
+
+    # 4. Confidentiality
+    if not include_confidential and doc.is_confidential:
+        return False
+
+    # 5. Customer scoping
+    if customer:
+        if doc.customer_id is not None and doc.customer_id != customer.id:
+            return False
+    else:
+        if not staff_mode and doc.customer_id is not None:
+            if not asset or doc.customer_id != getattr(asset, "customer_id", None):
+                return False
+
+    # 6. Asset & Equipment scoping
+    if asset:
+        # Document bound to a different asset is strictly rejected
+        if doc.asset_id is not None and doc.asset_id != asset.id:
+            return False
+        # Document bound to a different product is strictly rejected
+        if doc.product_id is not None:
+            if not asset.product_id or doc.product_id != asset.product_id:
+                return False
+    else:
+        # Unscoped query: only tenant-wide general documents allowed
+        if doc.asset_id is not None or doc.product_id is not None:
+            return False
+
+    # 7. Real company provenance verification
+    from .customer_isolation import get_customer_data_mode, is_real_tenant, is_verified_real_document
+    mode = get_customer_data_mode()
+    if not staff_mode and is_real_tenant(tenant) and mode == "verified_real_only":
+        if not is_verified_real_document(doc):
+            return False
+
+    return True
+
+
 def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False):
     from .customer_isolation import get_customer_data_mode, is_real_tenant
     mode = get_customer_data_mode()
@@ -82,37 +160,46 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
     if customer:
         qs = qs.filter(Q(document__customer__isnull=True) | Q(document__customer=customer))
-    else:
+    elif not staff_mode and asset and asset.customer_id:
+        qs = qs.filter(Q(document__customer__isnull=True) | Q(document__customer_id=asset.customer_id))
+    elif not staff_mode:
         qs = qs.filter(document__customer__isnull=True)
 
     if asset and asset.product:
         product = asset.product
-        # Hierarchy & Category-Independent Scoping:
+        # Hierarchy Scoping:
         # 1. Exact asset-bound documents: document__asset=asset
         # 2. Product-bound documents: document__asset__isnull=True, document__product=product
-        # 3. Fleet/unassigned documents within tenant (documents not bound to a different product or different asset):
-        #    document__asset__isnull=True, document__product__isnull=True
+        # 3. Fleet/unassigned documents within tenant: document__asset__isnull=True, document__product__isnull=True
+        # Explicit document IDs NEVER broaden scope; they are search hints, not authorization grants.
         scope = (
             Q(document__asset=asset)
             | Q(document__asset__isnull=True, document__product=product)
             | Q(document__asset__isnull=True, document__product__isnull=True)
         )
-        if query_doc_ids:
-            scope |= Q(document__id__in=query_doc_ids)
         qs = qs.filter(scope)
     elif asset:
         scope = Q(document__asset=asset) | Q(document__asset__isnull=True, document__product__isnull=True)
-        if query_doc_ids:
-            scope |= Q(document__id__in=query_doc_ids)
         qs = qs.filter(scope)
     else:
-        # NO asset context: restrict to unscoped/general fleet documents only
-        # unless an explicit document ID is requested
+        # NO asset context: restrict strictly to unscoped/general fleet documents
         scope = Q(document__asset__isnull=True, document__product__isnull=True)
-        if query_doc_ids:
-            scope |= Q(document__id__in=query_doc_ids)
         qs = qs.filter(scope)
-    return qs[:3000]
+
+    # Pre-filter candidate list to those passing canonical authorization predicate
+    candidates = list(qs[:3000])
+    return [
+        c for c in candidates
+        if is_authorized_candidate(
+            c,
+            tenant=tenant,
+            customer=customer,
+            asset=asset,
+            include_confidential=include_confidential,
+            staff_mode=staff_mode,
+        )
+    ]
+
 
 
 def _resolution_candidates(tenant, asset, customer, staff_mode):
@@ -297,7 +384,8 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                             evidence_text, query_identifiers, asset,
                             customer, tenant, top_k, min_score,
-                            query_doc_ids=None, staff_mode=False):
+                            query_doc_ids=None, staff_mode=False,
+                            include_confidential=False):
     """Score candidates using ChromaDB dense embeddings.
 
     Authorization is enforced BEFORE ranking by passing allowed_doc_ids into
@@ -371,6 +459,15 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     None,
                 )
                 if not matched_chunk or matched_chunk.is_quarantined:
+                    continue
+                if not is_authorized_candidate(
+                    matched_chunk,
+                    tenant=tenant,
+                    customer=customer,
+                    asset=asset,
+                    include_confidential=include_confidential,
+                    staff_mode=staff_mode,
+                ):
                     continue
 
                 d = matched_chunk.document
@@ -577,6 +674,7 @@ def retrieve(
             tenant, top_k, min_score,
             query_doc_ids=query_doc_ids,
             staff_mode=staff_mode,
+            include_confidential=include_confidential,
         )
     except Exception as exc:
         logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
@@ -596,10 +694,12 @@ def retrieve(
         results = []
         retrieval_backend = "fallback"
 
-    # Defense-in-depth: Ensure NO chunk from outside allowed_doc_ids can leak
+    # Defense-in-depth: Ensure NO chunk from outside authorized candidates can leak
     results = [
         r for r in results
-        if r.source_kind != "knowledge_document" or r.document_id in allowed_doc_ids
+        if r.source_kind != "knowledge_document" or (
+            r.document_id in allowed_doc_ids and r.chunk_id in allowed_chunks_by_id
+        )
     ]
 
     logger.info(

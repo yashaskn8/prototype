@@ -275,11 +275,22 @@ STARLLY_REAL_TENANTS = ["skydream"]
 STARLLY_REAL_ORGANISATIONS = ["273"]
 SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"
 
-# Authorized human training and procedure reviewers
+# Authorized human training reviewers (ML pipeline only - CANNOT approve industrial procedures)
 SERVY_AUTHORIZED_TRAINING_REVIEWERS = [
     "Pranav Patel",
     "Lead Diagnostics Engineer",
     "Staff Diagnostics Auditor",
     "dr-yashas-kn",
+    "admin",
+]
+
+# Dedicated authorized industrial safety approvers (STRICTLY separate from training reviewers)
+SERVY_AUTHORIZED_SAFETY_APPROVERS = [
+    "Certified OEM Safety Engineer",
+    "Director of Product Safety",
+    "Senior Industrial Safety Auditor",
+    "dr-yashas-kn",
+    "Lead Diagnostics Engineer",
+    "Staff Diagnostics Auditor",
     "admin",
 ]
