@@ -535,3 +535,149 @@ class TestDatasetSplitIntegrity(TestCase):
                 self.assertNotIn(r["query_id"], all_ids, "Row appears in multiple splits")
                 all_ids.add(r["query_id"])
         self.assertEqual(len(all_ids), 30)
+
+
+# ===========================================================================
+# Operation 17.0: Training Pipeline Integrity Hardening
+# ===========================================================================
+
+class TestOp17VerifiedTripletsStrictFailure(TestCase):
+    """Op17 M4: verified_triplets_only mode must FAIL with diagnostic
+    listing incomplete example IDs, not silently discard them."""
+
+    def test_verified_triplets_fails_with_incomplete_ids(self):
+        """When some examples lack negatives, the ValueError must list
+        the incomplete example IDs so the engineer can fix them."""
+        from core.ml.training import finetune, TRAINING_MODE_VERIFIED_TRIPLETS
+
+        rows = [
+            {"query_text": "query with neg", "positive_text": "pos A",
+             "negative_text": "neg A", "review_status": "approved", "query_id": "q-good"},
+            {"query_text": "query without neg", "positive_text": "pos B",
+             "negative_text": None, "review_status": "approved", "query_id": "q-missing"},
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            finetune(
+                rows, [], "/tmp/out", "abc",
+                synthetic_smoke_test=True,
+                training_mode=TRAINING_MODE_VERIFIED_TRIPLETS,
+            )
+        error_msg = str(ctx.exception)
+        self.assertIn("TRAINING_BLOCKED", error_msg)
+        self.assertIn("q-missing", error_msg,
+                       "Error must list the specific incomplete example IDs")
+        self.assertIn("1 of 2", error_msg,
+                       "Error must report exact counts of incomplete vs total")
+
+    def test_verified_triplets_passes_when_all_have_negatives(self):
+        """When ALL examples have negatives, verified_triplets must NOT raise."""
+        from core.ml.training import finetune, TRAINING_MODE_VERIFIED_TRIPLETS
+
+        rows = [
+            {"query_text": "query A", "positive_text": "pos A",
+             "negative_text": "neg A", "review_status": "approved", "query_id": "q1"},
+            {"query_text": "query B", "positive_text": "pos B",
+             "negative_text": "neg B", "review_status": "approved", "query_id": "q2"},
+        ]
+        # Should reach model loading (may fail in CI without model files)
+        # but must NOT fail at the verified_triplets validation stage
+        try:
+            finetune(
+                rows, [], "/tmp/out", "abc",
+                synthetic_smoke_test=True,
+                training_mode=TRAINING_MODE_VERIFIED_TRIPLETS,
+            )
+        except ValueError as e:
+            self.assertNotIn("TRAINING_BLOCKED", str(e),
+                             "Should not block training when all examples have negatives")
+        except Exception:
+            pass  # Model loading or other non-validation errors are OK
+
+
+class TestOp17NoBlankNegatives(TestCase):
+    """Op17 M3: No empty-string negatives must ever be passed to contrastive loss."""
+
+    def test_mixed_mode_dataset_has_no_blank_negatives(self):
+        """Expanded triplets must never contain blank negative_text."""
+        from core.ml.labels import expand_training_triplets
+        examples = [
+            {
+                "query_id": "q1", "query_text": "query with neg",
+                "positive_texts": ["pos A"],
+                "negative_texts": ["neg A"],
+            },
+            {
+                "query_id": "q2", "query_text": "query without neg",
+                "positive_texts": ["pos B"],
+                "negative_texts": [],
+            },
+        ]
+        triplets = expand_training_triplets(examples, preserve_primary_positive_only=True)
+        for t in triplets:
+            neg = t.get("negative_text")
+            if neg is not None:
+                self.assertNotEqual(neg, "",
+                                     f"Blank negative found for {t['query_id']}")
+                self.assertTrue(len(neg.strip()) > 0,
+                                f"Whitespace-only negative for {t['query_id']}")
+
+    def test_no_blank_negative_in_training_data_construction(self):
+        """The to_ds function must not use 'or empty-string' pattern for negatives."""
+        import inspect
+        from core.ml import training
+        source = inspect.getsource(training)
+        # The old dangerous pattern inserted blank negatives into contrastive loss
+        if "def to_ds" in source:
+            to_ds_body = source.split("def to_ds")[1].split("\n    out_dir")[0]
+            self.assertNotIn(
+                'or ""',
+                to_ds_body,
+                "to_ds must not contain 'or empty-string' pattern for negatives"
+            )
+
+
+class TestOp17ServingConfigGateIndependence(TestCase):
+    """Op17 M6: Per-request serving config must be independent."""
+
+    def test_scoring_functions_accept_serving_config(self):
+        """Retrieval scoring functions must accept serving_config parameter."""
+        import inspect
+        from core.services.retriever import _sparse_score_candidates, _dense_score_candidates
+        sparse_sig = inspect.signature(_sparse_score_candidates)
+        dense_sig = inspect.signature(_dense_score_candidates)
+        self.assertIn("serving_config", sparse_sig.parameters,
+                       "_sparse_score_candidates must accept serving_config")
+        self.assertIn("serving_config", dense_sig.parameters,
+                       "_dense_score_candidates must accept serving_config")
+
+    @override_settings(SERVY_DENSE_RELEVANCE_GATE=0.38)
+    def test_config_reflects_low_gate(self):
+        """ServingConfig must read 0.38 from settings when configured."""
+        from core.services.retriever import get_serving_config
+        config = get_serving_config()
+        self.assertEqual(config.dense_relevance_gate, 0.38)
+
+    @override_settings(SERVY_DENSE_RELEVANCE_GATE=0.55)
+    def test_config_reflects_high_gate(self):
+        """ServingConfig must read 0.55 from settings when configured."""
+        from core.services.retriever import get_serving_config
+        config = get_serving_config()
+        self.assertEqual(config.dense_relevance_gate, 0.55)
+
+    def test_two_configs_with_different_gates_are_independent(self):
+        """Two ServingConfig instances must not share mutable state."""
+        from core.services.retriever import ServingConfig
+        config_low = ServingConfig(
+            dense_relevance_gate=0.38,
+            sparse_relevance_gate=0.055,
+            embedding_profile="auto",
+        )
+        config_high = ServingConfig(
+            dense_relevance_gate=0.55,
+            sparse_relevance_gate=0.055,
+            embedding_profile="auto",
+        )
+        self.assertEqual(config_low.dense_relevance_gate, 0.38)
+        self.assertEqual(config_high.dense_relevance_gate, 0.55)
+        with self.assertRaises(Exception):
+            config_low.dense_relevance_gate = 0.99  # type: ignore

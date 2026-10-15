@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 
 from core.ml import embeddings as E
 from core.ml.labels import validate_labels, split_by_group
-from core.models import KnowledgeChunk, KnowledgeDocument, Tenant
+from core.models import KnowledgeChunk, KnowledgeDocument, SourceProvenanceRecord, Tenant
 
 
 def _model_available():
@@ -138,6 +138,32 @@ class LabelValidationTests(TestCase):
 
         from django.utils import timezone
         self.now_str = timezone.now().isoformat()
+
+        # Create verified SourceProvenanceRecord for each document.
+        # The strengthened validate_labels contract requires provenance records
+        # for all documents referenced by approved training labels.
+        SourceProvenanceRecord.objects.create(
+            tenant=self.t1,
+            source_system="starlly",
+            source_org="273",
+            external_object_type="document",
+            external_id=f"test-doc-d1-{uuid.uuid4().hex[:8]}",
+            local_object_type="KnowledgeDocument",
+            local_object_id=d1.id,
+            verification_status="VERIFIED",
+            verified_at=timezone.now(),
+        )
+        SourceProvenanceRecord.objects.create(
+            tenant=self.t2,
+            source_system="starlly",
+            source_org="273",
+            external_object_type="document",
+            external_id=f"test-doc-d2-{uuid.uuid4().hex[:8]}",
+            local_object_type="KnowledgeDocument",
+            local_object_id=d2.id,
+            verification_status="VERIFIED",
+            verified_at=timezone.now(),
+        )
 
     def _row(self, **kw):
         r = {"query_id": uuid.uuid4().hex, "query_text": "q", "tenant_id": self.t1.id,

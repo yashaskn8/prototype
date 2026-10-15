@@ -113,44 +113,37 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     if not train_rows:
         raise ValueError("No training rows: BLOCKED — VALID TRAINING DATA REQUIRED.")
 
-
-    import torch
-    from datasets import Dataset
-    from sentence_transformers import (SentenceTransformer, SentenceTransformerTrainer,
-                                       SentenceTransformerTrainingArguments)
-    try:
-        from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
-        from sentence_transformers.sentence_transformer.training_args import BatchSamplers
-    except ImportError:
-        from sentence_transformers.losses import MultipleNegativesRankingLoss  # type: ignore
-        from sentence_transformers.training_args import BatchSamplers  # type: ignore
-    from .embeddings import BGE_QUERY_PREFIX
-
-    torch.manual_seed(seed)
-    model = SentenceTransformer("BAAI/bge-small-en-v1.5", revision=base_revision,
-                                device="cpu", local_files_only=True)
-    model.max_seq_length = max_seq_length
-
+    # ---- Triplet expansion (no model required) ----
     from .labels import expand_training_triplets
     train_triplets = expand_training_triplets(train_rows, preserve_primary_positive_only=True)
     val_triplets = expand_training_triplets(val_rows, preserve_primary_positive_only=True) if val_rows else []
 
     # ---- Phase 1 (Operation 16.0): Explicit training mode enforcement ----
+    # FAIL-FAST: Validate training mode BEFORE expensive model loading (Op17 fix).
     # Categorize every expanded triplet into with-negative or without-negative.
     triplets_with_neg = [r for r in train_triplets if r.get("negative_text")]
     triplets_without_neg = [r for r in train_triplets if not r.get("negative_text")]
     excluded_example_ids = []
 
     if training_mode == TRAINING_MODE_VERIFIED_TRIPLETS:
-        # Strict: require every example to have a reviewed negative.
+        # Strict: FAIL if any example lacks a reviewed negative.
+        # Do NOT silently discard incomplete triplets — this contradicts
+        # the documented contract that every example must have a reviewed negative.
         if triplets_without_neg:
-            excluded_example_ids = [r.get("query_id", "?") for r in triplets_without_neg]
+            incomplete_ids = [r.get("query_id", "?") for r in triplets_without_neg]
+            raise ValueError(
+                f"TRAINING_BLOCKED: verified_triplets_only mode requires reviewed negatives "
+                f"for EVERY example. {len(triplets_without_neg)} of "
+                f"{len(train_triplets)} examples lack negatives. "
+                f"Incomplete example IDs: {incomplete_ids[:50]}. "
+                f"Either provide reviewed negatives for all examples, or use "
+                f"'positive_pairs_only' or 'mixed_verified_examples' mode."
+            )
         effective_triplets = triplets_with_neg
         if not effective_triplets:
             raise ValueError(
                 f"TRAINING_BLOCKED: verified_triplets_only mode requires reviewed negatives "
-                f"for every example, but {len(triplets_without_neg)} examples lack negatives "
-                f"and 0 have them. Cannot proceed."
+                f"for every example, but no examples have negatives. Cannot proceed."
             )
         use_negatives = True
 
@@ -162,6 +155,7 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     elif training_mode == TRAINING_MODE_MIXED:
         # Use triplets where negatives exist, pairs where they don't.
         # Record which examples contribute negatives and which don't.
+        # CRITICAL: Never insert empty-string negatives into contrastive loss.
         effective_triplets = train_triplets
         use_negatives = bool(triplets_with_neg)  # Only include negative column if any exist
     else:
@@ -179,22 +173,34 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     else:
         effective_val = val_triplets
 
+    # ---- Heavy imports and model loading (after validation passes) ----
+    import torch
+    from datasets import Dataset
+    from sentence_transformers import (SentenceTransformer, SentenceTransformerTrainer,
+                                       SentenceTransformerTrainingArguments)
+    try:
+        from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
+        from sentence_transformers.sentence_transformer.training_args import BatchSamplers
+    except ImportError:
+        from sentence_transformers.losses import MultipleNegativesRankingLoss  # type: ignore
+        from sentence_transformers.training_args import BatchSamplers  # type: ignore
+    from .embeddings import BGE_QUERY_PREFIX
+
+    torch.manual_seed(seed)
+    model = SentenceTransformer("BAAI/bge-small-en-v1.5", revision=base_revision,
+                                device="cpu", local_files_only=True)
+    model.max_seq_length = max_seq_length
+
     def to_ds(triplets, include_neg: bool):
         if not triplets:
             return None
         if include_neg:
-            # Only include examples that actually have negatives
+            # Only include examples that actually have negatives.
+            # NEVER insert empty-string negatives — this creates degenerate
+            # training signals where the loss pushes embeddings away from
+            # a meaningless blank passage.
             has_neg = [r for r in triplets if r.get("negative_text")]
-            no_neg = [r for r in triplets if not r.get("negative_text")]
-            if has_neg and no_neg and training_mode == TRAINING_MODE_MIXED:
-                # Mixed mode: include negative column, fill missing with empty string
-                # so MNRL treats them as in-batch negatives only for those rows
-                return Dataset.from_dict({
-                    "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
-                    "positive": [r["positive_text"] for r in triplets],
-                    "negative": [r.get("negative_text") or "" for r in triplets],
-                })
-            elif has_neg:
+            if has_neg:
                 return Dataset.from_dict({
                     "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in has_neg],
                     "positive": [r["positive_text"] for r in has_neg],

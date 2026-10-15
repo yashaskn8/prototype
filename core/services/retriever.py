@@ -471,7 +471,8 @@ def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: st
 
 def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
                              query_identifiers, asset, customer, min_score,
-                             query_doc_ids=None, evidence_text=None):
+                             query_doc_ids=None, evidence_text=None,
+                             serving_config=None):
     """Score all candidates using hybrid lexical scoring (BM25 + character n-grams + sparse hashing).
 
     Returns list of RetrievedChunk tuples sorted by score descending with explicit sparse_rank.
@@ -509,7 +510,9 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 
         # Content relevance gate (Defect #3 fix): candidate must pass minimum content match
         # before metadata bonus can apply. Exact identifier matches are always relevant.
-        if content_score < SPARSE_RELEVANCE_GATE and id_boost <= 0.0:
+        # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
+        _sparse_gate = serving_config.sparse_relevance_gate if serving_config else _get_sparse_gate()
+        if content_score < _sparse_gate and id_boost <= 0.0:
             continue
 
         # Prevent single-word distractors from receiving metadata bonus alone
@@ -576,7 +579,8 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                             evidence_text, query_identifiers, asset,
                             customer, tenant, top_k, min_score,
                             query_doc_ids=None, staff_mode=False,
-                            include_confidential=False):
+                            include_confidential=False,
+                            serving_config=None):
     """Score candidates using ChromaDB dense embeddings.
 
     Authorization is enforced BEFORE ranking by passing allowed_doc_ids into
@@ -702,7 +706,9 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
                 # Content relevance gate (Defect #3 fix): if semantic similarity is too low
                 # and no identifier matches, metadata bonus cannot rescue the document.
-                if sim < DENSE_RELEVANCE_GATE and id_boost <= 0.0:
+                # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
+                _dense_gate = serving_config.dense_relevance_gate if serving_config else _get_dense_gate()
+                if sim < _dense_gate and id_boost <= 0.0:
                     continue
 
                 if getattr(profile, "content_first", False):
@@ -932,6 +938,11 @@ def retrieve(
 
     retrieval_backend = "fallback"
 
+    # Construct immutable per-request serving config (Op17 Phase 2 fix).
+    # This ensures each retrieval call uses its own snapshot of settings,
+    # preventing cross-contamination between parallel requests or experiments.
+    serving_config = get_serving_config()
+
     # Step 2: TRUE HYBRID RETRIEVAL — run dense AND sparse concurrently,
     # then fuse results using Reciprocal Rank Fusion (Phase 2).
     # This replaces the old "sparse only if dense returns nothing" approach.
@@ -942,6 +953,7 @@ def retrieve(
         query_identifiers, asset, customer, min_score,
         query_doc_ids=query_doc_ids,
         evidence_text=evidence_text,
+        serving_config=serving_config,
     )
 
     # 2b: Dense retrieval (may fail gracefully)
@@ -953,6 +965,7 @@ def retrieve(
             query_doc_ids=query_doc_ids,
             staff_mode=staff_mode,
             include_confidential=include_confidential,
+            serving_config=serving_config,
         )
     except Exception as exc:
         logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)

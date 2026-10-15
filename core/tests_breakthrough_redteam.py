@@ -497,7 +497,7 @@ class BreakthroughRedTeamTests(TestCase):
         prov.save()
         res = validate_labels([valid_row])
         self.assertEqual(len(res["rejected"]), 1)
-        self.assertIn("unverified/revoked provenance", res["rejected"][0][1])
+        self.assertIn("unverified provenance", res["rejected"][0][1])
 
         # Restore prov
         prov.verification_status = "VERIFIED"
