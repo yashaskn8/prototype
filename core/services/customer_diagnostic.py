@@ -426,30 +426,41 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
                     if app.equipment_manufacturer and app.equipment_manufacturer != "*":
                         if not asset_mfr or app.equipment_manufacturer.strip().lower() != str(asset_mfr).strip().lower():
                             continue
-                    # Gate 6: Source document and version
-                    if app.document:
-                        if not app.document.is_rag_enabled or app.document.is_confidential:
+                    # Gate 6: Source document identity and integrity
+                    if not app.document or not app.document.is_rag_enabled or app.document.is_confidential:
+                        continue
+                    if app.document_version and getattr(app.document, "index_version", None):
+                        if str(app.document_version) != str(app.document.index_version):
                             continue
-                        if app.document_version and getattr(app.document, "version", None):
-                            if str(app.document_version) != str(app.document.version):
-                                continue
-                    # Gate 7: Independently authenticated approval evidence and reviewer identity
-                    if not app.reviewer_identity or not app.approval_evidence:
+
+                    # Gate 7: Independently authenticated approval authority and evidence
+                    from core.ml.labels import is_authorized_reviewer
+                    if not app.reviewer_identity or not is_authorized_reviewer(app.reviewer_identity, tenant.id):
                         continue
-                    if app.reviewer_identity.strip().upper() in ("UNVERIFIED", "NONE", "UNKNOWN", "ANONYMOUS"):
+                    evidence = (app.approval_evidence or "").strip().lower()
+                    if len(evidence) < 10 or any(p in evidence for p in ("placeholder", "test", "dummy", "self-approved", "n/a")):
                         continue
-                    # Gate 8: Keywords match
+
+                    # Gate 8: Safety Prerequisites Check
+                    prereqs = app.prerequisites or []
+                    hazardous_prereqs = {"live_circuit", "open_cabinet", "bypass_interlock", "high_voltage", "refrigerant_gauge", "three_phase"}
+                    if any(p.lower() in hazardous_prereqs for p in prereqs if isinstance(p, str)):
+                        return "TECHNICIAN_ONLY", f"Procedure requires certified technician safety prerequisites ({', '.join(prereqs)})."
+
+                    # Gate 9: Keywords match
                     keywords = app.procedure_keywords or []
                     if not any(kw in lower for kw in keywords):
                         continue
-                    # Gate 9: Secondary unsafe step check in procedure text
+
+                    # Gate 10: Secondary unsafe step check in procedure text
                     has_prohibited = any(kw in lower for kw in PROHIBITED_KEYWORDS)
                     has_tech_hazard = any(kw in lower for kw in TECHNICIAN_ONLY_KEYWORDS)
                     if has_prohibited:
                         return "PROHIBITED", "Procedure contains prohibited safety violations or bypass steps."
                     if has_tech_hazard:
                         return "TECHNICIAN_ONLY", "Procedure contains hazardous secondary work requiring a certified technician."
-                    # Gate 10: Procedure approval hazards check
+
+                    # Gate 11: Procedure approval hazards check
                     app_hazards = app.hazards or []
                     if any(h in ("electrical", "three_phase", "refrigerant", "chemical", "pressure", "high_voltage") for h in app_hazards):
                         return "TECHNICIAN_ONLY", f"Procedure involves certified technician-only hazards ({', '.join(app_hazards)})."

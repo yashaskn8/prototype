@@ -65,33 +65,64 @@ def is_authorized_reviewer(reviewer: str, tenant_id: int | None = None) -> bool:
     if len(reviewer) < 3:
         return False
     # Reject automated/synthetic/placeholder reviewer strings
-    disallowed = {"auto", "ai", "bot", "synthetic", "test", "dummy", "unknown", "system", "anonymous", "none"}
-    if reviewer.lower() in disallowed or any(d in reviewer.lower() for d in ("placeholder", "self-approved")):
+    disallowed = {"auto", "ai", "bot", "synthetic", "test", "dummy", "unknown", "system", "anonymous", "none", "placeholder", "self-approved"}
+    rev_lower = reviewer.lower()
+    if rev_lower in disallowed or any(d in rev_lower for d in disallowed):
         return False
     # Check against authorized settings if configured
     from django.conf import settings
     authorized = getattr(settings, "SERVY_AUTHORIZED_TRAINING_REVIEWERS", None)
-    if authorized is not None and reviewer not in authorized:
-        return False
-    return True
+    if authorized is not None:
+        return reviewer in authorized or any(a.lower() == rev_lower for a in authorized)
+    # Fail closed to authenticated staff user if allowlist not explicitly defined
+    try:
+        from django.contrib.auth.models import User
+        if User.objects.filter(username__iexact=reviewer, is_staff=True).exists():
+            return True
+        for u in User.objects.filter(is_staff=True):
+            full = f"{u.first_name} {u.last_name}".strip()
+            if full and full.lower() == rev_lower:
+                return True
+    except Exception:
+        pass
+    return False
 
 
-def validate_labels(rows: List[dict]) -> dict:
-    """Return {'valid': [...], 'rejected': [(query_id, reason)]}. Only approved rows can be valid."""
-    from core.models import KnowledgeChunk
+def validate_labels(rows: List[dict], require_approved: bool = True) -> dict:
+    """Return {'valid': [...], 'rejected': [(query_id, reason)]}. Enforces full data and provenance integrity."""
+    from core.models import KnowledgeChunk, SourceProvenanceRecord
     from django.utils.dateparse import parse_datetime
-    all_ids = {i for r in rows for i in r.get("positive_chunk_ids", []) + r.get("negative_chunk_ids", [])}
-    chunks = {c.id: c for c in KnowledgeChunk.objects.filter(id__in=all_ids).select_related("document", "document__source_provenance")}
+    def _get_pos(row):
+        p = row.get("positive_chunk_ids")
+        if p is None and row.get("positive_chunk_id") is not None:
+            return [row.get("positive_chunk_id")]
+        return p or []
+
+    def _get_neg(row):
+        n = row.get("negative_chunk_ids")
+        if n is None and row.get("negative_chunk_id") is not None:
+            return [row.get("negative_chunk_id")]
+        return n or []
+
+    all_ids = {i for r in rows for i in _get_pos(r) + _get_neg(r)}
+    chunks = {c.id: c for c in KnowledgeChunk.objects.filter(id__in=all_ids).select_related("document")}
+    
+    doc_ids = {c.document_id for c in chunks.values() if c.document_id}
+    # Explicit tenant-scoped, type-scoped provenance lookup
+    prov_records = list(SourceProvenanceRecord.objects.filter(
+        local_object_type="KnowledgeDocument",
+        local_object_id__in=doc_ids,
+    ))
+    prov_map = {(p.tenant_id, p.local_object_id): p for p in prov_records}
+
     valid, rejected, seen = [], [], set()
     for r in rows:
         qid = r.get("query_id")
-        pos, neg = r.get("positive_chunk_ids") or [], r.get("negative_chunk_ids") or []
+        pos, neg = _get_pos(r), _get_neg(r)
         reviewer = r.get("reviewer")
         reviewed_at = r.get("reviewed_at")
         reason = None
-        if r.get("review_status") != APPROVED:
-            reason = "not human-approved"
-        elif not (r.get("query_text") or "").strip():
+        if not (r.get("query_text") or "").strip():
             reason = "empty query"
         elif not pos:
             reason = "no positive"
@@ -99,9 +130,11 @@ def validate_labels(rows: List[dict]) -> dict:
             reason = "contradictory: chunk is both positive and negative"
         elif qid in seen:
             reason = "duplicate query_id"
-        elif not reviewer or not is_authorized_reviewer(reviewer, r.get("tenant_id")):
+        elif require_approved and r.get("review_status") != APPROVED:
+            reason = "not human-approved"
+        elif require_approved and (not reviewer or not is_authorized_reviewer(reviewer, r.get("tenant_id"))):
             reason = "invalid or unauthorized reviewer identity"
-        elif not reviewed_at or not parse_datetime(str(reviewed_at)):
+        elif require_approved and (not reviewed_at or not parse_datetime(str(reviewed_at))):
             reason = "missing or invalid approval timestamp"
         else:
             for cid in pos + neg:
@@ -115,16 +148,21 @@ def validate_labels(rows: List[dict]) -> dict:
                 if c.document.is_confidential and not r.get("allow_confidential", False):
                     reason = f"chunk {cid} is confidential and not permitted for general training"; break
                 # Check document provenance verification status
-                prov = getattr(c.document, "source_provenance", None)
-                if prov is not None and getattr(prov, "verification_status", "") not in ("VERIFIED", ""):
-                    reason = f"chunk {cid} document has unverified/revoked provenance ({prov.verification_status})"
-                    break
+                prov = prov_map.get((c.tenant_id, c.document_id))
+                if prov is not None:
+                    if prov.verification_status not in ("VERIFIED", "") or prov.revoked_at is not None:
+                        reason = f"chunk {cid} document has unverified/revoked provenance ({prov.verification_status})"
+                        break
+                    if r.get("source_org") and prov.source_org != str(r.get("source_org")):
+                        reason = f"chunk {cid} document source organization mismatch ({prov.source_org} != {r.get('source_org')})"
+                        break
         if reason:
             rejected.append((qid, reason))
         else:
             seen.add(qid)
             valid.append(r)
     return {"valid": valid, "rejected": rejected}
+
 
 
 def resolve_provenance_verified_examples(rows: List[dict], require_approved: bool = True) -> dict:
@@ -137,7 +175,7 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
     - Returns {'verified_examples': [...], 'rejected': [(qid, reason)]}.
     """
     from core.models import KnowledgeChunk
-    val_res = validate_labels(rows) if require_approved else {"valid": rows, "rejected": []}
+    val_res = validate_labels(rows, require_approved=require_approved)
     valid_rows = val_res["valid"]
     rejected = list(val_res["rejected"])
 
@@ -179,6 +217,8 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
             "query_text": r["query_text"],
             "tenant_id": r["tenant_id"],
             "positive_chunk_id": pos_id,
+            "positive_chunk_ids": [pos_id],
+            "negative_chunk_ids": r.get("negative_chunk_ids") or ([] if not r.get("negative_chunk_id") else [r.get("negative_chunk_id")]),
             "positive_document_id": pos_chunk.document_id,
             "positive_text": pos_chunk.text,
             "negative_text": neg_text,
@@ -198,6 +238,7 @@ def approve_label_candidate(candidate: dict, reviewer: str, positive_chunk_id: i
     if not is_authorized_reviewer(reviewer, candidate.get("tenant_id")):
         raise ValueError(f"Reviewer '{reviewer}' is not an authorized human reviewer.")
     from django.utils import timezone
+    from core.models import KnowledgeChunk
     chunk = KnowledgeChunk.objects.select_related("document").get(id=positive_chunk_id)
     content_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
 

@@ -1,0 +1,251 @@
+{
+  "minilm": {
+    "n_queries_evaluated": 7,
+    "n_abstention_queries": 2,
+    "mrr@10": 0.5357,
+    "ndcg@10": 0.5802,
+    "latency_ms_p50": 36.44,
+    "latency_ms_p95": 275.88,
+    "hit@1": 0.4286,
+    "recall@1": 0.4286,
+    "precision@1": 0.4286,
+    "hit@5": 0.7143,
+    "recall@5": 0.7143,
+    "precision@5": 0.1429,
+    "hit@10": 0.7143,
+    "recall@10": 0.7143,
+    "precision@10": 0.0714,
+    "abstention_accuracy": 1.0,
+    "model_profile": "company-minilm",
+    "model_id": "all-MiniLM-L6-v2",
+    "load_time_ms": 72986.06,
+    "peak_memory_mb": 221.35,
+    "wrong_equipment_rate": 0.0,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": true,
+    "training_status": "production",
+    "category_breakdown": {
+      "general_symptom": {
+        "n_queries": 2,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      },
+      "exact_error_code": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 1.0,
+        "mrr@10": 0.25,
+        "ndcg@10": 0.4307
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 0.5,
+        "mrr@10": 0.5,
+        "ndcg@10": 0.5
+      },
+      "misspelled_query": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "multi_symptom": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 1.0,
+        "mrr@10": 0.5,
+        "ndcg@10": 0.6309
+      }
+    },
+    "equipment_breakdown": {
+      "Split AC Unit 2T": {
+        "n_queries": 4,
+        "hit@1": 0.75,
+        "hit@5": 0.75,
+        "mrr@10": 0.75
+      },
+      "VRF Outdoor Module": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 1.0,
+        "mrr@10": 0.25
+      },
+      "Ductable AC 5T": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.5,
+        "mrr@10": 0.25
+      }
+    }
+  },
+  "bge-small-base": {
+    "n_queries_evaluated": 7,
+    "n_abstention_queries": 2,
+    "mrr@10": 0.3492,
+    "ndcg@10": 0.4001,
+    "latency_ms_p50": 58.27,
+    "latency_ms_p95": 213.58,
+    "hit@1": 0.2857,
+    "recall@1": 0.2857,
+    "precision@1": 0.2857,
+    "hit@5": 0.4286,
+    "recall@5": 0.4286,
+    "precision@5": 0.0857,
+    "hit@10": 0.5714,
+    "recall@10": 0.5714,
+    "precision@10": 0.0571,
+    "abstention_accuracy": 0.5,
+    "model_profile": "company-bge-small",
+    "model_id": "BAAI/bge-small-en-v1.5",
+    "load_time_ms": 635.22,
+    "peak_memory_mb": 9.77,
+    "wrong_equipment_rate": 0.0,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": true,
+    "training_status": "production",
+    "category_breakdown": {
+      "general_symptom": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 1.0,
+        "mrr@10": 0.6667,
+        "ndcg@10": 0.75
+      },
+      "exact_error_code": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0556,
+        "ndcg@10": 0.1505
+      },
+      "misspelled_query": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "multi_symptom": {
+        "n_queries": 1,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      }
+    },
+    "equipment_breakdown": {
+      "Split AC Unit 2T": {
+        "n_queries": 4,
+        "hit@1": 0.25,
+        "hit@5": 0.5,
+        "mrr@10": 0.3333
+      },
+      "VRF Outdoor Module": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0
+      },
+      "Ductable AC 5T": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 0.5,
+        "mrr@10": 0.5556
+      }
+    }
+  },
+  "bge-small-finetuned": {
+    "n_queries_evaluated": 7,
+    "n_abstention_queries": 2,
+    "mrr@10": 0.4036,
+    "ndcg@10": 0.4762,
+    "latency_ms_p50": 61.28,
+    "latency_ms_p95": 270.37,
+    "hit@1": 0.2857,
+    "recall@1": 0.2857,
+    "precision@1": 0.2857,
+    "hit@5": 0.5714,
+    "recall@5": 0.5714,
+    "precision@5": 0.1143,
+    "hit@10": 0.7143,
+    "recall@10": 0.7143,
+    "precision@10": 0.0714,
+    "abstention_accuracy": 1.0,
+    "model_profile": "company-bge-ft",
+    "model_id": "C:\\Users\\prana\\OneDrive\\Desktop\\SURVY-RAG\\prototype\\ml_models\\checkpoints\\servy_company_bge_v1\\final",
+    "load_time_ms": 673.29,
+    "peak_memory_mb": 9.39,
+    "wrong_equipment_rate": 0.2857,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": false,
+    "training_status": "COMPANY_DATA_WEAKLY_SUPERVISED_EXPERIMENT",
+    "category_breakdown": {
+      "general_symptom": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 1.0,
+        "mrr@10": 0.75,
+        "ndcg@10": 0.8155
+      },
+      "exact_error_code": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.5,
+        "mrr@10": 0.1625,
+        "ndcg@10": 0.3512
+      },
+      "misspelled_query": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "multi_symptom": {
+        "n_queries": 1,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      }
+    },
+    "equipment_breakdown": {
+      "Split AC Unit 2T": {
+        "n_queries": 4,
+        "hit@1": 0.25,
+        "hit@5": 0.5,
+        "mrr@10": 0.4062
+      },
+      "VRF Outdoor Module": {
+        "n_queries": 1,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0
+      },
+      "Ductable AC 5T": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 1.0,
+        "mrr@10": 0.6
+      }
+    }
+  }
+}

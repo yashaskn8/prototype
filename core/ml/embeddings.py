@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional
 
 from django.conf import settings
@@ -65,6 +66,20 @@ PROFILES: Dict[str, EmbeddingProfile] = {
     "company-minilm": EmbeddingProfile(
         key="company-minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
         collection="servy_company_dense_kb", content_first=False, promotion_eligible=True,
+    ),
+    "company-bge-ft": EmbeddingProfile(
+        key="company-bge-ft",
+        model_id=str(getattr(settings, "BASE_DIR", Path(__file__).resolve().parent.parent.parent) / "ml_models" / "checkpoints" / "servy_company_bge_v1" / "final"),
+        revision=None,
+        dim=384,
+        collection="servy_company_bge_ft_v1",
+        query_prefix=BGE_QUERY_PREFIX,
+        content_first=True,
+        local_path=str(getattr(settings, "BASE_DIR", Path(__file__).resolve().parent.parent.parent) / "ml_models" / "checkpoints" / "servy_company_bge_v1" / "final"),
+        promotion_eligible=False,
+        training_status="COMPANY_DATA_WEAKLY_SUPERVISED_EXPERIMENT",
+        checkpoint_hash="7d394413398be69d2d1093538e5eec6cafa58cbfeae858cac4abf608b5db0d33",
+        base_revision=BGE_SMALL_REVISION,
     ),
 }
 

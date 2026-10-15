@@ -2439,13 +2439,14 @@ class CustomerConversationTicketView(APIView):
                 site=conv.site,
                 asset=conv.asset,
                 conversation=conv,
-                diagnostic_session=conv.current_diagnostic_session,
-                customer_symptom=conv.title or "Customer requested service from conversation",
-                status="active",
+                created_by=request.user,
+                question=conv.title or "Customer requested service from conversation",
+                answer="Service Call requested from conversation.",
+                source_refs=[],
             )
 
         note = _clean_input(request.data.get("user_observation") or request.data.get("note") or request.data.get("customer_note") or "")
-        session_id = conv.current_diagnostic_session_id
+        session_id = str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None
 
         call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
         conv.status = "TICKETED"

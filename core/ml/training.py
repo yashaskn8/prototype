@@ -45,13 +45,35 @@ def evaluate_profile(profile_key: str, rows, k_max: int = 10) -> dict:
 
 
 def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_size=8,
-             lr=2e-5, max_seq_length=256, seed=42, synthetic_smoke_test=False) -> dict:
+             lr=2e-5, max_seq_length=256, seed=42, synthetic_smoke_test=False,
+             weak_supervision: bool = False) -> dict:
     """Fine-tune BGE-small with MultipleNegativesRankingLoss (+ explicit hard negatives).
 
     train_rows must contain query_text plus resolved 'positive_text' and optional
-    'negative_text'. Unapproved rows are rejected unless synthetic_smoke_test=True.
+    'negative_text'.
+    - If synthetic_smoke_test=True, labeled as SYNTHETIC TRAINING PIPELINE SMOKE TEST (ineligible).
+    - If weak_supervision=True, resolves authentic DB chunks but labels as COMPANY-DATA WEAKLY SUPERVISED EXPERIMENT.
+    - Otherwise, requires full human reviewer approval and labels as HUMAN-VERIFIED PRODUCTION FINE-TUNING.
     """
-    if not synthetic_smoke_test:
+    if synthetic_smoke_test:
+        supervision = "synthetic_smoke"
+    elif weak_supervision or any(r.get("review_status") != "approved" for r in train_rows):
+        supervision = "weakly_supervised"
+    else:
+        supervision = "human_verified"
+
+    if supervision == "synthetic_smoke":
+        pass  # Synthetic smoke rows supply their own text
+    elif supervision == "weakly_supervised":
+        from .labels import resolve_provenance_verified_examples
+        res_train = resolve_provenance_verified_examples(train_rows, require_approved=False)
+        if res_train["rejected"] or not res_train["verified_examples"]:
+            raise ValueError(f"Training data provenance validation failed: {res_train['rejected']}")
+        train_rows = res_train["verified_examples"]
+        if val_rows:
+            res_val = resolve_provenance_verified_examples(val_rows, require_approved=False)
+            val_rows = res_val["verified_examples"]
+    else:
         from .labels import resolve_provenance_verified_examples
         res_train = resolve_provenance_verified_examples(train_rows, require_approved=True)
         if res_train["rejected"] or not res_train["verified_examples"]:
@@ -60,15 +82,21 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         if val_rows:
             res_val = resolve_provenance_verified_examples(val_rows, require_approved=True)
             val_rows = res_val["verified_examples"]
+
     if not train_rows:
-        raise ValueError("No training rows: BLOCKED — VERIFIED HUMAN LABELS REQUIRED.")
+        raise ValueError("No training rows: BLOCKED — VALID TRAINING DATA REQUIRED.")
+
 
     import torch
     from datasets import Dataset
     from sentence_transformers import (SentenceTransformer, SentenceTransformerTrainer,
                                        SentenceTransformerTrainingArguments)
-    from sentence_transformers.losses import MultipleNegativesRankingLoss
-    from sentence_transformers.training_args import BatchSamplers
+    try:
+        from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
+        from sentence_transformers.sentence_transformer.training_args import BatchSamplers
+    except ImportError:
+        from sentence_transformers.losses import MultipleNegativesRankingLoss  # type: ignore
+        from sentence_transformers.training_args import BatchSamplers  # type: ignore
     from .embeddings import BGE_QUERY_PREFIX
 
     torch.manual_seed(seed)
@@ -115,16 +143,38 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
 
     reloaded = SentenceTransformer(str(final), device="cpu")
     vec = reloaded.encode(["reload check"], normalize_embeddings=True)
+    if supervision == "synthetic_smoke":
+        kind = "SYNTHETIC TRAINING PIPELINE SMOKE TEST"
+        promo = False
+        status = "SYNTHETIC_SMOKE_TEST_INELIGIBLE_FOR_PRODUCTION"
+    elif supervision == "weakly_supervised":
+        kind = "COMPANY-DATA WEAKLY SUPERVISED EXPERIMENT"
+        promo = False
+        status = "COMPANY_DATA_WEAKLY_SUPERVISED_EXPERIMENT"
+    else:
+        kind = "HUMAN-VERIFIED PRODUCTION FINE-TUNING"
+        promo = True
+        status = "VERIFIED_FINE_TUNED"
+
     report = {
-        "kind": "SYNTHETIC TRAINING PIPELINE SMOKE TEST" if synthetic_smoke_test else "verified-label fine-tune",
-        "promotion_eligible": False if synthetic_smoke_test else True,
-        "training_status": "SYNTHETIC_SMOKE_TEST_INELIGIBLE_FOR_PRODUCTION" if synthetic_smoke_test else "VERIFIED_FINE_TUNED",
-        "optimizer_steps": int(result.global_step), "train_loss": float(result.training_loss),
-        "epochs": epochs, "n_train": len(train_rows), "n_val": len(val_rows or []),
-        "hard_negatives": has_neg, "seed": seed, "lr": lr, "batch_size": batch_size,
-        "base_revision": base_revision, "checkpoint": str(final),
+        "kind": kind,
+        "supervision_mode": supervision,
+        "promotion_eligible": promo,
+        "training_status": status,
+        "optimizer_steps": int(result.global_step),
+        "train_loss": float(result.training_loss),
+        "epochs": epochs,
+        "n_train": len(train_rows),
+        "n_val": len(val_rows or []),
+        "hard_negatives": has_neg,
+        "seed": seed,
+        "lr": lr,
+        "batch_size": batch_size,
+        "base_revision": base_revision,
+        "checkpoint": str(final),
         "checkpoint_sha256": ckpt_hash,
-        "reload_dim": int(vec.shape[1]), "seconds": round(time.time() - t, 1),
+        "reload_dim": int(vec.shape[1]),
+        "seconds": round(time.time() - t, 1),
     }
     (out_dir / "run_report.json").write_text(json.dumps(report, indent=2))
     return report

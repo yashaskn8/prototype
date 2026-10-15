@@ -57,15 +57,17 @@ def is_real_tenant(tenant: Any) -> bool:
 
 def is_test_environment() -> bool:
     """Detect if current execution is within an isolated test runner.
-    Prevents DEBUG=True or generic CI=true flags from authorizing synthetic provenance in production.
+    Prevents normal runtime configuration from authorizing synthetic provenance in production.
     """
     import sys
-    return (
+    is_runner = (
         "test" in sys.argv
         or "pytest" in sys.modules
         or getattr(settings, "IN_TEST_SUITE", False)
-        or getattr(settings, "SERVY_ALLOW_TEST_PROVENANCE", False)
     )
+    if not is_runner:
+        return False
+    return getattr(settings, "SERVY_ALLOW_TEST_PROVENANCE", True)
 
 
 # In-memory test-authorized registry for isolated test suites
@@ -420,7 +422,7 @@ def is_verified_real_document(doc: Any) -> bool:
     # Durable local document ID binding with tenant check:
     t_slug = getattr(tenant, "slug", str(tenant)) if tenant else ""
     if t_slug == "skydream" or t_slug in get_real_tenants():
-        if entry.get("local_doc_id"):
+        if entry and entry.get("local_doc_id"):
             if doc_id != entry.get("local_doc_id"):
                 return False
     elif t_slug not in get_real_tenants():

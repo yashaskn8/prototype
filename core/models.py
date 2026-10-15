@@ -1005,3 +1005,37 @@ class ProcedureApproval(TenantOwnedModel):
     def __str__(self):
         return f"Approval {self.procedure_id} ({self.approval_status} - {self.permitted_audience})"
 
+
+class CustomerTurnIdempotency(TenantOwnedModel):
+    """
+    Durable exact-once request reservation and response store for customer turns.
+    Guarantees database-enforced deduplication, concurrent lock safety, and failure recovery.
+    """
+    STATUS_CHOICES = [
+        ("PENDING", "Pending In-Flight"),
+        ("COMPLETED", "Completed"),
+        ("FAILED", "Failed"),
+    ]
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="idempotency_records")
+    conversation = models.ForeignKey("CustomerConversation", on_delete=models.CASCADE, null=True, blank=True, related_name="idempotency_records")
+    idempotency_key = models.CharField(max_length=120)
+    payload_fingerprint = models.CharField(max_length=64)
+    processing_status = models.CharField(max_length=30, choices=STATUS_CHOICES, default="PENDING")
+    user_message = models.ForeignKey("CustomerMessage", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    assistant_message = models.ForeignKey("CustomerMessage", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    response_payload = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("tenant", "customer", "idempotency_key")
+        indexes = [
+            models.Index(fields=["tenant", "customer", "idempotency_key"]),
+            models.Index(fields=["conversation", "processing_status"]),
+        ]
+
+    def __str__(self):
+        return f"Idempotency {self.tenant.slug}:{self.customer_id}:{self.idempotency_key} [{self.processing_status}]"
+
+

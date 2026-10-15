@@ -274,3 +274,12 @@ SERVY_CUSTOMER_DATA_MODE = os.getenv("SERVY_CUSTOMER_DATA_MODE", "verified_real_
 STARLLY_REAL_TENANTS = ["skydream"]
 STARLLY_REAL_ORGANISATIONS = ["273"]
 SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"
+
+# Authorized human training and procedure reviewers
+SERVY_AUTHORIZED_TRAINING_REVIEWERS = [
+    "Pranav Patel",
+    "Lead Diagnostics Engineer",
+    "Staff Diagnostics Auditor",
+    "dr-yashas-kn",
+    "admin",
+]
