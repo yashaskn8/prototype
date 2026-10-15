@@ -68,6 +68,22 @@ PROHIBITED_KEYWORDS = [
     "tamper with calibration",
     "tamper with potentiometer",
     "override limit",
+    "interlock bypass",
+    "bypass interlock",
+    "override interlock",
+    "disable interlock",
+    "jumper interlock",
+    "bridge interlock",
+    "force interlock",
+    "jumper wire",
+    "tape door switch",
+    "tape switch",
+    "wire around",
+    "unsafe reset",
+    "factory reset bypass",
+    "ignore previous safety",
+    "disregard safety",
+    "override safety policy",
 ]
 
 TECHNICIAN_ONLY_KEYWORDS = [
@@ -77,12 +93,23 @@ TECHNICIAN_ONLY_KEYWORDS = [
     "high voltage",
     "415v",
     "440v",
+    "480v",
+    "three-phase",
+    "3-phase",
+    "three phase",
+    "phase voltage",
+    "voltage measurement",
+    "measure voltage",
+    "multimeter on live",
+    "multimeter",
     "220v internal",
     "internal wiring",
     "open cabinet while running",
     "open electrical cabinet",
     "open cabinet",
     "open electrical",
+    "electrical cabinet",
+    "cabinet access",
     "open chassis",
     "open enclosure",
     "open housing",
@@ -97,7 +124,17 @@ TECHNICIAN_ONLY_KEYWORDS = [
     "internal transformer",
     "refrigerant recovery",
     "refrigerant charging",
+    "refrigerant servicing",
+    "reclaim refrigerant",
+    "charge refrigerant",
+    "refrigerant",
     "freon",
+    "r-410a",
+    "r-32",
+    "r-134a",
+    "r-22",
+    "manifold gauge",
+    "vacuum pump",
     "compressor teardown",
     "disassemble",
     "dismantle",
@@ -110,12 +147,17 @@ TECHNICIAN_ONLY_KEYWORDS = [
     "logic analyzer",
     "oscilloscope",
     "hydraulic cylinder overhaul",
+    "bleed hydraulic",
     "pump assembly manipulation",
     "manipulate pump assembly",
     "disassemble pump",
     "pressure relief valve adjustment",
     "adjust pressure relief valve",
-    # Unapproved hazardous chemicals
+    "pressure relief valve",
+    "pressurized component",
+    "high pressure line",
+    "capacitor discharge",
+    # Unapproved hazardous chemicals & washes
     "sodium hydroxide",
     "caustic soda",
     "nitric acid",
@@ -124,6 +166,9 @@ TECHNICIAN_ONLY_KEYWORDS = [
     "toxic chemical",
     "concentrated chemical",
     "chemical cleaning",
+    "chemical wash",
+    "chemical washing",
+    "acid wash",
 ]
 
 OBSERVATION_KEYWORDS = [
@@ -316,7 +361,10 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
     """
     lower = (step_text or "").lower()
 
-    # 1. Prohibited check
+    # 1. Prohibited and Interlock Tamper check
+    if "interlock" in lower:
+        return "PROHIBITED", "Defeating, bypassing, or servicing safety interlocks is strictly prohibited for customer operations."
+
     for kw in PROHIBITED_KEYWORDS:
         if kw in lower:
             return "PROHIBITED", f"Prohibited safety violation ({kw}). Defeating interlocks or safety circuits is strictly forbidden."
@@ -335,28 +383,78 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
                 return "TECHNICIAN_ONLY", "Requires opening equipment chassis/enclosure or accessing internal components."
         return "INFORMATIONAL_OBSERVATION", "Approved non-invasive visual/status check."
 
-    # 4. Check Database-backed ProcedureApproval Model
+    # 4. Check Database-backed ProcedureApproval Model with all 10 industrial safety gates
     asset_code = getattr(asset, "asset_code", "") or ""
+    asset_model = getattr(asset, "model_number", "") or ""
+    asset_mfr = getattr(asset, "manufacturer", "") or ""
+    if not asset_mfr and hasattr(asset, "product") and asset.product:
+        asset_mfr = getattr(asset.product, "manufacturer", "") or ""
     if isinstance(asset, dict):
         asset_code = asset.get("asset_code", "") or ""
+        asset_model = asset.get("model_number", "") or ""
+        asset_mfr = asset.get("manufacturer", "") or ""
 
     if asset:
         try:
             from core.models import ProcedureApproval
             tenant = getattr(asset, "tenant", None)
+            now = timezone.now()
             if tenant:
                 approvals = ProcedureApproval.objects.filter(
                     tenant=tenant,
                     approval_status="APPROVED",
                     permitted_audience="customer",
                     revoked_at__isnull=True,
-                )
+                ).select_related("document", "source_chunk")
                 for app in approvals:
+                    # Gate 1: Revocation
+                    if app.revoked_at is not None:
+                        continue
+                    # Gate 2: Effective and expiration dates
+                    if app.effective_date and app.effective_date > now:
+                        continue
+                    if app.expiration_date and app.expiration_date < now:
+                        continue
+                    # Gate 3: Applicable asset scope
                     if app.asset_scope != "*" and app.asset_scope != asset_code:
                         continue
+                    # Gate 4: Exact equipment model match
+                    if app.equipment_model and app.equipment_model != "*":
+                        if not asset_model or app.equipment_model.strip().lower() != asset_model.strip().lower():
+                            continue
+                    # Gate 5: Equipment manufacturer match
+                    if app.equipment_manufacturer and app.equipment_manufacturer != "*":
+                        if not asset_mfr or app.equipment_manufacturer.strip().lower() != str(asset_mfr).strip().lower():
+                            continue
+                    # Gate 6: Source document and version
+                    if app.document:
+                        if not app.document.is_rag_enabled or app.document.is_confidential:
+                            continue
+                        if app.document_version and getattr(app.document, "version", None):
+                            if str(app.document_version) != str(app.document.version):
+                                continue
+                    # Gate 7: Independently authenticated approval evidence and reviewer identity
+                    if not app.reviewer_identity or not app.approval_evidence:
+                        continue
+                    if app.reviewer_identity.strip().upper() in ("UNVERIFIED", "NONE", "UNKNOWN", "ANONYMOUS"):
+                        continue
+                    # Gate 8: Keywords match
                     keywords = app.procedure_keywords or []
-                    if any(kw in lower for kw in keywords):
-                        return "CUSTOMER_APPROVED", f"Authorized customer procedure ({app.procedure_id}) with verified approval."
+                    if not any(kw in lower for kw in keywords):
+                        continue
+                    # Gate 9: Secondary unsafe step check in procedure text
+                    has_prohibited = any(kw in lower for kw in PROHIBITED_KEYWORDS)
+                    has_tech_hazard = any(kw in lower for kw in TECHNICIAN_ONLY_KEYWORDS)
+                    if has_prohibited:
+                        return "PROHIBITED", "Procedure contains prohibited safety violations or bypass steps."
+                    if has_tech_hazard:
+                        return "TECHNICIAN_ONLY", "Procedure contains hazardous secondary work requiring a certified technician."
+                    # Gate 10: Procedure approval hazards check
+                    app_hazards = app.hazards or []
+                    if any(h in ("electrical", "three_phase", "refrigerant", "chemical", "pressure", "high_voltage") for h in app_hazards):
+                        return "TECHNICIAN_ONLY", f"Procedure involves certified technician-only hazards ({', '.join(app_hazards)})."
+
+                    return "CUSTOMER_APPROVED", f"Authorized customer procedure ({app.procedure_id}) with verified manufacturer approval."
         except Exception:
             pass
 

@@ -102,14 +102,28 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     result = trainer.train()
     final = out_dir / "final"
     model.save(str(final))
+    # Compute deterministic checkpoint hash
+    import hashlib
+    h = hashlib.sha256()
+    for p in sorted(final.rglob("*")):
+        if p.is_file():
+            h.update(p.name.encode())
+            with open(p, "rb") as f:
+                while chunk := f.read(65536):
+                    h.update(chunk)
+    ckpt_hash = h.hexdigest()
+
     reloaded = SentenceTransformer(str(final), device="cpu")
     vec = reloaded.encode(["reload check"], normalize_embeddings=True)
     report = {
         "kind": "SYNTHETIC TRAINING PIPELINE SMOKE TEST" if synthetic_smoke_test else "verified-label fine-tune",
+        "promotion_eligible": False if synthetic_smoke_test else True,
+        "training_status": "SYNTHETIC_SMOKE_TEST_INELIGIBLE_FOR_PRODUCTION" if synthetic_smoke_test else "VERIFIED_FINE_TUNED",
         "optimizer_steps": int(result.global_step), "train_loss": float(result.training_loss),
         "epochs": epochs, "n_train": len(train_rows), "n_val": len(val_rows or []),
         "hard_negatives": has_neg, "seed": seed, "lr": lr, "batch_size": batch_size,
         "base_revision": base_revision, "checkpoint": str(final),
+        "checkpoint_sha256": ckpt_hash,
         "reload_dim": int(vec.shape[1]), "seconds": round(time.time() - t, 1),
     }
     (out_dir / "run_report.json").write_text(json.dumps(report, indent=2))

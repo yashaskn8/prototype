@@ -56,15 +56,15 @@ def is_real_tenant(tenant: Any) -> bool:
 
 
 def is_test_environment() -> bool:
-    """Detect if current execution is within an isolated test runner or CI environment."""
+    """Detect if current execution is within an isolated test runner.
+    Prevents DEBUG=True or generic CI=true flags from authorizing synthetic provenance in production.
+    """
     import sys
-    import os
     return (
         "test" in sys.argv
+        or "pytest" in sys.modules
         or getattr(settings, "IN_TEST_SUITE", False)
         or getattr(settings, "SERVY_ALLOW_TEST_PROVENANCE", False)
-        or os.getenv("CI") == "true"
-        or bool(getattr(settings, "DEBUG", False))
     )
 
 
@@ -160,6 +160,11 @@ def is_verified_real_asset(asset: Any) -> bool:
     if tenant and not is_verified_real_tenant(tenant):
         return False
 
+    # Extract local asset identity immediately (fixes scoping bug where asset_id was checked before initialization)
+    asset_id = getattr(asset, "id", None)
+    if isinstance(asset, dict):
+        asset_id = asset.get("id")
+
     code = getattr(asset, "asset_code", "") or ""
     if isinstance(asset, dict):
         code = asset.get("asset_code", "") or ""
@@ -202,44 +207,28 @@ def is_verified_real_asset(asset: Any) -> bool:
     if ext_id and str(ext_id) != str(entry.get("external_id")):
         return False
 
-    # Durable database-backed SourceProvenanceRecord check
-    try:
-        from core.models import SourceProvenanceRecord
-        if asset_id and tenant:
-            prov = SourceProvenanceRecord.objects.filter(
-                tenant=tenant,
-                local_object_type="Asset",
-                local_object_id=asset_id,
-                verification_status="VERIFIED",
-            ).first()
-            if prov:
-                return True
-    except Exception:
-        pass
-
-    # Durable local object identity binding:
-    # A synthetic or duplicate asset cannot inherit authorization by simply copying a real asset code.
-    asset_id = getattr(asset, "id", None)
-    if isinstance(asset, dict):
-        asset_id = asset.get("id")
-
     if not asset_id:
         return False
 
     if is_test_verified_object("asset", asset_id):
         return True
 
-    # Durable database-backed SourceProvenanceRecord check
+    # Durable database-backed SourceProvenanceRecord check with strict verification
     try:
         from core.models import SourceProvenanceRecord
-        if tenant:
+        if tenant and asset_id:
             prov = SourceProvenanceRecord.objects.filter(
                 tenant=tenant,
                 local_object_type="Asset",
                 local_object_id=asset_id,
                 verification_status="VERIFIED",
+                revoked_at__isnull=True,
             ).first()
             if prov:
+                if prov.asset_code and prov.asset_code != code_clean:
+                    return False
+                if ext_id and prov.external_id != str(ext_id):
+                    return False
                 return True
     except Exception:
         pass
@@ -380,7 +369,8 @@ def is_verified_real_document(doc: Any) -> bool:
 
     checksum = (getattr(doc, "checksum_sha256", "") or "").strip().lower()
 
-    # Check durable database-backed SourceProvenanceRecord
+    # Check durable database-backed SourceProvenanceRecord with fail-closed integrity
+    has_db_provenance = False
     try:
         from core.models import SourceProvenanceRecord
         if tenant:
@@ -388,27 +378,43 @@ def is_verified_real_document(doc: Any) -> bool:
                 tenant=tenant,
                 local_object_type="KnowledgeDocument",
                 local_object_id=doc_id,
-                verification_status="VERIFIED",
             ).first()
-            if prov and (not prov.checksum_sha256 or prov.checksum_sha256 == checksum):
-                return True
+            if prov:
+                # If record is unverified or revoked, immediately fail closed
+                if prov.verification_status != "VERIFIED" or prov.revoked_at is not None:
+                    return False
+                # If checksum recorded, fail closed on mismatch
+                if prov.checksum_sha256 and checksum and prov.checksum_sha256.lower() != checksum.lower():
+                    return False
+                # If asset_code bound in provenance, fail closed on mismatch
+                doc_asset_code = getattr(asset, "asset_code", "") or (asset.get("asset_code", "") if isinstance(asset, dict) else "")
+                if prov.asset_code and doc_asset_code and prov.asset_code.upper() != doc_asset_code.upper():
+                    return False
+                # Separate extracted text checksum verification if available
+                content_text_val = getattr(doc, "content_text", "")
+                if prov.extracted_text_sha256 and content_text_val:
+                    calc_text_sha = hashlib.sha256(content_text_val.encode("utf-8", errors="ignore")).hexdigest().lower()
+                    if calc_text_sha != prov.extracted_text_sha256.lower():
+                        return False
+                has_db_provenance = True
     except Exception:
         pass
 
     # In production/registry check: document must have authentic SHA-256 checksum bound to the exact asset
     registry = VERIFIED_REAL_PROVENANCE_REGISTRY.get("documents", {})
-    if not checksum or checksum not in registry:
-        return False
+    entry = registry.get(checksum)
 
-    entry = registry[checksum]
-    if entry.get("status") != "active":
-        return False
+    if not has_db_provenance:
+        if not checksum or not entry:
+            return False
+        if entry.get("status") != "active":
+            return False
 
     # Exact asset code binding: checksum must be registered for this specific asset code
     asset_code = getattr(asset, "asset_code", "")
     if isinstance(asset, dict):
         asset_code = asset.get("asset_code", "")
-    if asset_code != entry.get("asset_code"):
+    if entry and asset_code and asset_code != entry.get("asset_code"):
         return False
 
     # Durable local document ID binding with tenant check:

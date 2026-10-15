@@ -31,6 +31,11 @@ class EmbeddingProfile:
     query_prefix: str = ""      # BGE retrieval instruction for queries only
     content_first: bool = False  # embed body/heading only (no manual metadata)
     local_path: Optional[str] = None
+    promotion_eligible: bool = False
+    checkpoint_hash: str = ""
+    training_status: str = "production"
+    dataset_manifest_hash: str = ""
+    base_revision: Optional[str] = None
 
 
 try:
@@ -45,31 +50,45 @@ BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 PROFILES: Dict[str, EmbeddingProfile] = {
     "minilm": EmbeddingProfile(
         key="minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
-        collection="servy_dense_kb", content_first=False,
+        collection="servy_dense_kb", content_first=False, promotion_eligible=True,
     ),
     "bge-small": EmbeddingProfile(
         key="bge-small", model_id="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
         dim=384, collection="servy_dense_bge_small_v1",
-        query_prefix=BGE_QUERY_PREFIX, content_first=True,
+        query_prefix=BGE_QUERY_PREFIX, content_first=True, promotion_eligible=True,
     ),
     "company-bge-small": EmbeddingProfile(
         key="company-bge-small", model_id="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
         dim=384, collection="servy_company_bge_small_v1",
-        query_prefix=BGE_QUERY_PREFIX, content_first=True,
+        query_prefix=BGE_QUERY_PREFIX, content_first=True, promotion_eligible=True,
     ),
     "company-minilm": EmbeddingProfile(
         key="company-minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
-        collection="servy_company_dense_kb", content_first=False,
+        collection="servy_company_dense_kb", content_first=False, promotion_eligible=True,
     ),
 }
 
 
-def register_finetuned(path: str, key: str = "bge-small-ft") -> EmbeddingProfile:
+def register_finetuned(
+    path: str,
+    key: str = "bge-small-ft",
+    *,
+    promotion_eligible: bool = False,
+    training_status: str = "synthetic_smoke",
+    dataset_manifest_hash: str = "",
+    base_revision: Optional[str] = None,
+    checkpoint_hash: str = "",
+) -> EmbeddingProfile:
     """Register a locally saved fine-tuned checkpoint as its own profile/collection."""
     p = EmbeddingProfile(
         key=key, model_id=path, revision=None, dim=384,
         collection=f"servy_dense_{key.replace('-', '_')}_v1",
         query_prefix=BGE_QUERY_PREFIX, content_first=True, local_path=path,
+        promotion_eligible=promotion_eligible,
+        training_status=training_status,
+        dataset_manifest_hash=dataset_manifest_hash,
+        base_revision=base_revision or BGE_SMALL_REVISION,
+        checkpoint_hash=checkpoint_hash,
     )
     PROFILES[key] = p
     return p
@@ -97,9 +116,11 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         kwargs = {"device": getattr(settings, "SERVY_EMBEDDING_DEVICE", "cpu")}
         if profile.revision:
             kwargs["revision"] = profile.revision
+        model_target = profile.local_path or profile.model_id
+        if model_target == "all-MiniLM-L6-v2":
+            model_target = "sentence-transformers/all-MiniLM-L6-v2"
         try:
-            m = SentenceTransformer(profile.local_path or profile.model_id,
-                                    local_files_only=not allow_download, **kwargs)
+            m = SentenceTransformer(model_target, local_files_only=not allow_download, **kwargs)
         except Exception as exc:
             raise EmbeddingConfigError(
                 f"Model '{profile.model_id}' not available locally. "

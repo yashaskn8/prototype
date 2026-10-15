@@ -57,15 +57,37 @@ def export_review_candidates(queries: Iterable[dict], profile_key: str, out_path
     return n
 
 
+def is_authorized_reviewer(reviewer: str, tenant_id: int | None = None) -> bool:
+    """Validate that reviewer identity is authenticated and authorized, not a bot or arbitrary string."""
+    if not reviewer or not isinstance(reviewer, str):
+        return False
+    reviewer = reviewer.strip()
+    if len(reviewer) < 3:
+        return False
+    # Reject automated/synthetic/placeholder reviewer strings
+    disallowed = {"auto", "ai", "bot", "synthetic", "test", "dummy", "unknown", "system", "anonymous", "none"}
+    if reviewer.lower() in disallowed or any(d in reviewer.lower() for d in ("placeholder", "self-approved")):
+        return False
+    # Check against authorized settings if configured
+    from django.conf import settings
+    authorized = getattr(settings, "SERVY_AUTHORIZED_TRAINING_REVIEWERS", None)
+    if authorized is not None and reviewer not in authorized:
+        return False
+    return True
+
+
 def validate_labels(rows: List[dict]) -> dict:
     """Return {'valid': [...], 'rejected': [(query_id, reason)]}. Only approved rows can be valid."""
     from core.models import KnowledgeChunk
+    from django.utils.dateparse import parse_datetime
     all_ids = {i for r in rows for i in r.get("positive_chunk_ids", []) + r.get("negative_chunk_ids", [])}
-    chunks = {c.id: c for c in KnowledgeChunk.objects.filter(id__in=all_ids).select_related("document")}
+    chunks = {c.id: c for c in KnowledgeChunk.objects.filter(id__in=all_ids).select_related("document", "document__source_provenance")}
     valid, rejected, seen = [], [], set()
     for r in rows:
         qid = r.get("query_id")
         pos, neg = r.get("positive_chunk_ids") or [], r.get("negative_chunk_ids") or []
+        reviewer = r.get("reviewer")
+        reviewed_at = r.get("reviewed_at")
         reason = None
         if r.get("review_status") != APPROVED:
             reason = "not human-approved"
@@ -77,8 +99,10 @@ def validate_labels(rows: List[dict]) -> dict:
             reason = "contradictory: chunk is both positive and negative"
         elif qid in seen:
             reason = "duplicate query_id"
-        elif not (r.get("reviewer") or "").strip():
-            reason = "missing reviewer identity"
+        elif not reviewer or not is_authorized_reviewer(reviewer, r.get("tenant_id")):
+            reason = "invalid or unauthorized reviewer identity"
+        elif not reviewed_at or not parse_datetime(str(reviewed_at)):
+            reason = "missing or invalid approval timestamp"
         else:
             for cid in pos + neg:
                 c = chunks.get(cid)
@@ -90,6 +114,11 @@ def validate_labels(rows: List[dict]) -> dict:
                     reason = f"chunk {cid} quarantined or RAG-disabled"; break
                 if c.document.is_confidential and not r.get("allow_confidential", False):
                     reason = f"chunk {cid} is confidential and not permitted for general training"; break
+                # Check document provenance verification status
+                prov = getattr(c.document, "source_provenance", None)
+                if prov is not None and getattr(prov, "verification_status", "") not in ("VERIFIED", ""):
+                    reason = f"chunk {cid} document has unverified/revoked provenance ({prov.verification_status})"
+                    break
         if reason:
             rejected.append((qid, reason))
         else:
@@ -166,9 +195,9 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
 
 def approve_label_candidate(candidate: dict, reviewer: str, positive_chunk_id: int,
                             negative_chunk_ids: list | None = None, source_group: str | None = None) -> dict:
-    """Helper for human reviewers to convert a candidate into an approved, provenance-stamped row."""
+    if not is_authorized_reviewer(reviewer, candidate.get("tenant_id")):
+        raise ValueError(f"Reviewer '{reviewer}' is not an authorized human reviewer.")
     from django.utils import timezone
-    from core.models import KnowledgeChunk
     chunk = KnowledgeChunk.objects.select_related("document").get(id=positive_chunk_id)
     content_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
 

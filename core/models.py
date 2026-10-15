@@ -955,9 +955,9 @@ class SourceProvenanceRecord(TenantOwnedModel):
     checksum_sha256 = models.CharField(max_length=64, blank=True)
     raw_attachment_sha256 = models.CharField(max_length=64, blank=True)
     extracted_text_sha256 = models.CharField(max_length=64, blank=True)
-    verification_status = models.CharField(max_length=40, default="VERIFIED")  # VERIFIED, UNVERIFIED, REVOKED
+    verification_status = models.CharField(max_length=40, default="UNVERIFIED")  # VERIFIED, UNVERIFIED, REVOKED
     verification_method = models.CharField(max_length=80, default="INGESTION_SHA256")
-    verified_at = models.DateTimeField(default=timezone.now)
+    verified_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 

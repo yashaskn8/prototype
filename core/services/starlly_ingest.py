@@ -714,8 +714,8 @@ def ingest_starlly_real_data(
                             "checksum_sha256": sha,
                             "raw_attachment_sha256": sha,
                             "extracted_text_sha256": hashlib.sha256(text_content.encode("utf-8", errors="ignore")).hexdigest(),
-                            "verification_status": "VERIFIED",
-                            "verification_method": "INGESTION_SHA256",
+                            "verification_status": "UNVERIFIED",
+                            "verification_method": "INGESTION_PENDING_AUDIT",
                         }
                     )
                 except Exception as p_exc:

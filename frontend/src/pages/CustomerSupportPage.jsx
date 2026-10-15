@@ -21,8 +21,23 @@ import {
   ExternalLink,
   ChevronDown,
   ArrowRight,
-  Info
+  Info,
+  History,
 } from 'lucide-react';
+
+/**
+ * Canonical array normalizer to prevent .map() runtime crashes
+ * when backend returns { conversations: [...] }, { tickets: [...] }, or { messages: [...] }
+ */
+export function normalizeArray(data, primaryKey) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (primaryKey && Array.isArray(data[primaryKey])) return data[primaryKey];
+  if (Array.isArray(data.results)) return data.results;
+  if (Array.isArray(data.data)) return data.data;
+  return [];
+}
+
 
 export function CustomerSupportPage() {
   const { user } = useAuth();
@@ -53,12 +68,23 @@ export function CustomerSupportPage() {
 
   // Persistent History / Tracking State
   const [conversations, setConversations] = useState([]);
+  const [conversationsTotal, setConversationsTotal] = useState(0);
+  const [conversationsOffset, setConversationsOffset] = useState(0);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  const [conversationsError, setConversationsError] = useState(null);
+
   const [tickets, setTickets] = useState([]);
+  const [ticketsTotal, setTicketsTotal] = useState(0);
+  const [ticketsOffset, setTicketsOffset] = useState(0);
   const [loadingTickets, setLoadingTickets] = useState(false);
+  const [ticketsError, setTicketsError] = useState(null);
+
   const [activeTranscript, setActiveTranscript] = useState(null);
   const [transcriptMessages, setTranscriptMessages] = useState([]);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
+  const [transcriptError, setTranscriptError] = useState(null);
+  const [replyText, setReplyText] = useState('');
+  const [sendingReply, setSendingReply] = useState(false);
 
   // Request race condition tracking: ensure late responses for previous assets are discarded
   const activeAssetRef = useRef('');
@@ -69,9 +95,10 @@ export function CustomerSupportPage() {
     setError(null);
     try {
       const data = await api.get('/api/customer-support/context/');
-      setContextData(data);
-      if (data.sites && data.sites.length > 0) {
-        const firstSiteId = String(data.sites[0].id);
+      setContextData(data || {});
+      const sites = normalizeArray(data, 'sites');
+      if (sites.length > 0) {
+        const firstSiteId = String(sites[0].id);
         setSelectedSite(firstSiteId);
         await loadAssetsForSite(firstSiteId, data.active_session);
       } else {
@@ -86,27 +113,39 @@ export function CustomerSupportPage() {
     }
   }
 
-  // Load customer's conversations
-  async function loadConversations() {
+  // Load customer's conversations with explicit contract normalization
+  async function loadConversations(offset = 0) {
     setLoadingConversations(true);
+    setConversationsError(null);
     try {
-      const res = await api.get('/api/customer-support/conversations/');
-      setConversations(res.results || res || []);
+      const res = await api.get(`/api/customer-support/conversations/?limit=10&offset=${offset}`);
+      const list = normalizeArray(res, 'conversations');
+      setConversations(list);
+      setConversationsTotal(typeof res?.count === 'number' ? res.count : list.length);
+      setConversationsOffset(offset);
     } catch (err) {
       console.error('Failed to load conversations', err);
+      setConversations([]);
+      setConversationsError(err.detail || 'Failed to load conversation history.');
     } finally {
       setLoadingConversations(false);
     }
   }
 
-  // Load customer's service tickets
-  async function loadTickets() {
+  // Load customer's service tickets with explicit contract normalization
+  async function loadTickets(offset = 0) {
     setLoadingTickets(true);
+    setTicketsError(null);
     try {
-      const res = await api.get('/api/customer-support/tickets/');
-      setTickets(res.results || res || []);
+      const res = await api.get(`/api/customer-support/tickets/?limit=10&offset=${offset}`);
+      const list = normalizeArray(res, 'tickets');
+      setTickets(list);
+      setTicketsTotal(typeof res?.count === 'number' ? res.count : list.length);
+      setTicketsOffset(offset);
     } catch (err) {
       console.error('Failed to load tickets', err);
+      setTickets([]);
+      setTicketsError(err.detail || 'Failed to load service tickets.');
     } finally {
       setLoadingTickets(false);
     }
@@ -123,7 +162,7 @@ export function CustomerSupportPage() {
     setLoadingAssets(true);
     try {
       const res = await api.get(`/api/sites/${siteId}/assets/`);
-      const assets = res.assets || [];
+      const assets = normalizeArray(res, 'assets');
       setSiteAssets(assets);
       if (assets.length > 0) {
         const firstAssetId = String(assets[0].id);
@@ -228,9 +267,10 @@ export function CustomerSupportPage() {
     setEscalationResult(null);
 
     // If conversation is already escalated or has a linked service call, load the ticket
-    if (conv.linked_service_call_id) {
+    if (conv.linked_service_call_id || conv.linked_service_call) {
       try {
-        const ticketRes = await api.get(`/api/customer-support/conversations/${conv.id}/ticket/`);
+        const convUuid = conv.conversation_uuid || conv.id;
+        const ticketRes = await api.get(`/api/customer-support/conversations/${convUuid}/ticket/`);
         setEscalationResult(ticketRes);
       } catch (e) {
         console.warn('Could not load linked ticket', e);
@@ -241,14 +281,36 @@ export function CustomerSupportPage() {
   async function viewConversationTranscript(conv) {
     setActiveTranscript(conv);
     setLoadingTranscript(true);
+    setTranscriptError(null);
     try {
-      const res = await api.get(`/api/customer-support/conversations/${conv.id}/messages/`);
-      setTranscriptMessages(res.results || res || []);
+      const convUuid = conv.conversation_uuid || conv.id;
+      const res = await api.get(`/api/customer-support/conversations/${convUuid}/messages/`);
+      setTranscriptMessages(normalizeArray(res, 'messages'));
     } catch (e) {
       console.error('Failed to load transcript messages', e);
       setTranscriptMessages([]);
+      setTranscriptError(e.detail || 'Failed to load conversation transcript.');
     } finally {
       setLoadingTranscript(false);
+    }
+  }
+
+  async function handleSendReply(e) {
+    if (e) e.preventDefault();
+    if (!replyText.trim() || !activeTranscript) return;
+    const convUuid = activeTranscript.conversation_uuid || activeTranscript.id;
+    setSendingReply(true);
+    try {
+      const res = await api.post(`/api/customer-support/conversations/${convUuid}/messages/`, {
+        message: replyText.trim(),
+      });
+      setReplyText('');
+      await viewConversationTranscript(activeTranscript);
+      loadConversations(conversationsOffset);
+    } catch (err) {
+      setTranscriptError(err.detail || 'Failed to post message.');
+    } finally {
+      setSendingReply(false);
     }
   }
 
@@ -1021,6 +1083,12 @@ export function CustomerSupportPage() {
             </button>
           </div>
 
+          {conversationsError && (
+            <div className="alert alert-danger" style={{ marginBottom: '16px' }}>
+              <AlertTriangle size={16} /> {conversationsError}
+            </div>
+          )}
+
           {loadingConversations && (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
               Loading conversation transcripts...
@@ -1034,55 +1102,84 @@ export function CustomerSupportPage() {
           )}
 
           {!loadingConversations && conversations.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {conversations.map(c => (
-                <div
-                  key={c.id}
-                  style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '16px',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    background: '#fff',
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                      <span className={`badge ${c.status === 'RESOLVED' ? 'badge-success' : c.status === 'ESCALATED' ? 'badge-warning' : 'badge-primary'}`} style={{ fontSize: '0.72rem' }}>
-                        {c.status}
-                      </span>
-                      <strong style={{ fontSize: '0.92rem', color: 'var(--text-main)' }}>
-                        {c.title || 'Diagnostic Session'}
-                      </strong>
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {conversations.map(c => (
+                  <div
+                    key={c.id || c.conversation_uuid}
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '16px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      background: '#fff',
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                        <span className={`badge ${c.status === 'RESOLVED' ? 'badge-success' : c.status === 'ESCALATED' ? 'badge-warning' : 'badge-primary'}`} style={{ fontSize: '0.72rem' }}>
+                          {c.status}
+                        </span>
+                        <strong style={{ fontSize: '0.92rem', color: 'var(--text-main)' }}>
+                          {c.title || 'Diagnostic Session'}
+                        </strong>
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        Facility: <strong>{c.site?.name || c.site_name || 'Site'}</strong> | Equipment: <strong>{c.asset?.name || c.asset_name || 'Equipment'}</strong> | Started: {c.created_at ? new Date(c.created_at).toLocaleString() : 'N/A'}
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                      Facility: <strong>{c.site_name || 'Site'}</strong> | Equipment: <strong>{c.asset_name || 'Equipment'}</strong> | Started: {new Date(c.created_at).toLocaleString()}
+
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-primary"
+                        onClick={() => viewConversationTranscript(c)}
+                      >
+                        <FileText size={14} /> View Transcript
+                      </button>
+                      {c.status === 'ACTIVE' && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={() => resumeConversationFromHistory(c)}
+                        >
+                          <ArrowRight size={14} /> Resume
+                        </button>
+                      )}
                     </div>
                   </div>
+                ))}
+              </div>
 
+              {/* Pagination Controls for Conversations */}
+              {conversationsTotal > 10 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    Showing {conversationsOffset + 1}–{Math.min(conversationsOffset + conversations.length, conversationsTotal)} of {conversationsTotal} conversations
+                  </span>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button
                       type="button"
                       className="btn btn-sm btn-outline-primary"
-                      onClick={() => viewConversationTranscript(c)}
+                      disabled={conversationsOffset <= 0 || loadingConversations}
+                      onClick={() => loadConversations(Math.max(0, conversationsOffset - 10))}
                     >
-                      <FileText size={14} /> View Transcript
+                      Previous
                     </button>
-                    {c.status === 'ACTIVE' && (
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-primary"
-                        onClick={() => resumeConversationFromHistory(c)}
-                      >
-                        <ArrowRight size={14} /> Resume
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-primary"
+                      disabled={conversationsOffset + 10 >= conversationsTotal || loadingConversations}
+                      onClick={() => loadConversations(conversationsOffset + 10)}
+                    >
+                      Next
+                    </button>
                   </div>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
 
           {/* Modal / Panel for Transcript */}
@@ -1107,6 +1204,12 @@ export function CustomerSupportPage() {
                 </button>
               </div>
 
+              {transcriptError && (
+                <div className="alert alert-danger" style={{ marginBottom: '12px' }}>
+                  <AlertTriangle size={14} /> {transcriptError}
+                </div>
+              )}
+
               {loadingTranscript && <p style={{ fontSize: '0.85rem' }}>Loading messages...</p>}
 
               {!loadingTranscript && transcriptMessages.length === 0 && (
@@ -1114,10 +1217,10 @@ export function CustomerSupportPage() {
               )}
 
               {!loadingTranscript && transcriptMessages.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
                   {transcriptMessages.map((m, idx) => (
                     <div
-                      key={idx}
+                      key={m.id || idx}
                       style={{
                         padding: '12px 14px',
                         borderRadius: 'var(--radius-md)',
@@ -1128,14 +1231,36 @@ export function CustomerSupportPage() {
                       }}
                     >
                       <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '4px' }}>
-                        {m.sender_role.toUpperCase()} ({m.message_type}) — {new Date(m.created_at).toLocaleTimeString()}
+                        {(m.sender_role || 'assistant').toUpperCase()} — {m.created_at ? new Date(m.created_at).toLocaleTimeString() : ''}
                       </div>
                       <div style={{ fontSize: '0.88rem', whiteSpace: 'pre-wrap' }}>
-                        {m.content}
+                        {m.message_text || m.content || (typeof m.structured_contract === 'object' ? JSON.stringify(m.structured_contract) : '')}
                       </div>
                     </div>
                   ))}
                 </div>
+              )}
+
+              {/* In-transcript reply box if conversation is still active */}
+              {activeTranscript.status === 'ACTIVE' && (
+                <form onSubmit={handleSendReply} style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Type follow-up observation or response..."
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    disabled={sendingReply}
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={sendingReply || !replyText.trim()}
+                  >
+                    <Send size={14} /> {sendingReply ? 'Sending...' : 'Send'}
+                  </button>
+                </form>
               )}
             </div>
           )}
@@ -1153,12 +1278,18 @@ export function CustomerSupportPage() {
             <button
               type="button"
               className="btn btn-sm btn-outline-primary"
-              onClick={loadTickets}
+              onClick={() => loadTickets(ticketsOffset)}
               disabled={loadingTickets}
             >
               <RefreshCw size={14} className={loadingTickets ? 'spin' : ''} /> Refresh Status
             </button>
           </div>
+
+          {ticketsError && (
+            <div className="alert alert-danger" style={{ marginBottom: '16px' }}>
+              <AlertTriangle size={16} /> {ticketsError}
+            </div>
+          )}
 
           {loadingTickets && (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
@@ -1173,59 +1304,88 @@ export function CustomerSupportPage() {
           )}
 
           {!loadingTickets && tickets.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {tickets.map(t => (
-                <div
-                  key={t.id}
-                  style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '16px',
-                    background: '#fff',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--primary)' }}>
-                        #{t.servy_id}
-                      </span>
-                      <span className={`badge ${t.status === 'closed' ? 'badge-success' : t.status === 'assigned' ? 'badge-primary' : 'badge-warning'}`}>
-                        {t.status?.toUpperCase()}
-                      </span>
-                      <span className="badge" style={{ background: '#f1f5f9', color: '#475569' }}>
-                        Priority: {t.priority?.toUpperCase()}
+            <>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {tickets.map(t => (
+                  <div
+                    key={t.id}
+                    style={{
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '16px',
+                      background: '#fff',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--primary)' }}>
+                          #{t.servy_id}
+                        </span>
+                        <span className={`badge ${t.status === 'closed' ? 'badge-success' : t.status === 'assigned' ? 'badge-primary' : 'badge-warning'}`}>
+                          {t.status?.toUpperCase()}
+                        </span>
+                        <span className="badge" style={{ background: '#f1f5f9', color: '#475569' }}>
+                          Priority: {t.priority?.toUpperCase()}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        Created: {t.created_at ? new Date(t.created_at).toLocaleString() : 'N/A'}
                       </span>
                     </div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                      Created: {new Date(t.created_at).toLocaleString()}
-                    </span>
-                  </div>
 
-                  <div style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-main)', marginBottom: '4px' }}>
-                    {t.complaint_type || 'Service Request'}
-                  </div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-main)', marginBottom: '4px' }}>
+                      {t.complaint_type || 'Service Request'}
+                    </div>
 
-                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                    Facility: <strong>{t.site_name}</strong> | Equipment: <strong>{t.asset_name} ({t.asset_model || 'N/A'})</strong>
-                  </div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                      Facility: <strong>{t.site?.name || t.site_name || 'Facility'}</strong> | Equipment: <strong>{t.asset?.name || t.asset_name || 'Equipment'} ({t.asset?.model_number || t.asset?.asset_code || t.asset_model || 'N/A'})</strong>
+                    </div>
 
-                  <div style={{
-                    background: 'var(--bg-app)',
-                    padding: '8px 12px',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '0.8rem',
-                    color: 'var(--text-main)',
-                  }}>
-                    Assigned Technician: <strong>{t.technician_name || 'Pending Dispatch'}</strong>
-                    {t.resolution_summary && (
-                      <div style={{ marginTop: '4px', color: '#166534' }}>
-                        Resolution: {t.resolution_summary}
-                      </div>
-                    )}
+                    <div style={{
+                      background: 'var(--bg-app)',
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.8rem',
+                      color: 'var(--text-main)',
+                    }}>
+                      Assigned Technician: <strong>{t.technician_name || 'Pending Dispatch'}</strong>
+                      {t.resolution_summary && (
+                        <div style={{ marginTop: '4px', color: '#166534' }}>
+                          Resolution: {t.resolution_summary}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Pagination Controls for Tickets */}
+              {ticketsTotal > 10 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '16px' }}>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    Showing {ticketsOffset + 1}–{Math.min(ticketsOffset + tickets.length, ticketsTotal)} of {ticketsTotal} tickets
+                  </span>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-primary"
+                      disabled={ticketsOffset <= 0 || loadingTickets}
+                      onClick={() => loadTickets(Math.max(0, ticketsOffset - 10))}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-primary"
+                      disabled={ticketsOffset + 10 >= ticketsTotal || loadingTickets}
+                      onClick={() => loadTickets(ticketsOffset + 10)}
+                    >
+                      Next
+                    </button>
                   </div>
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </div>
       )}

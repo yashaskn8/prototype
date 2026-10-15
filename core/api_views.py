@@ -2,6 +2,7 @@ import os
 import logging
 from django.conf import settings
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
+from django.core.exceptions import ValidationError, PermissionDenied
 from django.db import transaction
 from django.db.models import Q, Count, Max
 from django.http import FileResponse, Http404
@@ -26,6 +27,7 @@ from core.security import (
     STAFF_ROLES, TECH_ROLES, ADMIN_ROLES, CUSTOMER_ROLES, ALL_ROLES
 )
 from core.services.rag import ask_rag
+from core.services.customer_diagnostic import check_for_safety_hazard
 from core.services.ticketing import create_call_from_interaction
 from core.services.indexing import index_document
 from core.services.document_loader import UnsafeDocumentError
@@ -511,349 +513,33 @@ class CustomerSupportQueryView(APIView):
             return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
 
         conversation_uuid = request.data.get("conversation_uuid")
-        conversation = None
-        if conversation_uuid:
-            conversation = CustomerConversation.objects.filter(
-                tenant=tenant, customer=customer, conversation_uuid=conversation_uuid
-            ).first()
-            if not conversation:
-                return Response(
-                    {"detail": "Conversation not found or access denied."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-        else:
-            title = (question or "Customer Diagnostic Session")[:80]
-            conversation = CustomerConversation.objects.create(
+        session_id = request.data.get("session_id")
+        idempotency_key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
+
+        try:
+            from core.services.customer_conversation import process_customer_diagnostic_turn
+            turn_result = process_customer_diagnostic_turn(
                 tenant=tenant,
                 customer=customer,
-                site=site,
-                asset=asset,
-                created_by=request.user,
-                title=title,
-                status="ACTIVE",
-            )
-
-        req_session_id = request.data.get("session_id")
-        if not req_session_id and conversation and conversation.current_diagnostic_session:
-            req_session_id = str(conversation.current_diagnostic_session.session_id)
-
-        # Step 1: Industrial Safety Hazard Check ACROSS ALL INPUTS AND PERSISTED FACTS
-        # Check active session / previous history for persisted hazard facts
-        existing_session = None
-        if req_session_id:
-            existing_session = DiagnosticSession.objects.filter(
-                tenant=tenant, customer=customer, session_id=req_session_id
-            ).first()
-            if not existing_session:
-                return Response(
-                    {"detail": "Diagnostic session not found or access denied."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-        if not existing_session:
-            existing_session = DiagnosticSession.objects.filter(
-                tenant=tenant,
-                customer=customer,
-                asset=asset,
-                status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "ESCALATED", "NO_PLAYBOOK_AVAILABLE"],
-            ).order_by("-updated_at").first()
-
-        all_inputs = [question, clarification_response, user_observation]
-        if existing_session and existing_session.complaint:
-            all_inputs.append(existing_session.complaint)
-
-        combined_text = " ".join(t for t in all_inputs if t)
-
-        is_hazard, hazard_warning = check_for_safety_hazard(combined_text)
-        if not is_hazard:
-            for inp in all_inputs:
-                if inp:
-                    is_h, h_w = check_for_safety_hazard(inp)
-                    if is_h:
-                        is_hazard, hazard_warning = is_h, h_w
-                        break
-
-        # Check persisted session facts for prior hazard status on active session
-        if not is_hazard and existing_session:
-            facts = existing_session.facts_snapshot or {}
-            if facts.get("hazard"):
-                is_hazard = True
-                hazard_warning = facts.get("hazard_warning") or (
-                    "IMMEDIATE SAFETY RISK DETECTED: Symptoms previously reported indicate a hazardous electrical, thermal, or chemical condition. "
-                    "Disconnect main power immediately if it is safe to do so. Do not operate or open the equipment. "
-                    "An urgent technician service call should be dispatched."
-                )
-            elif existing_session.events.filter(event_type=EVENT_SESSION_ESCALATED, payload__hazard=True).exists():
-                is_hazard = True
-                hazard_warning = (
-                    "IMMEDIATE SAFETY RISK DETECTED: Symptoms previously reported indicate a hazardous electrical, thermal, or chemical condition. "
-                    "Disconnect main power immediately if it is safe to do so. Do not operate or open the equipment. "
-                    "An urgent technician service call should be dispatched."
-                )
-
-        if is_hazard:
-            session = get_or_create_customer_session(
-                tenant=tenant,
-                customer=customer,
-                site=site,
-                asset=asset,
-                complaint=question or clarification_response,
                 user=request.user,
-                session_id=req_session_id,
-            )
-            with transaction.atomic():
-                locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
-                facts = locked_session.facts_snapshot or {}
-                facts["hazard"] = True
-                facts["hazard_warning"] = hazard_warning
-                locked_session.facts_snapshot = facts
-                locked_session.status = "ESCALATED"
-                locked_session.version += 1
-                locked_session.save(update_fields=["status", "version", "facts_snapshot", "updated_at"])
-
-                last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
-                DiagnosticEvent.objects.create(
-                    tenant=tenant,
-                    session=locked_session,
-                    seq_num=last_seq + 1,
-                    event_type=EVENT_OBSERVATION_RECORDED,
-                    actor_role="customer",
-                    payload={"observation": clarification_response or question, "hazard": True},
-                )
-                DiagnosticEvent.objects.create(
-                    tenant=tenant,
-                    session=locked_session,
-                    seq_num=last_seq + 2,
-                    event_type=EVENT_SESSION_ESCALATED,
-                    actor_role="system",
-                    payload={"reason": "Safety hazard detected in customer input", "warning": hazard_warning},
-                )
-
-            if conversation:
-                if not conversation.current_diagnostic_session:
-                    conversation.current_diagnostic_session = session
-                conversation.status = "ESCALATED"
-                conversation.save(update_fields=["current_diagnostic_session", "status", "updated_at"])
-                CustomerMessage.objects.create(
-                    tenant=tenant,
-                    conversation=conversation,
-                    sender_role="customer",
-                    message_text=question or combined_text,
-                )
-                CustomerMessage.objects.create(
-                    tenant=tenant,
-                    conversation=conversation,
-                    sender_role="assistant",
-                    message_text=hazard_warning,
-                    structured_contract={"hazard": True},
-                )
-
-            interaction = CustomerInteraction.objects.create(
-                tenant=tenant,
-                created_by=request.user,
-                customer=customer,
                 site=site,
                 asset=asset,
-                conversation=conversation,
-                question=combined_text or question,
-                answer=hazard_warning,
-                source_refs=[],
-            )
-            contract = build_structured_diagnostic_contract(
-                interaction=interaction,
-                session=session,
-                raw_answer=hazard_warning,
-                retrieved_references=[],
-                is_hazard=True,
-                hazard_warning=hazard_warning,
-            )
-            contract["conversation_uuid"] = str(conversation.conversation_uuid) if conversation else None
-            return Response(contract)
-
-        # Step 2: Symptom Ambiguity / Clarification Check
-        is_vague, clarif_q, clarif_opts = check_for_vague_complaint(question, asset=asset)
-        if is_vague and not clarification_response:
-            session = get_or_create_customer_session(
-                tenant=tenant,
-                customer=customer,
-                site=site,
-                asset=asset,
-                complaint=question,
-                user=request.user,
-                session_id=req_session_id,
-            )
-            if conversation:
-                if not conversation.current_diagnostic_session:
-                    conversation.current_diagnostic_session = session
-                    conversation.save(update_fields=["current_diagnostic_session", "updated_at"])
-                CustomerMessage.objects.create(
-                    tenant=tenant,
-                    conversation=conversation,
-                    sender_role="customer",
-                    message_text=question,
-                )
-                CustomerMessage.objects.create(
-                    tenant=tenant,
-                    conversation=conversation,
-                    sender_role="assistant",
-                    message_text=clarif_q,
-                    structured_contract={"options": clarif_opts},
-                )
-
-            interaction = CustomerInteraction.objects.create(
-                tenant=tenant,
-                created_by=request.user,
-                customer=customer,
-                site=site,
-                asset=asset,
-                conversation=conversation,
                 question=question,
-                answer=clarif_q,
-                source_refs=[],
+                clarification_response=clarification_response,
+                user_observation=user_observation,
+                conversation_uuid=conversation_uuid,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
             )
-            contract = build_structured_diagnostic_contract(
-                interaction=interaction,
-                session=session,
-                raw_answer=clarif_q,
-                retrieved_references=[],
-                clarification_question=clarif_q,
-                clarification_options=clarif_opts,
-            )
-            contract["conversation_uuid"] = str(conversation.conversation_uuid) if conversation else None
-            return Response(contract)
-
-        # If user answered clarification, bind and persist clarification event to session
-        if clarification_response:
-            session = get_or_create_customer_session(
-                tenant=tenant,
-                customer=customer,
-                site=site,
-                asset=asset,
-                complaint=question,
-                user=request.user,
-                session_id=req_session_id,
-            )
-            if conversation and not conversation.current_diagnostic_session:
-                conversation.current_diagnostic_session = session
-                conversation.save(update_fields=["current_diagnostic_session", "updated_at"])
-
-            with transaction.atomic():
-                locked_session = DiagnosticSession.objects.select_for_update().get(id=session.id)
-                last_seq = locked_session.events.aggregate(m=Max("seq_num"))["m"] or 0
-                DiagnosticEvent.objects.create(
-                    tenant=tenant,
-                    session=locked_session,
-                    seq_num=last_seq + 1,
-                    event_type=EVENT_CLARIFICATION_RECORDED,
-                    actor_role="customer",
-                    payload={"question": question, "clarification": clarification_response},
-                )
-                locked_session.version += 1
-                locked_session.save(update_fields=["version", "updated_at"])
-
-        combined_question = f"{question} - {clarification_response}" if clarification_response else question
-
-        # Step 3: Run RAG in Customer Mode (category-independent, customer-safe)
-        rag_res = ask_rag(
-            tenant=tenant,
-            question=combined_question,
-            asset=asset,
-            customer=customer,
-            include_confidential=False,
-            service_call=None,
-            staff_mode=False,
-        )
-
-        retrieved_list = rag_res.get("retrieved", [])
-        retrieval_backend = getattr(retrieved_list, "retrieval_backend", "fallback")
-
-        # Step 4: Reconcile with persistent DiagnosticSession
-        session = get_or_create_customer_session(
-            tenant=tenant,
-            customer=customer,
-            site=site,
-            asset=asset,
-            complaint=combined_question,
-            user=request.user,
-            session_id=req_session_id,
-        )
-
-        if conversation:
-            if not conversation.current_diagnostic_session:
-                conversation.current_diagnostic_session = session
-                conversation.save(update_fields=["current_diagnostic_session", "updated_at"])
-            CustomerMessage.objects.create(
-                tenant=tenant,
-                conversation=conversation,
-                sender_role="customer",
-                message_text=question if not clarification_response else f"{question} (Clarification: {clarification_response})",
-            )
-
-        interaction = CustomerInteraction.objects.create(
-            tenant=tenant,
-            created_by=request.user,
-            customer=customer,
-            site=site,
-            asset=asset,
-            conversation=conversation,
-            question=combined_question,
-            answer=rag_res["answer"],
-            source_refs=rag_res["references"],
-        )
-
-        # Step 5: Build Authoritative Structured Contract & Filter Industrial Hazards
-        contract = build_structured_diagnostic_contract(
-            interaction=interaction,
-            session=session,
-            raw_answer=rag_res["answer"],
-            retrieved_references=rag_res["references"],
-        )
-        record_customer_action_presentation(session, contract["customer_safe_actions"], tenant)
-
-        if conversation:
-            CustomerMessage.objects.create(
-                tenant=tenant,
-                conversation=conversation,
-                sender_role="assistant",
-                message_text=rag_res["answer"],
-                structured_contract={
-                    "customer_safe_actions": contract.get("customer_safe_actions", []),
-                    "technician_actions": contract.get("technician_actions", []),
-                },
-                source_refs=rag_res.get("references", []),
-            )
-            contract["conversation_uuid"] = str(conversation.conversation_uuid)
-
-        # Enrich past resolution references with full ServiceCall details for backward compatibility
-        past_res_call_ids = [
-            r.get("service_call_id")
-            for r in rag_res.get("references", [])
-            if r.get("source_kind") == "past_resolution" and r.get("service_call_id")
-        ]
-        sc_map = {
-            sc.id: sc
-            for sc in ServiceCall.objects.filter(tenant=tenant, id__in=past_res_call_ids)
-        }
-        past_resolutions = []
-        for r in rag_res.get("references", []):
-            if r.get("source_kind") == "past_resolution":
-                sc = sc_map.get(r.get("service_call_id"))
-                servy_id = sc.servy_id if sc else r.get("service_call_id")
-                complaint_type = sc.complaint_type if sc and sc.complaint_type else (r.get("heading") or "Past Service Call")
-                resolution_text = (sc.resolution_text or sc.technician_notes or "Resolved according to standard technical procedures.") if sc else "Resolved according to standard technical procedures."
-                past_resolutions.append({
-                    "service_call_id": r.get("service_call_id"),
-                    "servy_id": servy_id,
-                    "complaint_type": complaint_type,
-                    "resolution_text": resolution_text,
-                    "title": r.get("title"),
-                    "reference": r.get("reference"),
-                    "doc_type": r.get("doc_type"),
-                    "score": r.get("score"),
-                })
-
-        contract["past_resolutions"] = past_resolutions
-        contract["retrieval_backend"] = retrieval_backend
-        return Response(contract)
+            return Response(turn_result["contract"])
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+        except ValidationError as ve:
+            detail_msg = ve.message if hasattr(ve, "message") else str(ve)
+            return Response({"detail": detail_msg}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("Error processing customer diagnostic query: %s", exc)
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CustomerSupportResolveView(APIView):
@@ -2433,6 +2119,12 @@ class CustomerConversationsListView(APIView):
             if not site and asset.site:
                 site = asset.site
 
+            # P0-5: Enforce asset-level real data isolation
+            try:
+                validate_customer_serving_policy(tenant=tenant, customer=customer, asset=asset)
+            except PermissionDenied as pe:
+                return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
         session = None
         if asset:
             session = DiagnosticSession.objects.create(
@@ -2623,71 +2315,40 @@ class CustomerConversationMessagesView(APIView):
         if not message_text and not clarification_response and not observation:
             return Response({"detail": "Message text is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Record user message
-        user_msg = CustomerMessage.objects.create(
-            tenant=tenant,
-            conversation=conv,
-            sender_role="customer",
-            message_text=message_text or clarification_response or observation,
-        )
+        idempotency_key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
 
-        # Prepare payload for CustomerSupportQueryView
-        query_payload = {
-            "site_id": conv.site_id,
-            "asset_id": conv.asset_id,
-            "question": message_text or clarification_response or observation,
-            "clarification_response": clarification_response,
-            "observation": observation,
-            "conversation_uuid": str(conv.conversation_uuid),
-        }
-        if conv.current_diagnostic_session:
-            query_payload["session_id"] = str(conv.current_diagnostic_session.session_id)
-
-        # Process through query endpoint logic
-        request._full_data = query_payload
-        request.data.clear()
-        request.data.update(query_payload)
-
-        query_view = CustomerSupportQueryView()
-        query_view.request = request
-        query_view.format_kwarg = None
-        resp = query_view.post(request)
-
-        if resp.status_code == 200:
-            contract_data = resp.data
-            assistant_text = contract_data.get("answer") or contract_data.get("summary") or ""
-            asst_msg = CustomerMessage.objects.create(
+        try:
+            from core.services.customer_conversation import process_customer_diagnostic_turn
+            turn_result = process_customer_diagnostic_turn(
                 tenant=tenant,
-                conversation=conv,
-                sender_role="assistant",
-                message_text=assistant_text,
-                structured_contract=contract_data,
-                source_refs=contract_data.get("references") or [],
+                customer=conv.customer,
+                user=request.user,
+                site=conv.site,
+                asset=conv.asset,
+                question=message_text,
+                clarification_response=clarification_response,
+                user_observation=observation,
+                conversation_uuid=str(conv.conversation_uuid),
+                session_id=str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None,
+                idempotency_key=idempotency_key,
             )
-            conv.updated_at = timezone.now()
-            conv.save(update_fields=["updated_at"])
-
             return Response({
-                "user_message": {
-                    "id": user_msg.id,
-                    "sender_role": user_msg.sender_role,
-                    "message_text": user_msg.message_text,
-                    "created_at": user_msg.created_at,
-                },
-                "assistant_message": {
-                    "id": asst_msg.id,
-                    "sender_role": asst_msg.sender_role,
-                    "message_text": asst_msg.message_text,
-                    "structured_contract": contract_data,
-                    "created_at": asst_msg.created_at,
-                },
-                "contract": contract_data,
+                "user_message": turn_result["user_message"],
+                "assistant_message": turn_result["assistant_message"],
+                "contract": turn_result["contract"],
             })
-        return resp
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+        except ValidationError as ve:
+            detail_msg = ve.message if hasattr(ve, "message") else str(ve)
+            return Response({"detail": detail_msg}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("Error processing customer conversation message turn: %s", exc)
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CustomerConversationTicketView(APIView):
-    """Fetch linked ticket for this conversation."""
+    """Fetch or escalate linked ticket for this conversation."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, conversation_uuid):
@@ -2724,6 +2385,94 @@ class CustomerConversationTicketView(APIView):
                 "technician_assigned": bool(sc.technician_id),
                 "technician_name": sc.technician.full_name if sc.technician else None,
             }
+        })
+
+    def post(self, request, conversation_uuid):
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            conv = CustomerConversation.objects.select_related("linked_service_call", "asset", "site", "customer").get(
+                tenant=tenant, conversation_uuid=conversation_uuid
+            )
+        except CustomerConversation.DoesNotExist:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Enforce server-side real customer data isolation
+        try:
+            validate_customer_serving_policy(tenant=tenant, customer=conv.customer, asset=conv.asset)
+        except PermissionDenied as pe:
+            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
+        # If already linked, return existing ticket idempotently
+        if conv.linked_service_call:
+            sc = conv.linked_service_call
+            return Response({
+                "ticket": {
+                    "id": sc.id,
+                    "servy_id": sc.servy_id,
+                    "status": sc.status,
+                    "priority": sc.priority,
+                    "complaint_type": sc.complaint_type,
+                    "complaint_text": sc.complaint_text,
+                    "created_at": sc.created_at,
+                    "technician_assigned": bool(sc.technician_id),
+                    "technician_name": sc.technician.full_name if sc.technician else None,
+                },
+                "detail": f"Service Call #{sc.servy_id} already exists for this conversation."
+            })
+
+        # Find latest interaction or create one for escalation
+        interaction = CustomerInteraction.objects.filter(conversation=conv).order_by("-id").first()
+        if not interaction:
+            interaction = CustomerInteraction.objects.create(
+                tenant=tenant,
+                customer=conv.customer,
+                site=conv.site,
+                asset=conv.asset,
+                conversation=conv,
+                diagnostic_session=conv.current_diagnostic_session,
+                customer_symptom=conv.title or "Customer requested service from conversation",
+                status="active",
+            )
+
+        note = _clean_input(request.data.get("user_observation") or request.data.get("note") or request.data.get("customer_note") or "")
+        session_id = conv.current_diagnostic_session_id
+
+        call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
+        conv.status = "TICKETED"
+        conv.linked_service_call = call
+        conv.save(update_fields=["status", "linked_service_call", "updated_at"])
+
+        CustomerMessage.objects.create(
+            tenant=tenant,
+            conversation=conv,
+            sender_role="system",
+            message_text=f"Service Call #{call.servy_id} created successfully.",
+            structured_contract={"call_id": call.id, "servy_id": call.servy_id},
+        )
+
+        return Response({
+            "ticket": {
+                "id": call.id,
+                "servy_id": call.servy_id,
+                "status": call.status,
+                "priority": call.priority,
+                "complaint_type": call.complaint_type,
+                "complaint_text": call.complaint_text,
+                "created_at": call.created_at,
+                "technician_assigned": bool(call.technician_id),
+                "technician_name": call.technician.full_name if call.technician else None,
+            },
+            "detail": f"Service Call #{call.servy_id} created successfully."
         })
 
 

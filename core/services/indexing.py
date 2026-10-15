@@ -21,7 +21,22 @@ def _doc_embedding_text(document, heading, body):
     return f"{metadata}\n{body}".strip()
 
 
-def index_document(document):
+def index_document(document, *, authorized: bool = False):
+    from django.conf import settings
+    # Protect verified/company documents from unauthorized destructive chunk deletion
+    real_tenants = getattr(settings, "STARLLY_REAL_TENANTS", ["skydream"])
+    is_protected_tenant = bool(document.tenant and document.tenant.slug in real_tenants)
+    has_verified_provenance = bool(
+        hasattr(document, "source_provenance")
+        and getattr(document.source_provenance, "verification_status", None) == "VERIFIED"
+    )
+    if (is_protected_tenant or has_verified_provenance) and not authorized:
+        if document.chunks.exists():
+            raise PermissionError(
+                f"Unauthorized reindex operation on protected document {document.id} ({document.title}). "
+                "Historical vector identity and knowledge chunks are protected."
+            )
+
     text = extract_document_text(document)
     document.chunks.all().delete()
     document.checksum_sha256 = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else ""
