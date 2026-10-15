@@ -158,9 +158,23 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
         if matching_codes and missing:
             return False, f"PARTIAL_IDENTIFIER_MATCH: missing {', '.join(sorted(missing))}"
         if matching_codes:
-            # Substantive claim check: if query has 3+ content terms, at least 1 must also be in chunk
-            if len(terms) >= 3:
-                overlap = terms & chunk_words
+            # Substantive claim check: if query has 2+ non-generic content terms, at least 1 must also be in chunk.
+            # Exclude identifiers, matching codes, and generic inquiry terms from claim terms.
+            generic_inquiry_terms = {
+                "unit", "equipment", "system", "machine", "device", "problem", "issue",
+                "occurs", "occur", "occurring", "happens", "happen", "happening", "error",
+                "code", "fault", "alarm", "warning", "fix", "clear", "solve", "reset",
+                "help", "do", "does", "what", "how", "why", "when", "work", "steps", "procedure"
+            }
+            def _clean_code(s):
+                return re.sub(r"[\W_]+", "", str(s)).lower()
+            code_keys = {_clean_code(c) for c in (set(matching_codes) | q_codes)}
+            claim_terms = {
+                t for t in terms
+                if _clean_code(t) not in code_keys and t.lower() not in generic_inquiry_terms
+            }
+            if len(claim_terms) >= 2:
+                overlap = claim_terms & chunk_words
                 if len(overlap) < 1:
                     return False, f"IDENTIFIER_MATCH_BUT_UNGROUNDED_CLAIM: code {matching_codes[0]} found but no claim terms matched"
             return True, f"EXACT_IDENTIFIER_MATCH: {', '.join(matching_codes)}"

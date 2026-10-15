@@ -89,8 +89,12 @@ Write-Host ""
 # 3. Run Django system check
 # ------------------------------------------------------------------
 Write-Host "[2/3] Running Django system checks..." -ForegroundColor Yellow
-python manage.py check --settings=servy_rag.settings 2>&1
-if ($LASTEXITCODE -ne 0) {
+$prevErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+python manage.py check --settings=servy_rag.settings
+$checkExit = $LASTEXITCODE
+$ErrorActionPreference = $prevErrorAction
+if ($checkExit -ne 0) {
     Write-Host "FATAL: Django system check failed." -ForegroundColor Red
     exit 1
 }
@@ -102,9 +106,10 @@ Write-Host ""
 # ------------------------------------------------------------------
 Write-Host "[3/3] Running tests: $TestLabel (verbosity=$Verbosity)" -ForegroundColor Yellow
 Write-Host "----------------------------------------------------------------"
-python manage.py test $TestLabel -v $Verbosity --no-input 2>&1
-
+$ErrorActionPreference = "Continue"
+python manage.py test $TestLabel -v $Verbosity --no-input
 $exitCode = $LASTEXITCODE
+$ErrorActionPreference = $prevErrorAction
 
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Cyan

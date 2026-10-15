@@ -129,12 +129,22 @@ def query_identifiers_not_in_sources(query: str, source_texts: list) -> Set[str]
     Uses exact canonical set difference instead of naive substring matching,
     preventing prefix collisions and Unicode dash mismatches.
     """
-    query_ids = extract_all_technical_identifiers(query)
+    q_codes = extract_error_codes(query)
+    if q_codes:
+        query_ids = q_codes
+    else:
+        query_ids = extract_all_technical_identifiers(query)
     if not query_ids:
         return set()
 
-    source_codes = set()
+    def _key(s: str) -> str:
+        return re.sub(DASH_CHARS, "", s).upper()
+
+    source_keys = set()
     for text in source_texts:
         if text:
-            source_codes.update(extract_all_technical_identifiers(text))
-    return query_ids - source_codes
+            for c in extract_all_technical_identifiers(text):
+                source_keys.add(_key(c))
+
+    return {q for q in query_ids if _key(q) not in source_keys}
+
