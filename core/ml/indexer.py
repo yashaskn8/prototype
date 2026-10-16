@@ -16,7 +16,10 @@ from __future__ import annotations
 import hashlib
 import time
 
-from .embeddings import get_profile, load_model, get_collection, passage_text, EmbeddingConfigError
+from .embeddings import (
+    get_profile, load_model, get_collection, passage_text, EmbeddingConfigError,
+    compute_checkpoint_fingerprint, PASSAGE_FORMAT_VERSION, INDEX_SCHEMA_VERSION,
+)
 
 INDEX_VERSION = "v1"
 
@@ -43,17 +46,49 @@ def _chunk_key(c) -> str:
     return f"t{c.tenant_id}_doc_{c.document_id}_v{c.document.index_version}_c{c.chunk_index}"
 
 
+def _profile_fingerprint(profile) -> str:
+    return compute_checkpoint_fingerprint(profile.local_path) if profile.local_path else profile.revision or ""
+
+
+def _expected_vector_metadata(chunk, profile, content_hash: str, checkpoint_fp: str) -> dict:
+    document = chunk.document
+    return {
+        "tenant_id": int(chunk.tenant_id),
+        "document_id": int(chunk.document_id),
+        "chunk_id": int(chunk.id),
+        "chunk_index": int(chunk.chunk_index),
+        "document_version": int(document.index_version or 0),
+        "is_confidential": bool(document.is_confidential),
+        "customer_id": int(document.customer_id or 0),
+        "product_id": int(document.product_id or 0),
+        "asset_id": int(document.asset_id or 0),
+        "source_kind": "knowledge_document",
+        "embedding_model": profile.model_id,
+        "embedding_revision": profile.revision or "",
+        "model_checkpoint_fingerprint": checkpoint_fp,
+        "passage_format_version": PASSAGE_FORMAT_VERSION if profile.content_first else "legacy_metadata_v0",
+        "index_schema_version": INDEX_SCHEMA_VERSION,
+        "index_version": INDEX_VERSION,
+        "content_sha256": content_hash,
+    }
+
+
+def _metadata_matches(actual: dict | None, expected: dict) -> bool:
+    return bool(actual) and all(actual.get(key) == value for key, value in expected.items())
+
+
 def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
     profile = get_profile(profile_key)
     if profile.collection == "servy_dense_kb":
         raise EmbeddingConfigError("Refusing to rebuild the active legacy MiniLM collection.")
     model = load_model(profile)
     coll = get_collection(profile)
+    checkpoint_fp = _profile_fingerprint(profile)
 
     existing = {}
     got = coll.get(include=["metadatas"])
     for cid, meta in zip(got["ids"], got["metadatas"]):
-        existing[cid] = (meta or {}).get("content_sha256")
+        existing[cid] = meta or {}
 
     is_full_reconciliation = (limit is None)
     chunks = list(_eligible_chunks(profile)[:limit] if limit else _eligible_chunks(profile))
@@ -67,34 +102,19 @@ def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
         cid = _chunk_key(c)
         wanted_ids.add(cid)
         h = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if existing.get(cid) != h:
-            todo.append((cid, c, text, h))
+        expected_meta = _expected_vector_metadata(c, profile, h, checkpoint_fp)
+        if not _metadata_matches(existing.get(cid), expected_meta):
+            todo.append((cid, c, text, expected_meta))
 
     t0 = time.time()
     for i in range(0, len(todo), batch_size):
         batch = todo[i:i + batch_size]
         emb = model.encode([b[2] for b in batch], normalize_embeddings=True, batch_size=batch_size)
-        d = [b[1].document for b in batch]
         coll.upsert(
             ids=[b[0] for b in batch],
             embeddings=emb.tolist(),
             documents=[b[1].text for b in batch],
-            metadatas=[{
-                "tenant_id": int(b[1].tenant_id),
-                "document_id": int(b[1].document_id),
-                "chunk_id": int(b[1].id),
-                "chunk_index": int(b[1].chunk_index),
-                "document_version": int(dd.index_version or 0),
-                "is_confidential": bool(dd.is_confidential),
-                "customer_id": int(dd.customer_id or 0),
-                "product_id": int(dd.product_id or 0),
-                "asset_id": int(dd.asset_id or 0),
-                "source_kind": "knowledge_document",
-                "embedding_model": profile.model_id,
-                "embedding_revision": profile.revision or "",
-                "index_version": INDEX_VERSION,
-                "content_sha256": b[3],
-            } for b, dd in zip(batch, d)],
+            metadatas=[b[3] for b in batch],
         )
     secs = time.time() - t0
 
@@ -129,6 +149,7 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
 
     model = load_model(profile)
     coll = get_collection(profile)
+    checkpoint_fp = _profile_fingerprint(profile)
 
     # Fetch existing vectors for this document only
     got = coll.get(where={"document_id": int(document.id)}, include=["metadatas"])
@@ -147,7 +168,7 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
         cid = _chunk_key(c)
         wanted_cids.add(cid)
         h = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        todo.append((cid, c, text, h))
+        todo.append((cid, c, text, _expected_vector_metadata(c, profile, h, checkpoint_fp)))
 
     if todo:
         emb = model.encode([b[2] for b in todo], normalize_embeddings=True, batch_size=len(todo))
@@ -155,22 +176,7 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
             ids=[b[0] for b in todo],
             embeddings=emb.tolist(),
             documents=[b[1].text for b in todo],
-            metadatas=[{
-                "tenant_id": int(document.tenant_id),
-                "document_id": int(document.id),
-                "chunk_id": int(b[1].id),
-                "chunk_index": int(b[1].chunk_index),
-                "document_version": int(document.index_version or 0),
-                "is_confidential": bool(document.is_confidential),
-                "customer_id": int(document.customer_id or 0),
-                "product_id": int(document.product_id or 0),
-                "asset_id": int(document.asset_id or 0),
-                "source_kind": "knowledge_document",
-                "embedding_model": profile.model_id,
-                "embedding_revision": profile.revision or "",
-                "index_version": INDEX_VERSION,
-                "content_sha256": b[3],
-            } for b in todo],
+            metadatas=[b[3] for b in todo],
         )
 
     # Clean up stale chunks for THIS document only
@@ -199,12 +205,19 @@ def reconcile_index(profile_key: str = "bge-small", dry_run: bool = True) -> dic
     from core.models import KnowledgeChunk
     profile = get_profile(profile_key)
     coll = get_collection(profile, create=False)
+    checkpoint_fp = _profile_fingerprint(profile)
     got = coll.get(include=["metadatas"])
 
-    expected = {_chunk_key(c) for c in _eligible_chunks(profile) if passage_text(profile, c).strip()}
+    expected = {
+        _chunk_key(c): _expected_vector_metadata(
+            c, profile, hashlib.sha256(passage_text(profile, c).encode("utf-8")).hexdigest(), checkpoint_fp
+        ) for c in _eligible_chunks(profile) if passage_text(profile, c).strip()
+    }
     present = set(got["ids"])
-    missing = expected - present
-    orphans = present - expected
+    actual = dict(zip(got["ids"], got["metadatas"]))
+    missing = expected.keys() - present
+    orphans = present - expected.keys()
+    mismatched = {cid for cid in expected.keys() & present if not _metadata_matches(actual[cid], expected[cid])}
 
     report = {
         "profile": profile.key,
@@ -214,13 +227,12 @@ def reconcile_index(profile_key: str = "bge-small", dry_run: bool = True) -> dic
         "present_count": len(present),
         "missing_count": len(missing),
         "orphan_count": len(orphans),
-        "is_consistent": (expected == present),
+        "metadata_mismatch_count": len(mismatched),
+        "is_consistent": not missing and not orphans and not mismatched,
     }
 
     if not dry_run:
-        if orphans:
-            coll.delete(ids=list(orphans))
-        if missing:
+        if missing or orphans or mismatched:
             build_index(profile_key, limit=None)
         report["reconciled"] = True
         report["final_count"] = coll.count()
@@ -233,17 +245,25 @@ def verify_index(profile_key: str) -> dict:
     from core.models import KnowledgeChunk
     profile = get_profile(profile_key)
     coll = get_collection(profile, create=False)
+    checkpoint_fp = _profile_fingerprint(profile)
     got = coll.get(include=["metadatas"])
-    expected = {_chunk_key(c) for c in _eligible_chunks(profile) if passage_text(profile, c).strip()}
+    expected = {
+        _chunk_key(c): _expected_vector_metadata(
+            c, profile, hashlib.sha256(passage_text(profile, c).encode("utf-8")).hexdigest(), checkpoint_fp
+        ) for c in _eligible_chunks(profile) if passage_text(profile, c).strip()
+    }
 
     present = set(got["ids"])
+    actual = dict(zip(got["ids"], got["metadatas"]))
+    mismatched = {cid for cid in expected.keys() & present if not _metadata_matches(actual[cid], expected[cid])}
     wrong_model = [i for i, m in zip(got["ids"], got["metadatas"]) if m.get("embedding_model") != profile.model_id]
     chunk_ids = [m["chunk_id"] for m in got["metadatas"]]
     real = set(KnowledgeChunk.objects.filter(id__in=chunk_ids).values_list("id", flat=True))
     return {
         "expected": len(expected), "present": len(present),
-        "missing": len(expected - present), "orphans": len(present - expected),
+        "missing": len(expected.keys() - present), "orphans": len(present - expected.keys()),
+        "metadata_mismatch": len(mismatched),
         "wrong_model_rows": len(wrong_model),
         "unresolvable_chunk_ids": len(set(chunk_ids) - real),
-        "complete": expected == present and not wrong_model and set(chunk_ids) <= real,
+        "complete": not (expected.keys() - present or present - expected.keys() or mismatched or wrong_model or set(chunk_ids) - real),
     }

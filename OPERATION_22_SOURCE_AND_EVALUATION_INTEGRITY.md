@@ -1,0 +1,28 @@
+# Operation 22 — source and evaluation integrity
+
+## Authenticated source chain
+
+On 16 October 2026, the existing Starlly read-only key authenticated to the external API and the catalog identified organisation **273**, matching Servy tenant **9**. The API returned 12 assets, five complaints, and nine attachments. All nine attachments downloaded and extracted. No source system, SQLite record, vector, or production checkpoint was modified. The private snapshot and audit live under `private_training_data/op22_starlly_snapshot/` and `private_training_data/op22_provenance_audit.json`; they are ignored by Git. The API key and signed attachment URLs are excluded from saved snapshot JSON.
+
+The reconciliation matches external asset codes and models for all 12 assets, including local asset IDs 59–70. Nine local tenant-9 documents (IDs 168–176) match attachment raw-byte SHA-256, extracted-text SHA-256, external asset-to-attachment relationships, and all 69 chunk bodies. All 69 corresponding Operation 20 BGE vector entries have matching chunk, document, tenant, index, and body hash identities. This certifies the attachment bytes and mappings at capture time; it does not certify the technical correctness of any question/answer label. There are nine legacy heading/body representation hash differences in the vector collection, which remain an index-version concern. The local `SourceProvenanceRecord` table has zero rows; this read-only audit did not populate it.
+
+The other 157 local documents are **UNRESOLVED by this organisation-273 snapshot**. They are not labeled synthetic or invalid from this absence of evidence. Some belong to other tenants, and no authority for those tenants was fetched. The experimental strict company diagnostic accepts only the nine verified documents. The mixed-tenant historical comparison is separately marked uncertified legacy research. Existing customer serving was not changed.
+
+Reproduce the read-only source capture with `python tools/op22_starlly_snapshot.py --expected-org 273 --download-attachments` using the existing authorized environment. Run `python tools/op22_provenance_audit.py` afterward. The API capture requires network access; audit and experiments use the private local snapshot. Never commit the private outputs.
+
+## Label and review state
+
+The original 64-case benchmark and 31/6 weak train/validation rows remain unchanged. They are not independent reviewed ground truth. The private `op22_review/historical_label_review.jsonl` queue contains all 64 original cases with question, tenant, asset, original section/passage, source hash and version, support flags, and candidate alternatives. Eleven cases have a suspected missing-support flag: `EVAL-ERR-01`, `EVAL-TRAP-02/03/04/06`, `EVAL-AMB-03/04`, `EVAL-TECH-01/02`, and `EVAL-XTLK-01/02`. Six cases have candidate alternate passages: `EVAL-ERR-04`, `EVAL-SYM-04/06`, `EVAL-MSP-02`, `EVAL-MLT-01`, and `EVAL-TECH-03`. None was silently relabeled. The queue uses `SUSPECTED_UNANSWERABLE_PENDING_REVIEW` for source-support concerns; the actual `UNANSWERABLE_FROM_APPROVED_SOURCES` decision requires reviewer approval.
+
+The private `op22_review/authentic_complaint_candidates.jsonl` queue contains five authentic complaint descriptions. Complaint 43 is associated with external asset 332/local asset 59 and includes five machine-suggested source passages with attachment and content hashes. Complaints 39–42 have no asset association; their answerability remains `NEEDS_ASSET_CLARIFICATION`, and the strict diagnostic will not assign them an equipment manual. Complaint descriptions are short and generic; they cannot by themselves establish correct technical answers.
+
+Every candidate has `PENDING_REVIEW`; **zero** relevance or answer-support judgments are approved. A named authorized technical reviewer has not been confirmed. `op22_review_workflow.py` rejects pending cases, reviewers absent from an externally supplied allowlist, absent evidence/time/source hashes, missing positives for answerable cases, positives on unanswerable cases, and positives mislabeled as training negatives. This is a validation gate, not authentication of a human signature; an external review authority must control the allowlist and approval record.
+
+`op22_freeze_reviewed_dataset.py` requires verified source/document/attachment identity and checks that every approved positive belongs to the verified source. The immutable `op22_review/prior_source_exclusion.json` lists 58 distinct raw hashes present in the local corpus before new test collection. Future test sources must have new hashes, remain separate from training/development/history, and pass technical review. The freeze command refuses to overwrite a versioned output. There are currently **zero** eligible independent reviewed test cases, so no independent Hit@1, answer accuracy, abstention accuracy, or confidence interval can be calculated.
+
+## Human approval needed
+
+- Assign a named technical reviewer with authority for organisation 273, control the reviewer allowlist, and retain a verifiable approval record and timestamp.
+- Review the 11 suspected missing-support historical cases and the six suggested alternatives passage by passage. Confirm all other original labels before treating them as ground truth.
+- Clarify the asset for complaints 39–42; review complaint 43's source passages, answerability, and any safe answer span.
+- Sample additional genuine, source-separated complaints or technician questions. Review both valid positive passages and hard negatives. No new test set can be frozen from today's already used documents.

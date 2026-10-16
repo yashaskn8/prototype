@@ -571,6 +571,24 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
     return scored
 
 
+def _matches_current_bge_vector(meta, chunk, profile) -> bool:
+    """Match an indexed vector to the current authoritative BGE chunk."""
+    import hashlib
+    from core.ml.embeddings import passage_text
+
+    content_hash = hashlib.sha256(passage_text(profile, chunk).encode("utf-8")).hexdigest()
+    return bool(
+        meta.get("chunk_id") == chunk.id
+        and meta.get("document_id") == chunk.document_id
+        and meta.get("chunk_index") == chunk.chunk_index
+        and meta.get("tenant_id") == chunk.tenant_id
+        and meta.get("document_version") == chunk.document.index_version
+        and meta.get("content_sha256") == content_hash
+        and meta.get("embedding_model") == profile.model_id
+        and meta.get("embedding_revision") == (profile.revision or "")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dense retrieval scoring
 # ---------------------------------------------------------------------------
@@ -678,6 +696,13 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     if key not in candidates_by_doc_chunk:
                         # Vector in Chroma is stale or unassociated with authorized candidate
                         continue
+                    current_chunk = candidates_by_doc_chunk[key]
+                    # BGE vectors have stable source identity. A vector from an earlier
+                    # chunk at the same document/index position must never be paired
+                    # with today's authoritative chunk text.
+                    if profile.content_first:
+                        if not _matches_current_bge_vector(meta, current_chunk, profile):
+                            continue
                     if key not in best_matches or dist < best_matches[key][1]:
                         best_matches[key] = (meta, dist)
 

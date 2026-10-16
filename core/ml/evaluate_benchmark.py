@@ -569,11 +569,16 @@ def main():
     print("TRACK A: EMBEDDING-ONLY RESEARCH | TRACK B: FULL CUSTOMER SERVING")
     print("=" * 115)
 
-    from core.ml.benchmark_registry import load_and_verify_benchmark, get_evaluation_provenance_metadata
-    manifest_meta = load_and_verify_benchmark()
+    from core.ml.benchmark_registry import (
+        DEFAULT_BENCHMARK_ID, load_and_verify_benchmark, get_evaluation_provenance_metadata,
+    )
+    dataset_id = os.environ.get("SERVY_BENCHMARK_ID", DEFAULT_BENCHMARK_ID)
+    manifest_meta = load_and_verify_benchmark(dataset_id)
     print(f"Verified immutable benchmark SHA-256: {manifest_meta['sha256_digest']}")
 
-    manifest = load_manifest()
+    manifest = load_manifest(dataset_id)
+    if manifest["sha256_digest"] != manifest_meta["sha256_digest"]:
+        raise RuntimeError("Benchmark identity changed during evaluation")
     cases = manifest["cases"]
     print(f"Loaded {len(cases)} benchmark queries across 14 categories.")
     print(f"Denominators: {manifest['primary_denominators']}")
@@ -632,6 +637,12 @@ def main():
 
     # Add evaluation provenance metadata
     results["evaluation_provenance"] = get_evaluation_provenance_metadata()
+    results["benchmark_identity"] = {
+        "dataset_id": dataset_id,
+        "dataset_role": manifest_meta["dataset_role"],
+        "sha256_digest": manifest_meta["sha256_digest"],
+        "number_of_cases": len(cases),
+    }
 
     # Save full report
     report_path = BASE_DIR / "ml_artifacts" / "benchmark_evaluation_report.json"

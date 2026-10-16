@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -117,17 +118,21 @@ def get_profile(key: str) -> EmbeddingProfile:
         raise EmbeddingConfigError(f"Unknown embedding profile '{key}'. Known: {sorted(PROFILES)}")
 
 
-_models: Dict[str, object] = {}
+_models: Dict[tuple, object] = {}
 _lock = threading.Lock()
 
 
 def load_model(profile: EmbeddingProfile, allow_download: bool = False):
     """Load a SentenceTransformer for a profile. Offline by default."""
-    if profile.key in _models:
-        return _models[profile.key]
+    checkpoint_fp = cached_checkpoint_fingerprint(profile.local_path) if profile.local_path else ""
+    if profile.local_path and not checkpoint_fp:
+        raise EmbeddingConfigError(f"Local checkpoint is missing: {profile.local_path}")
+    cache_key = (profile.key, profile.model_id, profile.revision, profile.local_path, checkpoint_fp)
+    if cache_key in _models:
+        return _models[cache_key]
     with _lock:
-        if profile.key in _models:
-            return _models[profile.key]
+        if cache_key in _models:
+            return _models[cache_key]
         from sentence_transformers import SentenceTransformer
         kwargs = {"device": getattr(settings, "SERVY_EMBEDDING_DEVICE", "cpu")}
         if profile.revision:
@@ -145,7 +150,7 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         actual = m.get_embedding_dimension() if hasattr(m, "get_embedding_dimension") else m.get_sentence_embedding_dimension()
         if actual != profile.dim:
             raise EmbeddingConfigError(f"{profile.model_id} dim {actual} != expected {profile.dim}")
-        _models[profile.key] = m
+        _models[cache_key] = m
         return m
 
 
@@ -174,6 +179,24 @@ def compute_checkpoint_fingerprint(checkpoint_path: str, *, short: bool = True) 
                 h.update(f.read_bytes())
     digest = h.hexdigest()
     return digest[:16] if short else digest
+
+
+@lru_cache(maxsize=16)
+def _fingerprint_for_file_signature(checkpoint_path: str, file_signature: tuple) -> str:
+    return compute_checkpoint_fingerprint(checkpoint_path)
+
+
+def cached_checkpoint_fingerprint(checkpoint_path: str) -> str:
+    """Rehash a checkpoint when any file's size or modification time changes."""
+    root = Path(checkpoint_path)
+    if not root.exists():
+        return ""
+    files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
+    signature = tuple(
+        (str(f.relative_to(root)) if root.is_dir() else f.name, f.stat().st_size, f.stat().st_mtime_ns)
+        for f in files
+    )
+    return _fingerprint_for_file_signature(str(root.resolve()), signature)
 
 
 @dataclass(frozen=True)
@@ -208,7 +231,9 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
 
     # Compute real content-based fingerprint for local checkpoints
     if profile.local_path:
-        cp_fp = compute_checkpoint_fingerprint(profile.local_path)
+        cp_fp = cached_checkpoint_fingerprint(profile.local_path)
+        if not cp_fp:
+            raise EmbeddingConfigError(f"Local checkpoint is missing: {profile.local_path}")
     else:
         cp_fp = profile.revision or ""
 
@@ -245,6 +270,12 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
     if stamped_model != profile.model_id:
         raise EmbeddingConfigError(
             f"Collection '{profile.collection}' model mismatch: stamped '{stamped_model}', expected '{profile.model_id}'."
+        )
+
+    if profile.local_path and stored_meta.get("servy_checkpoint_fp") != cp_fp:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' checkpoint fingerprint mismatch: "
+            f"stamped '{stored_meta.get('servy_checkpoint_fp')}', expected '{cp_fp}'."
         )
 
     # Validate Dimension
