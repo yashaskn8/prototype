@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -226,50 +226,40 @@ class StarllyApiClient:
             "User-Agent": "Servy-RAG-Backend/1.0",
         }
 
-    def fetch_assets(
+    def _request_get(
         self,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        search: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Fetch asset records from Starlly External Assets API.
+        endpoint_path: str,
+        params: Optional[Dict[str, Any]] = None,
+        resource_label: str = "Starlly API",
+    ) -> requests.Response:
+        """Shared HTTP GET with full error handling, redirect protection, and credential safety.
 
-        Endpoint: GET /api/external/assets/
-        Authentication: Authorization: Api-Key <STARLLY_API_KEY>
+        Raises typed exceptions for all failure modes. Never leaks credentials to untrusted hosts.
         """
-        # Validates base URL and API key
-        endpoint_url = f"{self.base_url}/api/external/assets/"
+        endpoint_url = f"{self.base_url}{endpoint_path}"
         headers = self.get_auth_headers()
 
-        params: Dict[str, Any] = {}
-        if limit is not None and limit > 0:
-            params["limit"] = int(limit)
-        if offset is not None and offset >= 0:
-            params["offset"] = int(offset)
-        if search and str(search).strip():
-            params["search"] = str(search).strip()
-
         try:
-            logger.info("Calling Starlly assets API at %s (params=%s)", endpoint_url, params)
+            logger.info("Calling %s at %s (params=%s)", resource_label, endpoint_url, params)
             response = requests.get(
                 endpoint_url,
                 headers=headers,
-                params=params,
+                params=params or {},
                 timeout=self._timeout,
                 allow_redirects=False,
             )
         except requests.Timeout as exc:
-            logger.warning("Starlly Assets API timed out after %ds", self._timeout)
+            logger.warning("%s timed out after %ds", resource_label, self._timeout)
             raise StarllyTimeoutError(
-                f"Connection to Starlly Assets API timed out after {self._timeout} seconds."
+                f"Connection to {resource_label} timed out after {self._timeout} seconds."
             ) from exc
         except requests.ConnectionError as exc:
-            logger.error("Failed to connect to Starlly Assets API at %s", self._base_url)
+            logger.error("Failed to connect to %s at %s", resource_label, self._base_url)
             raise StarllyConnectionError(
                 f"Failed to connect to Starlly API server ({self._base_url}). Service may be unreachable."
             ) from exc
         except requests.RequestException as exc:
-            logger.error("Starlly Assets API request exception: %s", exc)
+            logger.error("%s request exception: %s", resource_label, exc)
             raise StarllyApiError(f"HTTP request to Starlly failed: {exc}") from exc
 
         # Handle Redirects (Prevent credential leakage to untrusted hosts)
@@ -285,14 +275,19 @@ class StarllyApiClient:
                 if parsed_target.scheme and parsed_target.scheme.lower() != "https":
                     raise StarllyApiError("Insecure redirect downgraded to HTTP rejected.")
 
-        # Handle HTTP Status
-        if response.status_code in (401, 403):
-            logger.warning("Starlly API rejected credentials: status=%d", response.status_code)
+        # Handle HTTP Status — distinguish 401 (invalid/expired key) from 403 (resource not in allowed_resources)
+        if response.status_code == 401:
+            logger.warning("Starlly API rejected credentials: status=401")
             raise StarllyAuthenticationError(
-                "Starlly API rejected credentials. Verify that STARLLY_API_KEY is valid and authorized for organization."
+                "Starlly API rejected credentials (HTTP 401). Verify that STARLLY_API_KEY is valid and not expired."
+            )
+        elif response.status_code == 403:
+            logger.warning("Starlly API rejected credentials: status=403")
+            raise StarllyAuthenticationError(
+                "Starlly API access denied (HTTP 403). The API key may not be authorized for this resource or organization."
             )
         elif response.status_code == 404:
-            raise StarllyNotFoundError("Starlly Assets endpoint returned 404 Not Found.")
+            raise StarllyNotFoundError(f"{resource_label} endpoint returned 404 Not Found.")
         elif response.status_code >= 500:
             logger.error("Starlly API server error %d", response.status_code)
             raise StarllyApiError(
@@ -306,58 +301,170 @@ class StarllyApiClient:
                 status_code=response.status_code,
             )
 
+        return response
+
+    def _parse_list_response(
+        self,
+        response: requests.Response,
+        resource_label: str = "Starlly API",
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Parse a JSON list/paginated response into (records, total_count)."""
         try:
             payload = response.json()
         except Exception as exc:
-            logger.error("Invalid JSON response from Starlly Assets API: %s", exc)
-            raise StarllyApiError("Starlly Assets API returned invalid JSON response.") from exc
+            logger.error("Invalid JSON response from %s: %s", resource_label, exc)
+            raise StarllyApiError(f"{resource_label} returned invalid JSON response.") from exc
 
-        # Process payload (handles both direct list and paginated dict formats)
-        raw_assets: List[Dict[str, Any]] = []
+        records: List[Dict[str, Any]] = []
         total_count = 0
 
         if isinstance(payload, list):
-            raw_assets = payload
-            total_count = len(payload)
+            records = [r for r in payload if isinstance(r, dict)]
+            total_count = len(records)
         elif isinstance(payload, dict):
             # DRF pagination standard
             if "results" in payload and isinstance(payload["results"], list):
-                raw_assets = payload["results"]
-                total_count = payload.get("count", len(raw_assets))
+                records = [r for r in payload["results"] if isinstance(r, dict)]
+                total_count = payload.get("count", len(records))
             elif "data" in payload and isinstance(payload["data"], list):
-                raw_assets = payload["data"]
-                total_count = payload.get("count", len(raw_assets))
+                records = [r for r in payload["data"] if isinstance(r, dict)]
+                total_count = payload.get("count", len(records))
             else:
-                raw_assets = [payload]
+                records = [payload]
                 total_count = 1
         else:
-            raise StarllyApiError(f"Unexpected payload type '{type(payload).__name__}' from Starlly Assets API.")
+            raise StarllyApiError(f"Unexpected payload type '{type(payload).__name__}' from {resource_label}.")
 
-        # Filter and validate by org_id
-        filtered_assets = []
-        for asset in raw_assets:
-            if not isinstance(asset, dict):
+        return records, total_count
+
+    def _filter_by_org(self, records: List[Dict[str, Any]], resource_label: str = "record") -> List[Dict[str, Any]]:
+        """Filter records by organisation ID if configured."""
+        if not self._org_id:
+            return records
+
+        filtered = []
+        for rec in records:
+            rec_org = rec.get("org_id") or rec.get("organisation_id") or rec.get("organization_id")
+            if rec_org is not None and str(rec_org) != str(self._org_id):
+                logger.warning(
+                    "Rejecting %s record %s: unexpected organisation ID %s (expected %s)",
+                    resource_label, rec.get("id"), rec_org, self._org_id
+                )
                 continue
-            rec_org = asset.get("org_id") or asset.get("organisation_id") or asset.get("organization_id")
-            if self._org_id:
-                if rec_org is not None and str(rec_org) != str(self._org_id):
-                    logger.warning(
-                        "Rejecting asset record %s: unexpected organisation ID %s (expected %s)",
-                        asset.get("id"), rec_org, self._org_id
-                    )
-                    continue
-            filtered_assets.append(asset)
+            filtered.append(rec)
+        return filtered
+
+    def fetch_assets(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch asset records from Starlly External Assets API.
+
+        Endpoint: GET /api/external/assets/
+        Authentication: Authorization: Api-Key <STARLLY_API_KEY>
+        """
+        params: Dict[str, Any] = {}
+        if limit is not None and limit > 0:
+            params["limit"] = int(limit)
+        if offset is not None and offset >= 0:
+            params["offset"] = int(offset)
+        if search and str(search).strip():
+            params["search"] = str(search).strip()
+
+        response = self._request_get("/api/external/assets/", params=params, resource_label="Starlly Assets API")
+        records, total_count = self._parse_list_response(response, resource_label="Starlly Assets API")
+        filtered = self._filter_by_org(records, resource_label="asset")
 
         return {
-            "assets": filtered_assets,
+            "assets": filtered,
             "count": total_count,
-            "total_returned": len(filtered_assets),
+            "total_returned": len(filtered),
             "organisation_id": int(self._org_id) if (self._org_id and self._org_id.isdigit()) else self._org_id,
             "limit": limit,
             "offset": offset,
         }
 
+    def fetch_site_assets(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Fetch site-asset (installed asset) records from Starlly External API.
+
+        Endpoint: GET /api/external/site-assets/
+        Authentication: Authorization: Api-Key <STARLLY_API_KEY>
+        """
+        params: Dict[str, Any] = {}
+        if limit is not None and limit > 0:
+            params["limit"] = int(limit)
+        if offset is not None and offset >= 0:
+            params["offset"] = int(offset)
+
+        response = self._request_get("/api/external/site-assets/", params=params, resource_label="Starlly Site-Assets API")
+        records, total_count = self._parse_list_response(response, resource_label="Starlly Site-Assets API")
+        filtered = self._filter_by_org(records, resource_label="site-asset")
+
+        return {
+            "site_assets": filtered,
+            "count": total_count,
+            "total_returned": len(filtered),
+            "organisation_id": int(self._org_id) if (self._org_id and self._org_id.isdigit()) else self._org_id,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def fetch_complaints(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Fetch complaint records from Starlly External API.
+
+        Endpoint: GET /api/external/complaints/
+        Authentication: Authorization: Api-Key <STARLLY_API_KEY>
+        """
+        params: Dict[str, Any] = {}
+        if limit is not None and limit > 0:
+            params["limit"] = int(limit)
+        if offset is not None and offset >= 0:
+            params["offset"] = int(offset)
+
+        response = self._request_get("/api/external/complaints/", params=params, resource_label="Starlly Complaints API")
+        records, total_count = self._parse_list_response(response, resource_label="Starlly Complaints API")
+        filtered = self._filter_by_org(records, resource_label="complaint")
+
+        return {
+            "complaints": filtered,
+            "count": total_count,
+            "total_returned": len(filtered),
+            "organisation_id": int(self._org_id) if (self._org_id and self._org_id.isdigit()) else self._org_id,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def fetch_resource_catalog(self) -> List[Dict[str, str]]:
+        """Fetch the API key's authorized resource catalog.
+
+        Endpoint: GET /api/external/
+        Returns the list of resources this API key is authorized to access.
+        """
+        response = self._request_get("/api/external/", resource_label="Starlly Resource Catalog")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            logger.error("Invalid JSON from Starlly Resource Catalog: %s", exc)
+            raise StarllyApiError("Starlly Resource Catalog returned invalid JSON.") from exc
+
+        if isinstance(payload, dict) and "resources" in payload:
+            return payload["resources"]
+        elif isinstance(payload, list):
+            return payload
+        return []
+
 
 def get_starlly_client(tenant: Any = None) -> StarllyApiClient:
     """Convenience factory for obtaining a StarllyApiClient instance bound to an authorized tenant."""
     return StarllyApiClient(tenant=tenant)
+

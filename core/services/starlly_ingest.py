@@ -331,22 +331,15 @@ def preview_starlly_ingestion(
     assets_res = client.fetch_assets()
     assets = assets_res.get("assets", [])
 
-    headers = client.get_auth_headers()
-    sa_resp = requests.get(
-        f"{client.base_url}/api/external/site-assets/",
-        headers=headers,
-        timeout=15,
-        allow_redirects=False,
-    )
-    site_assets = sa_resp.json() if sa_resp.status_code == 200 else []
+    try:
+        site_assets = client.fetch_site_assets().get("site_assets", [])
+    except Exception:
+        site_assets = []
 
-    comp_resp = requests.get(
-        f"{client.base_url}/api/external/complaints/",
-        headers=headers,
-        timeout=15,
-        allow_redirects=False,
-    )
-    complaints = comp_resp.json() if comp_resp.status_code == 200 else []
+    try:
+        complaints = client.fetch_complaints().get("complaints", [])
+    except Exception:
+        complaints = []
 
     unique_clients = sorted(list({sa.get("client_name") for sa in site_assets if sa.get("client_name")}))
     unique_sites = sorted(list({sa.get("site_name") for sa in site_assets if sa.get("site_name")}))
@@ -420,23 +413,18 @@ def ingest_starlly_real_data(
 
     # 1. Fetch from Starlly
     assets_data = client.fetch_assets().get("assets", [])
-    headers = client.get_auth_headers()
 
-    sa_resp = requests.get(
-        f"{client.base_url}/api/external/site-assets/",
-        headers=headers,
-        timeout=15,
-        allow_redirects=False,
-    )
-    site_assets_data = sa_resp.json() if sa_resp.status_code == 200 else []
+    try:
+        site_assets_data = client.fetch_site_assets().get("site_assets", [])
+    except Exception as exc:
+        logger.warning("Could not fetch site-assets from Starlly: %s", exc)
+        site_assets_data = []
 
-    comp_resp = requests.get(
-        f"{client.base_url}/api/external/complaints/",
-        headers=headers,
-        timeout=15,
-        allow_redirects=False,
-    )
-    complaints_data = comp_resp.json() if comp_resp.status_code == 200 else []
+    try:
+        complaints_data = client.fetch_complaints().get("complaints", [])
+    except Exception as exc:
+        logger.warning("Could not fetch complaints from Starlly: %s", exc)
+        complaints_data = []
 
     ingest_report: Dict[str, Any] = {
         "tenant": tenant_slug,
@@ -695,7 +683,7 @@ def ingest_starlly_real_data(
                     checksum_sha256=sha,
                     is_rag_enabled=True,
                     is_confidential=False,
-                    index_status="PENDING",
+                    index_status="NOT_INDEXED",
                 )
                 ingest_report["documents_created"] += 1
 
