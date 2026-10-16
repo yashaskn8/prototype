@@ -19,10 +19,13 @@ from core.services.retriever import _knowledge_candidates
 from core.services.vectors import compute_bm25_scores
 
 PRIVATE = ROOT / "private_training_data"
-OUT = PRIVATE / "op22_review"
+OUT = Path(os.environ.get("SERVY_EXPERIMENT_OUTPUT_DIR", str(PRIVATE / "op22_review"))).resolve()
+if not OUT.is_relative_to(PRIVATE.resolve()):
+    raise ValueError("Company diagnostics must remain private")
+OUT.mkdir(parents=True, exist_ok=True)
 audit = json.loads((PRIVATE / "op22_provenance_audit.json").read_text(encoding="utf-8"))
 verified_ids = {r["document_id"] for r in audit["document_links"] if r["classification"] == "VERIFIED_ORIGINAL_COMPANY_SOURCE"}
-cases = [json.loads(line) for line in (OUT / "authentic_complaint_candidates.jsonl").read_text(encoding="utf-8").splitlines()]
+cases = [json.loads(line) for line in (PRIVATE / "op22_review" / "authentic_complaint_candidates.jsonl").read_text(encoding="utf-8").splitlines()]
 tenant = Tenant.objects.get(id=audit["source_tenant"])
 profile = get_profile("minilm")
 model = load_model(profile)
@@ -37,7 +40,7 @@ for case in cases:
     authorized = [c for c in scoped if c.document_id in verified_ids and c.document.asset_id == asset.id]
     query = parse_technical_query(case["question_text"])
     if not authorized:
-        results.append({"query_id": case["query_id"], "decision": "ANSWER_NOT_IN_KB",
+        results.append({"query_id": case["query_id"], "decision": "NO_SUFFICIENT_EVIDENCE_FOUND",
                         "candidate_chunk_ids": [], "review_status": "PENDING_REVIEW"})
         continue
     vectors = np.asarray(model.encode([passage_text(profile, c) for c in authorized], normalize_embeddings=True))
@@ -52,7 +55,10 @@ for case in cases:
         {authorized[i].id: rank + 1 for rank, i in enumerate(lexical_order)},
         verified_document_ids=verified_ids, asset=asset,
     )
-    verdict = verify_answer_evidence(query, ranked)
+    verdict = verify_answer_evidence(query, ranked, index_complete=True,
+                                     source_universe_complete=True,
+                                     expected_candidate_count=len(authorized),
+                                     searched_candidate_count=len(ranked))
     results.append({
         "query_id": case["query_id"], "asset_id": asset.id,
         "source_verified_candidate_count": len(authorized),

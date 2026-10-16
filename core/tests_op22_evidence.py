@@ -22,6 +22,9 @@ def doc(**overrides):
 
 
 class TechnicalEvidenceTests(SimpleTestCase):
+    complete = {"index_complete": True, "source_universe_complete": True,
+                "expected_candidate_count": 1, "searched_candidate_count": 1}
+
     def test_parser_preserves_fault_codes_models_units_and_negation(self):
         q = parse_technical_query("Model VRF-CS-1.5T alarm E-04, fan not spinning at 230 V; inspect capacitor")
         self.assertIn("E04", q.fault_codes)
@@ -36,24 +39,26 @@ class TechnicalEvidenceTests(SimpleTestCase):
     def test_generic_symptom_is_relevant_but_not_answer_supported(self):
         q = parse_technical_query("Abnormal Noise")
         result = assess_passage(q, heading="Symptom: Noise or Vibration", body="Record the noise location.", document=doc(), source_verified=True)
-        self.assertEqual(result.decision, "PARTIALLY_SUPPORTED")
+        self.assertEqual(result.decision, "PASSAGE_PARTIALLY_SUPPORTED")
         self.assertFalse(verify_answer_evidence(q, [{"chunk_id": 1, "assessment": result}])["answer_coverage"])
 
     def test_all_missing_evidence_is_answer_not_in_kb(self):
         q = parse_technical_query("What torque specification applies?")
         result = assess_passage(q, heading="Overview", body="General equipment description.", document=doc(), source_verified=True)
-        self.assertEqual(verify_answer_evidence(q, [{"chunk_id": 1, "assessment": result}])["decision"], "ANSWER_NOT_IN_KB")
+        self.assertEqual(verify_answer_evidence(q, [{"chunk_id": 1, "assessment": result}],
+                         index_complete=True, source_universe_complete=True,
+                         expected_candidate_count=1, searched_candidate_count=1)["decision"], "NO_SUFFICIENT_EVIDENCE_FOUND")
 
     def test_exact_code_cannot_be_guessed_or_prefix_matched(self):
         q = parse_technical_query("What does alarm E-04 mean?")
         result = assess_passage(q, heading="E-040 fault", body="Check the controller.", document=doc(), source_verified=True)
-        self.assertEqual(result.decision, "ANSWER_NOT_IN_KB")
+        self.assertEqual(result.decision, "PASSAGE_NOT_SUPPORTING_QUERY")
         self.assertFalse(result.exact_identifier_match)
 
     def test_missing_torque_value_is_not_supported(self):
         q = parse_technical_query("What flare nut torque specification applies?")
         result = assess_passage(q, heading="Installation", body="Check the flare nut and refrigerant line.", document=doc(), source_verified=True)
-        self.assertEqual(result.decision, "ANSWER_NOT_IN_KB")
+        self.assertEqual(result.decision, "PASSAGE_NOT_SUPPORTING_QUERY")
         self.assertFalse(result.specification_present)
 
     def test_source_and_equipment_gates(self):
@@ -61,11 +66,11 @@ class TechnicalEvidenceTests(SimpleTestCase):
         foreign = doc(asset_id=17)
         asset = SimpleNamespace(id=18, product=None, product_id=None)
         mismatch = assess_passage(q, heading="Fan motor", body="Inspect fan motor wiring.", document=foreign, asset=asset, source_verified=True)
-        self.assertEqual(mismatch.decision, "EQUIPMENT_MISMATCH")
+        self.assertEqual(mismatch.decision, "PASSAGE_EQUIPMENT_MISMATCH")
         unverified = assess_passage(q, heading="Fan motor", body="Inspect fan motor wiring.", document=doc(), source_verified=False)
-        self.assertEqual(unverified.decision, "SOURCE_UNVERIFIED")
+        self.assertEqual(unverified.decision, "PASSAGE_SOURCE_UNVERIFIED")
         default_unverified = assess_passage(q, heading="Fan motor", body="Inspect fan motor wiring.", document=doc())
-        self.assertEqual(default_unverified.decision, "SOURCE_UNVERIFIED")
+        self.assertEqual(default_unverified.decision, "PASSAGE_SOURCE_UNVERIFIED")
 
     def test_wrong_explicit_model_and_safe_spelling(self):
         q = parse_technical_query("Model VRF-CS-1.5T inspect capcitor")
@@ -73,26 +78,103 @@ class TechnicalEvidenceTests(SimpleTestCase):
         other_model = doc(asset=SimpleNamespace(model_number="VRF-CS-2T"))
         result = assess_passage(q, heading="Electrical", body="Inspect capacitor on VRF-CS-2T.",
                                 document=other_model, source_verified=True)
-        self.assertEqual(result.decision, "EQUIPMENT_MISMATCH")
+        self.assertEqual(result.decision, "PASSAGE_EQUIPMENT_MISMATCH")
         unspecified_model = assess_passage(q, heading="Electrical", body="Inspect capacitor.",
                                            document=doc(), source_verified=True)
-        self.assertEqual(unspecified_model.decision, "EQUIPMENT_MISMATCH")
+        self.assertEqual(unspecified_model.decision, "PASSAGE_EQUIPMENT_MISMATCH")
 
     def test_hazardous_procedure_requires_approval(self):
         q = parse_technical_query("How to discharge capacitor?")
-        result = assess_passage(q, heading="Capacitor discharge", body="Step 1: Isolate power and discharge capacitor.", document=doc(), source_verified=True)
-        self.assertEqual(result.decision, "SAFETY_APPROVAL_REQUIRED")
+        result = assess_passage(q, heading="Capacitor discharge", body="Step 1: Isolate power.\nStep 2: Discharge capacitor with an approved tool and verify zero voltage.", document=doc(), source_verified=True)
+        self.assertEqual(result.decision, "PASSAGE_SAFETY_REVIEW_REQUIRED")
         self.assertFalse(verify_answer_evidence(q, [{"chunk_id": 1, "assessment": result}])["answer_coverage"])
 
     def test_exact_code_evidence_ranks_above_generic_overview(self):
         q = parse_technical_query("Inspect controller for E-04 fault")
         chunks = [
             SimpleNamespace(id=1, heading="General Overview", text="Generic equipment overview.", document=doc(), document_id=11),
-            SimpleNamespace(id=2, heading="E-04 fault", text="Inspect controller and check cable damage.", document=doc(), document_id=11),
+            SimpleNamespace(id=2, heading="E-04 fault", text="Inspect controller cable for damage before reset and check connections.", document=doc(), document_id=11),
         ]
         ranked = rank_authorized_candidates(q, chunks, {1: 1, 2: 2}, {1: 2, 2: 1}, verified_document_ids={11})
         self.assertEqual(ranked[0]["chunk_id"], 2)
-        self.assertEqual(ranked[0]["assessment"].decision, "ANSWER_SUPPORTED")
+        self.assertEqual(ranked[0]["assessment"].decision, "PASSAGE_SUPPORTED")
+
+    def test_optional_support_tier_prefers_answer_bearing_procedure(self):
+        q = parse_technical_query("How do I inspect the fan motor?")
+        chunks = [
+            SimpleNamespace(id=1, heading="Fan motor", text="Inspect fan motor.", document=doc(), document_id=11),
+            SimpleNamespace(id=2, heading="Fan motor", text="With power isolated, inspect fan motor wiring for damage and record the observed condition.", document=doc(), document_id=11),
+        ]
+        fixed = rank_authorized_candidates(q, chunks, {1: 1, 2: 2}, {1: 1, 2: 2}, verified_document_ids={11})
+        support = rank_authorized_candidates(q, chunks, {1: 1, 2: 2}, {1: 1, 2: 2},
+                                             verified_document_ids={11}, rerank_mode="technical_support")
+        self.assertEqual(fixed[0]["chunk_id"], 1)
+        self.assertEqual(support[0]["chunk_id"], 2)
+        self.assertEqual(support[0]["support_tier"], 2)
+
+    def test_missing_code_passage_does_not_decide_whole_corpus(self):
+        query = parse_technical_query("What does E-04 mean?")
+        missing = assess_passage(query, heading="Overview", body="Controller fault handling overview.",
+                                 document=doc(), source_verified=True)
+        self.assertEqual(missing.decision, "PASSAGE_NOT_SUPPORTING_QUERY")
+        incomplete = verify_answer_evidence(query, [{"chunk_id": 1, "assessment": missing}])
+        self.assertEqual(incomplete["decision"], "INCOMPLETE_SEARCH_OR_INDEX")
+        definition = assess_passage(query, heading="E-04: Controller communication interruption",
+                                    body="Check the controller connection for damage.", document=doc(), source_verified=True)
+        result = verify_answer_evidence(query, [{"chunk_id": 1, "assessment": missing},
+                                                {"chunk_id": 2, "assessment": definition}],
+                                        index_complete=True, source_universe_complete=True,
+                                        expected_candidate_count=2, searched_candidate_count=2)
+        self.assertEqual(result["decision"], "SUPPORTED_FROM_AUTHORIZED_SOURCES")
+        self.assertEqual(result["chunk_ids"], [2])
+
+    def test_keyword_overlap_does_not_fabricate_procedure(self):
+        q = parse_technical_query("How do I inspect the fan motor?")
+        result = assess_passage(q, heading="Fan motor", body="Inspect fan motor.", document=doc(), source_verified=True)
+        self.assertEqual(result.decision, "PASSAGE_PARTIALLY_SUPPORTED")
+        detailed = assess_passage(q, heading="Fan motor", body="With power isolated, inspect fan motor wiring for damage and record the observed condition.",
+                                  document=doc(), source_verified=True)
+        self.assertEqual(detailed.decision, "PASSAGE_SUPPORTED")
+
+    def test_numeric_conflict_and_source_disagreement(self):
+        q = parse_technical_query("What torque specification is 12 Nm?")
+        wrong = assess_passage(q, heading="Torque", body="Tighten to 14 Nm.", document=doc(), source_verified=True)
+        self.assertNotEqual(wrong.decision, "PASSAGE_SUPPORTED")
+        q2 = parse_technical_query("What torque specification applies?")
+        first = assess_passage(q2, heading="Torque", body="Tighten to 12 Nm.", document=doc(), source_verified=True)
+        second = assess_passage(q2, heading="Torque", body="Tighten to 14 Nm.", document=doc(), source_verified=True)
+        verdict = verify_answer_evidence(q2, [{"chunk_id": 1, "assessment": first},
+                                              {"chunk_id": 2, "assessment": second}],
+                                         index_complete=True, source_universe_complete=True,
+                                         expected_candidate_count=2, searched_candidate_count=2)
+        self.assertEqual(verdict["decision"], "PARTIALLY_SUPPORTED_FROM_AUTHORIZED_SOURCES")
+        self.assertEqual(verdict["reason"], "conflicting_verified_specifications")
+
+    def test_neighbor_context_requires_same_section_and_document(self):
+        q = parse_technical_query("How do I inspect the fan motor?")
+        source = doc(id=22)
+        related = ({"document_id": 22, "chunk_index": 2, "section_id": "fan-inspection",
+                    "text": "Step 2: Inspect fan motor wiring for damage and record loose connections."},)
+        first = assess_passage(q, heading="Fan inspection", body="Step 1: Isolate power before inspection.",
+                               document=source, source_verified=True, chunk_index=1,
+                               section_id="fan-inspection", related_passages=related)
+        self.assertEqual(first.decision, "PASSAGE_SUPPORTED")
+        foreign = assess_passage(q, heading="Fan inspection", body="Step 1: Isolate power before inspection.",
+                                 document=source, source_verified=True, chunk_index=1,
+                                 section_id="other-section", related_passages=related)
+        self.assertNotEqual(foreign.decision, "PASSAGE_SUPPORTED")
+
+    def test_generic_question_and_negated_condition(self):
+        generic = parse_technical_query("What is the purpose of this equipment?")
+        overview = assess_passage(generic, heading="Overview",
+                                  body="This equipment moves conditioned air through occupied rooms and maintains the selected temperature.",
+                                  document=doc(), source_verified=True)
+        self.assertEqual(overview.decision, "PASSAGE_SUPPORTED")
+        negated = parse_technical_query("Why is the motor not spinning?")
+        positive = assess_passage(negated, heading="Motor operation",
+                                  body="The motor is spinning normally during operation.",
+                                  document=doc(), source_verified=True)
+        self.assertNotEqual(positive.decision, "PASSAGE_SUPPORTED")
 
 
 class ReviewWorkflowTests(SimpleTestCase):

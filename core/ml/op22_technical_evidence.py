@@ -73,6 +73,8 @@ class EvidenceAssessment:
     procedure_present: bool
     generic_section: bool
     reasons: tuple[str, ...]
+    support_spans: tuple[str, ...] = ()
+    specification_values: tuple[str, ...] = ()
 
 
 def parse_technical_query(text: str) -> TechnicalQuery:
@@ -88,7 +90,7 @@ def parse_technical_query(text: str) -> TechnicalQuery:
         specs.add("unspecified")
     numbers = {
         re.sub(r"\s+", "", value.lower())
-        for value in re.findall(r"(?<!\w)\d+(?:\.\d+)?\s*(?:mm|cm|bar|psi|kpa|v|volts?|°\s*c|°\s*f|rpm|%)\b", raw, re.I)
+        for value in re.findall(r"(?<!\w)\d+(?:\.\d+)?\s*(?:n\s*[·.]?\s*m|nm|ft\s*[- ]?\s*lb|mm|cm|bar|psi|kpa|v|volts?|°\s*c|°\s*f|rpm|%)\b", raw, re.I)
     }
     negated = {m.lower() for m in re.findall(r"\b(?:not|without|except|exclude)\s+(\w+)\b", raw, re.I)}
     abbreviations = {word.upper() for word in re.findall(r"\b[A-Za-z]{2,6}\b", raw)
@@ -111,12 +113,22 @@ def parse_technical_query(text: str) -> TechnicalQuery:
 def assess_passage(
     query: TechnicalQuery, *, heading: str, body: str,
     document: Any = None, asset: Any = None, source_verified: bool = False,
-    action_approved: bool = False,
+    action_approved: bool = False, related_passages: tuple[dict, ...] = (),
+    chunk_index: int | None = None, section_id: str | None = None,
 ) -> EvidenceAssessment:
-    """Check explicit support signals in an already-authorized source passage."""
+    """Classify a passage, never the existence of an answer in the corpus."""
     from core.services.knowledge_scope import is_document_applicable_to_asset
 
-    text = f"{heading or ''}\n{body or ''}"
+    context = []
+    document_id = getattr(document, "id", None)
+    for segment in related_passages:
+        if (document_id is not None and chunk_index is not None and section_id is not None
+                and segment.get("document_id") == document_id
+                and segment.get("section_id") == section_id
+                and isinstance(segment.get("chunk_index"), int)
+                and abs(segment["chunk_index"] - chunk_index) == 1):
+            context.append(segment.get("text") or "")
+    text = f"{heading or ''}\n{body or ''}" + ("\n" + "\n".join(context) if context else "")
     lower = text.lower()
     words = {word.lower() for word in WORD_RE.findall(lower)}
     heading_key = re.sub(r"^(?:\d+[.)]\s*)", "", (heading or "").strip().lower())
@@ -124,9 +136,9 @@ def assess_passage(
     reasons = []
 
     if document is not None and not is_document_applicable_to_asset(document, asset):
-        return EvidenceAssessment("EQUIPMENT_MISMATCH", False, False, False, False, False, generic, ("document_not_applicable",))
+        return EvidenceAssessment("PASSAGE_EQUIPMENT_MISMATCH", False, False, False, False, False, generic, ("document_not_applicable",))
     if not source_verified:
-        return EvidenceAssessment("SOURCE_UNVERIFIED", False, False, False, False, False, generic, ("source_not_verified",))
+        return EvidenceAssessment("PASSAGE_SOURCE_UNVERIFIED", False, False, False, False, False, generic, ("source_not_verified",))
 
     matched, missing = match_canonical_identifiers(set(query.fault_codes), text)
     code_match = bool(matched) and not missing if query.fault_codes else False
@@ -149,54 +161,100 @@ def assess_passage(
             model_match = False
             reasons.append("explicit_equipment_model_not_in_source")
     if not model_match:
-        return EvidenceAssessment("EQUIPMENT_MISMATCH", False, code_match, component_match, False, False, generic, tuple(reasons))
+        return EvidenceAssessment("PASSAGE_EQUIPMENT_MISMATCH", False, code_match, component_match, False, False, generic, tuple(reasons))
 
-    spec_present = any(re.search(SPEC_UNITS[kind], lower, re.I) for kind in query.specification_types if kind in SPEC_UNITS)
+    spec_values = tuple(sorted({match.group().strip() for kind in query.specification_types if kind in SPEC_UNITS
+                                for match in re.finditer(SPEC_UNITS[kind], lower, re.I)}))
+    spec_present = bool(spec_values)
     if query.specification_types and not spec_present:
         reasons.append("requested_specification_value_absent")
-    normalized = re.sub(r"\s+", "", lower)
-    missing_numbers = [number for number in query.numeric_expressions if number not in normalized]
+    normalize_number = lambda value: re.sub(r"[^a-z0-9.]", "", value.casefold()).replace("volt", "v")
+    normalized = normalize_number(lower)
+    missing_numbers = [number for number in query.numeric_expressions if normalize_number(number) not in normalized]
     if missing_numbers:
-        reasons.append("query_number_or_unit_absent")
-    action_cues = bool(words & ACTION_WORDS) or bool(re.search(r"\bstep\s*\d+\b", lower))
+        reasons.append("numeric_value_or_unit_conflicts_with_source")
+    body_lower = (body or "").lower() + ("\n" + "\n".join(context).lower() if context else "")
+    body_words = {word.lower() for word in WORD_RE.findall(body_lower)}
+    windows = [window.strip() for window in re.split(r"[.!?;\n]+", body_lower) if window.strip()]
+    window_words = [{word.lower() for word in WORD_RE.findall(window)} for window in windows]
+    spec_component_aligned = not (query.specification_types and query.components) or any(
+        (query.components & tokens or query.components & {word.lower() for word in WORD_RE.findall(heading or "")})
+        and any(re.search(SPEC_UNITS[kind], window, re.I) for kind in query.specification_types if kind in SPEC_UNITS)
+        for window, tokens in zip(windows, window_words))
+    if not spec_component_aligned:
+        reasons.append("specification_not_bound_to_requested_component")
+    action_cues = bool(body_words & ACTION_WORDS) or bool(re.search(r"\bstep\s*\d+\b", body_lower))
     procedure_kind_match = any(words.intersection(PROCEDURE_TYPES[kind]) for kind in query.procedure_types)
-    procedure_present = bool((query.actions or query.procedure_types) and action_cues
+    action_match = bool(query.actions & body_words) if query.actions else True
+    action_component_aligned = not (query.actions and query.components) or any(
+        query.actions & tokens and query.components & tokens for tokens in window_words)
+    numbered_steps = len(re.findall(r"(?:^|\n)\s*(?:step\s*)?\d+[.)]\s+", body_lower))
+    has_detail = len(WORD_RE.findall(body_lower)) >= 7 and bool(re.search(
+        r"\b(?:for|before|after|until|then|with|against|from|to)\b", body_lower))
+    procedure_present = bool((query.actions or query.procedure_types) and action_cues and action_match
+                             and action_component_aligned
                              and (not query.procedure_types or procedure_kind_match)
-                             and (not query.components or component_match))
+                             and (not query.components or component_match)
+                             and (numbered_steps >= 2 or has_detail))
     if (query.actions or query.procedure_types) and not procedure_present:
-        reasons.append("requested_procedure_absent")
-
-    # A code mention or repeated equipment name cannot by itself prove support.
-    explicit_request = bool(query.fault_codes or query.specification_types or query.actions or query.procedure_types)
-    fact_match = bool(
-        not (query.fault_codes and not code_match)
-        and not (query.components and not component_match)
-        and not missing_numbers
-        and (not query.specification_types or spec_present)
+        reasons.append("complete_requested_procedure_absent")
+    code_definition = bool(code_match and re.search(
+        r"\b(?:e|f)[- ]?\d{1,4}\b\s*(?::|[-–])\s*[a-z][a-z ]{7,}", lower, re.I))
+    if query.fault_codes and code_match and not code_definition and not procedure_present:
+        reasons.append("fault_code_mentioned_without_definition")
+    if query.negated_terms and any(term in words for term in query.negated_terms):
+        if not all(re.search(rf"\b(?:not|no|without)\s+{re.escape(term)}\b", lower)
+                   for term in query.negated_terms):
+            reasons.append("negated_condition_not_supported")
+    negative_instruction = bool(query.actions and re.search(
+        r"\b(?:do\s+not|never)\s+(?:\w+\s+){0,2}(?:" + "|".join(map(re.escape, query.actions)) + r")\b", body_lower))
+    if negative_instruction:
+        reasons.append("source_prohibits_requested_action")
+    support = bool(
+        not missing_numbers and not negative_instruction
+        and "negated_condition_not_supported" not in reasons
+        and (not query.components or component_match)
+        and (not query.fault_codes or code_match)
+        and (not query.specification_types or (spec_present and spec_component_aligned))
         and (not (query.actions or query.procedure_types) or procedure_present)
+        and (not query.fault_codes or query.actions or query.procedure_types or code_definition)
+        and bool(query.fault_codes or query.actions or query.procedure_types or query.specification_types)
     )
-    answer_bearing = bool(explicit_request and fact_match and not generic and (procedure_present or spec_present))
-    if query.actions & SAFETY_ACTIONS and answer_bearing and not action_approved:
-        decision = "SAFETY_APPROVAL_REQUIRED"
+    if not query.technical_intent and len(WORD_RE.findall(body_lower)) >= 8:
+        support = True
+    support_spans = tuple(window for window in windows if
+                          (not query.components or query.components & {word.lower() for word in WORD_RE.findall(window)}
+                           or query.components & {word.lower() for word in WORD_RE.findall(heading or "")})
+                          and (not query.specification_types or any(re.search(SPEC_UNITS[kind], window, re.I)
+                              for kind in query.specification_types if kind in SPEC_UNITS))) if support else ()
+    if support and code_definition and not support_spans:
+        support_spans = (heading.strip(),)
+    if support and query.actions & SAFETY_ACTIONS and not action_approved:
+        decision = "PASSAGE_SAFETY_REVIEW_REQUIRED"
         reasons.append("physical_action_approval_missing")
-    elif answer_bearing:
-        decision = "ANSWER_SUPPORTED"
-    elif (query.fault_codes and not code_match) or (query.specification_types and not spec_present):
-        decision = "ANSWER_NOT_IN_KB"
+    elif support:
+        decision = "PASSAGE_SUPPORTED"
     elif component_match or code_match or procedure_present or symptom_match:
-        decision = "PARTIALLY_SUPPORTED"
+        decision = "PASSAGE_PARTIALLY_SUPPORTED"
     else:
-        decision = "RELEVANT" if not query.technical_intent else "ANSWER_NOT_IN_KB"
-    return EvidenceAssessment(decision, answer_bearing, code_match, component_match,
-                              spec_present, procedure_present, generic, tuple(reasons))
+        decision = "PASSAGE_RELEVANT" if not query.technical_intent else "PASSAGE_NOT_SUPPORTING_QUERY"
+    return EvidenceAssessment(decision, support, code_match, component_match,
+                              spec_present, procedure_present, generic, tuple(reasons),
+                              support_spans, spec_values)
 
 
 def rank_authorized_candidates(
     query: TechnicalQuery, candidates: list, dense_ranks: dict[int, int],
     lexical_ranks: dict[int, int], *, verified_document_ids: set[int],
-    asset: Any = None,
+    asset: Any = None, rerank_mode: str = "fixed",
 ) -> list[dict]:
-    """Interpretable fixed ranker; authorization is mandatory before this call."""
+    """Interpretable research ranker; authorization is mandatory before this call.
+
+    The optional support tier compares categorical evidence, not tuned keyword
+    weights. It remains offline until reviewed development labels justify use.
+    """
+    if rerank_mode not in {"fixed", "technical_support"}:
+        raise ValueError("Unknown experimental rerank mode")
     scored = []
     for chunk in candidates:
         if chunk.id not in dense_ranks and chunk.id not in lexical_ranks:
@@ -206,7 +264,7 @@ def rank_authorized_candidates(
             document=chunk.document, asset=asset,
             source_verified=chunk.document_id in verified_document_ids,
         )
-        if assessment.decision in {"EQUIPMENT_MISMATCH", "SOURCE_UNVERIFIED"}:
+        if assessment.decision in {"PASSAGE_EQUIPMENT_MISMATCH", "PASSAGE_SOURCE_UNVERIFIED"}:
             continue
         dense_rank = dense_ranks.get(chunk.id, 1000)
         lexical_rank = lexical_ranks.get(chunk.id, 1000)
@@ -221,19 +279,41 @@ def rank_authorized_candidates(
             score += 0.12
         if query.technical_intent and assessment.generic_section and not assessment.answer_bearing:
             score -= 0.15
-        scored.append({"chunk_id": chunk.id, "score": round(score, 6), "assessment": assessment,
+        tier = (2 if assessment.decision == "PASSAGE_SUPPORTED" else
+                1 if assessment.decision == "PASSAGE_PARTIALLY_SUPPORTED" else 0)
+        scored.append({"chunk_id": chunk.id, "score": round(score, 6), "support_tier": tier,
+                       "assessment": assessment,
                        "dense_rank": dense_rank, "lexical_rank": lexical_rank})
+    if rerank_mode == "technical_support" and query.technical_intent:
+        return sorted(scored, key=lambda r: (-r["support_tier"], -r["score"], r["chunk_id"]))
     return sorted(scored, key=lambda r: (-r["score"], r["chunk_id"]))
 
 
-def verify_answer_evidence(query: TechnicalQuery, ranked: list[dict]) -> dict:
-    """Select only source-supported evidence; otherwise abstain with a reason."""
-    supported = [r for r in ranked if r["assessment"].decision == "ANSWER_SUPPORTED"]
-    if supported:
-        return {"decision": "ANSWER_SUPPORTED", "chunk_ids": [r["chunk_id"] for r in supported],
-                "answer_coverage": True}
-    if any(r["assessment"].decision == "SAFETY_APPROVAL_REQUIRED" for r in ranked):
+def verify_answer_evidence(
+    query: TechnicalQuery, ranked: list[dict], *,
+    index_complete: bool = False, source_universe_complete: bool = False,
+    asset_resolved: bool = True, expected_candidate_count: int | None = None,
+    searched_candidate_count: int | None = None,
+) -> dict:
+    """Make a corpus-level decision only after a complete authorized search."""
+    if not asset_resolved:
+        return {"decision": "EQUIPMENT_CLARIFICATION_REQUIRED", "chunk_ids": [], "answer_coverage": False}
+    if (not index_complete or not source_universe_complete
+            or expected_candidate_count is None or searched_candidate_count != expected_candidate_count):
+        return {"decision": "INCOMPLETE_SEARCH_OR_INDEX", "chunk_ids": [], "answer_coverage": False}
+    if any(r["assessment"].decision == "PASSAGE_SOURCE_UNVERIFIED" for r in ranked):
+        return {"decision": "SOURCE_VERIFICATION_REQUIRED", "chunk_ids": [], "answer_coverage": False}
+    if any(r["assessment"].decision == "PASSAGE_SAFETY_REVIEW_REQUIRED" for r in ranked):
         return {"decision": "SAFETY_APPROVAL_REQUIRED", "chunk_ids": [], "answer_coverage": False}
-    if not ranked or all(r["assessment"].decision == "ANSWER_NOT_IN_KB" for r in ranked):
-        return {"decision": "ANSWER_NOT_IN_KB", "chunk_ids": [], "answer_coverage": False}
-    return {"decision": "PARTIALLY_SUPPORTED", "chunk_ids": [], "answer_coverage": False}
+    supported = [r for r in ranked if r["assessment"].decision == "PASSAGE_SUPPORTED"]
+    values = {v.lower().replace(" ", "") for r in supported for v in r["assessment"].specification_values}
+    if len(values) > 1 and query.specification_types:
+        return {"decision": "PARTIALLY_SUPPORTED_FROM_AUTHORIZED_SOURCES", "chunk_ids": [],
+                "answer_coverage": False, "reason": "conflicting_verified_specifications"}
+    if supported:
+        return {"decision": "SUPPORTED_FROM_AUTHORIZED_SOURCES",
+                "chunk_ids": [r["chunk_id"] for r in supported], "answer_coverage": True}
+    if any(r["assessment"].decision == "PASSAGE_PARTIALLY_SUPPORTED" for r in ranked):
+        return {"decision": "PARTIALLY_SUPPORTED_FROM_AUTHORIZED_SOURCES", "chunk_ids": [],
+                "answer_coverage": False}
+    return {"decision": "NO_SUFFICIENT_EVIDENCE_FOUND", "chunk_ids": [], "answer_coverage": False}

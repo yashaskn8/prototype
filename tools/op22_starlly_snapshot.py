@@ -33,7 +33,7 @@ def load_existing_env() -> None:
 
 def paged_records(client, resource: str, max_records: int = 5000, page_size: int = 50) -> list[dict]:
     """Fetch a complete array response; reject duplicate or inconsistent pages."""
-    if resource not in {"assets", "complaints"}:
+    if resource not in {"assets", "complaints", "site-assets"}:
         raise ValueError("Unsupported paged resource")
     records = []
     seen_ids = set()

@@ -21,7 +21,13 @@ from core.models import Asset, KnowledgeChunk, Tenant
 from core.services.retriever import _knowledge_candidates
 
 PRIVATE = ROOT / "private_training_data"
-OUT = PRIVATE / "op22_review"
+OUT = Path(os.environ.get("SERVY_EXPERIMENT_OUTPUT_DIR", str(PRIVATE / "op22_review"))).resolve()
+if not OUT.is_relative_to(PRIVATE.resolve()):
+    raise ValueError("Experimental diagnostics must remain private")
+OUT.mkdir(parents=True, exist_ok=True)
+RERANK_MODE = os.environ.get("SERVY_EXPERIMENT_RANK_MODE", "fixed")
+if RERANK_MODE not in {"fixed", "technical_support"}:
+    raise ValueError("Unknown experimental rerank mode")
 historical = [json.loads(line) for line in (PRIVATE / "op21_accuracy_audit" / "per_query.jsonl").read_text(encoding="utf-8").splitlines()]
 validation = [json.loads(line) for line in (PRIVATE / "company_val_weakly_supervised.jsonl").read_text(encoding="utf-8").splitlines()]
 dev_old = {r["query_id"]: r for r in json.loads((PRIVATE / "op21_accuracy_audit" / "dev_experiments.json").read_text(encoding="utf-8"))["per_query"]}
@@ -95,9 +101,13 @@ def evaluate_row(row, *, strict_source):
     dense = {cid: i + 1 for i, cid in enumerate(row["fair_minilm"])}
     lexical = {cid: i + 1 for i, cid in enumerate(row["lexical"])}
     started = time.perf_counter()
-    ranked = rank_authorized_candidates(query, authorized, dense, lexical, verified_document_ids=verified, asset=asset)
+    ranked = rank_authorized_candidates(query, authorized, dense, lexical, verified_document_ids=verified,
+                                        asset=asset, rerank_mode=RERANK_MODE)
     latency_ms = (time.perf_counter() - started) * 1000
-    verification = verify_answer_evidence(query, ranked)
+    verification = verify_answer_evidence(query, ranked, index_complete=True,
+                                          source_universe_complete=True,
+                                          expected_candidate_count=len(authorized),
+                                          searched_candidate_count=len(ranked))
     return {
         "evidence_ranked": [r["chunk_id"] for r in ranked],
         "evidence_top_5": [{"chunk_id": r["chunk_id"], "score": r["score"],
@@ -129,7 +139,7 @@ for row in relevance:
 dev_metrics = score_rows(dev_results)
 historical_metrics = score_rows(relevance)
 summary = {
-    "ranker_version": "op22_fixed_evidence_v1",
+    "ranker_version": f"op23_passage_support_v1_{RERANK_MODE}",
     "source_mode": "legacy mixed-tenant research only; company certification uses strict source audit separately",
     "development": {"population": "six weakly supervised, source-group-separated validation cases", "metrics": dev_metrics},
     "historical": {"population": "43 repeatedly inspected single-label relevance cases; diagnostic only", "metrics": historical_metrics},

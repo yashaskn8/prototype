@@ -1,0 +1,12 @@
+# Operation 23 implementation ledger
+
+| Confirmed defect or limit | Required implementation | Verification |
+|---|---|---|
+| Operation 22 final-test freeze requires an existing audited Servy document while its source-exclusion list rejects existing source hashes. | Admit authenticated new attachments into a versioned private manifest without first writing SQLite or Chroma; freeze against manifest passage IDs and a sealed prior-source baseline covering all 166 local texts, including 108 without raw checksums. | New-source acceptance, historical-hash rejection, text-only prior, revised-manual and near-duplicate rejection tests. |
+| An editable reviewer allowlist and approval string do not prove human authorization. | Verify an external Ed25519 signature over the entire review decision using a trust root supplied outside candidate files. Keep actual cases pending until a real company key and reviewer exist. | Forged signature, edited passage, wrong organisation and changed version tests. |
+| Unanswerable questions may have no source attachment; four real complaints have no asset. | Bind query provenance and searched source universe separately from positive passages. Route absent equipment to clarification. | No-positive unanswerable and missing-asset tests. |
+| Passage `ANSWER_NOT_IN_KB` is an invalid corpus-level inference. | Separate passage support from full authorized-corpus search and index completeness. | Missing-code passage, incomplete index and source disagreement tests. |
+| Nine source documents/69 chunks are verified from organisation 273; 157 local documents and local provenance rows remain unresolved/empty. | Preserve the read-only audit; add a dry-run mapping validator for authoritative MySQL provenance with no automatic write-back. | SQLite and disposable MySQL tests of identity/uniqueness. |
+| MiniLM 24/43 historical Hit@1 and 4/6 weak development Hit@1; experimental ranker has no verified Hit@1 lift. | Keep production selection unchanged. Measure evidence logic separately, add a private MiniLM admitted-passage baseline, and use reviewed development before tuning. | Reproducible offline results, private prediction tests, and per-query diagnostics, with no independent score claimed. |
+
+Operation 22 starting commit: `80e06d86c51df73544ada97ca829ba84523081ac`. Its [MySQL 8.0 CI run](https://github.com/yashaskn8/prototype/actions/runs/38886250178) passed. Current `main` and working tree matched this reference when Operation 23 began. Private snapshots, labels, and checkpoints remain untouched.
