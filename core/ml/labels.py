@@ -239,8 +239,22 @@ def resolve_provenance_verified_examples(rows: List[dict], require_approved: boo
             rejected.append((qid, f"negative chunk(s) {missing_nids} not found in database"))
             continue
         
-        pos_texts = [pc.text for pc in pos_chunks]
-        neg_texts = [nc.text for nc in neg_chunks]
+        # Train-serve alignment fix: resolve passage text using the SAME
+        # representation the BGE indexer writes to Chroma vectors.
+        # Raw chunk.text misses the heading prepended by passage_text() for
+        # content_first profiles, creating a train-serve skew that degrades
+        # fine-tuned model accuracy.
+        from core.ml.embeddings import passage_text as _passage_text, get_profile as _get_profile
+        try:
+            _bge_profile = _get_profile("company-bge-small")
+        except Exception:
+            _bge_profile = None
+        if _bge_profile:
+            pos_texts = [_passage_text(_bge_profile, pc) for pc in pos_chunks]
+            neg_texts = [_passage_text(_bge_profile, nc) for nc in neg_chunks]
+        else:
+            pos_texts = [pc.text for pc in pos_chunks]
+            neg_texts = [nc.text for nc in neg_chunks]
 
         verified_examples.append({
             "query_id": qid,

@@ -715,7 +715,7 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     # In content-first mode, rely primarily on semantic content match.
                     # Bounded metadata bonus is strictly capped.
                     boost = min(0.05, _calculate_metadata_bonus(d, matched_chunk, asset, customer) * 0.25)
-                elif sim < 0.58 and id_boost <= 0.0:
+                elif sim < _dense_gate and id_boost <= 0.0:
                     boost = 0.0
                 else:
                     boost = _calculate_metadata_bonus(d, matched_chunk, asset, customer)

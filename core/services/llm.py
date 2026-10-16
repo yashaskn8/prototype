@@ -543,12 +543,15 @@ def generate_answer(question, asset, retrieved, service_call=None):
 
     # Evidence sufficiency check (Phase 1 Fix):
     # Validates candidate score, technical identifier presence, equipment applicability, and grounded content.
-    is_sufficient, reason = check_evidence_sufficiency(question, asset, retrieved)
-    if not is_sufficient:
+    evidence_result = check_evidence_sufficiency(question, asset, retrieved)
+    if not evidence_result:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
 
+    # Use only grounded, verified chunks for LLM context — never the full unfiltered retrieved list.
+    # This prevents ungrounded, non-applicable, or quarantined chunks from leaking into the prompt.
+    grounded = evidence_result.grounded_chunks or retrieved
     context_blocks = []
-    for i, r in enumerate(retrieved, 1):
+    for i, r in enumerate(grounded, 1):
         context_blocks.append(
             f"<retrieved_source id=\"{i}\" kind=\"{r.source_kind}\">\n"
             f"TITLE: {r.reference}\nTYPE: {r.doc_type}\n"
@@ -612,12 +615,12 @@ ANSWER:"""
     if provider in {"auto", "ollama"} and retrieved and is_ollama_service_online():
         try:
             raw_answer = ollama_generate(prompt)
-            clean_answer = _clean_model_answer(raw_answer, retrieved)
+            clean_answer = _clean_model_answer(raw_answer, grounded)
             if clean_answer and clean_answer != INSUFFICIENT_EVIDENCE_MESSAGE:
                 # Append verified references from authoritative retrieval metadata
                 seen_refs = set()
                 ref_lines = ["\n\nVERIFIED REFERENCES"]
-                for r in retrieved[:5]:
+                for r in grounded[:5]:
                     ref_label = f"{r.reference} ({r.doc_type})"
                     if ref_label not in seen_refs:
                         seen_refs.add(ref_label)
@@ -628,5 +631,5 @@ ANSWER:"""
                 return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
         except Exception:
             pass
-    return _extractive_answer(question, asset, retrieved, service_call=service_call), "extractive-local"
+    return _extractive_answer(question, asset, grounded, service_call=service_call), "extractive-local"
 

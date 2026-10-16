@@ -89,15 +89,15 @@ def delete_document_vectors(document_id: Any, allow_company_purge: bool = False)
 
     try:
         sparse_coll = get_sparse_collection()
-        sparse_coll.delete(where={"document_id": document_id})
+        sparse_coll.delete(where={"document_id": doc_id})
     except Exception as exc:
-        logger.warning("Error deleting document %s from sparse collection: %s", document_id, exc)
+        logger.warning("Error deleting document %s from sparse collection: %s", doc_id, exc)
 
     try:
         from core.ml.indexer import remove_document_bge
-        remove_document_bge(document_id)
+        remove_document_bge(doc_id)
     except Exception as exc:
-        logger.debug("Error removing BGE vectors for doc %s: %s", document_id, exc)
+        logger.debug("Error removing BGE vectors for doc %s: %s", doc_id, exc)
 
 
 def get_document_retrieval_readiness(document_id: Any) -> Dict[str, Any]:
