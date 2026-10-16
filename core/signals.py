@@ -18,6 +18,11 @@ def keep_resolution_index_in_sync(sender, instance, raw=False, **kwargs):
 def purge_chroma_on_document_delete(sender, instance, **kwargs):
     """Purge document vectors from ChromaDB when a KnowledgeDocument is deleted."""
     queue_chroma_deletion(instance.id)
+    try:
+        from core.ml.indexer import remove_document_bge
+        remove_document_bge(instance.id)
+    except Exception:
+        pass
 
 
 @receiver(m2m_changed, sender=Project.assets.through)

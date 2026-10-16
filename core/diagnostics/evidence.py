@@ -225,4 +225,12 @@ def verify_evidence_anchor(
         if not binding_ok:
             return False, f"SOURCE_BINDING_FAILED: {binding_reason}", doc
 
+    # Provenance gate: procedures in real company scope require verified company document provenance
+    from core.services.customer_isolation import get_customer_data_mode, is_verified_real_document, is_verified_real_tenant
+    mode = get_customer_data_mode()
+    is_real_scope = is_verified_real_tenant(doc.tenant) or is_verified_real_tenant(tenant_id)
+    if is_real_scope:
+        if not is_verified_real_document(doc):
+            return False, "DOCUMENT_PROVENANCE_NOT_VERIFIED", doc
+
     return True, "VALID", doc

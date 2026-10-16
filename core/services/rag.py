@@ -5,7 +5,17 @@ from .retriever import retrieve
 from .llm import generate_answer
 
 
-def ask_rag(*, tenant, question, asset, customer=None, include_confidential=False, service_call=None, staff_mode=False):
+def ask_rag(
+    *,
+    tenant,
+    question,
+    asset,
+    customer=None,
+    include_confidential=False,
+    service_call=None,
+    staff_mode=False,
+    top_k: int | None = None,
+):
     question = (question or "").strip()[:4000]
     if query_is_control_abuse(question):
         return {
@@ -16,13 +26,14 @@ def ask_rag(*, tenant, question, asset, customer=None, include_confidential=Fals
         }
 
     include_past_resolutions = bool(staff_mode and service_call)
+    effective_top_k = top_k if top_k is not None else settings.SERVY_RAG_TOP_K
     results = retrieve(
         tenant=tenant,
         question=question,
         asset=asset,
         customer=customer,
         include_confidential=include_confidential,
-        top_k=settings.SERVY_RAG_TOP_K,
+        top_k=effective_top_k,
         min_score=settings.SERVY_RAG_MIN_SCORE,
         service_call=service_call,
         include_past_resolutions=include_past_resolutions,
@@ -41,6 +52,14 @@ def ask_rag(*, tenant, question, asset, customer=None, include_confidential=Fals
             "reference": r.reference,
             "doc_type": r.doc_type,
             "score": round(r.score, 4),
+            "dense_similarity": round(r.dense_similarity, 4) if getattr(r, "dense_similarity", None) is not None else None,
+            "sparse_relevance": round(r.sparse_relevance, 4) if getattr(r, "sparse_relevance", None) is not None else None,
+            "fusion_score": round(r.fusion_score, 6) if getattr(r, "fusion_score", None) is not None else None,
+            "final_rank": getattr(r, "final_rank", None),
+            "evidence_support": getattr(r, "evidence_support", False),
+            "source_verified": getattr(r, "source_verified", False),
+            "equipment_applicable": getattr(r, "equipment_applicable", False),
+            "customer_action_authorized": getattr(r, "customer_action_authorized", False),
             "source_url": r.source_url,
             "model_version": getattr(r, "model_version", "minilm"),
         }

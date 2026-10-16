@@ -3,12 +3,15 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Load environment variables from .env if present (supporting both project root and workspace root)
+# Load environment variables from .env if present (supporting both project root and workspace root).
+# IMPORTANT: override=False ensures explicit process-level environment variables
+# (e.g. SERVY_DB_ENGINE=sqlite3 set in the shell) are NEVER silently overwritten
+# by values from .env files. This is critical for local test isolation.
 for _env_candidate in [BASE_DIR.parent / ".env", BASE_DIR / ".env"]:
     if _env_candidate.is_file():
         try:
             from dotenv import load_dotenv
-            load_dotenv(_env_candidate, override=True)
+            load_dotenv(_env_candidate, override=False)
         except Exception:
             try:
                 with open(_env_candidate, "r", encoding="utf-8") as _f:
@@ -16,7 +19,8 @@ for _env_candidate in [BASE_DIR.parent / ".env", BASE_DIR / ".env"]:
                         _line = _line.strip()
                         if _line and not _line.startswith("#") and "=" in _line:
                             _k, _v = _line.split("=", 1)
-                            os.environ[_k.strip()] = _v.strip().strip("'\"")
+                            # Only set if not already defined in process environment
+                            os.environ.setdefault(_k.strip(), _v.strip().strip("'\""))
             except Exception:
                 pass
 
@@ -64,7 +68,80 @@ TEMPLATES = [{
 WSGI_APPLICATION = "servy_rag.wsgi.application"
 ASGI_APPLICATION = "servy_rag.asgi.application"
 
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3", "OPTIONS": {"timeout": 20}}}
+# ----------------------------------------------------------------------
+# Authoritative Relational Database Configuration: MySQL-First Architecture
+# ----------------------------------------------------------------------
+# MySQL is the authoritative relational database for Servy.
+# Production startup strictly requires MySQL.
+
+SERVY_DB_ENGINE = os.getenv("SERVY_DB_ENGINE", "mysql").lower().strip()
+
+if SERVY_DB_ENGINE == "mysql":
+    # Ensure MySQL driver is registered (mysqlclient C-extension preferred, PyMySQL fallback)
+    try:
+        import MySQLdb  # mysqlclient
+    except ImportError:
+        try:
+            import pymysql
+            pymysql.install_as_MySQLdb()
+        except ImportError:
+            raise RuntimeError(
+                "Neither 'mysqlclient' nor 'pymysql' is installed. "
+                "Install mysqlclient (pip install mysqlclient) or PyMySQL (pip install pymysql) "
+                "to connect to the authoritative Servy MySQL database."
+            )
+
+    MYSQL_HOST = os.getenv("MYSQL_HOST", os.getenv("SERVY_DB_HOST", "127.0.0.1")).strip()
+    MYSQL_PORT = int(os.getenv("MYSQL_PORT", os.getenv("SERVY_DB_PORT", "3306")))
+    MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", os.getenv("SERVY_DB_NAME", "servy")).strip()
+    MYSQL_USER = os.getenv("MYSQL_USER", os.getenv("SERVY_DB_USER", "servy_app")).strip()
+    MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", os.getenv("SERVY_DB_PASSWORD", "")).strip()
+
+    MYSQL_OPTIONS = {
+        "charset": "utf8mb4",
+        "init_command": (
+            "SET sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ZERO_DATE,NO_ZERO_IN_DATE';"
+            "SET default_storage_engine=INNODB;"
+        ),
+        "connect_timeout": int(os.getenv("MYSQL_CONNECT_TIMEOUT", "10")),
+    }
+
+    MYSQL_SSL_CA = os.getenv("MYSQL_SSL_CA", "").strip()
+    if MYSQL_SSL_CA:
+        MYSQL_OPTIONS["ssl"] = {"ca": MYSQL_SSL_CA}
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.mysql",
+            "NAME": MYSQL_DATABASE,
+            "USER": MYSQL_USER,
+            "PASSWORD": MYSQL_PASSWORD,
+            "HOST": MYSQL_HOST,
+            "PORT": MYSQL_PORT,
+            "OPTIONS": MYSQL_OPTIONS,
+            "CONN_MAX_AGE": int(os.getenv("MYSQL_CONN_MAX_AGE", "60")),
+            "TEST": {
+                "CHARSET": "utf8mb4",
+                "COLLATION": "utf8mb4_unicode_ci",
+            },
+        }
+    }
+elif SERVY_DB_ENGINE == "sqlite3":
+    # Allowed strictly when explicitly specified for test isolation or offline review
+    if not DEBUG and os.getenv("CI") != "true":
+        raise RuntimeError("SQLite backend is strictly prohibited when DJANGO_DEBUG=0. MySQL is required.")
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            "OPTIONS": {"timeout": 20},
+            "TEST": {
+                "NAME": ":memory:",
+            },
+        }
+    }
+else:
+    raise RuntimeError(f"Unsupported database engine '{SERVY_DB_ENGINE}'. Servy requires MySQL ('mysql').")
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -153,6 +230,8 @@ SERVY_OLLAMA_MODEL = os.getenv("SERVY_OLLAMA_MODEL", "qwen2.5:3b")
 SERVY_OLLAMA_TIMEOUT = int(os.getenv("SERVY_OLLAMA_TIMEOUT", "30"))
 SERVY_RAG_TOP_K = int(os.getenv("SERVY_RAG_TOP_K", "6"))
 SERVY_RAG_MIN_SCORE = float(os.getenv("SERVY_RAG_MIN_SCORE", "0.055"))
+SERVY_DENSE_RELEVANCE_GATE = float(os.getenv("SERVY_DENSE_RELEVANCE_GATE", "0.55"))
+SERVY_SPARSE_RELEVANCE_GATE = float(os.getenv("SERVY_SPARSE_RELEVANCE_GATE", "0.055"))
 SERVY_MAX_KB_UPLOAD_BYTES = int(os.getenv("SERVY_MAX_KB_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 SERVY_MAX_IMPORT_BYTES = int(os.getenv("SERVY_MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
 SERVY_MAX_DOCUMENT_TEXT_CHARS = int(os.getenv("SERVY_MAX_DOCUMENT_TEXT_CHARS", "500000"))
@@ -181,3 +260,43 @@ STARLLY_API_BASE_URL = os.getenv("STARLLY_API_BASE_URL", "").rstrip("/")
 STARLLY_API_KEY = os.getenv("STARLLY_API_KEY", "")
 STARLLY_ORGANISATION_ID = os.getenv("STARLLY_ORGANISATION_ID", "")
 STARLLY_API_KEY_ID = os.getenv("STARLLY_API_KEY_ID", "")
+
+# Starlly Tenant Authorization Mapping
+# Maps Servy tenant identifier (slug or ID) to authorized Starlly organisation ID.
+# Only explicitly mapped tenants can make calls to external Starlly endpoints.
+STARLLY_TENANT_ORGANISATION_MAP = {
+    "skydream": os.getenv("STARLLY_ORGANISATION_ID", "273"),
+    "starlly-tester": os.getenv("STARLLY_ORGANISATION_ID", "273"),
+}
+_allowed_tenants_env = os.getenv("STARLLY_ALLOWED_TENANTS", "")
+if _allowed_tenants_env:
+    for _t in _allowed_tenants_env.split(","):
+        _t = _t.strip()
+        if _t:
+            STARLLY_TENANT_ORGANISATION_MAP[_t] = os.getenv("STARLLY_ORGANISATION_ID", "273")
+
+# Real company data isolation controls
+SERVY_CUSTOMER_DATA_MODE = os.getenv("SERVY_CUSTOMER_DATA_MODE", "verified_real_only")
+STARLLY_REAL_TENANTS = ["skydream"]
+STARLLY_REAL_ORGANISATIONS = ["273"]
+SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"
+
+# Authorized human training reviewers (ML pipeline only - CANNOT approve industrial procedures)
+SERVY_AUTHORIZED_TRAINING_REVIEWERS = [
+    "Pranav Patel",
+    "Lead Diagnostics Engineer",
+    "Staff Diagnostics Auditor",
+    "dr-yashas-kn",
+    "admin",
+]
+
+# Dedicated authorized industrial safety approvers (STRICTLY separate from training reviewers)
+SERVY_AUTHORIZED_SAFETY_APPROVERS = [
+    "Certified OEM Safety Engineer",
+    "Director of Product Safety",
+    "Senior Industrial Safety Auditor",
+    "dr-yashas-kn",
+    "Lead Diagnostics Engineer",
+    "Staff Diagnostics Auditor",
+    "admin",
+]

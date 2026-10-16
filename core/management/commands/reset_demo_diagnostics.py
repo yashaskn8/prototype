@@ -30,21 +30,26 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("Asset 'Milk Analyzer Lab-01' not found."))
             return
 
-        from django.db import connection
+        from core.security import is_protected_database
+        from django.core.management.base import CommandError
+
+        if is_protected_database():
+            raise CommandError(
+                "DESTRUCTIVE OPERATION BLOCKED: reset_demo_diagnostics cannot operate on the protected database. "
+                "Diagnostic event ledgers and session history are immutable."
+            )
 
         with transaction.atomic():
             # 1. Clear any active or previous diagnostic sessions, commands, and passports for this asset
             sessions = DiagnosticSession.objects.filter(tenant=tenant, asset=asset)
             session_ids = list(sessions.values_list("id", flat=True))
 
-            with connection.cursor() as cursor:
-                if session_ids:
-                    placeholders = ",".join(["%s"] * len(session_ids))
-                    cursor.execute(f"DELETE FROM core_diagnosticevent WHERE session_id IN ({placeholders})", session_ids)
-                    cursor.execute(f"DELETE FROM core_diagnosticcommand WHERE session_id IN ({placeholders})", session_ids)
-                    cursor.execute(f"DELETE FROM core_recoverypassport WHERE session_id IN ({placeholders})", session_ids)
-                    cursor.execute(f"DELETE FROM core_diagnosticsession WHERE id IN ({placeholders})", session_ids)
-                cursor.execute("DELETE FROM core_recoverypassport WHERE asset_id = %s", [asset.id])
+            if session_ids:
+                DiagnosticEvent.objects.filter(session_id__in=session_ids).delete()
+                DiagnosticCommand.objects.filter(session_id__in=session_ids).delete()
+                RecoveryPassport.objects.filter(session_id__in=session_ids).delete()
+                sessions.delete()
+            RecoveryPassport.objects.filter(asset=asset).delete()
 
             # 2. Reset service calls created for this asset from diagnostic escalation
             ServiceCall.objects.filter(

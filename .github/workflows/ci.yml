@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feature/**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -12,8 +12,26 @@ concurrency:
 
 jobs:
   backend-security-and-tests:
-    name: Backend Security & Tests
+    name: Backend Security & Tests (MySQL 8.0)
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_ci_password
+          MYSQL_DATABASE: servy_test
+          MYSQL_USER: servy_ci
+          MYSQL_PASSWORD: servy_ci_password
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
+    env:
+      SERVY_DB_ENGINE: mysql
+      MYSQL_HOST: 127.0.0.1
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: servy_test
+      MYSQL_USER: servy_ci
+      MYSQL_PASSWORD: servy_ci_password
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,6 +47,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify MySQL Readiness
+        run: python manage.py check_mysql_ready
+
+      - name: Configure Disposable Test Database Privileges
+        run: |
+          python -c "import pymysql; conn = pymysql.connect(host='127.0.0.1', user='root', password='root_ci_password'); c = conn.cursor(); c.execute('GRANT ALL PRIVILEGES ON \`test_%\`.* TO \'servy_ci\'@\'%\''); c.execute('FLUSH PRIVILEGES'); conn.close(); print('Scoped test_% privileges granted to servy_ci successfully.')"
+
+      - name: Apply Migrations on MySQL
+        run: python manage.py migrate
+
       - name: Django System Check
         run: python manage.py check
 
@@ -41,7 +69,16 @@ jobs:
       - name: Red Team Offline Checks (Roles & Scoping)
         run: python red_team_offline.py
 
-      - name: Run All Core Tests (Unit, Security, RAG, Red-Team)
+      - name: Real-Company Isolation Tests
+        run: python manage.py test core.tests_real_company_isolation -v 2
+
+      - name: Customer RAG End-to-End Tests
+        run: python manage.py test core.tests_customer_rag_endtoend -v 2
+
+      - name: Customer RAG Mutation Tests
+        run: python manage.py test core.tests_customer_mutations -v 2
+
+      - name: Run All Core Tests on MySQL
         run: python manage.py test core -v 2
 
   frontend-build-and-lint:

@@ -7,7 +7,7 @@ from core.services.indexing import index_document
 from core.services.rag import ask_rag
 
 
-@override_settings(SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated", SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
 class RagIsolationTests(TestCase):
     def setUp(self):
         self.t1 = Tenant.objects.create(name="Tenant A", slug="tenant-a")

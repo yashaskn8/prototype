@@ -10,8 +10,10 @@ so current production behaviour and data are untouched.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional
 
 from django.conf import settings
@@ -31,6 +33,11 @@ class EmbeddingProfile:
     query_prefix: str = ""      # BGE retrieval instruction for queries only
     content_first: bool = False  # embed body/heading only (no manual metadata)
     local_path: Optional[str] = None
+    promotion_eligible: bool = False
+    checkpoint_hash: str = ""
+    training_status: str = "production"
+    dataset_manifest_hash: str = ""
+    base_revision: Optional[str] = None
 
 
 try:
@@ -45,22 +52,59 @@ BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 PROFILES: Dict[str, EmbeddingProfile] = {
     "minilm": EmbeddingProfile(
         key="minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
-        collection="servy_dense_kb", content_first=False,
+        collection="servy_dense_kb", content_first=False, promotion_eligible=True,
     ),
     "bge-small": EmbeddingProfile(
         key="bge-small", model_id="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
         dim=384, collection="servy_dense_bge_small_v1",
-        query_prefix=BGE_QUERY_PREFIX, content_first=True,
+        query_prefix=BGE_QUERY_PREFIX, content_first=True, promotion_eligible=True,
+    ),
+    "company-bge-small": EmbeddingProfile(
+        key="company-bge-small", model_id="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        dim=384, collection="servy_company_bge_small_v1",
+        query_prefix=BGE_QUERY_PREFIX, content_first=True, promotion_eligible=True,
+    ),
+    "company-minilm": EmbeddingProfile(
+        key="company-minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
+        collection="servy_company_dense_kb", content_first=False, promotion_eligible=True,
+    ),
+    "company-bge-ft": EmbeddingProfile(
+        key="company-bge-ft",
+        model_id=str(getattr(settings, "BASE_DIR", Path(__file__).resolve().parent.parent.parent) / "ml_models" / "checkpoints" / "servy_company_bge_v1" / "final"),
+        revision=None,
+        dim=384,
+        collection="servy_company_bge_ft_v1",
+        query_prefix=BGE_QUERY_PREFIX,
+        content_first=True,
+        local_path=str(getattr(settings, "BASE_DIR", Path(__file__).resolve().parent.parent.parent) / "ml_models" / "checkpoints" / "servy_company_bge_v1" / "final"),
+        promotion_eligible=False,
+        training_status="COMPANY_DATA_WEAKLY_SUPERVISED_EXPERIMENT",
+        checkpoint_hash="7d394413398be69d2d1093538e5eec6cafa58cbfeae858cac4abf608b5db0d33",
+        base_revision=BGE_SMALL_REVISION,
     ),
 }
 
 
-def register_finetuned(path: str, key: str = "bge-small-ft") -> EmbeddingProfile:
+def register_finetuned(
+    path: str,
+    key: str = "bge-small-ft",
+    *,
+    promotion_eligible: bool = False,
+    training_status: str = "synthetic_smoke",
+    dataset_manifest_hash: str = "",
+    base_revision: Optional[str] = None,
+    checkpoint_hash: str = "",
+) -> EmbeddingProfile:
     """Register a locally saved fine-tuned checkpoint as its own profile/collection."""
     p = EmbeddingProfile(
         key=key, model_id=path, revision=None, dim=384,
         collection=f"servy_dense_{key.replace('-', '_')}_v1",
         query_prefix=BGE_QUERY_PREFIX, content_first=True, local_path=path,
+        promotion_eligible=promotion_eligible,
+        training_status=training_status,
+        dataset_manifest_hash=dataset_manifest_hash,
+        base_revision=base_revision or BGE_SMALL_REVISION,
+        checkpoint_hash=checkpoint_hash,
     )
     PROFILES[key] = p
     return p
@@ -88,42 +132,160 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         kwargs = {"device": getattr(settings, "SERVY_EMBEDDING_DEVICE", "cpu")}
         if profile.revision:
             kwargs["revision"] = profile.revision
+        model_target = profile.local_path or profile.model_id
+        if model_target == "all-MiniLM-L6-v2":
+            model_target = "sentence-transformers/all-MiniLM-L6-v2"
         try:
-            m = SentenceTransformer(profile.local_path or profile.model_id,
-                                    local_files_only=not allow_download, **kwargs)
+            m = SentenceTransformer(model_target, local_files_only=not allow_download, **kwargs)
         except Exception as exc:
             raise EmbeddingConfigError(
                 f"Model '{profile.model_id}' not available locally. "
                 f"Run: python core/ml/download_bge.py ml_artifacts/bge_small_manifest.json ({exc})"
             ) from exc
-        actual = m.get_sentence_embedding_dimension()
+        actual = m.get_embedding_dimension() if hasattr(m, "get_embedding_dimension") else m.get_sentence_embedding_dimension()
         if actual != profile.dim:
             raise EmbeddingConfigError(f"{profile.model_id} dim {actual} != expected {profile.dim}")
         _models[profile.key] = m
         return m
 
 
+INDEX_SCHEMA_VERSION = "2.0"
+PASSAGE_FORMAT_VERSION = "heading_body_v1"
+
+
+def compute_checkpoint_fingerprint(checkpoint_path: str, *, short: bool = True) -> str:
+    """Compute a content-based SHA-256 fingerprint of an entire checkpoint directory.
+
+    Hashes every regular file's relative path and bytes in sorted order, producing
+    a deterministic digest that changes when any model weight, config, or tokenizer
+    file changes. If the path does not exist, returns the empty string.
+    """
+    p = Path(checkpoint_path)
+    if not p.exists():
+        return ""
+    h = hashlib.sha256()
+    if p.is_file():
+        h.update(p.name.encode())
+        h.update(p.read_bytes())
+    else:
+        for f in sorted(p.rglob("*")):
+            if f.is_file():
+                h.update(str(f.relative_to(p)).encode())
+                h.update(f.read_bytes())
+    digest = h.hexdigest()
+    return digest[:16] if short else digest
+
+
+@dataclass(frozen=True)
+class IndexManifest:
+    model_id: str
+    revision: str
+    dim: int
+    normalization: str
+    query_prefix: str
+    passage_format_version: str
+    index_schema_version: str
+    checkpoint_fingerprint: str = ""
+
+    def to_metadata(self) -> dict:
+        return {
+            "hnsw:space": self.normalization,
+            "servy_model": self.model_id,
+            "servy_revision": self.revision or "",
+            "servy_dim": int(self.dim),
+            "servy_query_prefix": self.query_prefix or "",
+            "servy_passage_format": self.passage_format_version,
+            "servy_schema_version": self.index_schema_version,
+            "servy_checkpoint_fp": self.checkpoint_fingerprint or "",
+        }
+
+
 def get_collection(profile: EmbeddingProfile, create: bool = True):
-    """Return the profile's collection; refuse to reuse a collection stamped by another model."""
+    """Return the profile's collection; refuse to reuse a collection stamped by another model
+    or having an incompatible manifest (revision, dimension, query_prefix, passage_format)."""
     from core.services.chroma_store import get_chroma_client
     client = get_chroma_client()
-    meta = {"hnsw:space": "cosine", "servy_model": profile.model_id, "servy_dim": profile.dim}
+
+    # Compute real content-based fingerprint for local checkpoints
+    if profile.local_path:
+        cp_fp = compute_checkpoint_fingerprint(profile.local_path)
+    else:
+        cp_fp = profile.revision or ""
+
+    manifest = IndexManifest(
+        model_id=profile.model_id,
+        revision=profile.revision or "",
+        dim=profile.dim,
+        normalization="cosine",
+        query_prefix=profile.query_prefix or "",
+        passage_format_version=PASSAGE_FORMAT_VERSION if profile.content_first else "legacy_metadata_v0",
+        index_schema_version=INDEX_SCHEMA_VERSION,
+        checkpoint_fingerprint=cp_fp,
+    )
+    meta = manifest.to_metadata()
     if create:
         coll = client.get_or_create_collection(name=profile.collection, metadata=meta)
     else:
         coll = client.get_collection(profile.collection)
-    stamped = (coll.metadata or {}).get("servy_model")
-    # Legacy servy_dense_kb has no stamp; it is only ever paired with minilm.
-    if stamped and stamped != profile.model_id:
-        raise EmbeddingConfigError(
-            f"Collection '{profile.collection}' belongs to model '{stamped}', not '{profile.model_id}'.")
-    if not stamped and profile.key != "minilm":
+
+    stored_meta = coll.metadata or {}
+    stamped_model = stored_meta.get("servy_model")
+
+    # Legacy servy_dense_kb and company-minilm have no stamp; only ever paired with minilm.
+    if profile.key in ("minilm", "company-minilm"):
+        if stamped_model and stamped_model != profile.model_id:
+            raise EmbeddingConfigError(
+                f"Collection '{profile.collection}' belongs to model '{stamped_model}', not '{profile.model_id}'."
+            )
+        return coll
+
+    if not stamped_model:
         raise EmbeddingConfigError(f"Collection '{profile.collection}' is unstamped; refusing to use it.")
+
+    if stamped_model != profile.model_id:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' model mismatch: stamped '{stamped_model}', expected '{profile.model_id}'."
+        )
+
+    # Validate Dimension
+    stamped_dim = stored_meta.get("servy_dim")
+    if stamped_dim and int(stamped_dim) != profile.dim:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' dim mismatch: stamped {stamped_dim}, expected {profile.dim}."
+        )
+
+    # Validate Revision if present
+    stamped_rev = stored_meta.get("servy_revision")
+    if stamped_rev and profile.revision and stamped_rev != profile.revision:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' revision mismatch: stamped '{stamped_rev}', expected '{profile.revision}'."
+        )
+
+    # Validate Query Prefix
+    stamped_prefix = stored_meta.get("servy_query_prefix")
+    if stamped_prefix is not None and stamped_prefix != (profile.query_prefix or ""):
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' query prefix mismatch: stamped '{stamped_prefix}', expected '{profile.query_prefix}'."
+        )
+
+    # Validate Passage Format
+    stamped_format = stored_meta.get("servy_passage_format")
+    expected_format = PASSAGE_FORMAT_VERSION if profile.content_first else "legacy_metadata_v0"
+    if stamped_format and stamped_format != expected_format:
+        raise EmbeddingConfigError(
+            f"Collection '{profile.collection}' passage format mismatch: stamped '{stamped_format}', expected '{expected_format}'."
+        )
+
     return coll
 
 
 def encode_queries(profile: EmbeddingProfile, model, queries):
     return model.encode([profile.query_prefix + q for q in queries],
+                        normalize_embeddings=True, batch_size=getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8))
+
+
+def encode_passages(profile: EmbeddingProfile, model, passages):
+    return model.encode(passages,
                         normalize_embeddings=True, batch_size=getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8))
 
 

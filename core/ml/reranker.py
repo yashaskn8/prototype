@@ -43,10 +43,25 @@ def get_reranker():
     return _cross_encoder
 
 
-def rerank_candidates(query: str, candidates: List, top_k: int = 10) -> List:
+import math
+import time
+
+
+def calibrated_sigmoid_score(logit: float) -> float:
+    """Calibrate raw CrossEncoder logits into a well-behaved probability in [0, 1]."""
+    return 1.0 / (1.0 + math.exp(-float(logit)))
+
+
+def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
     """Rerank an already-authorized, bounded list of RetrievedChunk objects.
 
-    If reranker is disabled or unavailable, returns the original list sorted by score.
+    Enforces:
+    - Bounded candidate pool (top 8 max).
+    - Source authority preservation: only reranks authoritative technical documents;
+      historical service cases are never promoted above authoritative guidance.
+    - Score preservation: saves calibrated retrieval score in orig.retrieval_score and
+      calibrated probability in orig.rerank_score.
+    - Safe exception fallback to original order.
     """
     if not is_reranker_enabled() or not candidates:
         return candidates[:top_k]
@@ -56,22 +71,32 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 10) -> List:
         return candidates[:top_k]
 
     try:
-        # Bounded subset: only rerank up to 20 candidates
-        pool = candidates[: min(len(candidates), 20)]
-        pairs = [[query, c.text] for c in pool]
-        scores = model.predict(pairs)
+        t0 = time.perf_counter()
+        # Segregate by source authority: only rerank authoritative technical documents
+        docs = [c for c in candidates if c.source_kind == "knowledge_document"]
+        others = [c for c in candidates if c.source_kind != "knowledge_document"]
 
-        scored = list(zip(pool, scores))
-        # Sort descending by cross-encoder score
-        scored.sort(key=lambda x: float(x[1]), reverse=True)
+        # Pool bound: up to 8 documents maximum
+        pool = docs[: min(len(docs), 8)]
+        if pool:
+            pairs = [[query, c.text] for c in pool]
+            raw_scores = model.predict(pairs)
+            for orig, raw_score in zip(pool, raw_scores):
+                logit = float(raw_score)
+                # Calibrated probability via sigmoid
+                prob = calibrated_sigmoid_score(logit)
+                orig.rerank_score = prob
+                orig.rerank_logit = logit
+                orig.retrieval_score = orig.score
 
-        reranked = []
-        for orig, ce_score in scored[:top_k]:
-            # Retain the chunk metadata, updating score
-            orig.score = float(ce_score)
-            reranked.append(orig)
+            pool.sort(key=lambda x: getattr(x, "rerank_score", 0.0), reverse=True)
 
-        return reranked
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.debug("CrossEncoder reranked %d candidates in %.1f ms", len(pool), elapsed_ms)
+
+        combined = pool + docs[8:] + others
+        return combined[:top_k]
+
     except Exception as exc:
         logger.warning("CrossEncoder reranking failed, falling back to original order: %s", exc)
         return candidates[:top_k]

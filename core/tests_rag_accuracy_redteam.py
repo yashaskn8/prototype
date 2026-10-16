@@ -41,6 +41,7 @@ from core.services.vectors import embed_text
 # ---------------------------------------------------------------------------
 
 RAG_TEST_SETTINGS = {
+    "SERVY_CUSTOMER_DATA_MODE": "test_isolated",
     "SERVY_RAG_MIN_SCORE": 0.0,
     "SERVY_RAG_TOP_K": 10,
     "SERVY_ALLOW_REMOTE_LLM": False,
@@ -707,6 +708,51 @@ class DenseOutageFallbackTests(_RAGFixtureMixin, TransactionTestCase):
             results = self._retrieve("E12 aspiration")
         # Should either return sparse results or empty, not crash
         self.assertIsInstance(results, list)
+
+    def test_missing_dense_collection_falls_back_to_sparse(self):
+        with patch("core.ml.embeddings.get_collection", side_effect=Exception("Collection not found")):
+            results = self._retrieve("E12 aspiration")
+        self.assertTrue(len(results) > 0)
+        self.assertIn("E12", " ".join(r.text for r in results))
+
+    def test_corrupt_dense_collection_falls_back_to_sparse(self):
+        with patch("core.ml.embeddings.load_model", side_effect=ValueError("Corrupt vector model")):
+            results = self._retrieve("E12 aspiration")
+        self.assertTrue(len(results) > 0)
+        self.assertIn("E12", " ".join(r.text for r in results))
+
+    def test_both_indexes_unavailable_returns_empty(self):
+        KnowledgeDocument.objects.filter(id=self.doc.id).update(index_status="NOT_INDEXED")
+        with patch("core.ml.embeddings.load_model", return_value=None):
+            results = self._retrieve("E12 aspiration")
+        self.assertEqual(len(results), 0)
+
+    def test_revoked_source_never_served(self):
+        KnowledgeDocument.objects.filter(id=self.doc.id).update(is_rag_enabled=False)
+        results = self._retrieve("E12 aspiration")
+        self.assertEqual(len(results), 0)
+
+    def test_quarantined_chunk_never_served(self):
+        KnowledgeChunk.objects.filter(document=self.doc).update(is_quarantined=True)
+        results = self._retrieve("E12 aspiration")
+        self.assertEqual(len(results), 0)
+
+    def test_wrong_equipment_never_served(self):
+        results = self._retrieve("E12 aspiration", asset=self.asset_pump)
+        doc_ids = [r.document_id for r in results if r.document_id]
+        self.assertNotIn(self.doc.id, doc_ids)
+
+    def test_wrong_tenant_never_served(self):
+        other_asset = Asset.objects.create(
+            tenant=self.other_tenant, customer=self.evil_customer, name="Evil Unit", asset_code="EVIL-01",
+        )
+        results = retrieve(
+            tenant=self.other_tenant,
+            question="E12 aspiration",
+            asset=other_asset,
+            customer=self.evil_customer,
+        )
+        self.assertEqual(len(results), 0)
 
 
 # ===========================================================================

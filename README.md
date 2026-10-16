@@ -10,7 +10,7 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
   - **Workflow 1 (Customer Pre-Ticket Self-Service)**: Facility & equipment diagnostics with verified technical references, past customer resolutions, "Issue Resolved" feedback, or direct escalation to a service call.
   - **Workflow 2 (Engineer Field Copilot)**: Active ticket diagnostics, confidential schematics, and cross-customer fleet resolution memory for technicians.
 - Local vector database using **ChromaDB** with `SentenceTransformer('all-MiniLM-L6-v2')` embeddings and sparse hashing fallback.
-- SQLite local database with strict Django security & tenant boundary revalidation.
+- **Authoritative MySQL relational database** (InnoDB, utf8mb4, strict SQL mode) with strict Django security & tenant boundary revalidation.
 - Multi-tenant data model with hard tenant filters in every RAG query.
 - Product hierarchy: **Domain → Category → Brand → Product → Asset**.
 - Servy-like screens for Projects, Assets, Inventory, Part Requests, Knowledge Base, and Call Register.
@@ -21,14 +21,33 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
 - Call Register XLSX export and XLSX import with safety bounds.
 - Demo seed volume matching the screenshots: **51 assets, 26 projects, 118 KB items, 532 inventory rows, 7,665 calls**.
 - Two high-quality initial RAG domains: **Milk Analyzer** and **Aerolift**.
-- Standalone `sample_data/servy_dummy_schema.sqlite3` and `sample_data/servy_dummy_data.xlsx` for database/data-table review before running Django.
+- Standalone review artifacts: `sample_data/servy_dummy_schema.sqlite3` and `sample_data/servy_dummy_data.xlsx` for independent data review.
 
 ## Quick Start & Running Commands
 
 ### Prerequisites
-- **Python**: 3.10, 3.11, or 3.12
+- **MySQL**: 8.0+ server running locally or accessible remotely
+- **Python**: 3.10, 3.11, or 3.12 (with `mysqlclient` / `pymysql`)
 - **Node.js**: v18+ and npm
 - **Git**
+
+### Database Setup (Authoritative MySQL)
+1. Create the database and dedicated application user:
+   ```sql
+   CREATE DATABASE servy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE USER 'servy_app'@'localhost' IDENTIFIED BY 'your_secure_password';
+   GRANT ALL PRIVILEGES ON servy.* TO 'servy_app'@'localhost';
+   FLUSH PRIVILEGES;
+   ```
+2. Configure credentials in `.env`:
+   ```ini
+   SERVY_DB_ENGINE=mysql
+   MYSQL_HOST=127.0.0.1
+   MYSQL_PORT=3306
+   MYSQL_DATABASE=servy
+   MYSQL_USER=servy_app
+   MYSQL_PASSWORD=your_secure_password
+   ```
 
 ---
 
@@ -48,11 +67,12 @@ python -m venv .venv
 # 4. Install dependencies
 pip install -r requirements.txt
 
-# 5. Apply migrations
+# 5. Verify MySQL Readiness and Apply migrations
+python manage.py check_mysql_ready
 python manage.py migrate
 
-# 6. Seed demo data and diagnostic playbooks (first-time setup)
-python manage.py seed_demo --reset
+# 6. Seed demo data and diagnostic playbooks (safe and idempotent; omit --reset on protected databases)
+python manage.py seed_demo
 python manage.py seed_diagnostic_playbook
 
 # 7. Start the Django API backend server
@@ -65,8 +85,9 @@ cd prototype
 python -m venv .venv
 .venv\Scripts\activate.bat
 pip install -r requirements.txt
+python manage.py check_mysql_ready
 python manage.py migrate
-python manage.py seed_demo --reset
+python manage.py seed_demo
 python manage.py seed_diagnostic_playbook
 python manage.py runserver 127.0.0.1:8000
 ```
@@ -77,8 +98,9 @@ cd prototype
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python manage.py check_mysql_ready
 python manage.py migrate
-python manage.py seed_demo --reset
+python manage.py seed_demo
 python manage.py seed_diagnostic_playbook
 python manage.py runserver 127.0.0.1:8000
 ```
@@ -280,7 +302,7 @@ The 10,000-session adversarial harness stress-tests 15 zero-tolerance invariants
 - `sample_data/call_register_import_template.xlsx` — directly usable import example.
 - `sample_data/servy_dummy_schema.sqlite3` — compact 36-table relational review database aligned with the hardened domain model.
 - `sample_data/build_review_sqlite.py` — reproducibly rebuilds and integrity-checks that review database without Django.
-- `python manage.py seed_demo --reset` — creates the full high-volume Django dummy dataset.
+- `python manage.py seed_demo` — creates the initial high-volume Django dummy dataset idempotently without destroying existing data.
 
 ## Production notes
 

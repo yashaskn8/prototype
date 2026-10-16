@@ -1,7 +1,35 @@
 import re
+import time
 import requests
 from urllib.parse import urlparse
 from django.conf import settings
+
+_ollama_last_checked = 0.0
+_ollama_is_available = None
+
+
+def is_ollama_service_online() -> bool:
+    """Fast check whether local Ollama daemon is reachable on loopback without blocking the serving pipeline.
+    Memoizes failure for 30s so offline local daemons fail in 0ms instead of 2000ms.
+    """
+    global _ollama_last_checked, _ollama_is_available
+    now = time.time()
+    if _ollama_is_available is not None and (now - _ollama_last_checked) < 30.0:
+        return _ollama_is_available
+
+    import socket
+    parsed = urlparse(settings.SERVY_OLLAMA_URL)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 11434
+    try:
+        # Rapid 50ms socket connect probe to check daemon liveness
+        with socket.create_connection((host, port), timeout=0.05):
+            _ollama_is_available = True
+    except (OSError, socket.timeout):
+        _ollama_is_available = False
+
+    _ollama_last_checked = now
+    return _ollama_is_available
 
 
 def _validate_llm_endpoint():
@@ -46,36 +74,176 @@ _STOPWORDS = {
 INSUFFICIENT_EVIDENCE_MESSAGE = "I couldn't find enough approved information in the Knowledge Base to safely answer this issue."
 
 
+class EvidenceSufficiencyResult:
+    def __init__(
+        self,
+        is_sufficient: bool,
+        reason: str,
+        candidate_relevance: bool = False,
+        answerability: bool = False,
+        claim_support: bool = False,
+        equipment_applicable: bool = False,
+        source_trust: bool = False,
+        procedure_approved: bool = False,
+        grounded_chunks: list | None = None,
+    ):
+        self.is_sufficient = is_sufficient
+        self.reason = reason
+        self.candidate_relevance = candidate_relevance
+        self.answerability = answerability
+        self.claim_support = claim_support
+        self.equipment_applicable = equipment_applicable
+        self.source_trust = source_trust
+        self.procedure_approved = procedure_approved
+        self.grounded_chunks = grounded_chunks or []
+
+    def __iter__(self):
+        yield self.is_sufficient
+        yield self.reason
+
+    def __bool__(self):
+        return bool(self.is_sufficient)
+
+    def __getitem__(self, idx):
+        if idx == 0:
+            return self.is_sufficient
+        elif idx == 1:
+            return self.reason
+        raise IndexError("Index out of range (tuple view supports indices 0 and 1)")
+
+    def __repr__(self):
+        return f"EvidenceSufficiencyResult(is_sufficient={self.is_sufficient}, reason='{self.reason}')"
+
+
+def extract_technical_numbers(text: str) -> set:
+    """Extract numbers with technical units or multi-digit thresholds from text."""
+    if not text:
+        return set()
+    text_lower = text.lower()
+    with_units = set(re.findall(r"\b\d+(?:\.\d+)?\s*(?:v|volt|volts|a|amp|amps|psi|bar|rpm|mhz|khz|hz|c|f|k|ton|tons|kw|hp)\b", text_lower))
+    standalone = set(re.findall(r"\b\d{2,}\b", text_lower))
+    return with_units | standalone
+
+
+def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set, require_code_if_present: bool = True) -> tuple[bool, str]:
+    """Deterministically evaluate claim-level factual support for a retrieved passage.
+
+    Rejects single-token casual overlap on complex queries.
+    Requires exact identifier presence if question asks for an identifier.
+    Requires matching numerical thresholds if question specifies values/limits.
+    """
+    if not chunk:
+        return False, "NULL_CHUNK"
+
+    chunk_text = f"{getattr(chunk, 'heading', '') or ''} {getattr(chunk, 'text', '') or ''}".lower()
+    chunk_words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{2,}", chunk_text)}
+
+    # 1. Numerical Threshold Check (boundary-aware matching):
+    if q_numbers:
+        missing_numbers = [
+            num for num in q_numbers
+            if not re.search(r"(?<!\d)" + re.escape(num) + r"(?!\d)", chunk_text)
+        ]
+        if missing_numbers:
+            return False, f"MISSING_NUMERICAL_THRESHOLD: {', '.join(missing_numbers)}"
+
+    # 2. Exact Identifier / Error Code Check:
+    if q_codes:
+        from core.services.identifiers import extract_all_technical_identifiers, match_canonical_identifiers
+        canon_q = set()
+        for c in q_codes:
+            canon_q |= (extract_all_technical_identifiers(str(c)) or {str(c).upper()})
+        matched, missing = match_canonical_identifiers(canon_q, chunk_text)
+        matching_codes = sorted(matched)
+        if matching_codes and missing:
+            return False, f"PARTIAL_IDENTIFIER_MATCH: missing {', '.join(sorted(missing))}"
+        if matching_codes:
+            # Substantive claim check: if query has 2+ non-generic content terms, at least 1 must also be in chunk.
+            # Exclude identifiers, matching codes, and generic inquiry terms from claim terms.
+            generic_inquiry_terms = {
+                "unit", "equipment", "system", "machine", "device", "problem", "issue",
+                "occurs", "occur", "occurring", "happens", "happen", "happening", "error",
+                "code", "fault", "alarm", "warning", "fix", "clear", "solve", "reset",
+                "help", "do", "does", "what", "how", "why", "when", "work", "steps", "procedure"
+            }
+            def _clean_code(s):
+                return re.sub(r"[\W_]+", "", str(s)).lower()
+            code_keys = {_clean_code(c) for c in (set(matching_codes) | q_codes)}
+            claim_terms = {
+                t for t in terms
+                if _clean_code(t) not in code_keys and t.lower() not in generic_inquiry_terms
+            }
+            if len(claim_terms) >= 2:
+                overlap = claim_terms & chunk_words
+                if len(overlap) < 1:
+                    return False, f"IDENTIFIER_MATCH_BUT_UNGROUNDED_CLAIM: code {matching_codes[0]} found but no claim terms matched"
+            return True, f"EXACT_IDENTIFIER_MATCH: {', '.join(matching_codes)}"
+        elif require_code_if_present:
+            return False, f"MISSING_IDENTIFIER: {', '.join(q_codes)}"
+
+    # 3. Content Terms Overlap Check:
+    overlap = terms & chunk_words
+    overlap_count = len(overlap)
+    n_terms = len(terms)
+
+    if n_terms == 0:
+        return False, "EMPTY_QUERY_TERMS"
+    if n_terms == 1:
+        if overlap_count >= 1:
+            return True, "SINGLE_TERM_MATCH"
+        return False, "NO_OVERLAP"
+    if n_terms == 2:
+        if overlap_count >= 2:
+            return True, "TWO_TERM_MATCH"
+        return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms}"
+
+    # For 3 or more terms, require >= 2 distinct matching terms AND >= 35% overlap
+    if overlap_count >= 2 and (overlap_count / n_terms) >= 0.35:
+        return True, f"SUBSTANTIVE_OVERLAP: {overlap_count}/{n_terms}"
+
+    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >=2 terms and >=35%)"
+
+
 def _extractive_answer(question, asset, retrieved, service_call=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE
 
     # Check for identifier-based abstention: if query mentions a specific
     # error code not found in any retrieved source, abstain.
-    from .identifiers import query_identifiers_not_in_sources
-    source_texts = [r.text for r in retrieved]
+    from .identifiers import query_identifiers_not_in_sources, extract_error_codes
+    source_texts = [f"{r.heading or ''} {r.text or ''}" for r in retrieved]
     missing_ids = query_identifiers_not_in_sources(question or "", source_texts)
     if missing_ids:
         missing_str = ", ".join(sorted(missing_ids))
         return f"No approved documentation found for identifier {missing_str}."
 
-    raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", question or "")}
+    from .retriever import normalize_domain_terms
+    norm_question = normalize_domain_terms(question or "")
+    raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", norm_question or "")}
     terms = raw_terms - _STOPWORDS
     if not terms:
         terms = raw_terms
 
-    # Check evidence relevance against question terms and metadata
-    matched_chunks = []
-    for r in retrieved:
-        words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", f"{r.heading} {r.text}".lower())}
-        overlap = len(terms & words)
-        matched_chunks.append((overlap, r))
+    q_codes = extract_error_codes(question or "")
+    q_numbers = extract_technical_numbers(question or "")
 
-    if not matched_chunks:
+    # Check evidence relevance against question terms and metadata.
+    # The retriever has ALREADY performed hybrid ranking (dense + lexical + BM25 + fault-code boost + RRF).
+    # Token overlap must NOT overwrite or invert the retriever's authoritative fused rank.
+    # We filter to chunks with valid claim support while strictly preserving the retriever's ranking order.
+    relevant_chunks = []
+    for r in retrieved:
+        is_supported, _ = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers, require_code_if_present=False)
+        if is_supported:
+            r.evidence_support = True
+            relevant_chunks.append(r)
+        else:
+            r.evidence_support = False
+
+    if not relevant_chunks:
         return INSUFFICIENT_EVIDENCE_MESSAGE
 
-    matched_chunks.sort(key=lambda x: (x[0], x[1].score), reverse=True)
-    primary_chunk = matched_chunks[0][1]
+    primary_chunk = relevant_chunks[0]
 
     # 1. DIAGNOSTIC SUMMARY
     asset_name = asset.name if asset else "the selected equipment"
@@ -95,7 +263,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
 
     seen_sentences = set()
 
-    for _, chunk in matched_chunks[:4]:
+    for chunk in relevant_chunks[:4]:
         raw_lines = chunk.text.split("\n")
         sentences = []
         for line in raw_lines:
@@ -208,7 +376,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
 
     output.append("VERIFIED REFERENCES")
     seen_refs = set()
-    for _, chunk in matched_chunks[:5]:
+    for chunk in relevant_chunks[:5]:
         ref_label = f"{chunk.reference} ({chunk.doc_type})"
         if ref_label not in seen_refs:
             seen_refs.add(ref_label)
@@ -260,14 +428,123 @@ def _clean_model_answer(answer, retrieved=None):
     return answer[:8000].strip()
 
 
+def check_evidence_sufficiency(question: str, asset, retrieved: list) -> EvidenceSufficiencyResult:
+    """
+    Independently validate evidence sufficiency for the question and asset.
+    Separates:
+    - Candidate relevance
+    - Answerability
+    - Claim support
+    - Equipment applicability
+    - Source trust
+    - Industrial procedure approval
+    """
+    if not retrieved:
+        return EvidenceSufficiencyResult(
+            is_sufficient=False, reason="no-retrieved-chunks",
+            candidate_relevance=False, answerability=False, claim_support=False,
+            equipment_applicable=False, source_trust=False, procedure_approved=False,
+            grounded_chunks=[],
+        )
+
+    # 1. Candidate retrieval threshold: at least one candidate must have raw relevance >= SERVY_RAG_MIN_SCORE
+    min_support = getattr(settings, "SERVY_RAG_MIN_SCORE", 0.055)
+    max_score = max((getattr(r, "score", 0.0) for r in retrieved), default=0.0)
+    if max_score < min_support:
+        return EvidenceSufficiencyResult(
+            is_sufficient=False, reason="score-below-minimum-support",
+            candidate_relevance=False, answerability=False, claim_support=False,
+            equipment_applicable=False, source_trust=False, procedure_approved=False,
+            grounded_chunks=[],
+        )
+
+    # 2. Identifier verification: if question explicitly asks for a code, it must be present
+    from .identifiers import extract_error_codes
+    q_codes = extract_error_codes(question or "")
+    if q_codes:
+        has_code_match = any(
+            bool(q_codes & extract_error_codes(f"{r.heading or ''} {r.text or ''}"))
+            for r in retrieved
+        )
+        if not has_code_match:
+            return EvidenceSufficiencyResult(
+                is_sufficient=False, reason="missing-required-identifier",
+                candidate_relevance=True, answerability=False, claim_support=False,
+                equipment_applicable=False, source_trust=False, procedure_approved=False,
+                grounded_chunks=[],
+            )
+
+    # 3. Source verification and quarantine check
+    valid_chunks = [r for r in retrieved if getattr(r, "source_verified", True) and not getattr(r, "is_quarantined", False)]
+    if not valid_chunks:
+        return EvidenceSufficiencyResult(
+            is_sufficient=False, reason="all-sources-unverified",
+            candidate_relevance=True, answerability=True, claim_support=False,
+            equipment_applicable=False, source_trust=False, procedure_approved=False,
+            grounded_chunks=[],
+        )
+
+    # 4. Equipment applicability
+    applicable_chunks = [r for r in valid_chunks if getattr(r, "equipment_applicable", True)]
+    if not applicable_chunks:
+        return EvidenceSufficiencyResult(
+            is_sufficient=False, reason="no-applicable-equipment-evidence",
+            candidate_relevance=True, answerability=True, claim_support=False,
+            equipment_applicable=False, source_trust=True, procedure_approved=False,
+            grounded_chunks=[],
+        )
+
+    # 5. Content Grounding / Claim Support check
+    from .retriever import normalize_domain_terms
+    norm_question = normalize_domain_terms(question or "")
+    raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", norm_question or "")}
+    terms = raw_terms - _STOPWORDS
+    if not terms:
+        terms = raw_terms
+
+    q_numbers = extract_technical_numbers(question or "")
+
+    grounded_chunks = []
+    for r in applicable_chunks:
+        is_supported, reason = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers)
+        # Phase 2 Fix: Enforce strict separation between retrieval signals and evidence verification.
+        # An exact-identifier match (ranking signal) must NEVER override failed claim support.
+        if is_supported:
+            r.evidence_support = True
+            grounded_chunks.append(r)
+        else:
+            r.evidence_support = False
+
+    if not grounded_chunks:
+        return EvidenceSufficiencyResult(
+            is_sufficient=False, reason="no-grounded-overlap",
+            candidate_relevance=True, answerability=True, claim_support=False,
+            equipment_applicable=True, source_trust=True, procedure_approved=False,
+            grounded_chunks=[],
+        )
+
+    # 6. Industrial Procedure Approval (Phase 4 Fix):
+    # Customer physical action authorization defaults strictly to False.
+    # It cannot be inferred from document trust or candidate scoring.
+    approved_chunks = [r for r in grounded_chunks if getattr(r, "customer_action_authorized", False)]
+
+    return EvidenceSufficiencyResult(
+        is_sufficient=True, reason="evidence-sufficient",
+        candidate_relevance=True, answerability=True, claim_support=True,
+        equipment_applicable=True, source_trust=True,
+        procedure_approved=bool(approved_chunks),
+        grounded_chunks=grounded_chunks,
+    )
+
+
 def generate_answer(question, asset, retrieved, service_call=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "fallback"
 
-    # Support threshold check: If retrieval scores are below minimum support, fail closed
-    min_support = getattr(settings, "SERVY_RAG_MIN_SCORE", 0.0)
-    max_score = max((getattr(r, "score", 0.0) for r in retrieved), default=0.0)
-    if max_score < min_support:
+    # Evidence sufficiency check (Phase 1 Fix):
+    # Validates candidate score, technical identifier presence, equipment applicability, and grounded content.
+    is_sufficient, reason = check_evidence_sufficiency(question, asset, retrieved)
+    if not is_sufficient:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
 
     context_blocks = []
@@ -332,7 +609,7 @@ RETRIEVED SOURCES:
 ANSWER:"""
 
     provider = settings.SERVY_LLM_PROVIDER.lower()
-    if provider in {"auto", "ollama"} and retrieved:
+    if provider in {"auto", "ollama"} and retrieved and is_ollama_service_online():
         try:
             raw_answer = ollama_generate(prompt)
             clean_answer = _clean_model_answer(raw_answer, retrieved)

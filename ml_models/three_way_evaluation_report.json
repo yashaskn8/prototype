@@ -1,0 +1,527 @@
+{
+  "minilm_dense": {
+    "n_queries_evaluated": 28,
+    "n_abstention_queries": 16,
+    "mrr@10": 0.5492,
+    "ndcg@10": 0.5883,
+    "latency_ms_p50": 30.93,
+    "latency_ms_p95": 55.39,
+    "hit@1": 0.4643,
+    "recall@1": 0.4643,
+    "precision@1": 0.4643,
+    "hit@5": 0.6071,
+    "recall@5": 0.6071,
+    "precision@5": 0.1214,
+    "hit@10": 0.7143,
+    "recall@10": 0.7143,
+    "precision@10": 0.0714,
+    "abstention_accuracy": 1.0,
+    "model_profile": "company-minilm",
+    "model_id": "all-MiniLM-L6-v2",
+    "architecture": "dense",
+    "load_time_ms": 70155.58,
+    "peak_memory_mb": 221.35,
+    "wrong_equipment_rate": 0.1786,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": true,
+    "training_status": "production",
+    "category_breakdown": {
+      "exact_error_code": {
+        "n_queries": 2,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      },
+      "general_symptom": {
+        "n_queries": 5,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      },
+      "model_trap": {
+        "n_queries": 6,
+        "hit@1": 0.3333,
+        "hit@5": 0.6667,
+        "mrr@10": 0.5,
+        "ndcg@10": 0.5436
+      },
+      "misspelled_query": {
+        "n_queries": 4,
+        "hit@1": 0.25,
+        "hit@5": 0.25,
+        "mrr@10": 0.25,
+        "ndcg@10": 0.25
+      },
+      "multi_symptom": {
+        "n_queries": 3,
+        "hit@1": 0.6667,
+        "hit@5": 1.0,
+        "mrr@10": 0.8333,
+        "ndcg@10": 0.877
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0625,
+        "ndcg@10": 0.1577
+      },
+      "technician_only": {
+        "n_queries": 4,
+        "hit@1": 0.0,
+        "hit@5": 0.25,
+        "mrr@10": 0.1885,
+        "ndcg@10": 0.3163
+      },
+      "equipment_crosstalk": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 0.5,
+        "mrr@10": 0.5,
+        "ndcg@10": 0.5
+      }
+    },
+    "equipment_breakdown": {
+      "VRF Outdoor Module": {
+        "n_queries": 8,
+        "hit@1": 0.375,
+        "hit@5": 0.5,
+        "mrr@10": 0.4849
+      },
+      "Split AC Unit 2T": {
+        "n_queries": 11,
+        "hit@1": 0.6364,
+        "hit@5": 0.7273,
+        "mrr@10": 0.6818
+      },
+      "Ductable AC 5T": {
+        "n_queries": 9,
+        "hit@1": 0.3333,
+        "hit@5": 0.5556,
+        "mrr@10": 0.4444
+      }
+    }
+  },
+  "bge_small_base_dense": {
+    "n_queries_evaluated": 28,
+    "n_abstention_queries": 16,
+    "mrr@10": 0.3414,
+    "ndcg@10": 0.4106,
+    "latency_ms_p50": 53.85,
+    "latency_ms_p95": 63.53,
+    "hit@1": 0.25,
+    "recall@1": 0.25,
+    "precision@1": 0.25,
+    "hit@5": 0.4286,
+    "recall@5": 0.4286,
+    "precision@5": 0.0857,
+    "hit@10": 0.6429,
+    "recall@10": 0.6429,
+    "precision@10": 0.0643,
+    "abstention_accuracy": 0.3125,
+    "model_profile": "company-bge-small",
+    "model_id": "BAAI/bge-small-en-v1.5",
+    "architecture": "dense",
+    "load_time_ms": 614.92,
+    "peak_memory_mb": 9.76,
+    "wrong_equipment_rate": 0.2143,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": true,
+    "training_status": "production",
+    "category_breakdown": {
+      "exact_error_code": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0625,
+        "ndcg@10": 0.1577
+      },
+      "general_symptom": {
+        "n_queries": 5,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      },
+      "model_trap": {
+        "n_queries": 6,
+        "hit@1": 0.0,
+        "hit@5": 0.1667,
+        "mrr@10": 0.0519,
+        "ndcg@10": 0.1146
+      },
+      "misspelled_query": {
+        "n_queries": 4,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0635,
+        "ndcg@10": 0.1586
+      },
+      "multi_symptom": {
+        "n_queries": 3,
+        "hit@1": 0.3333,
+        "hit@5": 0.6667,
+        "mrr@10": 0.5476,
+        "ndcg@10": 0.6548
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.5,
+        "mrr@10": 0.25,
+        "ndcg@10": 0.3155
+      },
+      "technician_only": {
+        "n_queries": 4,
+        "hit@1": 0.25,
+        "hit@5": 0.75,
+        "mrr@10": 0.4315,
+        "ndcg@10": 0.566
+      },
+      "equipment_crosstalk": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      }
+    },
+    "equipment_breakdown": {
+      "VRF Outdoor Module": {
+        "n_queries": 8,
+        "hit@1": 0.125,
+        "hit@5": 0.375,
+        "mrr@10": 0.2626
+      },
+      "Split AC Unit 2T": {
+        "n_queries": 11,
+        "hit@1": 0.2727,
+        "hit@5": 0.4545,
+        "mrr@10": 0.3539
+      },
+      "Ductable AC 5T": {
+        "n_queries": 9,
+        "hit@1": 0.3333,
+        "hit@5": 0.4444,
+        "mrr@10": 0.3961
+      }
+    }
+  },
+  "bge_small_ft_dense": {
+    "n_queries_evaluated": 28,
+    "n_abstention_queries": 16,
+    "mrr@10": 0.393,
+    "ndcg@10": 0.4581,
+    "latency_ms_p50": 71.58,
+    "latency_ms_p95": 373.87,
+    "hit@1": 0.3214,
+    "recall@1": 0.3214,
+    "precision@1": 0.3214,
+    "hit@5": 0.5,
+    "recall@5": 0.5,
+    "precision@5": 0.1,
+    "hit@10": 0.6786,
+    "recall@10": 0.6786,
+    "precision@10": 0.0679,
+    "abstention_accuracy": 0.75,
+    "model_profile": "company-bge-ft",
+    "model_id": "C:\\Users\\prana\\OneDrive\\Desktop\\SURVY-RAG\\prototype\\ml_models\\checkpoints\\servy_company_bge_v1\\final",
+    "architecture": "dense",
+    "load_time_ms": 557.47,
+    "peak_memory_mb": 9.38,
+    "wrong_equipment_rate": 0.25,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": false,
+    "training_status": "COMPANY_DATA_WEAKLY_SUPERVISED_EXPERIMENT",
+    "category_breakdown": {
+      "exact_error_code": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.125,
+        "ndcg@10": 0.3155
+      },
+      "general_symptom": {
+        "n_queries": 5,
+        "hit@1": 0.8,
+        "hit@5": 1.0,
+        "mrr@10": 0.9,
+        "ndcg@10": 0.9262
+      },
+      "model_trap": {
+        "n_queries": 6,
+        "hit@1": 0.0,
+        "hit@5": 0.3333,
+        "mrr@10": 0.0875,
+        "ndcg@10": 0.1815
+      },
+      "misspelled_query": {
+        "n_queries": 4,
+        "hit@1": 0.0,
+        "hit@5": 0.25,
+        "mrr@10": 0.0778,
+        "ndcg@10": 0.172
+      },
+      "multi_symptom": {
+        "n_queries": 3,
+        "hit@1": 0.6667,
+        "hit@5": 1.0,
+        "mrr@10": 0.75,
+        "ndcg@10": 0.8102
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 0.5,
+        "mrr@10": 0.5,
+        "ndcg@10": 0.5
+      },
+      "technician_only": {
+        "n_queries": 4,
+        "hit@1": 0.5,
+        "hit@5": 0.5,
+        "mrr@10": 0.5417,
+        "ndcg@10": 0.5891
+      },
+      "equipment_crosstalk": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      }
+    },
+    "equipment_breakdown": {
+      "VRF Outdoor Module": {
+        "n_queries": 8,
+        "hit@1": 0.375,
+        "hit@5": 0.5,
+        "mrr@10": 0.4375
+      },
+      "Split AC Unit 2T": {
+        "n_queries": 11,
+        "hit@1": 0.2727,
+        "hit@5": 0.4545,
+        "mrr@10": 0.3629
+      },
+      "Ductable AC 5T": {
+        "n_queries": 9,
+        "hit@1": 0.3333,
+        "hit@5": 0.5556,
+        "mrr@10": 0.3901
+      }
+    }
+  },
+  "minilm_hybrid_rrf": {
+    "n_queries_evaluated": 28,
+    "n_abstention_queries": 16,
+    "mrr@10": 0.4107,
+    "ndcg@10": 0.4247,
+    "latency_ms_p50": 527.14,
+    "latency_ms_p95": 669.46,
+    "hit@1": 0.3571,
+    "recall@1": 0.3571,
+    "precision@1": 0.3571,
+    "hit@5": 0.4643,
+    "recall@5": 0.4643,
+    "precision@5": 0.0929,
+    "hit@10": 0.4643,
+    "recall@10": 0.4643,
+    "precision@10": 0.0464,
+    "abstention_accuracy": 1.0,
+    "model_profile": "company-minilm",
+    "model_id": "Hybrid RRF (MiniLM + BM25/Sparse)",
+    "architecture": "hybrid-rrf-minilm",
+    "load_time_ms": 0.07,
+    "peak_memory_mb": 6.77,
+    "wrong_equipment_rate": 0.0,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": true,
+    "training_status": "production",
+    "category_breakdown": {
+      "exact_error_code": {
+        "n_queries": 2,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      },
+      "general_symptom": {
+        "n_queries": 5,
+        "hit@1": 0.8,
+        "hit@5": 0.8,
+        "mrr@10": 0.8,
+        "ndcg@10": 0.8
+      },
+      "model_trap": {
+        "n_queries": 6,
+        "hit@1": 0.3333,
+        "hit@5": 0.6667,
+        "mrr@10": 0.5,
+        "ndcg@10": 0.5436
+      },
+      "misspelled_query": {
+        "n_queries": 4,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "multi_symptom": {
+        "n_queries": 3,
+        "hit@1": 0.6667,
+        "hit@5": 1.0,
+        "mrr@10": 0.8333,
+        "ndcg@10": 0.877
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "technician_only": {
+        "n_queries": 4,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "equipment_crosstalk": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      }
+    },
+    "equipment_breakdown": {
+      "VRF Outdoor Module": {
+        "n_queries": 8,
+        "hit@1": 0.375,
+        "hit@5": 0.5,
+        "mrr@10": 0.4375
+      },
+      "Split AC Unit 2T": {
+        "n_queries": 11,
+        "hit@1": 0.4545,
+        "hit@5": 0.4545,
+        "mrr@10": 0.4545
+      },
+      "Ductable AC 5T": {
+        "n_queries": 9,
+        "hit@1": 0.2222,
+        "hit@5": 0.4444,
+        "mrr@10": 0.3333
+      }
+    }
+  },
+  "bge_hybrid_rrf": {
+    "n_queries_evaluated": 28,
+    "n_abstention_queries": 16,
+    "mrr@10": 0.3625,
+    "ndcg@10": 0.4044,
+    "latency_ms_p50": 561.39,
+    "latency_ms_p95": 712.76,
+    "hit@1": 0.2857,
+    "recall@1": 0.2857,
+    "precision@1": 0.2857,
+    "hit@5": 0.5,
+    "recall@5": 0.5,
+    "precision@5": 0.1,
+    "hit@10": 0.5357,
+    "recall@10": 0.5357,
+    "precision@10": 0.0536,
+    "abstention_accuracy": 1.0,
+    "model_profile": "company-bge-small",
+    "model_id": "Hybrid RRF (BGE-small + BM25/Sparse)",
+    "architecture": "hybrid-rrf-bge",
+    "load_time_ms": 0.04,
+    "peak_memory_mb": 6.46,
+    "wrong_equipment_rate": 0.0,
+    "wrong_tenant_disclosures": 0,
+    "promotion_eligible": false,
+    "training_status": "production",
+    "category_breakdown": {
+      "exact_error_code": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      },
+      "general_symptom": {
+        "n_queries": 5,
+        "hit@1": 1.0,
+        "hit@5": 1.0,
+        "mrr@10": 1.0,
+        "ndcg@10": 1.0
+      },
+      "model_trap": {
+        "n_queries": 6,
+        "hit@1": 0.0,
+        "hit@5": 0.1667,
+        "mrr@10": 0.0333,
+        "ndcg@10": 0.0645
+      },
+      "misspelled_query": {
+        "n_queries": 4,
+        "hit@1": 0.0,
+        "hit@5": 0.25,
+        "mrr@10": 0.0625,
+        "ndcg@10": 0.1077
+      },
+      "multi_symptom": {
+        "n_queries": 3,
+        "hit@1": 0.3333,
+        "hit@5": 1.0,
+        "mrr@10": 0.5667,
+        "ndcg@10": 0.6726
+      },
+      "model_ambiguity": {
+        "n_queries": 2,
+        "hit@1": 0.5,
+        "hit@5": 0.5,
+        "mrr@10": 0.5833,
+        "ndcg@10": 0.6781
+      },
+      "technician_only": {
+        "n_queries": 4,
+        "hit@1": 0.25,
+        "hit@5": 0.75,
+        "mrr@10": 0.4583,
+        "ndcg@10": 0.5327
+      },
+      "equipment_crosstalk": {
+        "n_queries": 2,
+        "hit@1": 0.0,
+        "hit@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg@10": 0.0
+      }
+    },
+    "equipment_breakdown": {
+      "VRF Outdoor Module": {
+        "n_queries": 8,
+        "hit@1": 0.25,
+        "hit@5": 0.5,
+        "mrr@10": 0.3375
+      },
+      "Split AC Unit 2T": {
+        "n_queries": 11,
+        "hit@1": 0.2727,
+        "hit@5": 0.4545,
+        "mrr@10": 0.3561
+      },
+      "Ductable AC 5T": {
+        "n_queries": 9,
+        "hit@1": 0.3333,
+        "hit@5": 0.5556,
+        "mrr@10": 0.3926
+      }
+    }
+  }
+}

@@ -194,3 +194,31 @@ def rate_limit_exceeded(request, bucket="rag", limit=None):
         count = 1
     return count > limit
 
+
+def is_protected_database(conn=None) -> bool:
+    """Determine whether the active database connection is protected from destructive operations.
+
+    A database is protected if:
+      - It contains authentic company records (e.g. Tenant slug 'skydream' exists)
+      - It contains historical service calls (> 100 calls)
+      - The database name is not explicitly a disposable test database ('test_*', '*disposable*')
+      - settings.SERVY_ALLOW_DESTRUCTIVE_RESET is not explicitly True
+    """
+    if getattr(settings, "SERVY_ALLOW_DESTRUCTIVE_RESET", False) is True:
+        return False
+
+    db_name = str(settings.DATABASES.get("default", {}).get("NAME", "")).lower()
+    if "test_" in db_name or "disposable" in db_name or ":memory:" in db_name or "memorydb" in db_name:
+        return False
+
+    try:
+        if Tenant.objects.filter(slug="skydream").exists():
+            return True
+        from core.models import ServiceCall
+        if ServiceCall.objects.count() > 100:
+            return True
+    except Exception:
+        return True
+
+    return True
+

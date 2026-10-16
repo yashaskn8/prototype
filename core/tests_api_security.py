@@ -12,7 +12,7 @@ from core.models import (
 from core.services.indexing import index_document
 
 
-@override_settings(SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
+@override_settings(SERVY_CUSTOMER_DATA_MODE="test_isolated", SERVY_LLM_PROVIDER="extractive", SERVY_RAG_MIN_SCORE=0.0)
 class ApiSecurityAndPermissionsTests(TestCase):
     """
     Comprehensive tests for Servy API authorization, canonical contracts,

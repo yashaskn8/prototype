@@ -14,7 +14,7 @@ from django.db.models import Q
 from django.conf import settings
 
 from core.models import KnowledgeChunk, KnowledgeDocument, ServiceResolutionIndex
-from .vectors import embed_text, cosine_sparse
+from .vectors import embed_text, cosine_sparse, compute_bm25_scores, compute_char_ngram_scores
 from .identifiers import extract_error_codes, extract_identifiers, extract_document_ids
 
 
@@ -33,6 +33,23 @@ class RetrievedChunk:
     confidential: bool
     service_call_id: int | None = None
     model_version: str = "minilm"
+    dense_score: float | None = None
+    dense_similarity: float | None = None
+    dense_rank: int | None = None
+    sparse_score: float | None = None
+    sparse_relevance: float | None = None
+    sparse_rank: int | None = None
+    exact_identifier_match: bool = False
+    applicable_equipment_context: bool = False
+    fusion_score: float | None = None
+    fusion_rank: int | None = None
+    reranker_score: float | None = None
+    final_rank: int | None = None
+    evidence_support: bool = False
+    source_verified: bool = False
+    equipment_applicable: bool = False
+    customer_action_authorized: bool = False
+    source_eligible: bool = False
 
     @property
     def reference(self):
@@ -46,7 +63,107 @@ class RetrievedResultList(list):
         self.retrieval_backend = retrieval_backend
 
 
-def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None):
+def is_authorized_candidate(
+    chunk,
+    *,
+    tenant,
+    customer=None,
+    asset=None,
+    include_confidential=False,
+    staff_mode=False,
+    allow_failed=False,
+    backend="all",
+    verified_doc_ids=None,
+) -> bool:
+    """Canonical server-side authorization predicate for retrieved candidates.
+
+    Every candidate MUST satisfy all mandatory constraints:
+    1. Authorized tenant
+    2. Authorized customer
+    3. Authorized asset / product hierarchy
+    4. Document visibility (is_rag_enabled=True, backend-specific index_status valid)
+    5. Confidentiality (if not include_confidential, is_confidential=False)
+    6. Chunk quarantine state (is_quarantined=False)
+    7. Revocation status (revoked_at is None)
+    8. Positive provenance in verified_real_only mode
+    """
+    if not chunk:
+        return False
+    doc = getattr(chunk, "document", None)
+    if not doc:
+        return False
+
+    # 1. Tenant boundary
+    if chunk.tenant_id != tenant.id or doc.tenant_id != tenant.id:
+        return False
+
+    # 2. Chunk quarantine state
+    if getattr(chunk, "is_quarantined", False):
+        return False
+
+    # 3. Document visibility & index state
+    if not doc.is_rag_enabled:
+        return False
+
+    if backend == "dense":
+        # Dense index requires complete synchronization (INDEXED)
+        if doc.index_status != "INDEXED":
+            return False
+    elif backend == "sparse" or allow_failed:
+        # Sparse index may be valid even if dense synchronization failed
+        if doc.index_status not in ("INDEXED", "INDEXING", "FAILED"):
+            return False
+        # Sparse retriever requires text or sparse embedding to exist
+        if not (chunk.text or chunk.content_embedding or chunk.embedding):
+            return False
+    else:
+        if doc.index_status not in ("INDEXED", "INDEXING"):
+            return False
+
+    if getattr(doc, "revoked_at", None) is not None:
+        return False
+
+    # 4. Confidentiality
+    if not include_confidential and doc.is_confidential:
+        return False
+
+    # 5. Customer scoping
+    if customer:
+        if doc.customer_id is not None and doc.customer_id != customer.id:
+            return False
+    else:
+        if not staff_mode and doc.customer_id is not None:
+            if not asset or doc.customer_id != getattr(asset, "customer_id", None):
+                return False
+
+    # 6. Asset & Equipment scoping (canonical 5-level hierarchy)
+    from .knowledge_scope import is_chunk_applicable_to_asset
+    if not is_chunk_applicable_to_asset(chunk, asset):
+        return False
+
+    # 7. Real company provenance verification
+    from .customer_isolation import get_customer_data_mode, is_real_tenant, is_verified_real_document
+    mode = get_customer_data_mode()
+    if not staff_mode and is_real_tenant(tenant) and mode == "verified_real_only":
+        if verified_doc_ids is not None:
+            if doc.id not in verified_doc_ids:
+                return False
+        elif not is_verified_real_document(doc, allow_failed=allow_failed):
+            return False
+
+    return True
+
+
+def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False, backend="all"):
+    from .customer_isolation import get_customer_data_mode, is_real_tenant
+    mode = get_customer_data_mode()
+    is_real = is_real_tenant(tenant)
+    is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
+
+    # In verified_real_only mode, customer queries on non-real tenants return nothing
+    if not staff_mode and is_real_customer_query and not is_real:
+        return KnowledgeChunk.objects.none()
+
     qs = KnowledgeChunk.objects.filter(
         tenant=tenant,
         document__is_rag_enabled=True,
@@ -56,48 +173,103 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
         "document__category", "document__domain", "document__customer",
     )
 
+    verified_doc_ids = None
+    if not staff_mode and is_real:
+        from .customer_isolation import is_verified_real_document
+        qs = qs.exclude(document__title__icontains="synthetic")\
+               .exclude(document__tags__icontains="synthetic")\
+               .exclude(document__tags__icontains="dummy")\
+               .exclude(document__description__icontains="synthetic")\
+               .exclude(document__description__icontains="dummy")
+        # Positive provenance enforcement: only allow documents satisfying is_verified_real_document
+        doc_candidates = KnowledgeDocument.objects.filter(tenant=tenant)
+        verified_doc_ids = {d.id for d in doc_candidates if is_verified_real_document(d, allow_failed=allow_failed)}
+        qs = qs.filter(document_id__in=verified_doc_ids)
+
     if not include_confidential:
         qs = qs.filter(document__is_confidential=False)
 
     if customer:
         qs = qs.filter(Q(document__customer__isnull=True) | Q(document__customer=customer))
-    else:
+    elif not staff_mode and asset and asset.customer_id:
+        qs = qs.filter(Q(document__customer__isnull=True) | Q(document__customer_id=asset.customer_id))
+    elif not staff_mode:
         qs = qs.filter(document__customer__isnull=True)
 
-    if asset and asset.product:
-        product = asset.product
-        # Hierarchy & Category-Independent Scoping:
-        # 1. Exact asset-bound documents: document__asset=asset
-        # 2. Product-bound documents: document__asset__isnull=True, document__product=product
-        # 3. Fleet/unassigned documents within tenant (documents not bound to a different product or different asset):
-        #    document__asset__isnull=True, document__product__isnull=True
-        scope = (
-            Q(document__asset=asset)
-            | Q(document__asset__isnull=True, document__product=product)
-            | Q(document__asset__isnull=True, document__product__isnull=True)
+    if asset:
+        product = getattr(asset, "product", None)
+        category = getattr(product, "category", None) if product else None
+        domain = getattr(category, "domain", None) if category else None
+
+        scope = Q(document__asset=asset)
+        if product:
+            scope |= Q(document__asset__isnull=True, document__product=product)
+        if category:
+            scope |= Q(document__asset__isnull=True, document__product__isnull=True, document__category=category)
+        if domain:
+            scope |= Q(
+                document__asset__isnull=True,
+                document__product__isnull=True,
+            ) & (Q(document__domain=domain) | Q(document__category__domain=domain))
+        scope |= Q(
+            document__asset__isnull=True,
+            document__product__isnull=True,
+            document__category__isnull=True,
+            document__domain__isnull=True,
         )
-        if query_doc_ids:
-            scope |= Q(document__id__in=query_doc_ids)
-        qs = qs.filter(scope)
-    elif asset:
-        scope = Q(document__asset=asset) | Q(document__asset__isnull=True, document__product__isnull=True)
-        if query_doc_ids:
-            scope |= Q(document__id__in=query_doc_ids)
         qs = qs.filter(scope)
     else:
-        # NO asset context: restrict to unscoped/general fleet documents only
-        # unless an explicit document ID is requested
-        scope = Q(document__asset__isnull=True, document__product__isnull=True)
-        if query_doc_ids:
-            scope |= Q(document__id__in=query_doc_ids)
+        # NO asset context: restrict strictly to unscoped/general fleet documents
+        scope = Q(
+            document__asset__isnull=True,
+            document__product__isnull=True,
+            document__category__isnull=True,
+            document__domain__isnull=True,
+        )
         qs = qs.filter(scope)
-    return qs[:3000]
+
+    # Pre-filter candidate list to those passing canonical authorization predicate
+    # Eliminate the [:3000] slice limitation (Part 7)
+    candidates = list(qs)
+    return [
+        c for c in candidates
+        if is_authorized_candidate(
+            c,
+            tenant=tenant,
+            customer=customer,
+            asset=asset,
+            include_confidential=include_confidential,
+            staff_mode=staff_mode,
+            allow_failed=allow_failed,
+            backend=backend,
+            verified_doc_ids=verified_doc_ids,
+        )
+    ]
+
 
 
 def _resolution_candidates(tenant, asset, customer, staff_mode):
+    from .customer_isolation import get_customer_data_mode, is_real_tenant, is_verified_real_service_call
+    mode = get_customer_data_mode()
+    is_real = is_real_tenant(tenant)
+    is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
+    if not staff_mode and is_real_customer_query and not is_real:
+        return []
+
     qs = ServiceResolutionIndex.objects.filter(tenant=tenant).select_related(
         "service_call", "service_call__asset", "service_call__asset__product", "service_call__customer"
     )
+
+    if not staff_mode and is_real:
+        # Defense in depth: exclude obvious synthetic identifiers at DB level
+        qs = qs.exclude(
+            service_call__servy_id__startswith="SRV-SYN-"
+        ).exclude(
+            service_call__servy_id__startswith="DUMMY-"
+        ).exclude(
+            service_call__servy_id__startswith="SYN-"
+        )
+
     if asset:
         if asset.product_id:
             qs = qs.filter(Q(service_call__asset=asset) | Q(service_call__asset__product=asset.product))
@@ -105,7 +277,13 @@ def _resolution_candidates(tenant, asset, customer, staff_mode):
             qs = qs.filter(service_call__asset=asset)
     if customer and not staff_mode:
         qs = qs.filter(service_call__customer=customer)
-    return qs[:1500]
+
+    candidates = list(qs[:1500])
+    if not staff_mode and is_real and mode == "verified_real_only":
+        # Positive provenance verification: exclude any service call that fails positive verification
+        candidates = [c for c in candidates if is_verified_real_service_call(c.service_call)]
+
+    return candidates
 
 
 import logging
@@ -123,11 +301,110 @@ CATEGORY_BONUS = 0.10
 DOMAIN_BONUS = 0.05
 CUSTOMER_BONUS = 0.10
 
-# Content relevance gates: chunk MUST exceed this threshold BEFORE metadata
-# bonus is applied.  This prevents irrelevant documents with good metadata
-# from being rescued by bonus alone (Defect #3).
-SPARSE_RELEVANCE_GATE = getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055)
-DENSE_RELEVANCE_GATE = getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)
+# Phase 4 (Operation 16.0): Immutable serving configuration.
+# Content relevance gates are read from settings at call time, NOT cached in
+# mutable module-level globals. This prevents benchmark-induced shared global-state
+# mutation from affecting parallel requests or production behavior.
+from dataclasses import dataclass as _dc
+
+
+@_dc(frozen=True)
+class ServingConfig:
+    """Immutable snapshot of all serving-time configuration.
+    
+    Created once per retrieval call from Django settings.
+    Never mutated. Benchmark code must NOT modify module-level globals.
+    """
+    dense_relevance_gate: float
+    sparse_relevance_gate: float
+    embedding_profile: str
+    rrf_k: int = 60
+    rrf_weight_dense: float = 0.55
+    rrf_weight_sparse: float = 0.45
+    top_k: int = 6
+    reranker_enabled: bool = False
+
+
+def get_serving_config() -> ServingConfig:
+    """Construct an immutable ServingConfig from current Django settings.
+    
+    This is called once per retrieval request. The returned object is frozen
+    and cannot be mutated, ensuring parallel requests never cross-contaminate.
+    """
+    return ServingConfig(
+        dense_relevance_gate=float(getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)),
+        sparse_relevance_gate=float(getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055)),
+        embedding_profile=str(getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")),
+        top_k=int(getattr(settings, "SERVY_RAG_TOP_K", 6)),
+        reranker_enabled=bool(getattr(settings, "SERVY_RERANKER_ENABLED", False)),
+    )
+
+
+# Legacy module-level accessors — read from settings each time for backward compat
+# DO NOT assign to these; use get_serving_config() in new code.
+def _get_sparse_gate():
+    return float(getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055))
+
+
+def _get_dense_gate():
+    return float(getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55))
+
+
+# Legacy names kept for backward compatibility with existing code paths
+SPARSE_RELEVANCE_GATE = _get_sparse_gate()
+DENSE_RELEVANCE_GATE = _get_dense_gate()
+
+DOMAIN_TYPO_MAP = {
+    "indor": "indoor",
+    "leeking": "leaking",
+    "watter": "water",
+    "milkk": "milk",
+    "temprature": "temperature",
+    "riseing": "rising",
+    "abov": "above",
+    "voltcure": "voltcore",
+    "invrter": "inverter",
+    "falt": "fault",
+    "pllet": "pallet",
+    "hydralic": "hydraulic",
+    "cavtation": "cavitation",
+    "ductible": "ductable",
+    "wek": "weak",
+    "airflo": "airflow",
+    "whistlng": "whistling",
+    "noys": "noise",
+    "outdor": "outdoor",
+    "comuncation": "communication",
+    "errer": "error",
+    "contrler": "controller",
+    "splitt": "split",
+    "icce": "ice",
+    "coolng": "cooling",
+    "pip": "pipe",
+    "viberation": "vibration",
+    "deflecton": "deflection",
+    "compresser": "compressor",
+    "coyl": "coil",
+}
+
+
+def normalize_domain_terms(text: str) -> str:
+    """Bounded domain-aware typo normalizer for customer equipment complaints.
+    Preserves alphanumeric technical identifiers and fault codes exactly.
+    """
+    if not text:
+        return ""
+    words = text.split()
+    corrected = []
+    for w in words:
+        clean = w.strip(".,!?:;\"'()[]{}")
+        clean_lower = clean.lower()
+        if clean_lower in DOMAIN_TYPO_MAP:
+            replacement = DOMAIN_TYPO_MAP[clean_lower]
+            corrected.append(w.replace(clean, replacement))
+        else:
+            corrected.append(w)
+    return " ".join(corrected)
 
 # RRF constant (standard value)
 RRF_K = 60
@@ -179,13 +456,12 @@ def _calculate_metadata_bonus(document, chunk, asset, customer) -> float:
 
 def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: str) -> float:
     """Give a deterministic boost when the chunk contains an exact identifier
-    that the query explicitly asks about."""
+    that the query explicitly asks about, parsed through the same canonical extractor."""
     if not query_identifiers:
         return 0.0
-    combined = f"{chunk_heading} {chunk_text}".upper()
-    for qid in query_identifiers:
-        if qid.upper() in combined:
-            return 0.40  # Strong boost for exact identifier match
+    chunk_identifiers = extract_identifiers(f"{chunk_heading or ''} {chunk_text or ''}")
+    if query_identifiers & chunk_identifiers:
+        return 0.40  # Strong boost for exact identifier match
     return 0.0
 
 
@@ -195,16 +471,35 @@ def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: st
 
 def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
                              query_identifiers, asset, customer, min_score,
-                             query_doc_ids=None):
-    """Score all candidates using sparse/local embeddings.
+                             query_doc_ids=None, evidence_text=None,
+                             serving_config=None):
+    """Score all candidates using hybrid lexical scoring (BM25 + character n-grams + sparse hashing).
 
-    Returns list of (rank_score, RetrievedChunk) tuples sorted by score descending.
+    Returns list of RetrievedChunk tuples sorted by score descending with explicit sparse_rank.
     """
     scored = []
-    for chunk in candidates:
+    chunk_texts = [_format_chunk_text(c) for c in candidates]
+    bm25_scores = compute_bm25_scores(evidence_text, chunk_texts) if evidence_text else [0.0] * len(candidates)
+    char_scores = compute_char_ngram_scores(evidence_text, chunk_texts) if evidence_text else [0.0] * len(candidates)
+
+    for i, chunk in enumerate(candidates):
         d = chunk.document
-        content_score = cosine_sparse(evidence_vector, chunk.content_embedding or chunk.embedding)
+        hashing_content = cosine_sparse(evidence_vector, chunk.content_embedding or chunk.embedding)
         scope_score = cosine_sparse(scope_vector, chunk.embedding)
+
+        # Lexical score blends BM25 (exact keyword match) and char n-grams (misspelling/morphology robustness)
+        bm25_val = bm25_scores[i] if i < len(bm25_scores) else 0.0
+        char_val = char_scores[i] if i < len(char_scores) else 0.0
+
+        # Background char-ngram threshold: character overlap below 0.22 is random English noise
+        effective_char = char_val if char_val >= 0.22 else 0.0
+        if bm25_val > 0.0:
+            # Exact words matched: BM25 with term coverage governs, with bounded char assistance
+            lexical_content = max(bm25_val, min(bm25_val * 1.5, effective_char * 0.5))
+        else:
+            # Zero exact words matched: pure misspelling/typo recovery mode
+            lexical_content = effective_char
+        content_score = max(hashing_content, lexical_content)
 
         # Content relevance gate: candidate must have minimum content match
         # BEFORE metadata bonus can apply (Defect #3 fix)
@@ -215,10 +510,13 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 
         # Content relevance gate (Defect #3 fix): candidate must pass minimum content match
         # before metadata bonus can apply. Exact identifier matches are always relevant.
-        if content_score < SPARSE_RELEVANCE_GATE and id_boost <= 0.0:
+        # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
+        _sparse_gate = serving_config.sparse_relevance_gate if serving_config else _get_sparse_gate()
+        if content_score < _sparse_gate and id_boost <= 0.0:
             continue
 
-        if content_score < 0.08 and id_boost <= 0.0:
+        # Prevent single-word distractors from receiving metadata bonus alone
+        if content_score < 0.15 and id_boost <= 0.0:
             boost = 0.0
         else:
             boost = _calculate_metadata_bonus(d, chunk, asset, customer)
@@ -226,6 +524,24 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 
         if final_score < min_score:
             continue
+
+        from .knowledge_scope import is_chunk_applicable_to_asset
+        is_equip_applicable = is_chunk_applicable_to_asset(chunk, asset)
+
+        from .customer_isolation import is_real_tenant, is_verified_real_document
+        is_verified = (
+            is_verified_real_document(d, allow_failed=True)
+            if is_real_tenant(d.tenant)
+            else bool(d.is_rag_enabled and not d.is_confidential and d.checksum_sha256)
+        )
+        is_eligible = bool(
+            d.is_rag_enabled
+            and not d.is_confidential
+            and not getattr(chunk, "is_quarantined", False)
+        )
+        # customer_action_authorized must NEVER be granted merely from document eligibility.
+        # It defaults to False and can only be authorized by ProcedureApproval through safety authority.
+        action_authorized = False
 
         scored.append(RetrievedChunk(
             source_kind="knowledge_document",
@@ -239,9 +555,19 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
             doc_type=d.get_doc_type_display(),
             source_url=d.source_url,
             confidential=d.is_confidential,
+            sparse_score=final_score,
+            sparse_relevance=final_score,
+            exact_identifier_match=(id_boost > 0.0),
+            applicable_equipment_context=(boost > 0.0),
+            equipment_applicable=is_equip_applicable,
+            customer_action_authorized=action_authorized,
+            source_verified=is_verified,
+            source_eligible=is_eligible,
         ))
 
     scored.sort(key=lambda r: r.score, reverse=True)
+    for i, r in enumerate(scored, 1):
+        r.sparse_rank = i
     return scored
 
 
@@ -252,7 +578,9 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                             evidence_text, query_identifiers, asset,
                             customer, tenant, top_k, min_score,
-                            query_doc_ids=None):
+                            query_doc_ids=None, staff_mode=False,
+                            include_confidential=False,
+                            serving_config=None):
     """Score candidates using ChromaDB dense embeddings.
 
     Authorization is enforced BEFORE ranking by passing allowed_doc_ids into
@@ -262,14 +590,43 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
     """
     try:
         from django.conf import settings
+        from .customer_isolation import get_customer_data_mode, is_real_tenant
+        mode = get_customer_data_mode()
         use_experimental = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
-        profile_key = (
-            getattr(settings, "SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
-            if use_experimental
-            else getattr(settings, "SERVY_EMBEDDING_MODEL", "minilm")
-        )
+        is_real = is_real_tenant(tenant)
+        is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
+        if not staff_mode and is_real_customer_query and not is_real:
+            return []
+
+        # Explicit serving model profile selection (Operation 13.0)
+        serving_profile = getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
+        if serving_profile in ("company-bge-ft", "bge-small-ft"):
+            profile_key = "company-bge-ft"
+        elif serving_profile in ("company-bge-small", "bge-small"):
+            profile_key = "company-bge-small" if is_real else "bge-small"
+        elif serving_profile in ("company-minilm", "minilm"):
+            profile_key = "company-minilm" if is_real else "minilm"
+        elif is_real:
+            profile_key = "company-bge-small" if use_experimental else "company-minilm"
+        else:
+            profile_key = (
+                getattr(settings, "SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
+                if use_experimental
+                else getattr(settings, "SERVY_EMBEDDING_MODEL", "minilm")
+            )
         from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
+
         profile = get_profile(profile_key)
+        # Phase 7 Fix: Enforce model promotion gating at serving time
+        if not getattr(profile, "promotion_eligible", False) and not staff_mode:
+            logger.warning(
+                "Embedding profile '%s' is not promotion eligible (training_status='%s'). "
+                "Rejecting unpromoted model and falling back to authorized baseline profile.",
+                profile.key, getattr(profile, "training_status", "unknown"),
+            )
+            profile_key = "company-minilm" if is_real else "minilm"
+            profile = get_profile(profile_key)
+
         model = load_model(profile)
         if model is None or not allowed_doc_ids:
             return []
@@ -279,43 +636,66 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
         # Phase 3: Authorization-before-ranking — pass allowed_doc_ids into
         # Chroma filter so unauthorized documents cannot crowd out authorized
-        # chunks in the top-N retrieved (Defect #2 fix).
+        # chunks in the top-N retrieved.
         doc_id_list = [int(did) for did in allowed_doc_ids]
 
-        # Chroma has a limit on $in list size; batch if necessary
-        if len(doc_id_list) > 500:
-            # For very large authorized sets, filter by tenant only and
-            # revalidate afterwards (defense-in-depth)
-            chroma_where = {"tenant_id": int(tenant.id)}
-        else:
+        # Scalable candidate retrieval (Phase 1 Fix):
+        # Choose Chroma result depth based on authorized chunk count and bounded retrieval budget.
+        # NEVER cap vector hits by the number of document IDs (prevents multi-chunk recall suppression).
+        batch_size = 400
+        doc_id_batches = [doc_id_list[i : i + batch_size] for i in range(0, len(doc_id_list), batch_size)]
+        fusion_budget = min(max(top_k * 6, 40), 200)
+
+        # Map (doc_id, chunk_index) -> KnowledgeChunk for O(1) post-query lookup and verification
+        candidates_by_doc_chunk = {(c.document_id, c.chunk_index): c for c in candidates}
+        # Deduplicate results across overlapping batches: key -> (metadata, distance)
+        best_matches = {}
+
+        for batch_ids in doc_id_batches:
+            batch_chunk_count = sum(1 for (did, _) in candidates_by_doc_chunk.keys() if did in batch_ids)
+            if batch_chunk_count == 0:
+                continue
+            n_results = min(fusion_budget, max(batch_chunk_count, 1))
+
             chroma_where = {
                 "$and": [
                     {"tenant_id": int(tenant.id)},
-                    {"document_id": {"$in": doc_id_list}},
+                    {"document_id": {"$in": batch_ids}},
                 ]
             }
-
-        chroma_res = dense_coll.query(
-            query_embeddings=[query_embedding],
-            n_results=min(top_k * 4, 30),
-            where=chroma_where,
-        )
+            res = dense_coll.query(
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                where=chroma_where,
+            )
+            if res and res.get("metadatas") and res["metadatas"][0]:
+                for meta, dist in zip(res["metadatas"][0], res["distances"][0]):
+                    doc_id = meta.get("document_id")
+                    chunk_idx = meta.get("chunk_index", 0)
+                    if doc_id not in allowed_doc_ids:
+                        continue
+                    key = (doc_id, chunk_idx)
+                    if key not in candidates_by_doc_chunk:
+                        # Vector in Chroma is stale or unassociated with authorized candidate
+                        continue
+                    if key not in best_matches or dist < best_matches[key][1]:
+                        best_matches[key] = (meta, dist)
 
         scored = []
-        if chroma_res and chroma_res.get("metadatas") and chroma_res["metadatas"][0]:
-            for meta, dist in zip(chroma_res["metadatas"][0], chroma_res["distances"][0]):
-                doc_id = meta.get("document_id")
-                chunk_idx = meta.get("chunk_index", 0)
-
-                # Defense-in-depth: revalidate authorization on every row
-                if doc_id not in allowed_doc_ids:
-                    continue
-
-                matched_chunk = next(
-                    (c for c in candidates if c.document_id == doc_id and c.chunk_index == chunk_idx),
-                    None,
-                )
+        if best_matches:
+            for (doc_id, chunk_idx), (meta, dist) in best_matches.items():
+                matched_chunk = candidates_by_doc_chunk.get((doc_id, chunk_idx))
                 if not matched_chunk or matched_chunk.is_quarantined:
+                    continue
+                if not is_authorized_candidate(
+                    matched_chunk,
+                    tenant=tenant,
+                    customer=customer,
+                    asset=asset,
+                    include_confidential=include_confidential,
+                    staff_mode=staff_mode,
+                    backend="dense",
+                ):
                     continue
 
                 d = matched_chunk.document
@@ -326,7 +706,9 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
                 # Content relevance gate (Defect #3 fix): if semantic similarity is too low
                 # and no identifier matches, metadata bonus cannot rescue the document.
-                if sim < DENSE_RELEVANCE_GATE and id_boost <= 0.0:
+                # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
+                _dense_gate = serving_config.dense_relevance_gate if serving_config else _get_dense_gate()
+                if sim < _dense_gate and id_boost <= 0.0:
                     continue
 
                 if getattr(profile, "content_first", False):
@@ -342,6 +724,24 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 if final_score < min_score:
                     continue
 
+                from .knowledge_scope import is_chunk_applicable_to_asset
+                is_equip_applicable = is_chunk_applicable_to_asset(matched_chunk, asset)
+
+                from .customer_isolation import is_real_tenant, is_verified_real_document
+                is_verified = (
+                    is_verified_real_document(d, allow_failed=False)
+                    if is_real
+                    else bool(d.is_rag_enabled and not d.is_confidential and d.checksum_sha256)
+                )
+                is_eligible = bool(
+                    d.is_rag_enabled
+                    and not d.is_confidential
+                    and not getattr(matched_chunk, "is_quarantined", False)
+                )
+                # Phase 4 Fix: customer_action_authorized must NEVER be granted merely from document eligibility.
+                # Only procedure-specific safety authority may authorize customer actions.
+                action_authorized = False
+
                 scored.append(RetrievedChunk(
                     source_kind="knowledge_document",
                     source_id=matched_chunk.id,
@@ -355,9 +755,19 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     source_url=d.source_url,
                     confidential=d.is_confidential,
                     model_version=profile.key,
+                    dense_score=final_score,
+                    dense_similarity=sim,
+                    exact_identifier_match=(id_boost > 0.0),
+                    applicable_equipment_context=(boost > 0.0),
+                    equipment_applicable=is_equip_applicable,
+                    customer_action_authorized=action_authorized,
+                    source_verified=is_verified,
+                    source_eligible=is_eligible,
                 ))
 
         scored.sort(key=lambda r: r.score, reverse=True)
+        for i, r in enumerate(scored, 1):
+            r.dense_rank = i
         return scored
 
     except Exception as exc:
@@ -375,40 +785,64 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_sparse=0.45):
     """Fuse dense and sparse ranked lists using RRF.
 
-    RRF(d) = w_dense / (K + rank_dense(d)) + w_sparse / (K + rank_sparse(d))
+    RRF(d) = sum(w_i / (K + rank_i(d))) for all lists i where d appears.
+    Only lists in which the document appears may contribute to that document's fusion score.
+    Missing-list entries must NOT receive phantom contributions.
     """
-    # Build rank maps (1-indexed)
-    dense_ranks = {}
+    dense_map = {}
     for i, r in enumerate(dense_results, 1):
         key = (r.source_kind, r.source_id)
-        if key not in dense_ranks:
-            dense_ranks[key] = i
+        if key not in dense_map:
+            r.dense_score = r.score
+            r.dense_similarity = r.score
+            r.dense_rank = i
+            dense_map[key] = r
 
-    sparse_ranks = {}
+    sparse_map = {}
     for i, r in enumerate(sparse_results, 1):
         key = (r.source_kind, r.source_id)
-        if key not in sparse_ranks:
-            sparse_ranks[key] = i
+        if key not in sparse_map:
+            r.sparse_score = r.score
+            r.sparse_relevance = r.score
+            r.sparse_rank = i
+            sparse_map[key] = r
 
-    # Collect all unique chunks
-    all_chunks = {}
-    for r in dense_results + sparse_results:
-        key = (r.source_kind, r.source_id)
-        if key not in all_chunks:
-            all_chunks[key] = r
-
-    # Compute RRF scores
+    # Collect all unique chunks preserving discovery order
+    all_keys = list(dict.fromkeys(list(dense_map.keys()) + list(sparse_map.keys())))
     fused = []
-    absent_rank = max(len(dense_results), len(sparse_results)) + 100
-    for key, chunk in all_chunks.items():
-        d_rank = dense_ranks.get(key, absent_rank)
-        s_rank = sparse_ranks.get(key, absent_rank)
-        rrf_rank_score = (w_dense / (RRF_K + d_rank)) + (w_sparse / (RRF_K + s_rank))
-        # Keep chunk.score as the calibrated similarity+bonus score
-        fused.append((rrf_rank_score, chunk))
 
-    fused.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in fused]
+    for key in all_keys:
+        d_item = dense_map.get(key)
+        s_item = sparse_map.get(key)
+        base_item = d_item if d_item is not None else s_item
+        if d_item is not None and s_item is not None:
+            base_item.sparse_score = s_item.sparse_score
+            base_item.sparse_relevance = s_item.sparse_relevance
+            base_item.sparse_rank = s_item.sparse_rank
+            base_item.exact_identifier_match = d_item.exact_identifier_match or s_item.exact_identifier_match
+            base_item.applicable_equipment_context = d_item.applicable_equipment_context or s_item.applicable_equipment_context
+
+        rrf_score = 0.0
+        if base_item.dense_rank is not None:
+            rrf_score += w_dense / (RRF_K + base_item.dense_rank)
+        if base_item.sparse_rank is not None:
+            rrf_score += w_sparse / (RRF_K + base_item.sparse_rank)
+
+        base_item.fusion_score = rrf_score
+        # Preserve natural candidate relevance score on [0, 1+] scale so downstream evidence sufficiency
+        # check does not reject fused candidates solely due to RRF rank scaling (Phase 1 Fix)
+        cand_scores = [s for s in [base_item.dense_score, base_item.sparse_score] if s is not None]
+        base_item.score = max(cand_scores) if cand_scores else rrf_score
+        base_item.dense_similarity = base_item.dense_score
+        base_item.sparse_relevance = base_item.sparse_score
+        fused.append(base_item)
+
+    # Sort strictly by fused rank value (descending fusion_score)
+    fused.sort(key=lambda x: (x.fusion_score or 0.0), reverse=True)
+    for i, item in enumerate(fused, 1):
+        item.fusion_rank = i
+        item.final_rank = i
+    return fused
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +881,8 @@ def retrieve(
     query_parts.append(f"Customer complaint: {question or ''}")
     dynamic_query_text = "\n".join(query_parts).strip()
 
-    evidence_text = f"{question or ''}".strip()
+    norm_question = normalize_domain_terms(question or "")
+    evidence_text = f"{norm_question}".strip()
 
     # Engineer Copilot enrichment: when the technician asks a vague follow-up
     # question like "what could be the reason", the bare question has zero
@@ -483,8 +918,8 @@ def retrieve(
     scope_vector = embed_text(dynamic_query_text)
 
     # Extract technical identifiers from the query for exact matching
-    query_identifiers = extract_identifiers(question or "")
-    query_error_codes = extract_error_codes(question or "")
+    query_identifiers = extract_identifiers(question or "") | extract_identifiers(norm_question)
+    query_error_codes = extract_error_codes(question or "") | extract_error_codes(norm_question)
     query_doc_ids = extract_document_ids(question or "")
 
     # Step 1: Django determines candidate pool according to tenant, customer,
@@ -492,6 +927,7 @@ def retrieve(
     candidates = list(_knowledge_candidates(
         tenant, asset, customer, include_confidential,
         allow_failed=True, query_doc_ids=query_doc_ids,
+        staff_mode=staff_mode,
     ))
     allowed_chunks_by_id = {c.id: c for c in candidates}
     allowed_doc_ids = {c.document_id for c in candidates}
@@ -502,6 +938,11 @@ def retrieve(
 
     retrieval_backend = "fallback"
 
+    # Construct immutable per-request serving config (Op17 Phase 2 fix).
+    # This ensures each retrieval call uses its own snapshot of settings,
+    # preventing cross-contamination between parallel requests or experiments.
+    serving_config = get_serving_config()
+
     # Step 2: TRUE HYBRID RETRIEVAL — run dense AND sparse concurrently,
     # then fuse results using Reciprocal Rank Fusion (Phase 2).
     # This replaces the old "sparse only if dense returns nothing" approach.
@@ -511,29 +952,60 @@ def retrieve(
         candidates, evidence_vector, scope_vector,
         query_identifiers, asset, customer, min_score,
         query_doc_ids=query_doc_ids,
+        evidence_text=evidence_text,
+        serving_config=serving_config,
     )
 
     # 2b: Dense retrieval (may fail gracefully)
-    dense_results = _dense_score_candidates(
-        candidates, allowed_doc_ids, allowed_chunks_by_id,
-        evidence_text, query_identifiers, asset, customer,
-        tenant, top_k, min_score,
-        query_doc_ids=query_doc_ids,
-    )
+    try:
+        dense_results = _dense_score_candidates(
+            dense_candidates, dense_doc_ids, dense_chunks_by_id,
+            evidence_text, query_identifiers, asset, customer,
+            tenant, top_k, min_score,
+            query_doc_ids=query_doc_ids,
+            staff_mode=staff_mode,
+            include_confidential=include_confidential,
+            serving_config=serving_config,
+        )
+    except Exception as exc:
+        logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+        dense_results = []
 
     # 2c: Fuse results using RRF
     if dense_results and sparse_results:
         results = _reciprocal_rank_fusion(dense_results, sparse_results)
         retrieval_backend = "hybrid"
     elif dense_results:
+        for i, r in enumerate(dense_results, 1):
+            r.dense_score = r.score
+            r.dense_similarity = r.score
+            r.dense_rank = i
+            r.fusion_score = r.score
+            r.fusion_rank = i
+            r.final_rank = i
         results = dense_results
         retrieval_backend = "semantic"
     elif sparse_results:
+        for i, r in enumerate(sparse_results, 1):
+            r.sparse_score = r.score
+            r.sparse_relevance = r.score
+            r.sparse_rank = i
+            r.fusion_score = r.score
+            r.fusion_rank = i
+            r.final_rank = i
         results = sparse_results
         retrieval_backend = "fallback"
     else:
         results = []
         retrieval_backend = "fallback"
+
+    # Defense-in-depth: Ensure NO chunk from outside authorized candidates can leak
+    results = [
+        r for r in results
+        if r.source_kind != "knowledge_document" or (
+            r.document_id in allowed_doc_ids and r.chunk_id in allowed_chunks_by_id
+        )
+    ]
 
     logger.info(
         "retrieval_backend = %s (retrieved %d knowledge chunks, "
@@ -578,39 +1050,48 @@ def retrieve(
                 service_call_id=call.id,
             ))
 
-    # Step 4: Source Authority Ranking (Phase 6) — authoritative documentation
-    # (Tiers 1-3) always outranks historical cases (Tier 4) when addressing
-    # the same topic.  Apply a tier-based penalty to historical cases.
-    all_results = results + resolution_results
-    all_results.sort(key=lambda r: r.score, reverse=True)
+    # Step 4: Strict Source Authority Tiering — authoritative technical guidance
+    # (Knowledge Documents) strictly outranks historical cases (Service Calls).
+    # Historical anecdotes can NEVER authorize repair actions or outrank approved manuals.
+    # Preserve the exact fused ranking of knowledge documents!
+    sorted_resolutions = sorted(resolution_results, key=lambda r: -r.score)
+    all_results = list(results) + sorted_resolutions
 
-    # Apply authority tier demotion: if authoritative docs exist, penalize
-    # historical cases so they rank below authoritative content
-    has_authoritative = any(r.source_kind == "knowledge_document" for r in all_results)
-    if has_authoritative:
-        for r in all_results:
-            if r.source_kind == "past_resolution":
-                # Demote historical cases below authoritative documents
-                r.score = r.score * 0.6
-
-    all_results.sort(key=lambda r: r.score, reverse=True)
-
-    # Step 5: Diversity & deduplication: avoid returning multiple identical
-    # chunks from the same document/call
+    # Step 5: Diversity & content-level deduplication
     selected = []
-    seen_texts = set()
+    seen_chunk_keys = set()
+    seen_content_hashes = set()
     per_source = {}
+    max_per_source = getattr(settings, "SERVY_MAX_CHUNKS_PER_SOURCE", top_k)
+
     for item in all_results:
-        text_sig = item.text[:120].strip()
-        if text_sig in seen_texts:
+        chunk_key = (item.source_kind, item.document_id, item.chunk_id)
+        if chunk_key in seen_chunk_keys and item.chunk_id is not None:
             continue
-        key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
-        if per_source.get(key, 0) >= 2:
+
+        # Deterministic SHA-256 content deduplication (Phase 7 Repair)
+        # Content deduplication ensures duplicate manual versions are deduplicated
+        import hashlib
+        norm_text = " ".join((item.text or "").strip().lower().split())
+        content_digest = hashlib.sha256(norm_text.encode("utf-8")).hexdigest()
+        digest_key = content_digest
+        if digest_key in seen_content_hashes:
             continue
+
+        source_key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
+        if item.source_kind == "past_resolution" and per_source.get(source_key, 0) >= 2:
+            continue
+        if item.source_kind == "knowledge_document" and per_source.get(source_key, 0) >= max_per_source:
+            continue
+
         selected.append(item)
-        seen_texts.add(text_sig)
-        per_source[key] = per_source.get(key, 0) + 1
-        if len(selected) >= top_k:
+        seen_chunk_keys.add(chunk_key)
+        seen_content_hashes.add(digest_key)
+        per_source[source_key] = per_source.get(source_key, 0) + 1
+        # Bounded candidate pool for reranking (Operation 13.0)
+        # Collect up to 3x top_k so reranker can recover relevant passages
+        rerank_pool_limit = max(top_k * 3, 24)
+        if len(selected) >= rerank_pool_limit:
             break
 
     try:
@@ -618,5 +1099,12 @@ def retrieve(
         selected = rerank_candidates(evidence_text, selected, top_k=top_k)
     except Exception as exc:
         logger.warning("Reranker step skipped due to error: %s", exc)
+        selected = selected[:top_k]
+
+    if len(selected) > top_k:
+        selected = selected[:top_k]
+
+    for i, item in enumerate(selected, 1):
+        item.final_rank = i
 
     return RetrievedResultList(selected, retrieval_backend=retrieval_backend)

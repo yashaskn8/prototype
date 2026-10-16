@@ -21,49 +21,69 @@ def _doc_embedding_text(document, heading, body):
     return f"{metadata}\n{body}".strip()
 
 
-def index_document(document):
-    text = extract_document_text(document)
-    document.chunks.all().delete()
-    document.checksum_sha256 = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else ""
-    document.index_status = "INDEXING"
-    document.index_version = (document.index_version or 0) + 1
-    document.save(update_fields=["checksum_sha256", "index_status", "index_version"])
-    if not document.is_rag_enabled or not text.strip():
-        document.index_status = "NOT_INDEXED"
-        document.save(update_fields=["index_status"])
-        from .chroma_store import queue_chroma_sync
-        queue_chroma_sync(document.id)
-        return 0
+def index_document(document, *, authorized: bool = False):
+    from django.conf import settings
+    # Protect verified/company documents from unauthorized destructive chunk deletion
+    real_tenants = getattr(settings, "STARLLY_REAL_TENANTS", ["skydream"])
+    is_protected_tenant = bool(document.tenant and document.tenant.slug in real_tenants)
+    has_verified_provenance = bool(
+        hasattr(document, "source_provenance")
+        and getattr(document.source_provenance, "verification_status", None) == "VERIFIED"
+    )
+    if (is_protected_tenant or has_verified_provenance) and not authorized:
+        if document.chunks.exists():
+            raise PermissionError(
+                f"Unauthorized reindex operation on protected document {document.id} ({document.title}). "
+                "Historical vector identity and knowledge chunks are protected."
+            )
 
-    chunks = chunk_markdownish(text)
-    objects = []
-    for i, (heading, body) in enumerate(chunks):
-        flags = detect_document_prompt_injection(body)
-        full_text = f"## {heading}\n{body}" if heading and heading not in body else body
-        content_embedding_text = f"{heading}\n{body}" if heading and heading not in body else body
-        objects.append(KnowledgeChunk(
-            tenant=document.tenant,
-            document=document,
-            chunk_index=i,
-            heading=heading,
-            text=full_text,
-            embedding=embed_text(_doc_embedding_text(document, heading, full_text)),
-            content_embedding=embed_text(content_embedding_text),
-            embedding_model=VECTOR_MODEL,
-            safety_flags=flags,
-            is_quarantined=bool(flags),
-        ))
-    KnowledgeChunk.objects.bulk_create(objects)
-    # Mark as INDEXED immediately so the sparse/fallback retriever can find
-    # these chunks even when Chroma sync hasn't completed yet (or inside test
-    # transactions where on_commit never fires).
-    document.index_status = "INDEXED"
+    from django.db import transaction
     from django.utils import timezone as _tz
-    document.indexed_at = _tz.now()
-    document.save(update_fields=["index_status", "indexed_at"])
     from .chroma_store import queue_chroma_sync
+
+    # Stage 1 (no destructive effects): extract, chunk, and embed. Any failure
+    # here propagates with existing chunks untouched.
+    text = extract_document_text(document)
+    new_checksum = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else ""
+    index_enabled = bool(document.is_rag_enabled and text.strip())
+    objects = []
+    if index_enabled:
+        for i, (heading, body) in enumerate(chunk_markdownish(text)):
+            flags = detect_document_prompt_injection(body)
+            full_text = f"## {heading}\n{body}" if heading and heading not in body else body
+            content_embedding_text = f"{heading}\n{body}" if heading and heading not in body else body
+            objects.append(KnowledgeChunk(
+                tenant=document.tenant,
+                document=document,
+                chunk_index=i,
+                heading=heading,
+                text=full_text,
+                embedding=embed_text(_doc_embedding_text(document, heading, full_text)),
+                content_embedding=embed_text(content_embedding_text),
+                embedding_model=VECTOR_MODEL,
+                safety_flags=flags,
+                is_quarantined=bool(flags),
+            ))
+
+    # Stage 2: atomic swap. Either all old chunks are replaced or none are.
+    with transaction.atomic():
+        document.chunks.all().delete()
+        if objects:
+            KnowledgeChunk.objects.bulk_create(objects)
+        document.checksum_sha256 = new_checksum
+        document.index_version = (document.index_version or 0) + 1
+        if index_enabled:
+            # INDEXED immediately so the sparse/fallback retriever can find
+            # these chunks even before Chroma sync completes.
+            document.index_status = "INDEXED"
+            document.indexed_at = _tz.now()
+            document.save(update_fields=["checksum_sha256", "index_status", "index_version", "indexed_at"])
+        else:
+            document.index_status = "NOT_INDEXED"
+            document.save(update_fields=["checksum_sha256", "index_status", "index_version"])
     queue_chroma_sync(document.id)
     return len(objects)
+
 
 
 def _redact_resolution_text(text, call):

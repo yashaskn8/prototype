@@ -54,4 +54,5 @@ scratch/
 
 # ML artifacts: model checkpoints, private relevance labels, eval outputs
 ml_artifacts/
+ml_models/checkpoints/
 private_training_data/
