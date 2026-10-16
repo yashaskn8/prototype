@@ -82,9 +82,9 @@ class TestMixedModeDataPreservation(TestCase):
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
-    def test_mixed_mode_all_negatives_produces_single_triplet_ds(self):
-        """When ALL examples have negatives, mixed mode should produce a single
-        triplet dataset (no need for multi-dataset)."""
+    def test_mixed_mode_all_negatives_produces_triplet_training(self):
+        """When ALL examples have negatives, mixed mode should train with
+        hard negatives consumed and report n_without_negative=0."""
         from core.ml.training import finetune, TRAINING_MODE_MIXED
         from core.ml.embeddings import BGE_SMALL_REVISION
 
@@ -95,36 +95,33 @@ class TestMixedModeDataPreservation(TestCase):
              "review_status": "approved", "query_id": "q2"},
         ]
 
-        datasets_captured = {}
+        out_dir = tempfile.mkdtemp(prefix="servy_all_neg_op18_")
         try:
-            from sentence_transformers import SentenceTransformerTrainer
-        except ImportError:
-            self.skipTest("sentence_transformers not available")
+            report = finetune(
+                rows, [], out_dir, BGE_SMALL_REVISION,
+                synthetic_smoke_test=True, training_mode=TRAINING_MODE_MIXED,
+                epochs=1, batch_size=4,
+            )
 
-        def mock_trainer_init(self_inner, *args, **kwargs):
-            datasets_captured["train"] = kwargs.get("train_dataset")
-            raise InterruptedError("Stop")
+            # All examples have negatives — should use triplet training
+            self.assertEqual(report["n_effective_examples"], 2)
+            self.assertEqual(report["n_with_negative"], 2)
+            self.assertEqual(report["n_without_negative"], 0)
+            self.assertTrue(report["hard_negatives_consumed"])
+            self.assertTrue(report["training_completed"])
+            self.assertGreater(report["optimizer_steps"], 0)
 
-        with mock.patch.object(
-            type(SentenceTransformerTrainer), '__init__', mock_trainer_init
-        ):
-            try:
-                finetune(rows, [], tempfile.mkdtemp(), BGE_SMALL_REVISION,
-                         synthetic_smoke_test=True, training_mode=TRAINING_MODE_MIXED)
-            except (InterruptedError, Exception):
-                pass
+        except (OSError, Exception) as e:
+            err_str = str(e)
+            if "not available locally" in err_str or "LocalEntryNotFoundError" in err_str or "couldn't connect" in err_str:
+                self.skipTest(f"Model not cached locally: {e}")
+            raise
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
 
-        train_ds = datasets_captured.get("train")
-        if train_ds is None:
-            self.skipTest("Model not cached locally")
-        # Should be a single Dataset (not a dict) since all have negatives
-        if not isinstance(train_ds, dict):
-            self.assertEqual(len(train_ds), 2)
-            self.assertIn("negative", train_ds.column_names)
-
-    def test_mixed_mode_no_negatives_produces_single_pairs_ds(self):
-        """When NO examples have negatives, mixed mode should produce a single
-        pairs dataset."""
+    def test_mixed_mode_no_negatives_produces_pairs_training(self):
+        """When NO examples have negatives, mixed mode should train without
+        hard negatives and report n_with_negative=0."""
         from core.ml.training import finetune, TRAINING_MODE_MIXED
         from core.ml.embeddings import BGE_SMALL_REVISION
 
@@ -135,32 +132,29 @@ class TestMixedModeDataPreservation(TestCase):
              "review_status": "approved", "query_id": "q2"},
         ]
 
-        datasets_captured = {}
+        out_dir = tempfile.mkdtemp(prefix="servy_no_neg_op18_")
         try:
-            from sentence_transformers import SentenceTransformerTrainer
-        except ImportError:
-            self.skipTest("sentence_transformers not available")
+            report = finetune(
+                rows, [], out_dir, BGE_SMALL_REVISION,
+                synthetic_smoke_test=True, training_mode=TRAINING_MODE_MIXED,
+                epochs=1, batch_size=4,
+            )
 
-        def mock_trainer_init(self_inner, *args, **kwargs):
-            datasets_captured["train"] = kwargs.get("train_dataset")
-            raise InterruptedError("Stop")
+            # No examples have negatives — pairs-only training
+            self.assertEqual(report["n_effective_examples"], 2)
+            self.assertEqual(report["n_with_negative"], 0)
+            self.assertEqual(report["n_without_negative"], 2)
+            self.assertFalse(report["hard_negatives_consumed"])
+            self.assertTrue(report["training_completed"])
+            self.assertGreater(report["optimizer_steps"], 0)
 
-        with mock.patch.object(
-            type(SentenceTransformerTrainer), '__init__', mock_trainer_init
-        ):
-            try:
-                finetune(rows, [], tempfile.mkdtemp(), BGE_SMALL_REVISION,
-                         synthetic_smoke_test=True, training_mode=TRAINING_MODE_MIXED)
-            except (InterruptedError, Exception):
-                pass
-
-        train_ds = datasets_captured.get("train")
-        if train_ds is None:
-            self.skipTest("Model not cached locally")
-        # Should be a single pairs-only Dataset
-        if not isinstance(train_ds, dict):
-            self.assertEqual(len(train_ds), 2)
-            self.assertNotIn("negative", train_ds.column_names)
+        except (OSError, Exception) as e:
+            err_str = str(e)
+            if "not available locally" in err_str or "LocalEntryNotFoundError" in err_str or "couldn't connect" in err_str:
+                self.skipTest(f"Model not cached locally: {e}")
+            raise
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
 
     def test_to_ds_source_has_no_data_loss_pattern(self):
         """The training module must NOT contain the old to_ds(include_neg)
