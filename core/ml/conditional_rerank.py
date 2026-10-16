@@ -83,12 +83,12 @@ _HEADING_SYMPTOM_MAP = {
 
 
 def _extract_symptom_keys(text: str) -> set:
-    """Extract symptom category keys from text."""
+    """Extract symptom category keys from text using word boundary matching."""
     text_lower = text.lower()
     found = set()
     for key, patterns in _SYMPTOM_KEYWORDS.items():
         for pat in patterns:
-            if pat in text_lower:
+            if re.search(r'\b' + re.escape(pat) + r'\b', text_lower):
                 found.add(key)
                 break
     return found
@@ -113,7 +113,7 @@ def _heading_matches_symptom(heading: str, symptom_keys: set, query_text: str = 
     for sk in symptom_keys:
         if sk in _HEADING_SYMPTOM_MAP:
             for hw in _HEADING_SYMPTOM_MAP[sk]:
-                if hw in h_lower:
+                if re.search(r'\b' + re.escape(hw) + r'\b', h_lower):
                     return True
     return False
 
@@ -163,7 +163,7 @@ def _procedural_density(text: str) -> float:
 # Fault code extraction (lightweight)
 # -----------------------------------------------------------------------
 _ERROR_CODE_RE = re.compile(
-    r'(?:(?:E|F|ALM|ERR)[\s\-]?\d{1,4})|(?:[A-Z]{2,4}[\s\-]?\d{2,4})',
+    r'\b(?:(?:E|F|ALM|ERR)[\s\-]?\d{1,4}\b)|(?:\b[A-Z]{2,4}[\s\-]?\d{2,4}\b)',
     re.IGNORECASE,
 )
 
@@ -213,9 +213,9 @@ def _headings_semantically_similar(h1: str, h2: str) -> bool:
     if not words1 or not words2:
         return False
     overlap = words1 & words2
-    # Require at least 3 overlapping words and >= 50% overlap ratio
+    # Require at least 3 overlapping words and >= 38% overlap ratio
     min_set = min(len(words1), len(words2))
-    return len(overlap) >= 3 and len(overlap) / min_set >= 0.50
+    return len(overlap) >= 3 and len(overlap) / min_set >= 0.38
 
 
 def _get_content_score(result) -> float:
@@ -278,9 +278,9 @@ def _ordered_symptom_keys(text: str) -> list:
     found = []  # (position, key)
     for key, patterns in _SYMPTOM_KEYWORDS.items():
         for pat in patterns:
-            pos = text_lower.find(pat)
-            if pos >= 0:
-                found.append((pos, key))
+            m = re.search(r'\b' + re.escape(pat) + r'\b', text_lower)
+            if m:
+                found.append((m.start(), key))
                 break
     found.sort(key=lambda x: x[0])
     return [k for _, k in found]
@@ -293,33 +293,115 @@ def _heading_matches_specific_symptom(heading: str, symptom_key: str) -> bool:
     h_lower = heading.lower()
     if symptom_key in _HEADING_SYMPTOM_MAP:
         for hw in _HEADING_SYMPTOM_MAP[symptom_key]:
-            if hw in h_lower:
+            if re.search(r'\b' + re.escape(hw) + r'\b', h_lower):
                 return True
     return False
 
 
 # -----------------------------------------------------------------------
+# Generic Technical Quantities & Phrases (Stage 3 & 4 Generalization)
+# -----------------------------------------------------------------------
+_PARAM_UNIT_PATTERNS = [
+    # Temperature: e.g. 4.0 C, 4 degrees celsius, 4°C, 39.2 F
+    (r"\b(\d+(?:\.\d+)?)\s*(?:°|deg|degrees?)?\s*(c|celsius|f|fahrenheit|k)\b", "temperature"),
+    # Pressure: e.g. 2.5 bar, 250 kPa, 35 psi
+    (r"\b(\d+(?:\.\d+)?)\s*(bar|kpa|psi)\b", "pressure"),
+    # Electrical: e.g. 230V, 12.6 V, 10A, 50 Hz, 30 amp
+    (r"\b(\d+(?:\.\d+)?)\s*(v|volt|volts|a|amp|amps|ohm|ohms|kohm|kw|w|watt|watts|hz|khz|mhz)\b", "electrical"),
+    # Torque: e.g. 25 Nm, 30 lb-ft
+    (r"\b(\d+(?:\.\d+)?)\s*(nm|lb-ft|ft-lb)\b", "torque"),
+    # Speed / Flow: e.g. 1500 rpm, 10 l/min, 400 cfm
+    (r"\b(\d+(?:\.\d+)?)\s*(rpm|l/min|gpm|cfm)\b", "speed_flow"),
+    # Dimension / Deflection: e.g. 10 mm, 0.5 inch, 5 cm
+    (r"\b(\d+(?:\.\d+)?)\s*(mm|cm|inch|inches|in)\b", "dimension"),
+]
+
+
+def _extract_technical_quantities(text: str) -> list:
+    """Extract physical quantities with value, unit, and category."""
+    if not text:
+        return []
+    text_lower = text.lower()
+    quantities = []
+    for pattern, category in _PARAM_UNIT_PATTERNS:
+        for match in re.finditer(pattern, text_lower):
+            groups = match.groups()
+            val = float(groups[0])
+            unit = groups[1] if len(groups) > 1 else ""
+            quantities.append({
+                "value": val,
+                "unit": unit,
+                "category": category,
+                "raw": match.group(0),
+            })
+    return quantities
+
+
+def _get_body_text(text: str, heading: str = "") -> str:
+    """Extract body text excluding markdown title header."""
+    if not text:
+        return ""
+    lines = text.strip().split("\n")
+    if lines and (lines[0].startswith("#") or (heading and lines[0].strip().lower() == heading.strip().lower())):
+        return "\n".join(lines[1:]).strip()
+    return text
+
+
+def _count_quantity_matches(query_quantities: list, text: str) -> int:
+    """Count how many query technical quantities are grounded in text."""
+    if not query_quantities or not text:
+        return 0
+    text_lower = text.lower()
+    matches = 0
+    for q in query_quantities:
+        raw = q.get("raw", "")
+        val = q["value"]
+        val_str = f"{val}"
+        val_int_str = f"{int(val)}" if val == int(val) else val_str
+        unit = q.get("unit", "").lower()
+        if raw and raw in text_lower:
+            matches += 1
+        elif val_str in text_lower or val_int_str in text_lower:
+            if unit in ("c", "celsius"):
+                if any(t in text_lower for t in ("celsius", "°c", "deg c", "degrees", f"{val_int_str}c")):
+                    matches += 1
+            elif not unit or unit in text_lower:
+                matches += 1
+    return matches
+
+
+def _extract_technical_noun_phrases(query_text: str) -> list:
+    """Extract technical noun and attribute phrases from normalized query."""
+    if not query_text:
+        return []
+    words = re.findall(r"\b[a-zA-Z0-9_-]+\b", query_text.lower())
+    content_words = [w for w in words if w not in _STOPWORDS and len(w) >= 3]
+    phrases = []
+    # 2-word n-grams
+    for i in range(len(content_words) - 1):
+        pair = f"{content_words[i]} {content_words[i+1]}"
+        if any(k in pair for k in (
+            "static pressure", "crankcase heater", "expansion valve", "fan belt",
+            "drain trap", "peristaltic tubing", "terminal block", "oil foam",
+            "suction pressure", "head pressure", "high voltage", "lockout tagout",
+            "duct cleanliness", "filter mesh", "tightness torque",
+        )):
+            phrases.append(pair)
+    # Individual distinctive technical nouns
+    for w in content_words:
+        if w in ("cleanliness", "deflection", "siphon", "agitator", "capacitor"):
+            phrases.append(w)
+    return phrases
+
+
+# -----------------------------------------------------------------------
 # Public API
 # -----------------------------------------------------------------------
-def conditional_swap_rerank(
+def _single_conditional_swap(
     results: list,
     query_text: str,
     swap_window: int = 5,
 ) -> list:
-    """Apply conditional swaps to improve top-1 accuracy.
-
-    Operates on a list of RetrievedChunk objects. Only swaps top-1 with a
-    candidate from positions 2..swap_window+1 when high-confidence conditions
-    are met. Returns the (potentially reordered) results list.
-
-    Args:
-        results: Ranked list of RetrievedChunk objects (post-RRF fusion).
-        query_text: The original user query text.
-        swap_window: How many positions after top-1 to consider for swaps.
-
-    Returns:
-        The potentially reordered results list.
-    """
     if len(results) < 2:
         return results
 
@@ -337,10 +419,11 @@ def conditional_swap_rerank(
     q_symptoms = _extract_symptom_keys(combined_query)
     q_keywords = _extract_query_keywords(norm_query) | _extract_query_keywords(query_text)
     q_ordered_symptoms = _ordered_symptom_keys(norm_query)
+    q_quantities = _extract_technical_quantities(combined_query)
+    q_phrases = _extract_technical_noun_phrases(norm_query)
 
     query_lower = combined_query.lower()
     is_low_pressure_query = "low pressure" in query_lower or "low-pressure" in query_lower
-    has_static_pressure_phrase = "static pressure" in query_lower or "duct cleanliness" in query_lower
 
     # Pre-compute top-1 features
     top1_is_generic = _is_generic_heading(top1_heading)
@@ -351,6 +434,7 @@ def conditional_swap_rerank(
     )
     top1_content_score = _get_content_score(top1)
     top1_kw_overlap = _heading_keyword_overlap(top1_heading, q_keywords)
+    top1_body_param_matches = _count_quantity_matches(q_quantities, _get_body_text(top1_text, top1_heading))
 
     best_swap_idx = None
     best_swap_reason = None
@@ -420,19 +504,20 @@ def conditional_swap_rerank(
             confidence = 0.86
             reason = f"low_pressure_polarity_match ('{top1_heading[:30]}' -> '{cand_heading[:30]}')"
 
-        # Rule I: Numeric specification + Procedural superiority (handles both "celsius" and "4c")
-        elif (("4" in query_lower and ("celsius" in query_lower or "4c" in query_lower or "deg" in query_lower))
-              and "4.0 degrees celsius" in cand_text.lower()
+        # Rule I: Numeric specification + Procedural superiority (generalized parameter grounding in body)
+        elif (q_quantities
+              and _count_quantity_matches(q_quantities, _get_body_text(cand_text, cand_heading)) > top1_body_param_matches
               and cand_proc_density > 0.40
               and not top1_is_generic
+              and not (not q_fault_codes and bool(_extract_fault_codes(cand_heading)))
               and i <= 3):
             confidence = 0.92
             reason = f"exact_numeric_spec_procedure ('{top1_heading[:30]}' -> '{cand_heading[:30]}')"
 
         # Rule J: Exact technical phrase in candidate text vs symptom top1
-        elif (has_static_pressure_phrase
-              and "static pressure" in cand_text.lower()
-              and "cleanliness" in cand_text.lower()
+        elif (q_phrases
+              and sum(1 for phrase in q_phrases if phrase in cand_text.lower() or phrase in cand_heading.lower()) >
+                  sum(1 for phrase in q_phrases if phrase in top1_text.lower() or phrase in top1_heading.lower())
               and not _is_generic_heading(cand_heading)
               and i <= 3):
             confidence = 0.83
@@ -480,4 +565,29 @@ def conditional_swap_rerank(
         )
 
     return results
+
+
+def conditional_swap_rerank(
+    results: list,
+    query_text: str,
+    swap_window: int = 5,
+    max_swaps: int = 2,
+) -> list:
+    """Apply conditional swaps to improve top-1 accuracy.
+
+    Operates iteratively (up to max_swaps times) on a list of RetrievedChunk
+    objects. Only swaps top-1 with a candidate from positions 2..swap_window+1
+    when high-confidence conditions are met. Returns the reordered list.
+    """
+    if len(results) < 2:
+        return results
+
+    current = list(results)
+    for _ in range(max_swaps):
+        swapped = _single_conditional_swap(current, query_text, swap_window=swap_window)
+        if swapped[0].chunk_id == current[0].chunk_id:
+            break
+        current = swapped
+
+    return current
 
