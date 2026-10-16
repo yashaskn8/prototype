@@ -1038,6 +1038,16 @@ def retrieve(
         retrieval_backend, len(results), len(dense_results), len(sparse_results),
     )
 
+    # Step 2d (Operation 24): Conditional swap re-ranking.
+    # Preserves the RRF ranking by default. Only swaps top-1 with a candidate
+    # from positions 2-5 when high-confidence conditions are met (same-heading
+    # procedural preference, generic overview demotion, fault code promotion).
+    try:
+        from core.ml.conditional_rerank import conditional_swap_rerank
+        results = conditional_swap_rerank(results, question or "", swap_window=5)
+    except Exception as exc:
+        logger.warning("Conditional swap re-ranking skipped due to error: %s", exc)
+
     # Step 3: Engineer Copilot - Previous Service Cases (separate from authoritative manuals)
     # Disabled for Customer Self-Service (only enabled when include_past_resolutions is True)
     resolution_results = []
