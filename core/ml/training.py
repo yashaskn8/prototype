@@ -191,28 +191,88 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
                                 device="cpu", local_files_only=True)
     model.max_seq_length = max_seq_length
 
-    def to_ds(triplets, include_neg: bool):
+    def to_ds_triplets(triplets):
+        """Build anchor/positive/negative dataset from triplets that HAVE negatives.
+        NEVER insert empty-string negatives — this creates degenerate training
+        signals where the loss pushes embeddings away from a meaningless blank passage."""
+        has_neg = [r for r in triplets if r.get("negative_text")]
+        if not has_neg:
+            return None
+        return Dataset.from_dict({
+            "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in has_neg],
+            "positive": [r["positive_text"] for r in has_neg],
+            "negative": [r["negative_text"] for r in has_neg],
+        })
+
+    def to_ds_pairs(triplets):
+        """Build anchor/positive dataset from examples WITHOUT negatives (in-batch negatives only)."""
+        no_neg = [r for r in triplets if not r.get("negative_text")]
+        if not no_neg:
+            return None
+        return Dataset.from_dict({
+            "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in no_neg],
+            "positive": [r["positive_text"] for r in no_neg],
+        })
+
+    def to_ds_all_pairs(triplets):
+        """Build anchor/positive-only dataset from ALL examples (ignoring negatives)."""
         if not triplets:
             return None
-        if include_neg:
-            # Only include examples that actually have negatives.
-            # NEVER insert empty-string negatives — this creates degenerate
-            # training signals where the loss pushes embeddings away from
-            # a meaningless blank passage.
-            has_neg = [r for r in triplets if r.get("negative_text")]
-            if has_neg:
-                return Dataset.from_dict({
-                    "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in has_neg],
-                    "positive": [r["positive_text"] for r in has_neg],
-                    "negative": [r["negative_text"] for r in has_neg],
-                })
-            # No negatives at all — fall through to pairs
         return Dataset.from_dict({
             "anchor": [BGE_QUERY_PREFIX + r["query_text"] for r in triplets],
             "positive": [r["positive_text"] for r in triplets],
         })
 
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Phase 1 (Operation 18): Build training datasets correctly for each mode.
+    # CRITICAL FIX: Mixed mode must NOT silently drop positive-only examples.
+    # The old to_ds(include_neg=True) filtered to only rows with negatives,
+    # discarding all positive-only training data. Now we use multi-dataset
+    # training: triplet examples (with hard negatives) and pair examples
+    # (in-batch negatives only) both contribute to training.
+    loss = MultipleNegativesRankingLoss(model)
+
+    if training_mode == TRAINING_MODE_POSITIVE_PAIRS:
+        # Deliberately ignore all negatives — in-batch negatives only.
+        train_dataset = to_ds_all_pairs(effective_triplets)
+        eval_dataset = to_ds_all_pairs(effective_val) if effective_val else None
+    elif training_mode == TRAINING_MODE_VERIFIED_TRIPLETS:
+        # All examples guaranteed to have negatives (validated above).
+        train_dataset = to_ds_triplets(effective_triplets)
+        eval_dataset = to_ds_triplets(effective_val) if effective_val else None
+    elif training_mode == TRAINING_MODE_MIXED:
+        # FIXED: Use multi-dataset training so BOTH triplet and pair examples
+        # contribute. SentenceTransformerTrainer accepts a dict of datasets
+        # keyed by name, each trained with the same loss.
+        ds_triplets = to_ds_triplets(effective_triplets)
+        ds_pairs = to_ds_pairs(effective_triplets)
+        if ds_triplets and ds_pairs:
+            # Both triplet and pair examples exist — use multi-dataset dict
+            train_dataset = {"triplets": ds_triplets, "pairs": ds_pairs}
+        elif ds_triplets:
+            train_dataset = ds_triplets
+        else:
+            train_dataset = to_ds_all_pairs(effective_triplets)
+
+        # Eval follows same structure
+        if effective_val:
+            eval_ds_triplets = to_ds_triplets(effective_val)
+            eval_ds_pairs = to_ds_pairs(effective_val)
+            if eval_ds_triplets and eval_ds_pairs:
+                eval_dataset = {"triplets": eval_ds_triplets, "pairs": eval_ds_pairs}
+            elif eval_ds_triplets:
+                eval_dataset = eval_ds_triplets
+            else:
+                eval_dataset = to_ds_all_pairs(effective_val)
+        else:
+            eval_dataset = None
+    else:
+        raise ValueError(f"Unexpected training_mode: {training_mode}")
+
+    if train_dataset is None:
+        raise ValueError("No training examples produced datasets. Check training data.")
+
     args = SentenceTransformerTrainingArguments(
         output_dir=str(out_dir), num_train_epochs=epochs,
         per_device_train_batch_size=batch_size, per_device_eval_batch_size=batch_size,
@@ -223,9 +283,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     )
     trainer = SentenceTransformerTrainer(
         model=model, args=args,
-        train_dataset=to_ds(effective_triplets, use_negatives),
-        eval_dataset=to_ds(effective_val, use_negatives) if effective_val else None,
-        loss=MultipleNegativesRankingLoss(model),
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        loss=loss,
     )
     t = time.time()
     result = trainer.train()

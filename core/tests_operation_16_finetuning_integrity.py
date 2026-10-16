@@ -627,13 +627,16 @@ class TestOp17NoBlankNegatives(TestCase):
         from core.ml import training
         source = inspect.getsource(training)
         # The old dangerous pattern inserted blank negatives into contrastive loss
-        if "def to_ds" in source:
-            to_ds_body = source.split("def to_ds")[1].split("\n    out_dir")[0]
-            self.assertNotIn(
-                'or ""',
-                to_ds_body,
-                "to_ds must not contain 'or empty-string' pattern for negatives"
-            )
+        if "def to_ds_triplets" in source or "def to_ds_pairs" in source or "def to_ds" in source:
+            # Find the dataset builder functions and check for dangerous patterns
+            for func_name in ["to_ds_triplets", "to_ds_pairs", "to_ds_all_pairs", "to_ds"]:
+                if f"def {func_name}" in source:
+                    func_body = source.split(f"def {func_name}")[1].split("\n    out_dir")[0]
+                    self.assertNotIn(
+                        'or ""',
+                        func_body,
+                        f"{func_name} must not contain 'or empty-string' pattern for negatives"
+                    )
 
 
 class TestOp17ServingConfigGateIndependence(TestCase):
