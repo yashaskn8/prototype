@@ -56,3 +56,8 @@ scratch/
 ml_artifacts/
 ml_models/checkpoints/
 private_training_data/
+
+.env.mysql*
+inventory_sqlite.json
+migration_summary.json
+performance_benchmark.json
