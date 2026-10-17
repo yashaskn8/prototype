@@ -95,12 +95,14 @@ def register_finetuned(
     dataset_manifest_hash: str = "",
     base_revision: Optional[str] = None,
     checkpoint_hash: str = "",
+    query_prefix: str = BGE_QUERY_PREFIX,
+    content_first: bool = True,
 ) -> EmbeddingProfile:
     """Register a locally saved fine-tuned checkpoint as its own profile/collection."""
     p = EmbeddingProfile(
         key=key, model_id=path, revision=None, dim=384,
         collection=f"servy_dense_{key.replace('-', '_')}_v1",
-        query_prefix=BGE_QUERY_PREFIX, content_first=True, local_path=path,
+        query_prefix=query_prefix, content_first=content_first, local_path=path,
         promotion_eligible=promotion_eligible,
         training_status=training_status,
         dataset_manifest_hash=dataset_manifest_hash,

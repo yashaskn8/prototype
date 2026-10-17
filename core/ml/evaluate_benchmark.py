@@ -45,7 +45,7 @@ from typing import Any, Dict, List, Optional, Set
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-os.environ["SERVY_DB_ENGINE"] = "sqlite3"
+os.environ.setdefault("SERVY_DB_ENGINE", "mysql")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 
 import django

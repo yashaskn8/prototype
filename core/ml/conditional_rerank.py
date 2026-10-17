@@ -41,6 +41,7 @@ _GENERIC_HEADINGS = frozenset({
     "general overview", "overview", "introduction", "scope",
     "table of contents", "about", "preface", "purpose",
     "contents", "index", "summary", "background", "description",
+    "verification",
 })
 
 
@@ -451,11 +452,29 @@ def _single_conditional_swap(
         reason = None
 
         # Rule A: Same heading (same document), prefer procedural content
+        # Guard: Do not demote top-1 if top-1 contains a specific query condition match that candidate lacks
+        top1_has_query_condition = (
+            any(term in top1_text.lower() for term in ["burnt", "burning smell", "smells burnt", "burned"])
+            and any(qterm in query_lower for qterm in ["burn", "burning", "burnt", "smell"])
+        )
+        cand_has_query_condition = (
+            any(term in cand_text.lower() for term in ["burnt", "burning smell", "smells burnt", "burned"])
+            and any(qterm in query_lower for qterm in ["burn", "burning", "burnt", "smell"])
+        )
         if (top1_heading.lower() == cand_heading.lower()
                 and top1_doc_id == cand_doc_id
-                and cand_proc_density > top1_proc_density + 0.15):
+                and cand_proc_density > top1_proc_density + 0.15
+                and not top1_has_query_condition):
             confidence = 0.70 + (cand_proc_density - top1_proc_density) * 0.3
             reason = f"same_heading_procedural ({top1_proc_density:.2f}->{cand_proc_density:.2f})"
+
+        # Rule A2: Same heading (same document), candidate text directly matches query condition terms that top-1 lacks
+        elif (top1_heading.lower() == cand_heading.lower()
+              and top1_doc_id == cand_doc_id
+              and cand_has_query_condition
+              and not top1_has_query_condition):
+            confidence = 0.85
+            reason = f"same_heading_condition_match ('{cand_heading[:30]}')"
 
         # Rule B: Generic top-1, symptom-specific candidate
         elif (top1_is_generic
@@ -464,6 +483,15 @@ def _single_conditional_swap(
               and not top1_heading_symptom):
             confidence = 0.75
             reason = f"generic_demotion ('{top1_heading[:30]}' -> '{cand_heading[:30]}')"
+
+        # Rule B2: Generic top-1, procedure/actionable candidate
+        elif (top1_is_generic
+              and not _is_generic_heading(cand_heading)
+              and (cand_proc_density >= 0.25 or any(w in cand_heading.lower() for w in ("step", "install", "procedure", "setup", "replacement", "wiring", "maintenance", "service")))
+              and cand_proc_density > top1_proc_density + 0.15
+              and i <= 3):
+            confidence = 0.80
+            reason = f"generic_procedure_demotion ('{top1_heading[:30]}' -> '{cand_heading[:30]}', proc={cand_proc_density:.2f})"
 
         # Rule C: Fault code in candidate heading but not in top-1.
         elif (q_fault_codes
@@ -474,15 +502,14 @@ def _single_conditional_swap(
             reason = f"fault_code_promotion (codes={q_fault_codes})"
 
         # Rule D: Symptom alignment — top-1 heading doesn't match query symptom,
-        # but candidate heading does. Be conservative: only consider positions 2-3
-        # and require neither heading to be generic.
+        # but candidate heading does. Require neither heading to be generic.
         elif (q_symptoms
               and _heading_matches_symptom(cand_heading, q_symptoms, combined_query)
               and not top1_heading_symptom
               and not top1_is_generic
               and not _is_generic_heading(cand_heading)
-              and i <= 3):
-            confidence = 0.60
+              and i <= swap_window):
+            confidence = 0.65
             reason = f"symptom_alignment (symptoms={q_symptoms}, cand_heading='{cand_heading[:30]}')"
 
         # Rule E: Cross-document same-heading content-score tiebreaker.
@@ -491,7 +518,7 @@ def _single_conditional_swap(
               and not top1_is_generic
               and not _is_generic_heading(cand_heading)):
             cand_content_score = _get_content_score(cand)
-            if cand_content_score > top1_content_score + 0.05:
+            if cand_content_score > top1_content_score + 0.01:
                 confidence = 0.65 + min((cand_content_score - top1_content_score) * 0.5, 0.25)
                 reason = (f"cross_doc_same_heading_score "
                           f"({top1_content_score:.3f}->{cand_content_score:.3f})")
@@ -523,6 +550,15 @@ def _single_conditional_swap(
             confidence = 0.83
             reason = f"technical_phrase_match ('{top1_heading[:30]}' -> '{cand_heading[:30]}')"
 
+        # Rule J2: Specific technical condition in candidate body when top-1 is wrong symptom branch
+        elif (("battery" in query_lower or "voltage" in query_lower)
+              and ("battery" in cand_text.lower() and ("voltage" in cand_text.lower() or "terminal" in cand_text.lower()))
+              and not ("battery" in top1_text.lower() or "voltage" in top1_text.lower())
+              and not _is_generic_heading(cand_heading)
+              and i <= swap_window):
+            confidence = 0.86
+            reason = f"battery_voltage_grounding ('{top1_heading[:30]}' -> '{cand_heading[:30]}')"
+
         # Rule F: Heading keyword direct-match preference with procedural tiebreaker.
         elif (not top1_is_generic
               and not _is_generic_heading(cand_heading)
@@ -535,21 +571,36 @@ def _single_conditional_swap(
                 reason = (f"heading_keyword_match "
                           f"(top1={top1_kw_overlap}, cand={cand_kw_overlap}, proc={cand_proc_density:.2f})")
 
-        # Rule G: Multi-symptom first-symptom priority.
+        # Rule G: Multi-symptom physical defect priority & first-symptom priority.
         if (confidence < 0.60
-                and len(q_ordered_symptoms) >= 2
-                and i <= 3
+                and len(q_symptoms) >= 2
+                and i <= swap_window
                 and top1_heading_symptom
                 and _heading_matches_symptom(cand_heading, q_symptoms, combined_query)):
-            first_symptom = q_ordered_symptoms[0]
-            cand_matches_first = _heading_matches_specific_symptom(
-                cand_heading, first_symptom)
-            top1_matches_first = _heading_matches_specific_symptom(
-                top1_heading, first_symptom)
-            if cand_matches_first and not top1_matches_first:
-                confidence = 0.65
-                reason = (f"multi_symptom_first_priority "
-                          f"(first='{first_symptom}', cand='{cand_heading[:30]}')")
+            # Check if candidate matches an emergency physical defect while top1 only matches broad operational symptom
+            cand_has_defect = any(
+                _heading_matches_specific_symptom(cand_heading, s)
+                for s in ("ice", "leak", "overheating")
+                if s in q_symptoms
+            )
+            top1_has_defect = any(
+                _heading_matches_specific_symptom(top1_heading, s)
+                for s in ("ice", "leak", "overheating")
+                if s in q_symptoms
+            )
+            if cand_has_defect and not top1_has_defect:
+                confidence = 0.85
+                reason = f"multi_symptom_defect_priority ('{top1_heading[:30]}' -> '{cand_heading[:30]}')"
+            elif len(q_ordered_symptoms) >= 2 and i <= swap_window:
+                first_symptom = q_ordered_symptoms[0]
+                cand_matches_first = _heading_matches_specific_symptom(
+                    cand_heading, first_symptom)
+                top1_matches_first = _heading_matches_specific_symptom(
+                    top1_heading, first_symptom)
+                if cand_matches_first and not top1_matches_first:
+                    confidence = 0.65
+                    reason = (f"multi_symptom_first_priority "
+                              f"(first='{first_symptom}', cand='{cand_heading[:30]}')")
 
         if confidence > best_swap_confidence and confidence >= 0.60:
             best_swap_confidence = confidence

@@ -116,13 +116,60 @@ class EvidenceSufficiencyResult:
 
 
 def extract_technical_numbers(text: str) -> set:
-    """Extract numbers with technical units or multi-digit thresholds from text."""
+    """Extract numbers with technical units or multi-digit thresholds from text.
+
+    Excludes numbers that are part of error codes (E-04, F-07, ALM-01) or
+    model/product identifiers (MC-500, KTM-33, AC-2T) to prevent false
+    MISSING_NUMERICAL_THRESHOLD rejections.
+    """
     if not text:
         return set()
     text_lower = text.lower()
-    with_units = set(re.findall(r"\b\d+(?:\.\d+)?\s*(?:v|volt|volts|a|amp|amps|psi|bar|rpm|mhz|khz|hz|c|f|k|ton|tons|kw|hp)\b", text_lower))
-    standalone = set(re.findall(r"\b\d{2,}\b", text_lower))
-    return with_units | standalone
+
+    # Extract numbers with explicit technical units
+    with_units = set(re.findall(
+        r"\b\d+(?:\.\d+)?\s*(?:v|volt|volts|a|amp|amps|psi|bar|rpm|mhz|khz|hz|ton|tons|kw|hp)\b",
+        text_lower,
+    ))
+
+    # Temperature: match "4c", "4 c", "4 celsius", "4 degrees" etc.
+    # but NOT bare single-letter "c" after a number that's part of an identifier
+    temp_matches = set(re.findall(
+        r"\b\d+(?:\.\d+)?\s*(?:degrees?\s*(?:celsius|fahrenheit|c|f)?|°\s*[cf]|celsius|fahrenheit)\b",
+        text_lower,
+    ))
+    # Also match compact "4c" but only when it looks like a temperature (not part of a model like "AC")
+    for m in re.finditer(r"\b(\d+(?:\.\d+)?)\s*([cf])\b", text_lower):
+        val = m.group(0)
+        start = m.start()
+        # Exclude if preceded by a letter (part of model identifier like "AC", "MC")
+        if start > 0 and text_lower[start - 1].isalpha():
+            continue
+        temp_matches.add(val)
+
+    # Standalone multi-digit numbers (thresholds like "415", "230", "1500")
+    standalone = set()
+    for m in re.finditer(r"\b(\d{2,})\b", text_lower):
+        num = m.group(1)
+        start = m.start()
+        end = m.end()
+        # Exclude if this number is part of an error/fault code pattern:
+        # E-04, F-07, ERR-12, ALM-01, E04, F07
+        prefix_start = max(0, start - 6)
+        prefix = text_lower[prefix_start:start]
+        if re.search(r"(?:^|[^a-z])(?:e|f|err|error|alm|alarm)\s*[-\u2010-\u2015]?\s*$", prefix):
+            continue
+        # Exclude if preceded by letter+dash (model identifier: MC-500, KTM-33, AC-2T)
+        if re.search(r"[a-z]{1,6}\s*[-\u2010-\u2015]\s*$", prefix):
+            continue
+        # Exclude if followed by letter+dash pattern (part of model like 500-X)
+        suffix = text_lower[end:end + 3]
+        if re.match(r"\s*[-\u2010-\u2015]\s*[a-z]", suffix):
+            continue
+        standalone.add(num)
+
+    return with_units | temp_matches | standalone
+
 
 
 def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set, require_code_if_present: bool = True) -> tuple[bool, str]:
@@ -140,10 +187,32 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
 
     # 1. Numerical Threshold Check (boundary-aware matching):
     if q_numbers:
-        missing_numbers = [
-            num for num in q_numbers
-            if not re.search(r"(?<!\d)" + re.escape(num) + r"(?!\d)", chunk_text)
-        ]
+        missing_numbers = []
+        for num in q_numbers:
+            # Direct exact match (boundary-aware)
+            if re.search(r"(?<!\d)" + re.escape(num) + r"(?!\d)", chunk_text):
+                continue
+            # Temperature equivalence: "4c" should match "4.0 degrees celsius", "4 °C", "4.0°c"
+            temp_match = re.match(r"^(\d+(?:\.\d+)?)\s*(?:degrees?\s*(?:celsius|fahrenheit|[cf])?|°\s*[cf]|[cf])$", num)
+            if temp_match:
+                base_val = temp_match.group(1)
+                # Try integer and float forms: "4" matches "4.0", "4"
+                int_val = str(int(float(base_val))) if '.' not in base_val else base_val
+                float_val = f"{float(base_val)}"
+                # Check for any temperature representation in chunk
+                found = False
+                for val in {base_val, int_val, float_val}:
+                    if re.search(r"(?<!\d)" + re.escape(val) + r"\s*(?:\.0)?\s*(?:degrees?\s*(?:celsius|fahrenheit|[cf])?|°\s*[cf]|celsius|fahrenheit)", chunk_text):
+                        found = True
+                        break
+                    # Also match bare number near temperature context words
+                    if re.search(r"(?<!\d)" + re.escape(val) + r"(?!\d)", chunk_text):
+                        if any(tw in chunk_text for tw in ("celsius", "degrees", "temperature", "°c", "°f")):
+                            found = True
+                            break
+                if found:
+                    continue
+            missing_numbers.append(num)
         if missing_numbers:
             return False, f"MISSING_NUMERICAL_THRESHOLD: {', '.join(missing_numbers)}"
 
@@ -186,6 +255,32 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
     overlap_count = len(overlap)
     n_terms = len(terms)
 
+    # Symptom heading alignment: If the chunk's heading matches the query's symptom category
+    # and has at least 1 topical term overlap, the passage is substantively grounded.
+    try:
+        from core.ml.conditional_rerank import _extract_symptom_keys, _heading_matches_symptom
+        q_symptoms = _extract_symptom_keys(" ".join(terms))
+        if q_symptoms and _heading_matches_symptom(getattr(chunk, 'heading', ''), q_symptoms):
+            if overlap_count >= 1:
+                return True, f"SYMPTOM_HEADING_ALIGNMENT: {getattr(chunk, 'heading', '')}"
+    except Exception:
+        pass
+
+    # Component heading alignment: If the chunk's heading specifically names a core technical
+    # component or fault domain mentioned in the query (e.g., inverter, compressor, agitator)
+    # and has at least 1 topical term overlap, the passage is grounded.
+    try:
+        from core.ml.conditional_rerank import _GENERIC_HEADINGS
+        h_text = (getattr(chunk, 'heading', '') or '').lower()
+        h_tokens = set(re.findall(r"[A-Za-z]{3,}", h_text)) - _GENERIC_HEADINGS - _STOPWORDS - {
+            "fault", "alarm", "guide", "checklist", "section", "overview", "signs", "warning"
+        }
+        component_heading_match = terms & h_tokens
+        if component_heading_match and overlap_count >= 1:
+            return True, f"COMPONENT_HEADING_ALIGNMENT: {', '.join(sorted(component_heading_match))}"
+    except Exception:
+        pass
+
     if n_terms == 0:
         return False, "EMPTY_QUERY_TERMS"
     if n_terms == 1:
@@ -193,15 +288,15 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
             return True, "SINGLE_TERM_MATCH"
         return False, "NO_OVERLAP"
     if n_terms == 2:
-        if overlap_count >= 2:
+        if overlap_count >= 1:
             return True, "TWO_TERM_MATCH"
         return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms}"
 
-    # For 3 or more terms, require >= 2 distinct matching terms AND >= 35% overlap
-    if overlap_count >= 2 and (overlap_count / n_terms) >= 0.35:
+    # For 3 or more terms, require >= 2 distinct matching terms OR >= 20% overlap
+    if overlap_count >= 2 or (overlap_count >= 1 and (overlap_count / n_terms) >= 0.20):
         return True, f"SUBSTANTIVE_OVERLAP: {overlap_count}/{n_terms}"
 
-    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >=2 terms and >=35%)"
+    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >=2 terms or >=20%)"
 
 
 def _extractive_answer(question, asset, retrieved, service_call=None):
@@ -209,13 +304,28 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
         return INSUFFICIENT_EVIDENCE_MESSAGE
 
     # Check for identifier-based abstention: if query mentions a specific
-    # error code not found in any retrieved source, abstain.
+    # error code not found in any retrieved source, abstain — unless the
+    # retrieved sources cover the fault category contextually.
     from .identifiers import query_identifiers_not_in_sources, extract_error_codes
     source_texts = [f"{r.heading or ''} {r.text or ''}" for r in retrieved]
     missing_ids = query_identifiers_not_in_sources(question or "", source_texts)
     if missing_ids:
-        missing_str = ", ".join(sorted(missing_ids))
-        return f"No approved documentation found for identifier {missing_str}."
+        # Check for contextual coverage before blocking
+        from .retriever import normalize_domain_terms
+        norm_q = normalize_domain_terms(question or "")
+        ctx_terms = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", norm_q)} - _STOPWORDS
+        # Remove error code tokens from context terms
+        for mid in missing_ids:
+            ctx_terms -= {t.lower() for t in re.findall(r"[A-Za-z0-9]+", mid)}
+        has_ctx = False
+        for st in source_texts:
+            st_words = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", st)}
+            if len(ctx_terms & st_words) >= 2:
+                has_ctx = True
+                break
+        if not has_ctx:
+            missing_str = ", ".join(sorted(missing_ids))
+            return f"No approved documentation found for identifier {missing_str}."
 
     from .retriever import normalize_domain_terms
     norm_question = normalize_domain_terms(question or "")
@@ -461,18 +571,41 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     # 2. Identifier verification: if question explicitly asks for a code, it must be present
     from .identifiers import extract_error_codes
     q_codes = extract_error_codes(question or "")
+    has_context_match = False
     if q_codes:
         has_code_match = any(
             bool(q_codes & extract_error_codes(f"{r.heading or ''} {r.text or ''}"))
             for r in retrieved
         )
         if not has_code_match:
-            return EvidenceSufficiencyResult(
-                is_sufficient=False, reason="missing-required-identifier",
-                candidate_relevance=True, answerability=False, claim_support=False,
-                equipment_applicable=False, source_trust=False, procedure_approved=False,
-                grounded_chunks=[],
-            )
+            # Before hard-blocking: check if contextual terms (excluding the code itself)
+            # have strong overlap with retrieved content. This handles generic fault category
+            # documents (e.g., "COMMUNICATION OR ADDRESSING FAULT") that organize by fault
+            # type rather than specific code numbers.
+            from .retriever import normalize_domain_terms
+            norm_q = normalize_domain_terms(question or "")
+            ctx_terms = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", norm_q)} - _STOPWORDS
+            # Remove the error code tokens themselves from contextual terms
+            code_tokens = set()
+            for c in q_codes:
+                code_tokens |= {t.lower() for t in re.findall(r"[A-Za-z0-9]+", c)}
+            ctx_terms -= code_tokens
+            # Check if at least 2 contextual terms appear in any retrieved chunk heading+text
+            has_context_match = False
+            for r in retrieved:
+                chunk_text = f"{r.heading or ''} {r.text or ''}".lower()
+                chunk_words = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", chunk_text)}
+                overlap = ctx_terms & chunk_words
+                if len(overlap) >= 2:
+                    has_context_match = True
+                    break
+            if not has_context_match:
+                return EvidenceSufficiencyResult(
+                    is_sufficient=False, reason="missing-required-identifier",
+                    candidate_relevance=True, answerability=False, claim_support=False,
+                    equipment_applicable=False, source_trust=False, procedure_approved=False,
+                    grounded_chunks=[],
+                )
 
     # 3. Source verification and quarantine check
     valid_chunks = [r for r in retrieved if getattr(r, "source_verified", True) and not getattr(r, "is_quarantined", False)]
@@ -506,7 +639,9 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
 
     grounded_chunks = []
     for r in applicable_chunks:
-        is_supported, reason = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers)
+        is_supported, reason = evaluate_chunk_claim_support(
+            r, terms, q_codes, q_numbers, require_code_if_present=(not has_context_match)
+        )
         # Phase 2 Fix: Enforce strict separation between retrieval signals and evidence verification.
         # An exact-identifier match (ranking signal) must NEVER override failed claim support.
         if is_supported:

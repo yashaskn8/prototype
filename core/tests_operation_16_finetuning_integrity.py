@@ -242,7 +242,7 @@ class TestProvenanceEnforcement(TestCase):
         from core.ml.labels import validate_labels
         from core.models import Tenant, KnowledgeDocument, KnowledgeChunk
         # Create real fixtures so validation reaches duplicate check
-        tenant = Tenant.objects.create(name="test-t", slug="test-t")
+        tenant, _ = Tenant.objects.get_or_create(slug="test-t", defaults={"name": "test-t"})
         doc = KnowledgeDocument.objects.create(
             tenant=tenant, title="Test Doc", doc_type="manual",
             is_rag_enabled=True, is_confidential=False, index_status="INDEXED",
@@ -270,7 +270,7 @@ class TestProvenanceEnforcement(TestCase):
         """Chunk that is both positive and negative must be rejected."""
         from core.ml.labels import validate_labels
         from core.models import Tenant, KnowledgeDocument, KnowledgeChunk
-        tenant = Tenant.objects.create(name="test-contra", slug="test-contra")
+        tenant, _ = Tenant.objects.get_or_create(slug="test-contra", defaults={"name": "test-contra"})
         doc = KnowledgeDocument.objects.create(
             tenant=tenant, title="Test Doc", doc_type="manual",
             is_rag_enabled=True, is_confidential=False, index_status="INDEXED",

@@ -454,14 +454,18 @@ def _calculate_metadata_bonus(document, chunk, asset, customer) -> float:
 # Exact identifier matching boost
 # ---------------------------------------------------------------------------
 
-def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: str) -> float:
+def _identifier_boost(query_identifiers: set, chunk_text: str, chunk_heading: str, doc_title: str = "") -> float:
     """Give a deterministic boost when the chunk contains an exact identifier
     that the query explicitly asks about, parsed through the same canonical extractor."""
     if not query_identifiers:
         return 0.0
     chunk_identifiers = extract_identifiers(f"{chunk_heading or ''} {chunk_text or ''}")
     if query_identifiers & chunk_identifiers:
-        return 0.40  # Strong boost for exact identifier match
+        return 0.40  # Strong boost for exact chunk identifier match
+    if doc_title:
+        doc_identifiers = extract_identifiers(doc_title)
+        if query_identifiers & doc_identifiers:
+            return 0.25  # Document-level identifier match
     return 0.0
 
 
@@ -504,7 +508,7 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
         # Content relevance gate: candidate must have minimum content match
         # BEFORE metadata bonus can apply (Defect #3 fix)
         base_score = (0.72 * content_score) + (0.28 * scope_score)
-        id_boost = _identifier_boost(query_identifiers, chunk.text, chunk.heading)
+        id_boost = _identifier_boost(query_identifiers, chunk.text, chunk.heading, getattr(d, "title", ""))
         if query_doc_ids and d.id in query_doc_ids:
             id_boost = max(id_boost, 0.60)
 
@@ -725,7 +729,7 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
                 d = matched_chunk.document
                 sim = max(0.0, 1.0 - float(dist))
-                id_boost = _identifier_boost(query_identifiers, matched_chunk.text, matched_chunk.heading)
+                id_boost = _identifier_boost(query_identifiers, matched_chunk.text, matched_chunk.heading, getattr(d, "title", ""))
                 if query_doc_ids and d.id in query_doc_ids:
                     id_boost = max(id_boost, 0.60)
 
@@ -1044,7 +1048,7 @@ def retrieve(
     # procedural preference, generic overview demotion, fault code promotion).
     try:
         from core.ml.conditional_rerank import conditional_swap_rerank
-        results = conditional_swap_rerank(results, question or "", swap_window=5)
+        results = conditional_swap_rerank(results, question or "", swap_window=8)
     except Exception as exc:
         logger.warning("Conditional swap re-ranking skipped due to error: %s", exc)
 
