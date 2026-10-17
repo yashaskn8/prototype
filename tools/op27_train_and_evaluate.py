@@ -211,7 +211,17 @@ def build_and_stamp_chroma_collection(model_path, collection_name, query_prefix,
     print(f"\nBuilding and stamping Chroma collection: {collection_name}")
     client = chromadb.PersistentClient(path=str(BASE_DIR / "chroma_db"))
 
-    # If collection exists, delete to ensure clean index
+    PROTECTED_COLLECTIONS = {
+        "servy_dense_kb",
+        "servy_dense_bge_small_v1",
+        "servy_company_dense_kb",
+        "servy_company_bge_small_v1",
+        "servy_company_bge_ft_v1",
+    }
+    if collection_name in PROTECTED_COLLECTIONS:
+        raise ValueError(f"Cannot delete or overwrite protected production collection: {collection_name}")
+
+    # If experimental collection exists, delete to ensure clean index
     existing = [c.name for c in client.list_collections()]
     if collection_name in existing:
         client.delete_collection(collection_name)

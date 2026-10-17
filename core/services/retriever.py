@@ -737,6 +737,10 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 # and no identifier matches, metadata bonus cannot rescue the document.
                 # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
                 _dense_gate = serving_config.dense_relevance_gate if serving_config else _get_dense_gate()
+                if not getattr(profile, "content_first", False):
+                    # MiniLM vector similarities have a lower ceiling (~0.30-0.50) compared to BGE (~0.60-0.85).
+                    # Avoid pruning genuine semantic matches when using non-content-first profiles.
+                    _dense_gate = min(_dense_gate, 0.25)
                 if sim < _dense_gate and id_boost <= 0.0:
                     continue
 
@@ -823,7 +827,7 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         key = (r.source_kind, r.source_id)
         if key not in dense_map:
             r.dense_score = r.score
-            r.dense_similarity = r.score
+            # Preserve raw dense_similarity from vector search; do not overwrite with boosted score
             r.dense_rank = i
             dense_map[key] = r
 
@@ -832,7 +836,6 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         key = (r.source_kind, r.source_id)
         if key not in sparse_map:
             r.sparse_score = r.score
-            r.sparse_relevance = r.score
             r.sparse_rank = i
             sparse_map[key] = r
 
@@ -850,6 +853,8 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
             base_item.sparse_rank = s_item.sparse_rank
             base_item.exact_identifier_match = d_item.exact_identifier_match or s_item.exact_identifier_match
             base_item.applicable_equipment_context = d_item.applicable_equipment_context or s_item.applicable_equipment_context
+            base_item.dense_similarity = d_item.dense_similarity
+            base_item.dense_score = d_item.dense_score
 
         rrf_score = 0.0
         if base_item.dense_rank is not None:
@@ -862,8 +867,6 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         # check does not reject fused candidates solely due to RRF rank scaling (Phase 1 Fix)
         cand_scores = [s for s in [base_item.dense_score, base_item.sparse_score] if s is not None]
         base_item.score = max(cand_scores) if cand_scores else rrf_score
-        base_item.dense_similarity = base_item.dense_score
-        base_item.sparse_relevance = base_item.sparse_score
         fused.append(base_item)
 
     # Sort strictly by fused rank value (descending fusion_score)
@@ -1048,7 +1051,7 @@ def retrieve(
     # procedural preference, generic overview demotion, fault code promotion).
     try:
         from core.ml.conditional_rerank import conditional_swap_rerank
-        results = conditional_swap_rerank(results, question or "", swap_window=8)
+        results = conditional_swap_rerank(results, question or "", swap_window=5)
     except Exception as exc:
         logger.warning("Conditional swap re-ranking skipped due to error: %s", exc)
 

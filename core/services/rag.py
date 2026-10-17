@@ -39,9 +39,13 @@ def ask_rag(
         include_past_resolutions=include_past_resolutions,
         staff_mode=staff_mode,
     )
+    from .llm import INSUFFICIENT_EVIDENCE_MESSAGE
+
     answer, engine = generate_answer(question, asset, results, service_call=service_call)
-    refs = [
-        {
+
+    # Helper to serialize chunk metadata
+    def _chunk_to_dict(r):
+        return {
             "source_kind": r.source_kind,
             "source_id": r.source_id,
             "document_id": r.document_id,
@@ -63,6 +67,32 @@ def ask_rag(
             "source_url": r.source_url,
             "model_version": getattr(r, "model_version", "minilm"),
         }
-        for r in results
-    ]
-    return {"answer": answer, "references": refs, "engine": engine, "retrieved": results}
+
+    is_abstention = (
+        answer == INSUFFICIENT_EVIDENCE_MESSAGE
+        or engine == "insufficient-evidence"
+        or "couldn't find enough approved information" in (answer or "").lower()
+        or (answer or "").startswith("No approved documentation found")
+    )
+
+    all_retrieved_candidates = [_chunk_to_dict(r) for r in results]
+    supported_chunks = [r for r in results if getattr(r, "evidence_support", False)]
+    claim_supporting_passages = [_chunk_to_dict(r) for r in supported_chunks]
+
+    if is_abstention:
+        refs = []
+        context_passages = []
+    else:
+        refs = claim_supporting_passages
+        context_passages = claim_supporting_passages or all_retrieved_candidates
+
+    return {
+        "answer": answer,
+        "references": refs,
+        "engine": engine,
+        "retrieved": results,
+        "retrieved_candidates": all_retrieved_candidates,
+        "context_passages": context_passages,
+        "claim_supporting_passages": [] if is_abstention else claim_supporting_passages,
+        "cited_passages": refs,
+    }

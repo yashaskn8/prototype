@@ -1,5 +1,7 @@
 import re
 import time
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Set
 import requests
 from urllib.parse import urlparse
 from django.conf import settings
@@ -115,6 +117,102 @@ class EvidenceSufficiencyResult:
         return f"EvidenceSufficiencyResult(is_sufficient={self.is_sufficient}, reason='{self.reason}')"
 
 
+@dataclass
+class TechnicalQuantity:
+    value: float
+    unit: str  # canonical: 'celsius', 'fahrenheit', 'bar', 'psi', 'kpa', 'volt', 'amp', 'rpm', 'nm', 'hz', 'standalone'
+    dimension: str  # 'temperature', 'pressure', 'voltage', 'current', 'torque', 'frequency', 'threshold'
+    raw: str
+
+
+def extract_typed_quantities(text: str) -> list[TechnicalQuantity]:
+    """Extract typed physical quantities and dimensional measurements from text.
+
+    Supports:
+    - Temperature: 4C, 4.0 °C, 4 degrees celsius, 40 fahrenheit
+    - Pressure: 0.4 bar, 250 kpa, 30 psi
+    - Electrical: 12V, 240 V, 10a, 50hz, 15kw
+    - Torque: 1.8 nm, 25 nm
+    - Speed: 1500 rpm
+    - Standalone thresholds: multi-digit numbers (415, 230), excluding error/model codes
+    """
+    if not text:
+        return []
+    text_lower = text.lower()
+    quantities = []
+
+    # 1. Temperature: 4C, 4.0 C, 4 degrees celsius, 4 °C, 4 fahrenheit, etc.
+    temp_pat = r"(?<![a-z0-9_-])(\d+(?:\.\d+)?)\s*(?:°|deg|degrees?)?\s*(celsius|fahrenheit|c\b|f\b)"
+    for m in re.finditer(temp_pat, text_lower):
+        val = float(m.group(1))
+        u_raw = m.group(2)
+        unit = "celsius" if u_raw.startswith("c") else "fahrenheit"
+        quantities.append(TechnicalQuantity(val, unit, "temperature", m.group(0)))
+
+    # 2. Pressure: 1.5 bar, 250 kpa, 30 psi
+    press_pat = r"(?<![a-z0-9_-])(\d+(?:\.\d+)?)\s*(bar|psi|kpa)\b"
+    for m in re.finditer(press_pat, text_lower):
+        val = float(m.group(1))
+        unit = m.group(2)
+        quantities.append(TechnicalQuantity(val, unit, "pressure", m.group(0)))
+
+    # 3. Electrical: 12V, 12.6 V, 415v, 230 v, 10a, 50hz, 15kw, 2hp
+    elec_pat = r"(?<![a-z0-9_-])(\d+(?:\.\d+)?)\s*(v|volt|volts|a|amp|amps|hz|khz|mhz|kw|hp)\b"
+    for m in re.finditer(elec_pat, text_lower):
+        val = float(m.group(1))
+        u_raw = m.group(2)
+        unit = "volt" if u_raw.startswith("v") else ("amp" if u_raw.startswith("a") else u_raw)
+        quantities.append(TechnicalQuantity(val, unit, "electrical", m.group(0)))
+
+    # 4. Torque: 1.8 nm, 25 nm
+    torque_pat = r"(?<![a-z0-9_-])(\d+(?:\.\d+)?)\s*(nm|lb-ft|ft-lb)\b"
+    for m in re.finditer(torque_pat, text_lower):
+        val = float(m.group(1))
+        quantities.append(TechnicalQuantity(val, m.group(2), "torque", m.group(0)))
+
+    # 5. Speed: 1500 rpm, 30 rpm
+    speed_pat = r"(?<![a-z0-9_-])(\d+(?:\.\d+)?)\s*(rpm)\b"
+    for m in re.finditer(speed_pat, text_lower):
+        val = float(m.group(1))
+        quantities.append(TechnicalQuantity(val, "rpm", "speed", m.group(0)))
+
+    # 6. Standalone multi-digit numbers (415, 230, 1500), but strictly excluding
+    # error codes (E-04, F-07, ALM-01) and model numbers (MC-500, KTM-33, 500-X)
+    for m in re.finditer(r"\b(\d{2,})\b", text_lower):
+        num_str = m.group(1)
+        start = m.start()
+        end = m.end()
+        prefix_start = max(0, start - 6)
+        prefix = text_lower[prefix_start:start]
+        # Exclude error codes
+        if re.search(r"(?:^|[^a-z])(?:e|f|err|error|alm|alarm)\s*[-\u2010-\u2015]?\s*$", prefix):
+            continue
+        # Exclude model codes
+        if re.search(r"[a-z]{1,6}\s*[-\u2010-\u2015]\s*$", prefix):
+            continue
+        suffix = text_lower[end:end + 3]
+        if re.match(r"\s*[-\u2010-\u2015]\s*[a-z]", suffix):
+            continue
+        # If this number was already captured with a unit, skip standalone
+        val = float(num_str)
+        if not any(abs(q.value - val) < 1e-4 and q.raw in text_lower[max(0, start-2):min(len(text_lower), end+10)] for q in quantities):
+            quantities.append(TechnicalQuantity(val, "standalone", "threshold", num_str))
+
+    return quantities
+
+
+def verify_quantity_support(q_qty: TechnicalQuantity, chunk_quantities: list[TechnicalQuantity]) -> bool:
+    """Strictly verify that a queried quantity is supported by a chunk's quantities."""
+    for c in chunk_quantities:
+        if q_qty.dimension == c.dimension:
+            if q_qty.unit == c.unit and abs(q_qty.value - c.value) < 1e-4:
+                return True
+        elif q_qty.unit == "standalone":
+            if abs(q_qty.value - c.value) < 1e-4:
+                return True
+    return False
+
+
 def extract_technical_numbers(text: str) -> set:
     """Extract numbers with technical units or multi-digit thresholds from text.
 
@@ -172,7 +270,14 @@ def extract_technical_numbers(text: str) -> set:
 
 
 
-def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set, require_code_if_present: bool = True) -> tuple[bool, str]:
+def evaluate_chunk_claim_support(
+    chunk,
+    terms: set,
+    q_codes: set,
+    q_numbers: set,
+    require_code_if_present: bool = True,
+    q_text: str = "",
+) -> tuple[bool, str]:
     """Deterministically evaluate claim-level factual support for a retrieved passage.
 
     Rejects single-token casual overlap on complex queries.
@@ -182,11 +287,48 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
     if not chunk:
         return False, "NULL_CHUNK"
 
-    chunk_text = f"{getattr(chunk, 'heading', '') or ''} {getattr(chunk, 'text', '') or ''}".lower()
-    chunk_words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{2,}", chunk_text)}
+    doc_title = getattr(chunk, "title", "") or getattr(getattr(chunk, "document", None), "title", "") or ""
+    chunk_text = f"{doc_title} {getattr(chunk, 'heading', '') or ''} {getattr(chunk, 'text', '') or ''}".lower()
 
-    # 1. Numerical Threshold Check (boundary-aware matching):
+    def _stem_variants(w: str) -> set[str]:
+        w = w.lower()
+        vars = {w}
+        if len(w) > 3 and w.endswith("s"):
+            vars.add(w[:-1])
+        if len(w) > 4:
+            if w.endswith("ed"):
+                vars.add(w[:-2])
+                vars.add(w[:-1])
+            elif w.endswith("ing"):
+                vars.add(w[:-3])
+                vars.add(w[:-3] + "e")
+        return vars
+
+    raw_words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{2,}", chunk_text)}
+    chunk_words = set(raw_words)
+    for rw in raw_words:
+        chunk_words.update(_stem_variants(rw))
+
+    # 1. Numerical Threshold Check (typed dimensional matching + boundary-aware):
+    typed_q_quantities = []
+    if q_text:
+        typed_q_quantities.extend(extract_typed_quantities(q_text))
     if q_numbers:
+        for num in q_numbers:
+            extracted = extract_typed_quantities(str(num))
+            for eq in extracted:
+                if not any(eq.dimension == tq.dimension and abs(eq.value - tq.value) < 1e-4 and eq.unit == tq.unit for tq in typed_q_quantities):
+                    typed_q_quantities.append(eq)
+
+    if typed_q_quantities:
+        chunk_quantities = extract_typed_quantities(chunk_text)
+        missing_typed = []
+        for q_qty in typed_q_quantities:
+            if not verify_quantity_support(q_qty, chunk_quantities):
+                missing_typed.append(f"{q_qty.raw}")
+        if missing_typed:
+            return False, f"MISSING_NUMERICAL_THRESHOLD: {', '.join(missing_typed)}"
+    elif q_numbers:
         missing_numbers = []
         for num in q_numbers:
             # Direct exact match (boundary-aware)
@@ -243,43 +385,33 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
                 if _clean_code(t) not in code_keys and t.lower() not in generic_inquiry_terms
             }
             if len(claim_terms) >= 2:
-                overlap = claim_terms & chunk_words
-                if len(overlap) < 1:
+                matched_claim = {t for t in claim_terms if _stem_variants(t) & chunk_words}
+                if len(matched_claim) < 1:
                     return False, f"IDENTIFIER_MATCH_BUT_UNGROUNDED_CLAIM: code {matching_codes[0]} found but no claim terms matched"
             return True, f"EXACT_IDENTIFIER_MATCH: {', '.join(matching_codes)}"
         elif require_code_if_present:
             return False, f"MISSING_IDENTIFIER: {', '.join(q_codes)}"
 
     # 3. Content Terms Overlap Check:
-    overlap = terms & chunk_words
-    overlap_count = len(overlap)
+    matched_terms = {t for t in terms if _stem_variants(t) & chunk_words}
+    overlap_count = len(matched_terms)
     n_terms = len(terms)
 
     # Symptom heading alignment: If the chunk's heading matches the query's symptom category
     # and has at least 1 topical term overlap, the passage is substantively grounded.
     try:
         from core.ml.conditional_rerank import _extract_symptom_keys, _heading_matches_symptom
-        q_symptoms = _extract_symptom_keys(" ".join(terms))
-        if q_symptoms and _heading_matches_symptom(getattr(chunk, 'heading', ''), q_symptoms):
+        from .retriever import normalize_domain_terms
+        query_source = f"{q_text} {normalize_domain_terms(q_text or '')} {' '.join(terms)}" if q_text else " ".join(terms)
+        q_symptoms = _extract_symptom_keys(query_source)
+        if q_symptoms and _heading_matches_symptom(getattr(chunk, 'heading', ''), q_symptoms, q_text or ""):
             if overlap_count >= 1:
                 return True, f"SYMPTOM_HEADING_ALIGNMENT: {getattr(chunk, 'heading', '')}"
     except Exception:
         pass
 
-    # Component heading alignment: If the chunk's heading specifically names a core technical
-    # component or fault domain mentioned in the query (e.g., inverter, compressor, agitator)
-    # and has at least 1 topical term overlap, the passage is grounded.
-    try:
-        from core.ml.conditional_rerank import _GENERIC_HEADINGS
-        h_text = (getattr(chunk, 'heading', '') or '').lower()
-        h_tokens = set(re.findall(r"[A-Za-z]{3,}", h_text)) - _GENERIC_HEADINGS - _STOPWORDS - {
-            "fault", "alarm", "guide", "checklist", "section", "overview", "signs", "warning"
-        }
-        component_heading_match = terms & h_tokens
-        if component_heading_match and overlap_count >= 1:
-            return True, f"COMPONENT_HEADING_ALIGNMENT: {', '.join(sorted(component_heading_match))}"
-    except Exception:
-        pass
+    # Note: Component heading shortcut (COMPONENT_HEADING_ALIGNMENT) removed in Op28
+    # to prevent shared component headings from bypassing procedural claim verification.
 
     if n_terms == 0:
         return False, "EMPTY_QUERY_TERMS"
@@ -288,15 +420,15 @@ def evaluate_chunk_claim_support(chunk, terms: set, q_codes: set, q_numbers: set
             return True, "SINGLE_TERM_MATCH"
         return False, "NO_OVERLAP"
     if n_terms == 2:
-        if overlap_count >= 1:
+        if overlap_count >= 2:
             return True, "TWO_TERM_MATCH"
         return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms}"
 
-    # For 3 or more terms, require >= 2 distinct matching terms OR >= 20% overlap
-    if overlap_count >= 2 or (overlap_count >= 1 and (overlap_count / n_terms) >= 0.20):
+    # For 3 or more terms, require >= 2 distinct matching terms AND >= 30% overlap
+    if overlap_count >= 2 and (overlap_count / n_terms) >= 0.30:
         return True, f"SUBSTANTIVE_OVERLAP: {overlap_count}/{n_terms}"
 
-    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >=2 terms or >=20%)"
+    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >=2 terms and >=30%)"
 
 
 def _extractive_answer(question, asset, retrieved, service_call=None):
@@ -307,8 +439,9 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     # error code not found in any retrieved source, abstain — unless the
     # retrieved sources cover the fault category contextually.
     from .identifiers import query_identifiers_not_in_sources, extract_error_codes
-    source_texts = [f"{r.heading or ''} {r.text or ''}" for r in retrieved]
+    source_texts = [f"{getattr(r, 'title', '') or ''} {r.heading or ''} {r.text or ''}" for r in retrieved]
     missing_ids = query_identifiers_not_in_sources(question or "", source_texts)
+    unverified_missing_codes = []
     if missing_ids:
         # Check for contextual coverage before blocking
         from .retriever import normalize_domain_terms
@@ -326,6 +459,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
         if not has_ctx:
             missing_str = ", ".join(sorted(missing_ids))
             return f"No approved documentation found for identifier {missing_str}."
+        unverified_missing_codes = sorted(missing_ids)
 
     from .retriever import normalize_domain_terms
     norm_question = normalize_domain_terms(question or "")
@@ -343,7 +477,9 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     # We filter to chunks with valid claim support while strictly preserving the retriever's ranking order.
     relevant_chunks = []
     for r in retrieved:
-        is_supported, _ = evaluate_chunk_claim_support(r, terms, q_codes, q_numbers, require_code_if_present=False)
+        is_supported, _ = evaluate_chunk_claim_support(
+            r, terms, q_codes, q_numbers, require_code_if_present=False, q_text=question
+        )
         if is_supported:
             r.evidence_support = True
             relevant_chunks.append(r)
@@ -358,7 +494,14 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
     # 1. DIAGNOSTIC SUMMARY
     asset_name = asset.name if asset else "the selected equipment"
     topic = primary_chunk.heading or primary_chunk.title
-    summary_line = f"Based on approved technical guidance for {asset_name}, the documented issue corresponds to: {topic}."
+    if unverified_missing_codes:
+        missing_code_str = ", ".join(unverified_missing_codes)
+        summary_line = (
+            f"Based on approved technical guidance for {asset_name}, the documented issue corresponds to: {topic}. "
+            f"(Note: Specified identifier(s) {missing_code_str} not explicitly found in available documentation; showing general category procedure.)"
+        )
+    else:
+        summary_line = f"Based on approved technical guidance for {asset_name}, the documented issue corresponds to: {topic}."
 
     checks = []
     troubleshooting_steps = []
@@ -571,35 +714,34 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     # 2. Identifier verification: if question explicitly asks for a code, it must be present
     from .identifiers import extract_error_codes
     q_codes = extract_error_codes(question or "")
-    has_context_match = False
+    has_symptom_category = False
     if q_codes:
         has_code_match = any(
             bool(q_codes & extract_error_codes(f"{r.heading or ''} {r.text or ''}"))
             for r in retrieved
         )
         if not has_code_match:
-            # Before hard-blocking: check if contextual terms (excluding the code itself)
-            # have strong overlap with retrieved content. This handles generic fault category
-            # documents (e.g., "COMMUNICATION OR ADDRESSING FAULT") that organize by fault
-            # type rather than specific code numbers.
-            from .retriever import normalize_domain_terms
-            norm_q = normalize_domain_terms(question or "")
-            ctx_terms = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", norm_q)} - _STOPWORDS
-            # Remove the error code tokens themselves from contextual terms
-            code_tokens = set()
-            for c in q_codes:
-                code_tokens |= {t.lower() for t in re.findall(r"[A-Za-z0-9]+", c)}
-            ctx_terms -= code_tokens
-            # Check if at least 2 contextual terms appear in any retrieved chunk heading+text
-            has_context_match = False
-            for r in retrieved:
-                chunk_text = f"{r.heading or ''} {r.text or ''}".lower()
-                chunk_words = {w.lower() for w in re.findall(r"[A-Za-z]{3,}", chunk_text)}
-                overlap = ctx_terms & chunk_words
-                if len(overlap) >= 2:
-                    has_context_match = True
-                    break
-            if not has_context_match:
+            # If retrieved sources already contain other error codes, the queried code is strictly missing
+            source_has_codes = any(
+                bool(extract_error_codes(f"{r.heading or ''} {r.text or ''}"))
+                for r in retrieved
+            )
+            # For un-coded category documents, check if a specific symptom category aligns
+            has_symptom_category = False
+            if not source_has_codes:
+                try:
+                    from core.ml.conditional_rerank import _extract_symptom_keys, _heading_matches_symptom
+                    from .retriever import normalize_domain_terms
+                    norm_q = normalize_domain_terms(question or "")
+                    q_symptoms = _extract_symptom_keys(f"{question or ''} {norm_q}")
+                    for r in retrieved:
+                        if q_symptoms and _heading_matches_symptom(getattr(r, "heading", ""), q_symptoms):
+                            has_symptom_category = True
+                            break
+                except Exception:
+                    pass
+
+            if not has_symptom_category:
                 return EvidenceSufficiencyResult(
                     is_sufficient=False, reason="missing-required-identifier",
                     candidate_relevance=True, answerability=False, claim_support=False,
@@ -640,7 +782,7 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     grounded_chunks = []
     for r in applicable_chunks:
         is_supported, reason = evaluate_chunk_claim_support(
-            r, terms, q_codes, q_numbers, require_code_if_present=(not has_context_match)
+            r, terms, q_codes, q_numbers, require_code_if_present=(not has_symptom_category), q_text=question
         )
         # Phase 2 Fix: Enforce strict separation between retrieval signals and evidence verification.
         # An exact-identifier match (ranking signal) must NEVER override failed claim support.

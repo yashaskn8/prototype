@@ -331,27 +331,36 @@ def verify_answer_evidence(
             reasons=[f"Substantive query terms {q_keywords - matching_keywords} unsupported in retrieved evidence."],
         )
 
-    # Equipment check
-    if asset_name and asset_name.lower() not in (getattr(top_chunk, "title", "") + top_text).lower():
-        # Equipment mismatch check
-        pass
+    # Equipment applicability check: if asset is specified, evidence must match asset or its product line
+    if asset_name:
+        from core.ml.conditional_rerank import _extract_query_keywords
+        asset_terms = _extract_query_keywords(asset_name)
+        chunk_context = f"{getattr(top_chunk, 'title', '')} {top_heading} {top_text}".lower()
+        if asset_terms and not any(term in chunk_context for term in asset_terms):
+            return EvidenceVerification(
+                status="MISSING_EQUIPMENT",
+                is_grounded=False,
+                confidence=0.0,
+                supporting_chunk_ids=[],
+                reasons=[f"Evidence does not apply to specified equipment '{asset_name}'."],
+            )
 
     # Safety-sensitive action
     safety_cues = ["lockout", "tagout", "isolate power", "high voltage", "capacitor discharge"]
     requires_approval = any(cue in top_text.lower() for cue in safety_cues)
 
-    # Procedural completeness
+    # Procedural completeness: heuristic density score (NOTE: uncalibrated heuristic, not a true probability)
     proc_density = compute_procedural_density(top_text)
 
     if proc_density >= 0.40 and not is_generic_heading(top_heading):
         status = "COMPLETE_ANSWER" if not requires_approval else "REQUIRES_APPROVAL"
-        conf = 0.95
+        conf = round(min(1.0, 0.50 + proc_density * 0.45), 2)
     elif proc_density >= 0.15:
         status = "ANSWER_BEARING"
-        conf = 0.85
+        conf = round(min(0.85, 0.40 + proc_density * 0.40), 2)
     else:
         status = "PARTIAL_SUPPORT"
-        conf = 0.65
+        conf = round(min(0.65, 0.20 + proc_density * 0.40), 2)
 
     return EvidenceVerification(
         status=status,

@@ -1,4 +1,4 @@
-﻿"""Operation 26 â€” Dual-Model Training Runner.
+"""Operation 26 â€” Dual-Model Training Runner.
 
 Fine-tunes BOTH models sequentially using the Op26 training dataset,
 then evaluates all configurations (base + finetuned) against the frozen holdout.

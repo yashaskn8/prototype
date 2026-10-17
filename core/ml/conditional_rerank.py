@@ -69,6 +69,7 @@ _SYMPTOM_KEYWORDS = {
     "not_starting": ["not start", "will not start", "won't start", "fails to start", "no power"],
     "overheating": ["overheat", "hot", "burning", "thermal", "overload"],
     "pressure": ["pressure", "high pressure", "low pressure"],
+    "communication": ["communication", "addressing", "comms", "network", "signal", "bus"],
 }
 
 _HEADING_SYMPTOM_MAP = {
@@ -80,6 +81,7 @@ _HEADING_SYMPTOM_MAP = {
     "not_starting": ["start", "power", "cranks", "ignition"],
     "overheating": ["overheat", "thermal", "hot", "burning"],
     "pressure": ["pressure", "high-pressure", "low pressure"],
+    "communication": ["communication", "addressing", "signal", "bus", "network"],
 }
 
 
