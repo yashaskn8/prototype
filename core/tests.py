@@ -35,9 +35,13 @@ class RagIsolationTests(TestCase):
 
     def test_tenant_isolation(self):
         result = ask_rag(tenant=self.t1, customer=self.c1, asset=self.a1, question="thermostat issue")
-        titles = [r["title"] for r in result["references"]]
+        # Tenant isolation is a candidate-authorization property; claim-approved
+        # references may rightly be empty when the question lacks evidence.
+        titles = [r["title"] for r in result["retrieved_candidates"]]
         self.assertIn("Tenant A Guide", titles)
         self.assertNotIn("Tenant B Secret", titles)
+        self.assertNotIn("Tenant B Secret",
+                         [r["title"] for r in result["references"]])
 
     def test_grounded_fallback(self):
         result = ask_rag(tenant=self.t1, customer=self.c1, asset=self.a1, question="What should I check for the thermostat?")

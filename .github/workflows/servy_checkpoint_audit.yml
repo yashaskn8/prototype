@@ -1,0 +1,81 @@
+name: Servy Checkpoint Audit Tests
+
+on:
+  pull_request:
+    paths:
+      - "tools/servy_checkpoint_audit.py"
+      - "tools/test_servy_checkpoint_audit.py"
+      - "core/ml/training.py"
+      - "tools/test_servy_best_checkpoint.py"
+      - "tools/op26_build_training_dataset.py"
+      - "tools/test_op26_negative_governance.py"
+      - "tools/servy_v4_colab_train.py"
+      - "tools/test_servy_v4_colab_train.py"
+      - "tools/servy_training_preflight.py"
+      - "tools/test_servy_training_preflight.py"
+      - "tools/servy_finetune_preflight.py"
+      - "tools/test_servy_finetune_preflight.py"
+      - "tools/servy_checkpoint_backup.py"
+      - "tools/test_servy_checkpoint_backup.py"
+      - "tools/servy_finetune_readiness.py"
+      - "tools/test_servy_finetune_readiness.py"
+      - "tools/op27_train_and_evaluate.py"
+      - "tools/op27_passages.py"
+      - "tools/test_op27_passages.py"
+      - "tools/op27_split_integrity.py"
+      - "tools/test_op27_split_integrity.py"
+      - ".github/workflows/servy_checkpoint_audit.yml"
+  push:
+    branches:
+      - "audit/**"
+    paths:
+      - "tools/servy_checkpoint_audit.py"
+      - "tools/test_servy_checkpoint_audit.py"
+      - "core/ml/training.py"
+      - "tools/test_servy_best_checkpoint.py"
+      - "tools/op26_build_training_dataset.py"
+      - "tools/test_op26_negative_governance.py"
+      - "tools/servy_v4_colab_train.py"
+      - "tools/test_servy_v4_colab_train.py"
+      - "tools/servy_training_preflight.py"
+      - "tools/test_servy_training_preflight.py"
+      - "tools/servy_finetune_preflight.py"
+      - "tools/test_servy_finetune_preflight.py"
+      - "tools/servy_checkpoint_backup.py"
+      - "tools/test_servy_checkpoint_backup.py"
+      - ".github/workflows/servy_checkpoint_audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline-audit-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile audit scripts
+        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_training_preflight.py tools/test_servy_training_preflight.py tools/servy_v4_colab_train.py tools/test_servy_v4_colab_train.py tools/test_op26_negative_governance.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py tools/op27_split_integrity.py tools/test_op27_split_integrity.py tools/servy_checkpoint_backup.py tools/test_servy_checkpoint_backup.py tools/test_servy_best_checkpoint.py
+      - name: Test audit tool offline (no Docker, database, or GPU)
+        run: python -m unittest discover -s tools -p "test_servy_checkpoint_audit.py" -v
+      - name: Test training preflight offline (no models or DB)
+        run: python -m unittest discover -s tools -p "test_servy_finetune_readiness.py" -v
+      - name: Test fine-tune admission gate (no GPU and no data download)
+        run: python -m unittest discover -s tools -p "test_servy_finetune_preflight.py" -v
+      - name: Test strict V4 admission gate (synthetic only)
+        run: python -m unittest discover -s tools -p "test_servy_training_preflight.py" -v
+      - name: Test research runner schema and backup guards (no GPU)
+        run: python -m unittest discover -s tools -p "test_servy_v4_colab_train.py" -v
+      - name: Test weak-negative provenance governance (AST only)
+        run: python -m unittest discover -s tools -p "test_op26_negative_governance.py" -v
+      - name: Test general embedding best-checkpoint guard (AST only)
+        run: python -m unittest discover -s tools -p "test_servy_best_checkpoint.py" -v
+      - name: Test Op27 training safety contracts (no ML runtime)
+        run: python -m unittest discover -s tools -p "test_op27_passages.py" -v
+
+      - name: Test verified checkpoint backups (no cloud access)
+        run: python -m unittest discover -s tools -p "test_servy_checkpoint_backup.py" -v
+      - name: Test train/dev source guide isolation (no ML runtime)
+        run: python -m unittest discover -s tools -p "test_op27_split_integrity.py" -v

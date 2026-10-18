@@ -51,9 +51,13 @@ from core.ml.embeddings import (
     EmbeddingProfile,
     cached_checkpoint_fingerprint,
     INDEX_SCHEMA_VERSION,
+    PASSAGE_FORMAT_VERSION,
 )
 from core.services.retriever import retrieve
 import core.services.retriever as retriever_module
+
+from tools.op27_passages import op27_passage_text
+from tools.op27_split_integrity import enforce_train_dev_separation
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
@@ -72,49 +76,57 @@ def load_holdout():
     return rows, relevance, abstention
 
 
-def resolve_chunk_texts(rows):
-    all_chunk_ids = set()
-    for r in rows:
-        all_chunk_ids.update(r.get("positive_chunk_ids", []))
-        all_chunk_ids.update(r.get("negative_chunk_ids", []))
-
-    chunks = {c.id: c for c in KnowledgeChunk.objects.filter(id__in=all_chunk_ids).select_related(
-        "document", "document__asset", "document__product"
-    )}
-
+def resolve_chunk_texts(rows, *, content_first=False):
+    """Resolve every source exactly; abort before training on any missing label."""
+    all_ids = {
+        cid for row in rows for cid in
+        row.get("positive_chunk_ids", []) + row.get("negative_chunk_ids", [])
+    }
+    chunks = {
+        c.id: c for c in KnowledgeChunk.objects.filter(
+            id__in=all_ids
+        ).select_related("document", "document__asset", "document__product",
+                         "document__category", "document__domain")
+    }
     resolved = []
-    for r in rows:
-        pos_ids = r.get("positive_chunk_ids", [])
-        neg_ids = r.get("negative_chunk_ids", [])
-
-        pos_texts = []
-        for cid in pos_ids:
-            c = chunks.get(cid)
-            if c:
-                heading = (c.heading or "").strip()
-                body = c.text or ""
-                text = f"{heading}\n{body}".strip() if heading and heading not in body else body
-                pos_texts.append(text)
-
-        neg_texts = []
-        for cid in neg_ids:
-            c = chunks.get(cid)
-            if c:
-                heading = (c.heading or "").strip()
-                body = c.text or ""
-                text = f"{heading}\n{body}".strip() if heading and heading not in body else body
-                neg_texts.append(text)
-
-        if not pos_texts:
-            continue
-
-        resolved_row = dict(r)
-        resolved_row["positive_text"] = pos_texts[0]
-        resolved_row["negative_text"] = neg_texts[0] if neg_texts else ""
-        resolved.append(resolved_row)
-
+    for row in rows:
+        qid = row.get("query_id", "?")
+        positive = row.get("positive_chunk_ids", [])
+        negative = row.get("negative_chunk_ids", [])
+        if not positive:
+            raise ValueError(f"{qid}: no positive chunk IDs")
+        missing = [cid for cid in positive + negative if cid not in chunks]
+        if missing:
+            raise ValueError(f"{qid}: missing training chunk IDs: {missing}")
+        for cid in positive + negative:
+            c = chunks[cid]
+            if str(c.tenant_id) != str(row.get("tenant_id")):
+                raise ValueError(f"{qid}: cross-tenant chunk {cid}")
+            if c.is_quarantined or not c.document.is_rag_enabled:
+                raise ValueError(f"{qid}: disallowed training chunk {cid}")
+        pos_texts = [
+            op27_passage_text(chunks[cid], content_first=content_first)
+            for cid in positive
+        ]
+        neg_texts = [
+            op27_passage_text(chunks[cid], content_first=content_first)
+            for cid in negative
+        ]
+        if any(not text.strip() for text in pos_texts + neg_texts):
+            raise ValueError(f"{qid}: empty passage")
+        if set(pos_texts) & set(neg_texts):
+            raise ValueError(f"{qid}: passage labeled both positive and negative")
+        resolved.append({
+            **row, "positive_text": pos_texts[0],
+            "negative_text": neg_texts[0] if neg_texts else "",
+            "positive_document_ids": sorted({chunks[cid].document_id for cid in positive}),
+            "negative_document_ids": sorted({chunks[cid].document_id for cid in negative}),
+            "positive_texts": pos_texts,
+            "negative_texts": neg_texts,
+        })
+    if not resolved:
+        raise ValueError("No training examples after source validation")
     return resolved
-
 
 def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_resolved,
                        epochs=3, batch_size=16, lr=2e-5, revision=None):
@@ -124,6 +136,17 @@ def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_r
     print(f"Epochs: {epochs}, Batch size: {batch_size}, LR: {lr}")
     print(f"{'='*80}")
 
+    # Mandatory even when this helper is invoked directly, not through main().
+    enforce_train_dev_separation(train_resolved, val_resolved)
+    if os.getenv("SERVY_OP27_WEAK_RESEARCH_ACK") != "acknowledge":
+        raise RuntimeError(
+            "TRAINING_BLOCKED: explicit weak-supervision research acknowledgment required "
+            "(SERVY_OP27_WEAK_RESEARCH_ACK=acknowledge)."
+        )
+    if not val_resolved or len(val_resolved) < 8:
+        raise ValueError("At least eight separate development questions required before training")
+    if (output_dir / "final").exists():
+        raise FileExistsError("Existing model checkpoint is protected: " + str(output_dir / "final"))
     output_dir.mkdir(parents=True, exist_ok=True)
     kwargs = {"device": "cpu"}
     if revision:
@@ -147,17 +170,18 @@ def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_r
             "positive": [r["positive_text"] for r in no_neg],
         })
 
-    train_dataset = train_data["triplets"] if len(train_data) == 1 and "triplets" in train_data else train_data
+    if not train_data:
+        raise ValueError("Empty resolved training dataset")
+    train_dataset = next(iter(train_data.values())) if len(train_data) == 1 else train_data
 
-    eval_dataset = None
-    if val_resolved:
-        eval_has_neg = [r for r in val_resolved if r.get("negative_text")]
-        if eval_has_neg:
-            eval_dataset = Dataset.from_dict({
-                "anchor": [query_prefix + r["query_text"] for r in eval_has_neg],
-                "positive": [r["positive_text"] for r in eval_has_neg],
-                "negative": [r["negative_text"] for r in eval_has_neg],
-            })
+    # All validation questions must contribute, including positive-only examples.
+    # Do not use the repeated final benchmark for checkpoint selection.
+    if not val_resolved or len(val_resolved) < 8:
+        raise ValueError("At least eight resolved development questions required")
+    eval_dataset = Dataset.from_dict({
+        "anchor": [query_prefix + r["query_text"] for r in val_resolved],
+        "positive": [r["positive_text"] for r in val_resolved],
+    })
 
     loss = MultipleNegativesRankingLoss(model)
 
@@ -173,7 +197,10 @@ def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_r
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         dataloader_num_workers=0,
         save_strategy="epoch",
-        eval_strategy="epoch" if eval_dataset else "no",
+        eval_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         logging_steps=5,
         use_cpu=True,
         fp16=False,
@@ -188,6 +215,8 @@ def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_r
 
     t0 = time.time()
     trainer.train()
+    print(f"Selected checkpoint: {trainer.state.best_model_checkpoint}; "
+          f"validation loss: {trainer.state.best_metric}")
     elapsed = time.time() - t0
     print(f"Training completed in {elapsed:.1f}s")
 
@@ -221,10 +250,10 @@ def build_and_stamp_chroma_collection(model_path, collection_name, query_prefix,
     if collection_name in PROTECTED_COLLECTIONS:
         raise ValueError(f"Cannot delete or overwrite protected production collection: {collection_name}")
 
-    # If experimental collection exists, delete to ensure clean index
+    # NEVER destructively replace an experimental vector collection during evaluation.
     existing = [c.name for c in client.list_collections()]
     if collection_name in existing:
-        client.delete_collection(collection_name)
+        raise FileExistsError("Existing research vector collection is protected: " + collection_name)
 
     model = SentenceTransformer(str(model_path), device="cpu")
 
@@ -237,12 +266,7 @@ def build_and_stamp_chroma_collection(model_path, collection_name, query_prefix,
         "document__category", "document__domain"
     ).order_by("id"))
 
-    passages = []
-    for c in chunks:
-        heading = (c.heading or "").strip()
-        body = c.text or ""
-        text = f"{heading}\n{body}".strip() if heading and heading not in body else body
-        passages.append(text)
+    passages = [op27_passage_text(c, content_first=content_first) for c in chunks]
 
     embeddings = model.encode(passages, normalize_embeddings=True, show_progress_bar=False, batch_size=32)
 
@@ -253,7 +277,7 @@ def build_and_stamp_chroma_collection(model_path, collection_name, query_prefix,
         "servy_revision": "",
         "servy_dim": 384,
         "servy_query_prefix": query_prefix,
-        "servy_passage_format": "legacy_metadata_v0",
+        "servy_passage_format": PASSAGE_FORMAT_VERSION if content_first else "legacy_metadata_v0",
         "servy_schema_version": INDEX_SCHEMA_VERSION,
         "servy_checkpoint_fp": fp,
     }
@@ -403,8 +427,20 @@ def main():
 
     print(f"Loaded {len(train_rows)} train rows, {len(dev_rows)} dev rows, {len(relevance_rows)} relevance test rows")
 
-    train_resolved = resolve_chunk_texts(train_rows)
-    val_resolved = resolve_chunk_texts(dev_rows)
+    # The Op27 Chroma collections are the legacy metadata-rich passage profile.
+    train_resolved = resolve_chunk_texts(train_rows, content_first=False)
+    val_resolved = resolve_chunk_texts(dev_rows, content_first=False)
+
+    integrity_report = enforce_train_dev_separation(train_resolved, val_resolved)
+    print("Train/dev structural isolation:", integrity_report)
+    # Operation 27's labels are source-derived, not authenticated expert truth.
+    # Training must be deliberately opted into; production promotion stays disabled.
+    if os.getenv("SERVY_OP27_WEAK_RESEARCH_ACK") != "acknowledge":
+        raise RuntimeError(
+            "TRAINING_BLOCKED: Op27 uses weak supervision. "
+            "Set SERVY_OP27_WEAK_RESEARCH_ACK=acknowledge for an isolated "
+            "research run only after inspecting the integrity report."
+        )
 
     all_eval_results = {}
 
