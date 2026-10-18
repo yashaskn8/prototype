@@ -140,9 +140,10 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                         if row.get("review_status") != "approved" or row.get("reviewer_id") not in reviewers:
                             issue("BLOCKED_LABEL_VERIFICATION", "POSITIVE_REVIEW_UNATTESTED", f"{role}:{index}")
                         has_negative = bool(
-                            row.get("negative_chunk_ids") or row.get("negative_texts")
-                            or row.get("candidate_negative") or row.get("negative")
-                            or row.get("negative_text")
+                            row.get("negative_chunk_ids") or row.get("negative_chunk_id")
+                            or row.get("candidate_negative_chunk_id")
+                            or row.get("negative_texts") or row.get("candidate_negative")
+                            or row.get("negative") or row.get("negative_text")
                         )
                         if has_negative and (
                             row.get("negative_review_status") != "approved"
