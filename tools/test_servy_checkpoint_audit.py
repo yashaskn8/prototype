@@ -189,7 +189,7 @@ class CheckpointAuditTests(unittest.TestCase):
                 model=["mock=" + str(model_path)],
                 device="cpu", top_k=10, pool_size=2,
                 out_dir=str(root / "reports"), embedding_model="unused",
-                allow_untraceable_training=False)
+                allow_untraceable_training=False, validate_only=False)
             with patch.dict(sys.modules, {
                 "sentence_transformers": fake_transformers,
                 "torch": fake_torch,
@@ -236,7 +236,7 @@ class CheckpointAuditTests(unittest.TestCase):
                 candidates=candidates, model=["base=BAAI/mock"],
                 device="cpu", top_k=10, pool_size=2,
                 out_dir=str(root / "out"), embedding_model="unused",
-                allow_untraceable_training=False)
+                allow_untraceable_training=False, validate_only=False)
             with patch.dict(sys.modules, {
                 "sentence_transformers": types.SimpleNamespace(CrossEncoder=FakeEncoder),
                 "torch": fake_torch,
@@ -244,6 +244,34 @@ class CheckpointAuditTests(unittest.TestCase):
                 result = run(args)
             self.assertEqual(result["train_overlap_check"], "NOT_PERFORMED")
             self.assertFalse(result["holdout_independent"])
+
+
+    def test_source_group_overlap_even_with_new_document_ids(self):
+        case = dict(self.dev[0], source_group="Compressor Guide V3")
+        cases, chunks = normalize_inputs([case], self.corpus)
+        collisions, unknown = check_split_overlap(
+            cases, [{"query": "different query", "source_group": " compressor  guide v3 ",
+                     "positive_chunk_ids": [2]}], chunks)
+        self.assertEqual(unknown, [])
+        self.assertEqual(collisions[0]["collision_types"], ["source_group"])
+
+    def test_model_free_preflight_runs_without_torch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus_path = root / "corpus.jsonl"
+            corpus_path.write_text("".join(json.dumps(x) + "\n" for x in self.corpus))
+            case_path = root / "cases.jsonl"
+            case_path.write_text("".join(json.dumps(x) + "\n" for x in self.dev))
+            args = SimpleNamespace(
+                cases=str(case_path), corpus=str(corpus_path), train=None,
+                candidates=None, model=None, validate_only=True,
+                device="cpu", top_k=10, pool_size=5,
+                out_dir=str(root / "out"), embedding_model="unused",
+                allow_untraceable_training=False)
+            result = run(args)
+            self.assertEqual(result["mode"], "PREFLIGHT_ONLY_NO_MODELS")
+            self.assertTrue((root / "out" / "preflight.json").is_file())
+            self.assertFalse((root / "out" / "per_query.jsonl").exists())
 
 
 if __name__ == "__main__":
