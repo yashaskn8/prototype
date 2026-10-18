@@ -25,6 +25,10 @@ on:
     paths:
       - "tools/servy_checkpoint_audit.py"
       - "tools/test_servy_checkpoint_audit.py"
+      - "tools/servy_training_preflight.py"
+      - "tools/test_servy_training_preflight.py"
+      - "tools/servy_finetune_preflight.py"
+      - "tools/test_servy_finetune_preflight.py"
       - "tools/servy_checkpoint_backup.py"
       - "tools/test_servy_checkpoint_backup.py"
       - ".github/workflows/servy_checkpoint_audit.yml"
@@ -48,7 +52,9 @@ jobs:
         run: python -m unittest discover -s tools -p "test_servy_finetune_readiness.py" -v
       - name: Test fine-tune admission gate (no GPU and no data download)
         run: python -m unittest discover -s tools -p "test_servy_finetune_preflight.py" -v
-      - name: Test strict V4 admission gate (synthetic only)\n        run: python -m unittest discover -s tools -p "test_servy_training_preflight.py" -v\n      - name: Test Op27 training safety contracts (no ML runtime)
+      - name: Test strict V4 admission gate (synthetic only)
+        run: python -m unittest discover -s tools -p "test_servy_training_preflight.py" -v
+      - name: Test Op27 training safety contracts (no ML runtime)
         run: python -m unittest discover -s tools -p "test_op27_passages.py" -v
 
       - name: Test verified checkpoint backups (no cloud access)
