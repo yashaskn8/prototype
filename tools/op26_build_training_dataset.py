@@ -1,6 +1,6 @@
 """Operation 26 — Build Enhanced Training Dataset for Dual-Model Fine-Tuning.
 
-Generates source-derived silver query-passage pairs with verified hard negatives
+Generates source-derived silver query-passage pairs with PROVISIONAL hard-negative candidates
 from the live MySQL corpus. Covers all equipment families across both authorized
 tenants (Skydream=9, Starlly=6).
 
@@ -139,7 +139,7 @@ def generate_natural_query(chunk, doc, query_type="symptom"):
 
 
 def find_hard_negatives(chunk, all_chunks_by_doc, all_chunks_by_equipment, all_chunks_by_tenant):
-    """Find genuinely difficult but verified negatives for a query-chunk pair."""
+    """Mine provisional candidates; heading/equipment differences do NOT prove irrelevance."""
     doc_id = chunk.document_id
     tenant_id = chunk.tenant_id
     chunk_id = chunk.id
@@ -173,7 +173,7 @@ def find_hard_negatives(chunk, all_chunks_by_doc, all_chunks_by_equipment, all_c
 
 
 def verify_negative_is_safe(query_text, positive_chunk, negative_chunk):
-    """Check that a negative candidate doesn't accidentally contain the answer."""
+    """Cheap screening only; a True result is NOT expert-verified irrelevance."""
     pos_text = positive_chunk.text.lower()
     neg_text = negative_chunk.text.lower()
 
@@ -287,6 +287,7 @@ def build_dataset():
                         "negative_chunk_ids": row.get("negative_chunk_ids", []),
                         "source_group": row.get("source_group", f"doc-{row.get('positive_document_id', 0)}"),
                         "review_status": "weakly_supervised",
+                        "negative_review_status": "provisional_unverified",
                         "label_source": "OP20_EXISTING_WEAKLY_SUPERVISED",
                         "dataset_version": "2.0",
                         "equipment": "",
@@ -322,11 +323,12 @@ def build_dataset():
             chunk, all_chunks_by_doc, all_chunks_by_equipment, all_chunks_by_tenant
         )
 
-        # Verify negatives
-        verified_negs = []
+        # Heuristic screening cannot establish a false-negative-free label.
+        # Preserve candidates only as weak supervision until domain review.
+        provisional_negs = []
         for strategy, neg_chunk in negatives:
             if verify_negative_is_safe(queries[0], chunk, neg_chunk):
-                verified_negs.append((strategy, neg_chunk))
+                provisional_negs.append((strategy, neg_chunk))
                 stats["hard_neg_strategies"][strategy] += 1
             else:
                 stats["rejected_false_negative"] += 1
@@ -344,10 +346,10 @@ def build_dataset():
 
             # Select best negative (prefer same-doc-diff-section)
             neg_ids = []
-            if verified_negs:
+            if provisional_negs:
                 # Prioritize same_doc_diff_section, then same_equipment_diff_doc
                 priority = {"same_doc_diff_section": 0, "same_equipment_diff_doc": 1, "diff_equipment_same_tenant": 2}
-                sorted_negs = sorted(verified_negs, key=lambda x: priority.get(x[0], 99))
+                sorted_negs = sorted(provisional_negs, key=lambda x: priority.get(x[0], 99))
                 neg_ids = [n.id for _, n in sorted_negs[:2]]  # Up to 2 negatives
 
             qid = f"OP26-SLV-{chunk.id}-{qi}"
@@ -361,6 +363,8 @@ def build_dataset():
                 "negative_chunk_ids": neg_ids,
                 "source_group": f"doc-{doc.id}",
                 "review_status": "weakly_supervised",
+                "negative_review_status": "provisional_unverified",
+                "negative_mining_method": "heuristic_only_no_expert_adjudication",
                 "label_source": "SOURCE_DERIVED_SILVER_OP26",
                 "source_content_hash": content_hash,
                 "dataset_version": "2.0",
