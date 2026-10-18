@@ -62,6 +62,8 @@ def backup_checkpoint(source, destination):
         raise ValueError("Backup destination is ephemeral /content; use approved durable storage")
     if dst.exists():
         raise FileExistsError(f"Backup already exists (refusing overwrite): {dst}")
+    if src.is_dir() and src.resolve() in dst.resolve().parents:
+        raise ValueError("Destination must not be nested inside the source checkpoint")
     if not dst.parent.is_dir():
         raise FileNotFoundError(f"Backup destination parent does not exist: {dst.parent}")
     entries = collect(src)
@@ -73,7 +75,7 @@ def backup_checkpoint(source, destination):
             shutil.copy2(src, stage)
         else:
             shutil.copytree(src, stage, symlinks=False)
-        staged = dict(collect(stage))
+        staged = ({src.name: stage} if src.is_file() else dict(collect(stage)))
         expected = {name: (path.stat().st_size, sha256(path)) for name, path in entries}
         actual = {name: (path.stat().st_size, sha256(path)) for name, path in staged.items()}
         if expected != actual:
@@ -84,7 +86,7 @@ def backup_checkpoint(source, destination):
                 if corrupt is not None:
                     raise IOError(f"Invalid ZIP entry: {corrupt}")
         os.replace(stage, dst)
-        rechecked = dict(collect(dst))
+        rechecked = ({src.name: dst} if src.is_file() else dict(collect(dst)))
         final = {name: (path.stat().st_size, sha256(path)) for name, path in rechecked.items()}
         if expected != final:
             raise IOError("Post-rename verification failed")
