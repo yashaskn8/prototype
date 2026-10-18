@@ -38,22 +38,41 @@ def raw_negative_texts(row):
 
 
 def make_bce_pairs(rows):
-    """Preserve every reviewed positive; require truly reviewed negative labels."""
+    """Materialize every explicitly reviewed BCE query/passage label, losslessly."""
     examples = []
     for row in rows:
         q = str(row.get("query_text") or row.get("query") or "").strip()
-        positive = str(get_positive_text(row)).strip()
-        if not q or not positive or row.get("review_status") != "approved":
+        positives_raw = row.get("positive_texts")
+        if positives_raw is not None:
+            if not isinstance(positives_raw, list):
+                raise ValueError("positive_texts must be a list")
+            positives = [str(x).strip() for x in positives_raw if str(x).strip()]
+            old_single = str(row.get("positive_text") or "").strip()
+            if old_single and old_single not in positives:
+                raise ValueError("positive_text conflicts with positive_texts")
+        else:
+            single = str(get_positive_text(row)).strip()
+            positives = [single] if single else []
+        pos_ids = row.get("positive_chunk_ids") or []
+        if not isinstance(pos_ids, list):
+            pos_ids = [pos_ids]
+        if len(pos_ids) > 1 and positives_raw is None:
+            raise ValueError("Multiple positive chunk IDs require all exported positive_texts")
+        if pos_ids and len(positives) != len(pos_ids):
+            raise ValueError("Positive passage count does not match positive chunk IDs")
+        if not q or not positives or row.get("review_status") != "approved":
             raise ValueError("BCE source lacks approved query/positive")
-        examples.append({"text1": q, "text2": positive, "label": 1.0})
+        for positive in positives:
+            examples.append({"text1": q, "text2": positive, "label": 1.0})
         negatives = raw_negative_texts(row)
         if (row.get("negative_chunk_id") or row.get("negative_chunk_ids")
                 or row.get("candidate_negative_chunk_id")) and not negatives:
             raise ValueError("Negative source IDs have no exported passage text")
         if negatives and row.get("negative_review_status") != "approved":
             raise ValueError("BCE negatives have not been approved")
+        positive_keys = {" ".join(x.casefold().split()) for x in positives}
         for negative in negatives:
-            if " ".join(negative.casefold().split()) == " ".join(positive.casefold().split()):
+            if " ".join(negative.casefold().split()) in positive_keys:
                 raise ValueError("A negative repeats the positive passage")
             examples.append({"text1": q, "text2": negative, "label": 0.0})
     if not examples or {p["label"] for p in examples} != {0.0, 1.0}:

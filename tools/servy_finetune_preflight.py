@@ -182,6 +182,20 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
             pos_ids = [str(row["chunk_id"])]
         if not get_positive_text(row) and not allow_unanswerable:
             add("BLOCKER", "MISSING_EXPORTED_TRAINING_PASSAGE", tag)
+        positive_list = row.get("positive_texts")
+        if positive_list is not None and not isinstance(positive_list, list):
+            add("BLOCKER", "INVALID_POSITIVE_TEXT_LIST", tag)
+        elif isinstance(positive_list, list) and pos_ids:
+            # Validate all referenced positive passages, not only the first.
+            supplied = {norm(x) for x in positive_list if norm(x)}
+            resolved = {
+                corpus[cid]["passage"] for cid in pos_ids
+                if cid in corpus and corpus[cid]["tenant"] == tenant
+            }
+            if supplied != resolved or len(positive_list) != len(pos_ids):
+                add("BLOCKER", "POSITIVE_ID_TEXT_SET_MISMATCH", tag)
+        elif len(pos_ids) > 1 and not allow_unanswerable:
+            add("BLOCKER", "MULTI_POSITIVE_ID_MISSING_TEXT_LIST", tag)
         pos, docs = resolve_source(
             tenant, pos_ids, get_positive_text(row), corpus, by_passage,
             add, f"{tag}:positive", allow_no_passage=no_positive_expected
@@ -224,7 +238,9 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
         if pos and neg and docs.intersection(neg_docs):
             add("REVIEW", "HARD_NEGATIVE_SAME_SOURCE_DOCUMENT", tag)
         pos_text = norm(get_positive_text(row))
-        if pos_text and pos_text in negatives:
+        known_positive_texts = ({norm(x) for x in positive_list if norm(x)}
+                                if isinstance(positive_list, list) else {pos_text})
+        if known_positive_texts.intersection(negatives):
             add("BLOCKER", "IDENTICAL_POSITIVE_AND_NEGATIVE_TEXT", tag)
         if not pos and not (allow_unanswerable and no_positive_expected):
             add("BLOCKER", "UNRESOLVED_POSITIVE_SOURCE", tag)

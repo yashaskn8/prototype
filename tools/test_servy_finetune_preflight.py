@@ -397,5 +397,29 @@ class TestTrainingAdmission(unittest.TestCase):
         self.assertEqual(sum(f["severity"] == "BLOCKER" for f in report["findings"]),
                          report["numbers"]["blockers"])
 
+    def test_multiple_positives_must_all_match_explicit_source_passages(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 10,
+             "passage": "Second acceptable compressor procedure"}]
+        train = [dict(self.train[0], positive_chunk_ids=[1, 5],
+                      positive_texts=["compressor fault alpha",
+                                      "Second acceptable compressor procedure"])]
+        train[0].pop("chunk_id", None)
+        report = self.check(train=train, corpus=corpus, loss_name="BinaryCrossEntropyLoss")
+        self.assertNotIn("POSITIVE_ID_TEXT_SET_MISMATCH", report["issue_counts"])
+        train[0]["positive_texts"][1] = "Unrelated fabricated source"
+        report = self.check(train=train, corpus=corpus, loss_name="BinaryCrossEntropyLoss")
+        self.assertIn("POSITIVE_ID_TEXT_SET_MISMATCH", report["issue_counts"])
+        self.assertEqual(report["status"], "BLOCKED")
+
+    def test_multiple_positive_ids_without_texts_blocks(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 10,
+             "passage": "Second compressor guide"}]
+        train = [dict(self.train[0], positive_chunk_ids=[1, 5])]
+        train[0].pop("chunk_id", None)
+        report = self.check(train=train, corpus=corpus)
+        self.assertIn("MULTI_POSITIVE_ID_MISSING_TEXT_LIST", report["issue_counts"])
+
 if __name__ == "__main__":
     unittest.main()

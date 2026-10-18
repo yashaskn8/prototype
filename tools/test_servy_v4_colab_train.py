@@ -118,5 +118,32 @@ class TestV4ColabSafety(unittest.TestCase):
                 check_backup_destination(root)
 
 
+    def test_all_multi_positive_passages_are_materialized_for_bce(self):
+        row = {"query": "Repair model-42", "positive_chunk_ids": ["1", "2"],
+               "positive_texts": ["24V relay check", "Inspect line pressure"],
+               "negative_text": "Unrelated fan cleaning",
+               "review_status": "approved", "negative_review_status": "approved"}
+        pairs = make_bce_pairs([row])
+        self.assertEqual(len(pairs), 3)
+        self.assertEqual([p["label"] for p in pairs], [1.0, 1.0, 0.0])
+        self.assertEqual(pairs[1]["text2"], "Inspect line pressure")
+
+    def test_multi_positive_missing_second_text_blocks(self):
+        row = {"query": "Repair", "positive_chunk_ids": ["1", "2"],
+               "positive_text": "Only one text", "review_status": "approved"}
+        with self.assertRaisesRegex(ValueError, "Multiple positive"):
+            make_bce_pairs([row])
+        row["positive_texts"] = ["Only one text"]
+        with self.assertRaisesRegex(ValueError, "count"):
+            make_bce_pairs([row])
+
+    def test_negative_equal_to_second_positive_blocks(self):
+        row = {"query": "Repair", "positive_chunk_ids": ["1", "2"],
+               "positive_texts": ["First positive", "Second positive"],
+               "negative_text": "second positive",
+               "review_status": "approved", "negative_review_status": "approved"}
+        with self.assertRaisesRegex(ValueError, "repeats"):
+            make_bce_pairs([row])
+
 if __name__ == "__main__":
     unittest.main()
