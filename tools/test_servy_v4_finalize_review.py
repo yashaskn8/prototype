@@ -188,5 +188,29 @@ class ReviewFinalizationTests(unittest.TestCase):
         self.assertEqual(len(make_bce_pairs(exports["train"])), 2)
 
 
+
+    def test_cross_tenant_same_checksum_requires_one_canonical_family(self):
+        self.corpus[1]["tenant_id"] = "8"
+        self.corpus[3]["tenant_id"] = "8"
+        self.dev[0]["tenant_id"] = "8"
+        self.families[1]["tenant_id"] = "8"
+        self.families[3]["tenant_id"] = "8"
+        self.corpus[1]["source_checksum_sha256"] = "a"*64
+        self.families[1]["source_document_sha256"] = ["a"*64]
+        with self.assertRaisesRegex(ReviewBlocked, "Identical original source"):
+            self.apply()
+
+    def test_cross_tenant_copied_passage_fails_even_with_new_document_id(self):
+        self.corpus[1]["tenant_id"] = "8"
+        self.corpus[3]["tenant_id"] = "8"
+        self.dev[0]["tenant_id"] = "8"
+        self.families[1]["tenant_id"] = "8"
+        self.families[3]["tenant_id"] = "8"
+        self.corpus[1]["passage"] = self.corpus[0]["passage"]
+        self.reviews[1]["references"][0]["passage"] = self.corpus[1]["passage"]
+        with self.assertRaisesRegex(ReviewBlocked, "leak across train and dev"):
+            self.apply()
+
+
 if __name__ == "__main__":
     unittest.main()

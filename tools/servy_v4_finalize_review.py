@@ -83,7 +83,7 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
         require(isinstance(expected_hashes, list) and set(expected_hashes) == hashes,
                 "Reviewed checksum differs from original source bytes: " + repr(key))
         for h in hashes:
-            checksum_families[(key[0], h)].add(family)
+            checksum_families[h].add(family)
         for chunk in source_chunks:
             upgraded = dict(chunk)
             upgraded["source_group"] = family
@@ -106,6 +106,7 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
     for split, rows in (("train", train), ("dev", dev)):
         output = []
         all_families, all_docs, all_texts, all_queries = set(), set(), set(), set()
+        global_checksums, global_passages, global_questions = set(), set(), set()
         for row in rows:
             qid = str(row.get("query_id") or "")
             tenant = str(row.get("tenant_id") or "")
@@ -156,6 +157,11 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
                 all_families.add((tenant, fam))
                 all_docs.add((tenant, doc))
                 all_texts.add((tenant, normalize(chunk["passage"])))
+                global_passages.add(normalize(chunk["passage"]))
+                global_checksums.update(
+                    str(checksum).lower()
+                    for checksum in doc_review[(tenant, doc)]["source_document_sha256"]
+                )
                 if role == "positive":
                     pos_texts.append(str(chunk["passage"]))
                     pos_reviewers.add(reviewer)
@@ -209,14 +215,20 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
             approved["reviewed_provenance_reference"] = reviewer_manifest["approval_reference"]
             output.append(approved)
             all_queries.add((tenant, normalize(question)))
+            global_questions.add(normalize(question))
         exports[split] = output
         inv[split] = {
             "families": all_families, "docs": all_docs,
             "passages": all_texts, "queries": all_queries,
+            "source_checksums_global": global_checksums,
+            "passages_global": global_passages,
+            "queries_global": global_questions,
         }
     require(used_reviews == set(decisions), "Orphan passage-review decisions")
     require(all(not (inv["train"][key] & inv["dev"][key])
-                for key in ("families", "docs", "passages", "queries")),
+                for key in ("families", "docs", "passages", "queries",
+                            "source_checksums_global", "passages_global",
+                            "queries_global")),
             "Reviewed source families/documents/passages/queries leak across train and dev")
     require(all(any(x.get("negative_texts") for x in exports[split])
                 for split in ("train", "dev")),
