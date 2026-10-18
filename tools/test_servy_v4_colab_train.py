@@ -34,6 +34,12 @@ class TestV4ColabSafety(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not been approved"):
             make_bce_pairs([row])
 
+    def test_negative_ids_only_never_silently_drop_labels(self):
+        row = {"query": "Q", "positive_text": "A", "negative_chunk_id": "id-2",
+               "review_status": "approved", "negative_review_status": "approved"}
+        with self.assertRaisesRegex(ValueError, "no exported passage text"):
+            make_bce_pairs([row])
+
     def test_one_class_validation_is_invalid(self):
         row = {"query": "Q", "positive_text": "A", "review_status": "approved"}
         with self.assertRaisesRegex(ValueError, "both approved"):

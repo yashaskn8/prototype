@@ -133,12 +133,37 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 issue("BLOCKED_LABEL_VERIFICATION", "NO_REVIEWER_ALLOWLIST", "approval")
                 reviewers = []
             if not missing:
+                # BCE requires both supervised classes in each split.
+                if config.get("loss_name") == "BinaryCrossEntropyLoss":
+                    for split in ("train", "dev"):
+                        if not any(
+                            row.get("negative") or row.get("negative_text")
+                            or row.get("candidate_negative")
+                            or (isinstance(row.get("negative_texts"), list)
+                                and any(row["negative_texts"]))
+                            for row in read_rows(paths[split])
+                        ):
+                            issue("BLOCKED_DATA_INTEGRITY", "BCE_MISSING_NEGATIVE_CLASS", split)
                 for role in ("train", "dev", "stage2"):
                     if role not in paths:
                         continue
                     for index, row in enumerate(read_rows(paths[role]), 1):
                         if row.get("review_status") != "approved" or row.get("reviewer_id") not in reviewers:
                             issue("BLOCKED_LABEL_VERIFICATION", "POSITIVE_REVIEW_UNATTESTED", f"{role}:{index}")
+                        negative_ids = bool(
+                            row.get("negative_chunk_ids") or row.get("negative_chunk_id")
+                            or row.get("candidate_negative_chunk_id")
+                        )
+                        negative_texts = bool(
+                            row.get("negative_text") or row.get("negative")
+                            or row.get("candidate_negative")
+                            or (isinstance(row.get("negative_texts"), list)
+                                and any(row["negative_texts"]))
+                        )
+                        if negative_ids and not negative_texts:
+                            issue("BLOCKED_DATA_INTEGRITY", "NEGATIVE_IDS_WITHOUT_TRAINING_TEXT", f"{role}:{index}")
+                        if "negative_texts" in row and not isinstance(row["negative_texts"], list):
+                            issue("BLOCKED_DATA_INTEGRITY", "INVALID_NEGATIVE_TEXT_LIST", f"{role}:{index}")
                         has_negative = bool(
                             row.get("negative_chunk_ids") or row.get("negative_chunk_id")
                             or row.get("candidate_negative_chunk_id")

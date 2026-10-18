@@ -47,6 +47,9 @@ def make_bce_pairs(rows):
             raise ValueError("BCE source lacks approved query/positive")
         examples.append({"text1": q, "text2": positive, "label": 1.0})
         negatives = raw_negative_texts(row)
+        if (row.get("negative_chunk_id") or row.get("negative_chunk_ids")
+                or row.get("candidate_negative_chunk_id")) and not negatives:
+            raise ValueError("Negative source IDs have no exported passage text")
         if negatives and row.get("negative_review_status") != "approved":
             raise ValueError("BCE negatives have not been approved")
         for negative in negatives:

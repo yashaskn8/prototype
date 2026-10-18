@@ -16,12 +16,16 @@ class TestStrictV4Admission(unittest.TestCase):
         self.train = [
             {"query_id": "q1", "query": "repair compressor", "tenant_id": 9,
              "positive_chunk_id": 1, "positive_text": "compressor repair procedure",
-             "review_status": "approved", "reviewer_id": "domain-engineer-a"}
+             "review_status": "approved", "reviewer_id": "domain-engineer-a",
+             "negative_chunk_id": 3, "negative_text": "unrelated approved procedure",
+             "negative_review_status": "approved", "negative_reviewer_id": "domain-engineer-a"}
         ]
         self.dev = [
             {"query_id": "q2", "query": "calibrate sensor", "tenant_id": 9,
              "positive_chunk_id": 2, "positive_text": "sensor calibration sequence",
-             "review_status": "approved", "reviewer_id": "domain-engineer-a"}
+             "review_status": "approved", "reviewer_id": "domain-engineer-a",
+             "negative_chunk_id": 4, "negative_text": "unrelated sensor procedure",
+             "negative_review_status": "approved", "negative_reviewer_id": "domain-engineer-a"}
         ]
         self.corpus = [
             {"chunk_id": 1, "tenant_id": 9, "document_id": 100,
@@ -33,6 +37,9 @@ class TestStrictV4Admission(unittest.TestCase):
             {"chunk_id": 3, "tenant_id": 9, "document_id": 300,
              "source_group": "manual-three", "source_version": "1",
              "passage": "unrelated approved procedure"},
+            {"chunk_id": 4, "tenant_id": 9, "document_id": 400,
+             "source_group": "manual-four", "source_version": "1",
+             "passage": "unrelated sensor procedure"},
         ]
         self.model_config = {
             "base_model_id": "BAAI/bge-reranker-v2-m3",
@@ -129,6 +136,7 @@ class TestStrictV4Admission(unittest.TestCase):
 
 
     def test_singular_negative_id_cannot_bypass_review(self):
+        self.train[0]["negative_review_status"] = "unapproved"
         self.train[0]["negative_chunk_id"] = 3
         self.inputs["train"].write_text(json.dumps(self.train[0]) + "\n", encoding="utf-8")
         self.refresh_approval()
@@ -137,11 +145,31 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertIn("NEGATIVE_REVIEW_UNATTESTED", [issue["code"] for issue in result["issues"]])
 
     def test_unapproved_candidate_negative_id_blocks(self):
+        self.train[0]["negative_review_status"] = "unapproved"
         self.train[0]["candidate_negative_chunk_id"] = 3
         self.inputs["train"].write_text(json.dumps(self.train[0]) + "\n", encoding="utf-8")
         self.refresh_approval()
         result = self.evaluate()
         self.assertIn("NEGATIVE_REVIEW_UNATTESTED", [issue["code"] for issue in result["issues"]])
+
+
+    def test_bce_positive_only_train_blocked_before_gpu(self):
+        for key in ("negative_chunk_id", "negative_text",
+                    "negative_review_status", "negative_reviewer_id"):
+            self.train[0].pop(key, None)
+        self.inputs["train"].write_text(json.dumps(self.train[0]) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("BCE_MISSING_NEGATIVE_CLASS", [x["code"] for x in result["issues"]])
+
+    def test_negative_ids_only_blocked_before_gpu(self):
+        self.train[0].pop("negative_text")
+        self.inputs["train"].write_text(json.dumps(self.train[0]) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("NEGATIVE_IDS_WITHOUT_TRAINING_TEXT", [x["code"] for x in result["issues"]])
 
 
 if __name__ == "__main__":
