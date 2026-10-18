@@ -326,6 +326,15 @@ def assess(train, dev, corpus, *, stage2=None, holdout=None):
     return {
         "status": "BLOCKED" if failures else "RESEARCH_PREFLIGHT_PASSED",
         "production_eligible": False,
+        "stage1_research_allowed": not failures,
+        "stage2_research_allowed": False,  # Spreadsheet text cannot authenticate a reviewer
+        "stage2_approval_status": (
+            "NOT_PROVIDED" if stage2 is None
+            else "DECLARED_NOT_AUTHENTICATED" if stage2_rows and
+                 all(row["verified"] for row in stage2_rows)
+            else "INCOMPLETE_OR_UNVERIFIED"
+        ),
+        "authorization_verified": False,
         "evidence_quality": "UNVERIFIED_UNTIL_AUTHORIZED_EXPERT_REVIEW",
         "training_loss_guarantee": "NONE; aim for generalization, not zero loss",
         "training": coverage(training),
