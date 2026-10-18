@@ -145,5 +145,43 @@ class TestV4ColabSafety(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "repeats"):
             make_bce_pairs([row])
 
+
+    def test_negative_ids_and_passages_must_have_matching_counts(self):
+        row = {
+            "query": "How to test the valve?",
+            "positive_chunk_ids": ["p1"],
+            "positive_texts": ["Test valve coil current"],
+            "negative_chunk_ids": ["n1", "n2"],
+            "negative_texts": ["Unrelated temperature FAQ"],
+            "review_status": "approved",
+            "negative_review_status": "approved",
+        }
+        with self.assertRaisesRegex(ValueError, "Negative passage count"):
+            make_bce_pairs([row])
+
+    def test_single_negative_id_and_text_are_accepted(self):
+        row = {
+            "query": "How to test the valve?",
+            "positive_chunk_id": "p1",
+            "positive_text": "Test valve coil current",
+            "negative_chunk_id": "n1",
+            "negative_text": "Unrelated temperature FAQ",
+            "review_status": "approved",
+            "negative_review_status": "approved",
+        }
+        self.assertEqual(len(make_bce_pairs([row])), 2)
+
+    def test_duplicate_negative_ids_fail_closed(self):
+        row = {
+            "query": "Valve fault",
+            "positive_text": "Measure current",
+            "negative_chunk_ids": ["n1", "n1"],
+            "negative_texts": ["See operation manual", "See another manual"],
+            "review_status": "approved",
+            "negative_review_status": "approved",
+        }
+        with self.assertRaisesRegex(ValueError, "Duplicate negative source IDs"):
+            make_bce_pairs([row])
+
 if __name__ == "__main__":
     unittest.main()

@@ -374,5 +374,36 @@ class TestStrictV4Admission(unittest.TestCase):
                       [x["code"] for x in result["issues"]])
 
 
+
+    def test_admission_cannot_pass_with_missing_second_negative_training_text(self):
+        self.train[0]["negative_chunk_ids"] = [3, 5]
+        self.train[0].pop("negative_chunk_id")
+        self.inputs["train"].write_text(
+            json.dumps(self.train[0]) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("BCE_TRAINING_EXPORT_REJECTED",
+                      [x["code"] for x in result["issues"]])
+        self.assertNotIn("train", result["bce_pair_counts"])
+
+    def test_admission_reports_actual_bce_pair_counts_before_cuda(self):
+        result = self.evaluate()
+        self.assertEqual(result["status"], "READY_FOR_RESEARCH_EXPERIMENT")
+        self.assertEqual(result["bce_pair_counts"]["train"],
+                         {"total": 2, "positives": 1, "negatives": 1})
+        self.assertEqual(result["bce_pair_counts"]["dev"],
+                         {"total": 2, "positives": 1, "negatives": 1})
+
+    def test_multi_positive_without_all_passage_texts_cannot_be_ready(self):
+        self.train[0]["positive_chunk_ids"] = [1, 5]
+        self.train[0].pop("positive_chunk_id")
+        self.inputs["train"].write_text(
+            json.dumps(self.train[0]) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertIn("BCE_TRAINING_EXPORT_REJECTED",
+                      [x["code"] for x in result["issues"]])
+
 if __name__ == "__main__":
     unittest.main()

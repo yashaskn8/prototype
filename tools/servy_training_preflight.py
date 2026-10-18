@@ -128,6 +128,37 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
         except (ValueError, OSError, TypeError) as error:
             issue("BLOCKED_MODEL_COMPATIBILITY", type(error).__name__, "model")
 
+    # Ensure the exact model-free BCE export consumed by the Colab runner
+    # succeeds *before* the gate can admit CUDA training. Structural source
+    # checks alone cannot catch a missing second negative passage, duplicate
+    # labeled pair, or wrong positive passage cardinality.
+    bce_pair_counts = {}
+    if not any(role in missing for role in ("train", "dev")):
+        try:
+            # Lazy import avoids any heavyweight ML libraries, which are
+            # initialized only inside the runner after this gate succeeds.
+            from servy_v4_colab_train import make_bce_pairs
+            prepared_pairs = {}
+            for split in ("train", "dev", "stage2"):
+                if split not in paths or split in missing:
+                    continue
+                try:
+                    pairs = make_bce_pairs(read_rows(paths[split]))
+                    prepared_pairs[split] = pairs
+                    bce_pair_counts[split] = {
+                        "total": len(pairs),
+                        "positives": sum(x["label"] == 1.0 for x in pairs),
+                        "negatives": sum(x["label"] == 0.0 for x in pairs),
+                    }
+                except (ValueError, OSError, KeyError, TypeError):
+                    issue("BLOCKED_DATA_INTEGRITY", "BCE_TRAINING_EXPORT_REJECTED", split)
+            if "train" in prepared_pairs and "stage2" in prepared_pairs:
+                all_pairs = prepared_pairs["train"] + prepared_pairs["stage2"]
+                if len({(x["text1"], x["text2"], x["label"]) for x in all_pairs}) != len(all_pairs):
+                    issue("BLOCKED_DATA_INTEGRITY", "BCE_STAGE2_DUPLICATE_TRAINING_PAIR", "stage2")
+        except (ImportError, AttributeError, TypeError, ValueError):
+            issue("BLOCKED_MODEL_COMPATIBILITY", "BCE_EXPORT_VALIDATOR_UNAVAILABLE", "runner")
+
     candidate_coverage = {}
     if candidates and not any(role in missing for role in ("candidates", "dev", "corpus")):
         # Strict evaluation uses frozen IDs, never injects gold or initializes GPU.
@@ -262,6 +293,7 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
         "authorization_manifest_sha256": sha256_file(authorization) if Path(authorization).is_file() else None,
         "structural_issue_counts": structure["issue_counts"] if structure else {},
         "candidate_coverage": candidate_coverage,
+        "bce_pair_counts": bce_pair_counts,
         "issues": issues[:500],
         "issues_truncated": len(issues) > 500,
         "limitations": [

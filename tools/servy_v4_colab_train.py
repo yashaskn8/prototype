@@ -53,9 +53,14 @@ def make_bce_pairs(rows):
         else:
             single = str(get_positive_text(row)).strip()
             positives = [single] if single else []
-        pos_ids = row.get("positive_chunk_ids") or []
+        pos_ids = row.get("positive_chunk_ids")
+        if pos_ids is None:
+            pos_ids = row.get("positive_chunk_id", row.get("chunk_id")) or []
         if not isinstance(pos_ids, list):
             pos_ids = [pos_ids]
+        pos_ids = [str(cid).strip() for cid in pos_ids if str(cid).strip()]
+        if len(pos_ids) != len(set(pos_ids)):
+            raise ValueError("Duplicate positive source IDs")
         if len(pos_ids) > 1 and positives_raw is None:
             raise ValueError("Multiple positive chunk IDs require all exported positive_texts")
         if pos_ids and len(positives) != len(pos_ids):
@@ -65,9 +70,18 @@ def make_bce_pairs(rows):
         for positive in positives:
             examples.append({"text1": q, "text2": positive, "label": 1.0})
         negatives = raw_negative_texts(row)
-        if (row.get("negative_chunk_id") or row.get("negative_chunk_ids")
-                or row.get("candidate_negative_chunk_id")) and not negatives:
+        neg_ids = row.get("negative_chunk_ids")
+        if neg_ids is None:
+            neg_ids = row.get("negative_chunk_id", row.get("candidate_negative_chunk_id")) or []
+        if not isinstance(neg_ids, list):
+            neg_ids = [neg_ids]
+        neg_ids = [str(cid).strip() for cid in neg_ids if str(cid).strip()]
+        if len(neg_ids) != len(set(neg_ids)):
+            raise ValueError("Duplicate negative source IDs")
+        if neg_ids and not negatives:
             raise ValueError("Negative source IDs have no exported passage text")
+        if neg_ids and len(negatives) != len(neg_ids):
+            raise ValueError("Negative passage count does not match negative source IDs")
         if negatives and row.get("negative_review_status") != "approved":
             raise ValueError("BCE negatives have not been approved")
         positive_keys = {" ".join(x.casefold().split()) for x in positives}
