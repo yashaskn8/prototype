@@ -123,5 +123,52 @@ class TestTrainingAdmission(unittest.TestCase):
         self.assertEqual(report["status"], "REVIEW_REQUIRED")
 
 
+    def test_mismatched_passage_even_with_correct_id_blocks(self):
+        train = [dict(self.train[0], positive_text="different undocumented information")]
+        report = self.check(train=train)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("PASSAGE_TEXT_DIFFERS_FROM_CORPUS", report["issue_counts"])
+
+    def test_holdout_with_unanswerable_rows_does_not_require_gold(self):
+        train_path = self.dump("train.jsonl", self.train)
+        dev_path = self.dump("dev.jsonl", self.dev)
+        corpus_path = self.dump("corpus.jsonl", self.corpus)
+        holdout_path = self.dump("holdout.jsonl", [
+            {"query_id": "H-1", "query_text": "no approved answer", "tenant_id": 9,
+             "positive_chunk_ids": [], "answerability": "UNANSWERABLE_FROM_APPROVED_SOURCES"}
+        ])
+        report = audit(train_path, dev_path, corpus_path, holdout_path=holdout_path)
+        self.assertEqual(report["numbers"]["blockers"], 0)
+
+    def test_ephemeral_colab_checkpoint_is_blocked(self):
+        train_path = self.dump("train.jsonl", self.train)
+        dev_path = self.dump("dev.jsonl", self.dev)
+        corpus_path = self.dump("corpus.jsonl", self.corpus)
+        report = audit(train_path, dev_path, corpus_path,
+                       artifact_dir="/content/checkpoints")
+        self.assertIn("CHECKPOINT_TARGET_IS_EPHEMERAL_COLAB_STORAGE",
+                      report["issue_counts"])
+        self.assertEqual(report["status"], "BLOCKED")
+
+    def test_planned_persistent_checkpoint_no_ephemeral_blocker(self):
+        train_path = self.dump("train.jsonl", self.train)
+        dev_path = self.dump("dev.jsonl", self.dev)
+        corpus_path = self.dump("corpus.jsonl", self.corpus)
+        report = audit(train_path, dev_path, corpus_path,
+                       artifact_dir="C:/approved-model-storage")
+        self.assertNotIn("CHECKPOINT_TARGET_IS_EPHEMERAL_COLAB_STORAGE",
+                         report["issue_counts"])
+
+    def test_same_document_negative_flags_unverified_semantics(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 10,
+             "passage": "compressor nearby section epsilon"}
+        ]
+        train = [dict(self.train[0], negative_chunk_ids=[5],
+                      negative_text="compressor nearby section epsilon")]
+        report = self.check(train=train, corpus=corpus)
+        self.assertIn("HARD_NEGATIVE_SAME_SOURCE_DOCUMENT", report["issue_counts"])
+
+
 if __name__ == "__main__":
     unittest.main()
