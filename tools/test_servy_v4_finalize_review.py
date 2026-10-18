@@ -75,7 +75,7 @@ class ReviewFinalizationTests(unittest.TestCase):
 
     def test_cross_tenant_reference_blocks(self):
         self.corpus[0]["tenant_id"] = "8"
-        with self.assertRaisesRegex(ReviewBlocked, "Missing or cross-tenant"):
+        with self.assertRaisesRegex(ReviewBlocked, "Missing source document|cross-tenant"):
             self.apply()
 
     def test_missing_source_family_review_blocks(self):
