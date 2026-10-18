@@ -110,7 +110,9 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
                     inv["chunks"].add((tid, cid))
                     inv["passages"].add((tid, normalize(chunk["passage"])))
                     inv["checksums"].update((tid, sha) for sha in info["checksums"])
-                    if row.get("source_group"):
+                    # A label row's source_group describes its positive
+                    # evidence, not every candidate negative's manual.
+                    if role == "positive" and row.get("source_group"):
                         info["groups"].add(str(row["source_group"]).strip())
                     evidence.append({"role": role, "chunk_id": cid,
                                      "document_id": document,
