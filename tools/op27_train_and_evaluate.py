@@ -136,6 +136,13 @@ def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_r
     print(f"Epochs: {epochs}, Batch size: {batch_size}, LR: {lr}")
     print(f"{'='*80}")
 
+    # Mandatory even when this helper is invoked directly, not through main().
+    enforce_train_dev_separation(train_resolved, val_resolved)
+    if os.getenv("SERVY_OP27_WEAK_RESEARCH_ACK") != "acknowledge":
+        raise RuntimeError(
+            "TRAINING_BLOCKED: explicit weak-supervision research acknowledgment required "
+            "(SERVY_OP27_WEAK_RESEARCH_ACK=acknowledge)."
+        )
     if not val_resolved or len(val_resolved) < 8:
         raise ValueError("At least eight separate development questions required before training")
     if (output_dir / "final").exists():
