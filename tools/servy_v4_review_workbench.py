@@ -80,7 +80,7 @@ def validate_destination(path, source):
 
 
 class ReviewSession:
-    def __init__(self, output, corpus):
+    def __init__(self, output, corpus, ai_evidence_dir=None):
         self.output = Path(output).resolve()
         self.corpus = Path(corpus).resolve()
         self.state = json.loads((self.output / MANIFEST).read_text(encoding="utf-8"))
@@ -114,8 +114,30 @@ class ReviewSession:
                         or str(chunk.get("document_id")) != str(ref.get("document_id"))):
                     raise ValueError("Reviewed passage is not identical to recovered corpus")
 
+        # Load AI Evidence Recommendations if available
+        self.ai_sources = {}
+        self.ai_labels = {}
+        evidence_path = Path(ai_evidence_dir) if ai_evidence_dir else None
+        if not evidence_path or not evidence_path.is_dir():
+            candidate_dirs = sorted(self.output.parent.glob("ai_review_evidence_*"))
+            if candidate_dirs:
+                evidence_path = candidate_dirs[-1]
+        if evidence_path and evidence_path.is_dir():
+            s_file = evidence_path / "ai_source_family_recommendations.jsonl"
+            l_file = evidence_path / "ai_label_recommendations.jsonl"
+            if s_file.is_file():
+                for line in s_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        r = json.loads(line)
+                        self.ai_sources[str(r["document_id"])] = r
+            if l_file.is_file():
+                for line in l_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        r = json.loads(line)
+                        self.ai_labels[(str(r["query_id"]), r["reference_index"])] = r
+
     @classmethod
-    def create(cls, bundle, corpus, output):
+    def create(cls, bundle, corpus, output, ai_evidence_dir=None):
         bundle, corpus = Path(bundle).resolve(), Path(corpus).resolve()
         output = validate_destination(output, bundle)
         if not corpus.is_file():
@@ -145,7 +167,7 @@ class ReviewSession:
         if report.exists():
             shutil.copyfile(report, output / report.name)
         (output / MANIFEST).write_text(json.dumps(state, indent=2), encoding="utf-8")
-        return cls(output, corpus)
+        return cls(output, corpus, ai_evidence_dir=ai_evidence_dir)
 
     def review_source(self, index, *, decision, reviewer, evidence, family="", version=""):
         if decision not in ("approved", "rejected"):
@@ -300,12 +322,36 @@ def gui(session):
         passages = session.by_document[identity]
         source_id.set(f"Document {si[0]+1}/{len(session.sources)} | tenant {identity[0]} | document {identity[1]} | "
                       f"status {item.get('decision')}")
-        family.set(item.get("verified_canonical_source_family") or "")
+        
+        # Pre-fill from AI recommendation if empty and not yet approved
+        ai_s = session.ai_sources.get(str(item['document_id']))
+        if not item.get("verified_canonical_source_family") and ai_s:
+            family.set(ai_s.get("proposed_canonical_source_family") or "")
+        else:
+            family.set(item.get("verified_canonical_source_family") or "")
+            
         versions = item.get("document_versions") or []
-        family_version.set(item.get("approved_source_version") or
-                           (str(versions[0]) if len(versions) == 1 else ""))
-        family_evidence.set(item.get("evidence_reference") or "")
+        default_ver = ai_s.get("proposed_source_version") if ai_s else (str(versions[0]) if len(versions) == 1 else "")
+        family_version.set(item.get("approved_source_version") or default_ver or "")
+        
+        default_ev = (f"SQLite core_knowledgedocument id={item['document_id']}; sha256={ai_s.get('authoritative_checksum')}" 
+                      if ai_s and ai_s.get("evidence_status") == "VERIFIED_SOURCE_EVIDENCE" else "")
+        family_evidence.set(item.get("evidence_reference") or default_ev or "")
+        
+        ai_header = ""
+        if ai_s:
+            ai_header = (
+                "=== AI SOURCE EVIDENCE AUDIT ===\n"
+                f"Status: {ai_s.get('evidence_status')} | Confidence: {ai_s.get('confidence')}\n"
+                f"Authoritative Title: {ai_s.get('authoritative_title')}\n"
+                f"Product: {ai_s.get('authoritative_product')} | Category: {ai_s.get('authoritative_category')}\n"
+                f"Canonical Family: {ai_s.get('proposed_canonical_source_family')}\n"
+                f"Checksum: {ai_s.get('authoritative_checksum')}\n"
+                f"Reasoning: {ai_s.get('reasoning')}\n\n"
+            )
+            
         set_readonly(source_text,
+                     ai_header +
                      "Document metadata:\n" + json.dumps({k:v for k,v in item.items()
                      if k not in ('evidence_reference',)}, indent=2) +
                      "\n\nRECOVERED PASSAGES — VERIFY AGAINST ORIGINAL SOURCE DOCUMENT:\n" +
@@ -318,8 +364,31 @@ def gui(session):
         if not selection:
             return
         ref = row["references"][selection[0]]
-        label_evidence.set(ref.get("review_evidence_reference") or "")
-        set_readonly(label_text, f"Question: {row.get('query_text')}\n\n"
+        ai_l = session.ai_labels.get((str(row.get("query_id")), selection[0]))
+        
+        default_ref_ev = (
+            f"AI verified: {ai_l.get('heading')}" if ai_l and ai_l.get("proposed_ai_decision") == "RECOMMEND_APPROVE"
+            else f"AI flagged: {ai_l.get('proposed_ai_decision')}" if ai_l and "FALSE_NEGATIVE" in ai_l.get("proposed_ai_decision", "")
+            else ""
+        )
+        label_evidence.set(ref.get("review_evidence_reference") or default_ref_ev or "")
+        
+        ai_ref_section = ""
+        if ai_l:
+            contra = "; ".join(ai_l.get("contradictions", [])) or "None detected"
+            ai_ref_section = (
+                "=== AI RELEVANCE AUDIT & EVIDENCE ===\n"
+                f"AI Recommendation: {ai_l.get('proposed_ai_decision')} | Confidence: {ai_l.get('confidence')}\n"
+                f"Action Token Overlap: {ai_l.get('action_overlap_ratio', 0):.1%} | Shared: {', '.join(ai_l.get('shared_tokens', []))}\n"
+                f"Source Section: {ai_l.get('heading')}\n"
+                f"Technical Reasoning: {ai_l.get('reasoning')}\n"
+                f"Contradictions: {contra}\n"
+                f"Recommended Action: {ai_l.get('recommended_human_action')}\n\n"
+            )
+            
+        set_readonly(label_text, 
+                     ai_ref_section +
+                     f"Question: {row.get('query_text')}\n\n"
                      f"Role: {ref.get('role')} | chunk: {ref.get('chunk_id')} | "
                      f"document: {ref.get('document_id')}\n\n"
                      f"DECISION: {ref.get('decision')}\n\n"
@@ -333,9 +402,21 @@ def gui(session):
         label_id.set(f"Question {li[0]+1}/{len(session.labels)} | "
                      f"{row.get('split')} / {row.get('query_id')} | {row.get('query_text')}")
         reference_list.delete(0, "end")
-        for ref in row["references"]:
-            reference_list.insert("end", f"{ref.get('role'):8s} | chunk {ref.get('chunk_id')} | "
-                                  f"{ref.get('decision')}")
+        for idx, ref in enumerate(row["references"]):
+            ai_l = session.ai_labels.get((str(row.get("query_id")), idx))
+            tag = ""
+            if ai_l:
+                rec_dec = ai_l.get("proposed_ai_decision", "")
+                if "FALSE_NEGATIVE" in rec_dec:
+                    tag = " [! FALSE NEGATIVE ? !]"
+                elif "UNCERTAIN" in rec_dec:
+                    tag = " [? UNCERTAIN ?]"
+                elif "PARTIAL" in rec_dec:
+                    tag = " [PARTIAL]"
+                else:
+                    tag = " [OK]"
+            reference_list.insert("end", f"{ref.get('role'):8s} | chunk {ref.get('chunk_id'):<4} | "
+                                  f"{ref.get('decision'):<8s}{tag}")
         if row["references"]:
             reference_list.selection_set(0)
             show_reference()
@@ -354,13 +435,26 @@ def gui(session):
             si[0] = (si[0]+delta) % len(session.sources)
         render_source()
 
-    def label_move(delta=1, pending=False):
+    def label_move(delta=1, pending=False, high_risk=False):
         if pending:
             def needs_review(row):
                 return any(r.get('decision') not in ('approved','rejected') for r in row['references'])
             found = next((i for i,x in enumerate(session.labels) if needs_review(x) and i > li[0]), None)
             if found is None:
                 found = next((i for i,x in enumerate(session.labels) if needs_review(x)), None)
+            if found is not None:
+                li[0] = found
+        elif high_risk:
+            def is_high_risk(row):
+                qid = str(row.get("query_id"))
+                return any(
+                    "FALSE_NEGATIVE" in session.ai_labels.get((qid, idx), {}).get("proposed_ai_decision", "")
+                    or "UNCERTAIN" in session.ai_labels.get((qid, idx), {}).get("proposed_ai_decision", "")
+                    for idx, _ in enumerate(row.get("references", []))
+                )
+            found = next((i for i,x in enumerate(session.labels) if is_high_risk(x) and i > li[0]), None)
+            if found is None:
+                found = next((i for i,x in enumerate(session.labels) if is_high_risk(x)), None)
             if found is not None:
                 li[0] = found
         else:
@@ -409,6 +503,7 @@ def gui(session):
     ttk.Button(source_actions, text="Record APPROVED source", command=lambda:source_decision('approved')).pack(side="left",padx=5)
     ttk.Button(source_actions, text="Record REJECTED source", command=lambda:source_decision('rejected')).pack(side="left",padx=5)
     for caption, callback in (("Previous",lambda:label_move(-1)),("Next",lambda:label_move(1)),
+                              ("Next high-risk",lambda:label_move(high_risk=True)),
                               ("Next pending",lambda:label_move(pending=True))):
         ttk.Button(label_nav,text=caption,command=callback).pack(side="right",padx=4)
     reference_list.bind("<<ListboxSelect>>", show_reference)
@@ -424,17 +519,18 @@ def main():
     p.add_argument("--bundle", required=True, help="Original recovery review bundle")
     p.add_argument("--corpus", required=True, help="Original recovered corpus JSONL")
     p.add_argument("--out-dir", required=True, help="Explicit new private review output directory")
+    p.add_argument("--ai-evidence", help="Path to AI evidence recommendations directory")
     p.add_argument("--status-only", action="store_true", help="Print counts; no GUI or new decisions")
     a = p.parse_args()
     output = validate_destination(a.out_dir, a.bundle)
     if output.exists():
         if not (output / MANIFEST).is_file():
             p.error("Existing directory is not an initialized V4 review session")
-        session = ReviewSession(output, a.corpus)
+        session = ReviewSession(output, a.corpus, ai_evidence_dir=a.ai_evidence)
     else:
         if a.status_only:
             p.error("Review session does not exist")
-        session = ReviewSession.create(a.bundle, a.corpus, output)
+        session = ReviewSession.create(a.bundle, a.corpus, output, ai_evidence_dir=a.ai_evidence)
     print(json.dumps({"review_directory": str(output), "progress": session.summary()}, indent=2))
     if not a.status_only:
         gui(session)
