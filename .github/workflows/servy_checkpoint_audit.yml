@@ -25,6 +25,8 @@ on:
       - "tools/test_servy_v4_review_workbench.py"
       - "tools/servy_v4_ai_evidence_auditor.py"
       - "tools/test_servy_v4_ai_evidence_auditor.py"
+      - "tools/servy_v4_family_isolated_resplit.py"
+      - "tools/test_servy_v4_family_isolated_resplit.py"
       - "tools/servy_v4_colab_smoke.py"
       - "tools/test_servy_v4_colab_smoke.py"
       - "tools/servy_checkpoint_backup.py"
@@ -64,6 +66,8 @@ on:
       - "tools/test_servy_v4_review_workbench.py"
       - "tools/servy_v4_ai_evidence_auditor.py"
       - "tools/test_servy_v4_ai_evidence_auditor.py"
+      - "tools/servy_v4_family_isolated_resplit.py"
+      - "tools/test_servy_v4_family_isolated_resplit.py"
       - "tools/servy_v4_colab_smoke.py"
       - "tools/test_servy_v4_colab_smoke.py"
       - "tools/servy_checkpoint_backup.py"
@@ -82,7 +86,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile audit scripts
-        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_v4_private_reconciliation.py tools/test_servy_v4_private_reconciliation.py tools/servy_v4_finalize_review.py tools/test_servy_v4_finalize_review.py tools/servy_v4_review_workbench.py tools/test_servy_v4_review_workbench.py tools/servy_v4_ai_evidence_auditor.py tools/test_servy_v4_ai_evidence_auditor.py tools/servy_v4_colab_smoke.py tools/test_servy_v4_colab_smoke.py tools/servy_training_preflight.py tools/test_servy_training_preflight.py tools/servy_v4_colab_train.py tools/test_servy_v4_colab_train.py tools/test_op26_negative_governance.py tools/op26_source_isolated_split.py tools/test_op26_source_isolated_split.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py tools/op27_split_integrity.py tools/test_op27_split_integrity.py tools/servy_checkpoint_backup.py tools/test_servy_checkpoint_backup.py tools/test_servy_best_checkpoint.py
+        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_v4_private_reconciliation.py tools/test_servy_v4_private_reconciliation.py tools/servy_v4_finalize_review.py tools/test_servy_v4_finalize_review.py tools/servy_v4_review_workbench.py tools/test_servy_v4_review_workbench.py tools/servy_v4_ai_evidence_auditor.py tools/test_servy_v4_ai_evidence_auditor.py tools/servy_v4_family_isolated_resplit.py tools/test_servy_v4_family_isolated_resplit.py tools/servy_v4_colab_smoke.py tools/test_servy_v4_colab_smoke.py tools/servy_training_preflight.py tools/test_servy_training_preflight.py tools/servy_v4_colab_train.py tools/test_servy_v4_colab_train.py tools/test_op26_negative_governance.py tools/op26_source_isolated_split.py tools/test_op26_source_isolated_split.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py tools/op27_split_integrity.py tools/test_op27_split_integrity.py tools/servy_checkpoint_backup.py tools/test_servy_checkpoint_backup.py tools/test_servy_best_checkpoint.py
       - name: Test audit tool offline (no Docker, database, or GPU)
         run: python -m unittest discover -s tools -p "test_servy_checkpoint_audit.py" -v
       - name: Test training preflight offline (no models or DB)
@@ -99,6 +103,8 @@ jobs:
         run: python -m unittest discover -s tools -p "test_servy_v4_review_workbench.py" -v
       - name: Test SQLite metadata and proposed source-family split risk (synthetic only)
         run: python -m unittest discover -s tools -p "test_servy_v4_ai_evidence_auditor.py" -v
+      - name: Test provisional family-connected split (synthetic only)
+        run: python -m unittest discover -s tools -p "test_servy_v4_family_isolated_resplit.py" -v
       - name: Test Colab GPU smoke test contracts (model-free)
         run: python -m unittest discover -s tools -p "test_servy_v4_colab_smoke.py" -v
       - name: Test research runner schema and backup guards (no GPU)
