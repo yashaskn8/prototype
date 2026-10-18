@@ -76,7 +76,8 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
     row_by_split_qid = {}
     for split, rows in (("train", train), ("dev", dev)):
         inv = {"chunks": set(), "docs": set(), "checksums": set(),
-               "passages": set(), "queries": set()}
+               "passages": set(), "queries": set(),
+               "global_checksums": set(), "global_passages": set(), "global_queries": set()}
         new_rows = []
         seen_qids = set()
         for row in rows:
@@ -94,6 +95,7 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
                 issues["AMBIGUOUS_QUARANTINE_QUERY_ID"] += 1
             row_by_split_qid[(split, qid)] = tid
             inv["queries"].add((tid, normalize(query)))
+            inv["global_queries"].add(normalize(query))
             pos_ids = refs(row, "positive_chunk_ids") or refs(row, "positive_chunk_id")
             neg_ids = refs(row, "negative_chunk_ids") or refs(row, "negative_chunk_id")
             quarantined_ids = refs(row, "quarantined_negative_chunk_ids")
@@ -135,7 +137,9 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
                     inv["docs"].add((tid, document))
                     inv["chunks"].add((tid, cid))
                     inv["passages"].add((tid, normalize(chunk["passage"])))
+                    inv["global_passages"].add(normalize(chunk["passage"]))
                     inv["checksums"].update((tid, sha) for sha in info["checksums"])
+                    inv["global_checksums"].update(info["checksums"])
                     # A label row's source_group describes its positive
                     # evidence, not every candidate negative's manual.
                     if role == "positive" and row.get("source_group"):
@@ -211,6 +215,9 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
         "checksums": len(train_i["checksums"] & dev_i["checksums"]),
         "identical_passages": len(train_i["passages"] & dev_i["passages"]),
         "normalized_queries": len(train_i["queries"] & dev_i["queries"]),
+        "identical_passages_across_tenants": len(train_i["global_passages"] & dev_i["global_passages"]),
+        "identical_checksums_across_tenants": len(train_i["global_checksums"] & dev_i["global_checksums"]),
+        "same_queries_across_tenants": len(train_i["global_queries"] & dev_i["global_queries"]),
     }
     if any(overlap.values()):
         issues["TRAIN_DEV_LEAKAGE"] += 1

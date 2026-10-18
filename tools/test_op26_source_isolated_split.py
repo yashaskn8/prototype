@@ -70,5 +70,26 @@ class SourceGraphSplitTests(unittest.TestCase):
                          source_isolated_split(rows, self.chunks))
 
 
+    def test_identical_manual_copies_across_tenants_share_component(self):
+        self.chunks[5] = c(8, 50, "  COMPRESSOR ")
+        rows = [self.row("A", 1), self.row("C", 4),
+                {"tenant_id": 8, "query_id": "B", "query_text": "Different question",
+                 "positive_chunk_ids": [5]}]
+        train, dev, _ = source_isolated_split(rows, self.chunks)
+        members = {r["query_id"]: "train" for r in train}
+        members.update({r["query_id"]: "dev" for r in dev})
+        self.assertEqual(members["A"], members["B"])
+
+    def test_identical_source_sha_across_tenants_share_component(self):
+        self.chunks[5] = c(8, 50, "Different passage", "d"*64)
+        self.chunks[6] = c(9, 60, "Another passage", "d"*64)
+        rows = [self.row("A", 6), self.row("C", 4),
+                {"tenant_id": 8, "query_id": "B", "query_text": "Different question",
+                 "positive_chunk_ids": [5]}]
+        train, dev, _ = source_isolated_split(rows, self.chunks)
+        members = {r["query_id"]: "train" for r in train}
+        members.update({r["query_id"]: "dev" for r in dev})
+        self.assertEqual(members["A"], members["B"])
+
 if __name__ == "__main__":
     unittest.main()

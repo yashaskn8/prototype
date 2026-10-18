@@ -156,3 +156,24 @@ class TestReconcile(unittest.TestCase):
         self.assertFalse(report["ready_for_training"])
         self.assertNotIn("negative_review_status", proposed["train"][0])
 
+
+    def test_cross_tenant_identical_checksum_detected(self):
+        train = [dict(self.train[0], negative_chunk_ids=[])]
+        dev = [dict(self.dev[0], tenant_id="8", query_text="different question")]
+        corpus = [dict(c) for c in self.corpus]
+        corpus[1]["tenant_id"] = "8"
+        corpus[1]["source_checksum_sha256"] = corpus[0]["source_checksum_sha256"]
+        report, _, _, _ = reconcile(train, dev, corpus)
+        self.assertEqual(report["train_dev_overlap"]["documents"], 0)
+        self.assertEqual(report["train_dev_overlap"]["identical_checksums_across_tenants"], 1)
+        self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+
+    def test_cross_tenant_identical_passage_detected(self):
+        train = [dict(self.train[0], negative_chunk_ids=[])]
+        dev = [dict(self.dev[0], tenant_id="8", query_text="different question")]
+        corpus = [dict(c) for c in self.corpus]
+        corpus[1]["tenant_id"] = "8"
+        corpus[1]["passage"] = corpus[0]["passage"]
+        report, _, _, _ = reconcile(train, dev, corpus)
+        self.assertEqual(report["train_dev_overlap"]["identical_passages_across_tenants"], 1)
+

@@ -24,7 +24,7 @@ def footprint(row, chunks):
         raise ValueError("Missing tenant/query/positive source")
     if len(set(positives + negatives)) != len(positives + negatives):
         raise ValueError("Duplicated or contradictory source IDs")
-    keys = {("question", tenant, question)}
+    keys = {("question", question)}
     for cid in positives + negatives:
         chunk = chunks.get(int(cid)) if cid.isdigit() else chunks.get(cid)
         if chunk is None:
@@ -34,9 +34,9 @@ def footprint(row, chunks):
         keys.add(("document", tenant, str(chunk.document_id)))
         checksum = str(getattr(chunk.document, "checksum_sha256", "") or "").lower().strip()
         if re.fullmatch("[0-9a-f]{64}", checksum):
-            keys.add(("checksum", tenant, checksum))
+            keys.add(("checksum", checksum))
         if norm(chunk.text):
-            keys.add(("exact_passage", tenant, norm(chunk.text)))
+            keys.add(("exact_passage", norm(chunk.text)))
     return keys
 
 
