@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from servy_v4_colab_train import (
-    make_bce_pairs, raw_negative_texts, candidate_gate, check_backup_destination
+    make_bce_pairs, raw_negative_texts, candidate_gate, check_backup_destination,\n    validate_model_tokenizer_binding
 )
 
 
@@ -45,6 +45,20 @@ class TestV4ColabSafety(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "repeats"):
             make_bce_pairs([row])
+
+    def test_model_tokenizer_binding_is_exact(self):
+        valid = {
+            "base_model_id": "BAAI/bge-reranker-v2-m3",
+            "tokenizer_id": "BAAI/bge-reranker-v2-m3",
+            "base_revision": "a" * 40, "tokenizer_revision": "a" * 40,
+        }
+        self.assertIsNone(validate_model_tokenizer_binding(valid))
+        with self.assertRaisesRegex(ValueError, "tokenizer revision"):
+            validate_model_tokenizer_binding(dict(valid, tokenizer_revision="b" * 40))
+        with self.assertRaisesRegex(ValueError, "tokenizer ID"):
+            validate_model_tokenizer_binding(dict(valid, tokenizer_id="other-model"))
+        with self.assertRaisesRegex(ValueError, "reviewed BGE"):
+            validate_model_tokenizer_binding(dict(valid, base_model_id="unauthorized-model"))
 
     def test_wrong_negative_list_schema_fails(self):
         with self.assertRaises(ValueError):
