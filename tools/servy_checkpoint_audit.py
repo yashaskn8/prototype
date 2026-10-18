@@ -308,7 +308,9 @@ def evaluate_one(cases, chunks, candidates, predict, pool_size=5):
         )
         rows.append({
             **case, "candidate_chunk_ids": candidates[qid],
-            "ranked_chunk_ids": ordered, "reranker_scores": scores,
+            "ranked_chunk_ids": ordered,
+            "ranked_document_ids": [chunks[cid]["document_id"] for cid in ordered],
+            "reranker_scores": scores,
             "gold_rank": rank, "original_gold_rank": original_rank,
             "gold_document_rank": doc_rank,
         })
@@ -470,11 +472,15 @@ def run(args):
             "gold_chunk_ids": case["gold_chunk_ids"],
             "gold_document_ids": case["gold_document_ids"],
             "fixed_candidates": candidates[qid],
+            "fixed_candidate_document_ids": [
+                chunks[cid]["document_id"] for cid in candidates[qid]
+            ],
         }
         for name, report in results.items():
             query_result = next(r for r in report["queries"] if r["query_id"] == qid)
             row[name] = {
                 "ranked_chunk_ids": query_result["ranked_chunk_ids"],
+                "ranked_document_ids": query_result["ranked_document_ids"],
                 "reranker_scores": query_result["reranker_scores"],
                 "gold_rank": query_result["gold_rank"],
                 "gold_document_rank": query_result["gold_document_rank"],
@@ -489,17 +495,27 @@ def run(args):
                     if baseline_rank is not None and current_rank is not None
                     else None
                 )
+                row[name]["movement_vs_baseline"] = (
+                    "BOTH_MISSING" if baseline_rank is None and current_rank is None
+                    else "FOUND" if baseline_rank is None
+                    else "LOST" if current_rank is None
+                    else "UP" if current_rank < baseline_rank
+                    else "DOWN" if current_rank > baseline_rank
+                    else "UNCHANGED"
+                )
         per_query.append(row)
     with (out / "per_query.jsonl").open("w", encoding="utf-8") as f:
         for row in per_query:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     with (out / "per_query.csv").open("w", newline="", encoding="utf-8") as f:
         columns = ["query_id", "query", "tenant_id", "gold_chunk_ids",
-                   "gold_document_ids", "fixed_candidates"]
+                   "gold_document_ids", "fixed_candidates",
+                   "fixed_candidate_document_ids"]
         for name in results:
-            columns += [f"{name}_ranked", f"{name}_scores",
-                        f"{name}_gold_rank", f"{name}_document_rank",
-                        f"{name}_rank_change_vs_baseline"]
+            columns += [f"{name}_ranked", f"{name}_ranked_documents",
+                        f"{name}_scores", f"{name}_gold_rank",
+                        f"{name}_document_rank", f"{name}_rank_change_vs_baseline",
+                        f"{name}_movement_vs_baseline"]
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
         for row in per_query:
@@ -510,10 +526,12 @@ def run(args):
             for name in results:
                 data = row[name]
                 flat[f"{name}_ranked"] = json.dumps(data["ranked_chunk_ids"])
+                flat[f"{name}_ranked_documents"] = json.dumps(data["ranked_document_ids"])
                 flat[f"{name}_scores"] = json.dumps(data["reranker_scores"])
                 flat[f"{name}_gold_rank"] = data["gold_rank"]
                 flat[f"{name}_document_rank"] = data["gold_document_rank"]
                 flat[f"{name}_rank_change_vs_baseline"] = data["rank_change_vs_baseline"]
+                flat[f"{name}_movement_vs_baseline"] = data["movement_vs_baseline"]
             writer.writerow(flat)
 
     summary = {
@@ -525,6 +543,7 @@ def run(args):
         "candidates_sha256": _sha256(out / "frozen_candidates.jsonl"),
         "pool_size": args.pool_size, "top_k": args.top_k,
         "checkpoint_fingerprints": fingerprints,
+        "comparison_baseline": next(iter(results)),
         "training_inputs": list(args.train or []),
         "train_overlap_check": (
             "POTENTIALLY_INCOMPLETE" if unresolved_provenance else
