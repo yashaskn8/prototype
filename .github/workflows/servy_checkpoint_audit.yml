@@ -5,6 +5,8 @@ on:
     paths:
       - "tools/servy_checkpoint_audit.py"
       - "tools/test_servy_checkpoint_audit.py"
+      - "tools/servy_finetune_readiness.py"
+      - "tools/test_servy_finetune_readiness.py"
       - ".github/workflows/servy_checkpoint_audit.yml"
   push:
     branches:
@@ -26,6 +28,8 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile audit scripts
-        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py
+        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py
       - name: Test audit tool offline (no Docker, database, or GPU)
         run: python -m unittest discover -s tools -p "test_servy_checkpoint_audit.py" -v
+      - name: Test training preflight offline (no models or DB)
+        run: python -m unittest discover -s tools -p "test_servy_finetune_readiness.py" -v
