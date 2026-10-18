@@ -54,9 +54,15 @@ def is_temporary_colab_path(path):
     )
 
 
+def is_absolute_path(path):
+    target = Path(path)
+    normalized = str(path).replace("\\", "/")
+    return target.is_absolute() or normalized.startswith("/") or (len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha())
+
+
 def backup_checkpoint(source, destination):
     src, dst = Path(source), Path(destination)
-    if not dst.is_absolute():
+    if not is_absolute_path(dst):
         raise ValueError("Backup destination must be an absolute approved persistent path")
     # In Colab, /content/drive can exist as an ordinary empty directory after
     # a disconnected runtime. It is NOT persistent until the Drive mount is live.

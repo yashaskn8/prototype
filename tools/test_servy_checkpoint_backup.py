@@ -79,6 +79,14 @@ class TestCheckpointBackup(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "absolute"):
             backup_checkpoint(source, "Servy_Research_Backup/model.bin")
 
+    def test_is_absolute_path_cross_platform(self):
+        from servy_checkpoint_backup import is_absolute_path
+        self.assertTrue(is_absolute_path("/content/drive/MyDrive"))
+        self.assertTrue(is_absolute_path(r"C:\backup\checkpoints"))
+        self.assertTrue(is_absolute_path("C:/backup/checkpoints"))
+        self.assertFalse(is_absolute_path("relative/path/checkpoints"))
+        self.assertFalse(is_absolute_path("checkpoints"))
+
     def test_source_symlink_rejected(self):
         source = self.root / "source"
         source.mkdir()
