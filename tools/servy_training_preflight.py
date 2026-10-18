@@ -107,10 +107,16 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 issue("BLOCKED_MODEL_COMPATIBILITY", "INVALID_MAX_SEQ_LENGTH", "model")
             if not isinstance(config.get("candidate_pool"), int) or config.get("candidate_pool", 0) < 5:
                 issue("BLOCKED_MODEL_COMPATIBILITY", "INVALID_CANDIDATE_POOL", "model")
-            if config.get("loss_name") not in (
-                "BinaryCrossEntropyLoss", "CachedMultipleNegativesRankingLoss"
-            ):
-                issue("BLOCKED_MODEL_COMPATIBILITY", "UNREVIEWED_LOSS", "model")
+            if config.get("loss_name") != "BinaryCrossEntropyLoss":
+                # This strict gate is bound to the V4 CrossEncoder runner.
+                # Other losses require their own audited admission protocol.
+                issue("BLOCKED_MODEL_COMPATIBILITY", "LOSS_NOT_SUPPORTED_BY_V4_RUNNER", "model")
+            if config.get("base_model_id") != "BAAI/bge-reranker-v2-m3":
+                issue("BLOCKED_MODEL_COMPATIBILITY", "MODEL_NOT_SUPPORTED_BY_V4_RUNNER", "model")
+            if config.get("tokenizer_id") != config.get("base_model_id"):
+                issue("BLOCKED_MODEL_COMPATIBILITY", "TOKENIZER_MODEL_ID_MISMATCH", "model")
+            if config.get("tokenizer_revision") != config.get("base_revision"):
+                issue("BLOCKED_MODEL_COMPATIBILITY", "TOKENIZER_REVISION_MISMATCH", "model")
             for field in ("base_revision", "tokenizer_revision"):
                 if not isinstance(config.get(field), str) or not re.fullmatch(
                     r"[0-9a-fA-F]{40}", config[field]

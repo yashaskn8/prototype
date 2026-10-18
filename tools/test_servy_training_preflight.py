@@ -46,7 +46,7 @@ class TestStrictV4Admission(unittest.TestCase):
             "base_model_id": "BAAI/bge-reranker-v2-m3",
             "base_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "tokenizer_id": "BAAI/bge-reranker-v2-m3",
-            "tokenizer_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "tokenizer_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "sentence_transformers_version": "5.1.0",
             "loss_name": "BinaryCrossEntropyLoss",
             "max_seq_length": 256, "candidate_pool": 10,
@@ -247,6 +247,44 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertEqual(decision["status"], "BLOCKED_DATA_INTEGRITY")
         self.assertIn("STRUCTURAL_BLOCKER_COUNT_MISMATCH",
                       [i["code"] for i in decision["issues"]])
+
+
+    def test_runner_loss_mismatch_blocks_standalone_preflight(self):
+        self.model_config["loss_name"] = "CachedMultipleNegativesRankingLoss"
+        self.model_path.write_text(json.dumps(self.model_config), encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_MODEL_COMPATIBILITY")
+        self.assertIn("LOSS_NOT_SUPPORTED_BY_V4_RUNNER",
+                      [issue["code"] for issue in result["issues"]])
+
+    def test_runner_tokenizer_revision_mismatch_blocks_at_preflight(self):
+        self.model_config["tokenizer_revision"] = "b" * 40
+        self.model_path.write_text(json.dumps(self.model_config), encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_MODEL_COMPATIBILITY")
+        self.assertIn("TOKENIZER_REVISION_MISMATCH",
+                      [issue["code"] for issue in result["issues"]])
+
+    def test_runner_tokenizer_id_mismatch_blocks_at_preflight(self):
+        self.model_config["tokenizer_id"] = "different-tokenizer"
+        self.model_path.write_text(json.dumps(self.model_config), encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_MODEL_COMPATIBILITY")
+        self.assertIn("TOKENIZER_MODEL_ID_MISMATCH",
+                      [issue["code"] for issue in result["issues"]])
+
+    def test_unreviewed_reranker_model_blocks_at_preflight(self):
+        self.model_config["base_model_id"] = "some-other-model"
+        self.model_config["tokenizer_id"] = "some-other-model"
+        self.model_path.write_text(json.dumps(self.model_config), encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_MODEL_COMPATIBILITY")
+        self.assertIn("MODEL_NOT_SUPPORTED_BY_V4_RUNNER",
+                      [issue["code"] for issue in result["issues"]])
 
 
 if __name__ == "__main__":
