@@ -293,7 +293,7 @@ class TestStrictV4Admission(unittest.TestCase):
             "review_status": "approved", "reviewer_id": "domain-engineer-a",
         })
         self.inputs["train"].write_text(
-            "".join(json.dumps(row) + "\\n" for row in self.train),
+            "".join(json.dumps(row) + "\n" for row in self.train),
             encoding="utf-8")
         self.refresh_approval()
         result = self.evaluate()
@@ -308,7 +308,7 @@ class TestStrictV4Admission(unittest.TestCase):
             "passage": "second compressor procedure"
         })
         self.inputs["corpus"].write_text(
-            "".join(json.dumps(row) + "\\n" for row in self.corpus),
+            "".join(json.dumps(row) + "\n" for row in self.corpus),
             encoding="utf-8")
         self.refresh_approval()
         result = self.evaluate()
