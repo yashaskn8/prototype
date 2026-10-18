@@ -150,8 +150,20 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                         "positives": sum(x["label"] == 1.0 for x in pairs),
                         "negatives": sum(x["label"] == 0.0 for x in pairs),
                     }
-                except (ValueError, OSError, KeyError, TypeError):
-                    issue("BLOCKED_DATA_INTEGRITY", "BCE_TRAINING_EXPORT_REJECTED", split)
+                except ValueError as error:
+                    # A pending expert decision is an approval blocker, not
+                    # evidence that passage bytes are corrupt. Keep the
+                    # original unapproved-label category for reviewers.
+                    if ("not been approved" in str(error)
+                            or "lacks approved query/positive" in str(error)):
+                        issue("BLOCKED_LABEL_VERIFICATION",
+                              "BCE_EXPORT_LABEL_NOT_APPROVED", split)
+                    else:
+                        issue("BLOCKED_DATA_INTEGRITY",
+                              "BCE_TRAINING_EXPORT_REJECTED", split)
+                except (OSError, KeyError, TypeError):
+                    issue("BLOCKED_DATA_INTEGRITY",
+                          "BCE_TRAINING_EXPORT_REJECTED", split)
             if "train" in prepared_pairs and "stage2" in prepared_pairs:
                 all_pairs = prepared_pairs["train"] + prepared_pairs["stage2"]
                 if len({(x["text1"], x["text2"], x["label"]) for x in all_pairs}) != len(all_pairs):
