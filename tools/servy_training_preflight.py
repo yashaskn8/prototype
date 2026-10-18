@@ -95,6 +95,16 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 "BinaryCrossEntropyLoss", "CachedMultipleNegativesRankingLoss"
             ):
                 issue("BLOCKED_MODEL_COMPATIBILITY", "UNREVIEWED_LOSS", "model")
+            for field in ("base_revision", "tokenizer_revision"):
+                if not isinstance(config.get(field), str) or not re.fullmatch(
+                    r"[0-9a-fA-F]{40}", config[field]
+                ):
+                    issue("BLOCKED_MODEL_COMPATIBILITY", "REVISION_NOT_COMMIT_PINNED", field)
+            if not re.fullmatch(
+                r"\d+\.\d+\.\d+(?:[a-zA-Z0-9.+-]*)?",
+                str(config.get("sentence_transformers_version", "")),
+            ):
+                issue("BLOCKED_MODEL_COMPATIBILITY", "LIBRARY_VERSION_NOT_PINNED", "model")
         except (ValueError, OSError, TypeError) as error:
             issue("BLOCKED_MODEL_COMPATIBILITY", type(error).__name__, "model")
 
@@ -109,6 +119,9 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 for name, digest in hashes.items():
                     if authorized_hashes.get(name) != digest:
                         issue("BLOCKED_LABEL_VERIFICATION", "INPUT_NOT_IN_APPROVED_EXPORT", name)
+            if (Path(model_config).is_file() and
+                    approved.get("authorized_model_config_sha256") != sha256_file(model_config)):
+                issue("BLOCKED_MODEL_COMPATIBILITY", "MODEL_CONFIG_NOT_IN_APPROVED_EXPORT", "approval")
             if approved.get("approved_persistent_destination") != str(artifact_dir):
                 issue("BLOCKED_MISSING_ARTIFACT", "CHECKPOINT_DESTINATION_NOT_APPROVED", "approval")
             if not approved.get("approval_reference"):
