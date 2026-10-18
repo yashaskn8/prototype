@@ -130,6 +130,20 @@ class FineTuneReadinessTests(unittest.TestCase):
         after = json.dumps([self.train, self.dev, self.corpus, self.stage2], sort_keys=True)
         self.assertEqual(before, after)
 
+    def test_dev_negative_from_train_source_blocks(self):
+        self.dev[0]["negative_chunk_ids"] = [2]
+        report = assess(self.train, self.dev, self.corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertTrue(any("negative source document also appears" in x
+                            for x in report["blocking_findings"]))
+
+    def test_stage2_must_use_known_train_questions(self):
+        self.stage2[0]["query"] = "New unsourced technician question"
+        report = assess(self.train, self.dev, self.corpus, stage2=self.stage2)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertTrue(any("question not found in Stage1 training" in x
+                            for x in report["blocking_findings"]))
+
 
 if __name__ == "__main__":
     unittest.main()
