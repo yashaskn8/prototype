@@ -83,5 +83,28 @@ class ReviewWorkbenchTests(unittest.TestCase):
             ReviewSession(self.output,self.corpus)
 
 
+
+    def test_review_actions_remain_visible_above_expanding_viewers(self):
+        # Static geometry contract: the user-facing buttons and evidence
+        # inputs must appear before the scrollable panel consumes remaining
+        # height. Do not create a Tk window on headless CI.
+        import ast
+        source = Path(__file__).with_name("servy_v4_review_workbench.py").read_text(
+            encoding="utf-8")
+        ast.parse(source)
+        gui = source.split("def gui(session):", 1)[1].split("\\ndef main():", 1)[0]
+        self.assertIn('source_actions.pack(fill="x", pady=4)', gui)
+        self.assertIn('label_actions.pack(fill="x", pady=4)', gui)
+        self.assertIn('ttk.Button(source_actions, text="Record APPROVED source"', gui)
+        self.assertIn('ttk.Button(label_actions, text="Record APPROVED passage"', gui)
+        self.assertLess(gui.index("source_actions.pack"), gui.index("source_text.pack"))
+        self.assertLess(gui.index("label_actions.pack"), gui.index("label_text.pack"))
+        self.assertLess(
+            gui.index('ttk.Entry(sources_tab, textvariable=variable'),
+            gui.index('source_text.pack'))
+        self.assertLess(
+            gui.index('ttk.Entry(labels_tab, textvariable=label_evidence'),
+            gui.index('label_text.pack'))
+
 if __name__=='__main__':
     unittest.main()

@@ -246,11 +246,14 @@ def gui(session):
     tabs.add(sources_tab, text="1. Source families")
     source_nav = ttk.Frame(sources_tab)
     source_nav.pack(fill="x")
+    # Pin action controls above the expanding document viewer, so Windows
+    # display scaling cannot push Approve/Reject beyond the bottom edge.
+    source_actions = ttk.Frame(sources_tab)
+    source_actions.pack(fill="x", pady=4)
     si = [0]
     source_id = tk.StringVar()
     ttk.Label(source_nav, textvariable=source_id).pack(side="left", padx=4)
-    source_text = scrolledtext.ScrolledText(sources_tab, height=15, wrap="word")
-    source_text.pack(fill="both", expand=True)
+    source_text = scrolledtext.ScrolledText(sources_tab, height=8, wrap="word")
     family = tk.StringVar()
     family_version = tk.StringVar()
     family_evidence = tk.StringVar()
@@ -259,21 +262,25 @@ def gui(session):
                             ("Evidence reference to verified original document", family_evidence)):
         ttk.Label(sources_tab, text=title).pack(anchor="w")
         ttk.Entry(sources_tab, textvariable=variable, width=105).pack(fill="x")
+    # Keep provenance input fields above the expanding passage viewer.
+    source_text.pack(fill="both", expand=True)
 
     labels_tab = ttk.Frame(tabs)
     tabs.add(labels_tab, text="2. Positive / negative labels")
     label_nav = ttk.Frame(labels_tab)
     label_nav.pack(fill="x")
+    label_actions = ttk.Frame(labels_tab)
+    label_actions.pack(fill="x", pady=4)
     li = [0]
     label_id = tk.StringVar()
     ttk.Label(label_nav, textvariable=label_id).pack(side="left", padx=4)
     reference_list = tk.Listbox(labels_tab, height=5, exportselection=False)
     reference_list.pack(fill="x")
-    label_text = scrolledtext.ScrolledText(labels_tab, wrap="word", height=11)
-    label_text.pack(fill="both", expand=True)
+    label_text = scrolledtext.ScrolledText(labels_tab, wrap="word", height=8)
     label_evidence = tk.StringVar()
     ttk.Label(labels_tab, text="Evidence reference / technical justification for THIS passage").pack(anchor="w")
     ttk.Entry(labels_tab, textvariable=label_evidence, width=105).pack(fill="x")
+    label_text.pack(fill="both", expand=True)
 
     def refresh_stats():
         stats = session.summary()
@@ -399,14 +406,14 @@ def gui(session):
     for caption, callback in (("Previous",lambda:source_move(-1)),("Next",lambda:source_move(1)),
                               ("Next pending",lambda:source_move(pending=True))):
         ttk.Button(source_nav,text=caption,command=callback).pack(side="right",padx=4)
-    ttk.Button(sources_tab, text="Record APPROVED source", command=lambda:source_decision('approved')).pack(side="left",padx=5,pady=8)
-    ttk.Button(sources_tab, text="Record REJECTED source", command=lambda:source_decision('rejected')).pack(side="left",padx=5,pady=8)
+    ttk.Button(source_actions, text="Record APPROVED source", command=lambda:source_decision('approved')).pack(side="left",padx=5)
+    ttk.Button(source_actions, text="Record REJECTED source", command=lambda:source_decision('rejected')).pack(side="left",padx=5)
     for caption, callback in (("Previous",lambda:label_move(-1)),("Next",lambda:label_move(1)),
                               ("Next pending",lambda:label_move(pending=True))):
         ttk.Button(label_nav,text=caption,command=callback).pack(side="right",padx=4)
     reference_list.bind("<<ListboxSelect>>", show_reference)
-    ttk.Button(labels_tab, text="Record APPROVED passage", command=lambda:label_decision('approved')).pack(side="left",padx=5,pady=8)
-    ttk.Button(labels_tab, text="Record REJECTED passage", command=lambda:label_decision('rejected')).pack(side="left",padx=5,pady=8)
+    ttk.Button(label_actions, text="Record APPROVED passage", command=lambda:label_decision('approved')).pack(side="left",padx=5)
+    ttk.Button(label_actions, text="Record REJECTED passage", command=lambda:label_decision('rejected')).pack(side="left",padx=5)
     render_source()
     render_label()
     root.mainloop()
