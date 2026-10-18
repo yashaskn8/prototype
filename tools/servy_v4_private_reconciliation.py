@@ -171,7 +171,8 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
                 issues["SAME_ROW_POSITIVE_NEGATIVE_PASSAGE"] += 1
             recovered = dict(row)
             recovered.pop("source_group", None)
-            recovered["unverified_declared_source_group"] = row.get("source_group")
+            recovered["unverified_declared_source_group"] = (
+                row.get("source_group") or row.get("unverified_declared_source_group"))
             recovered["positive_texts"] = positives
             recovered["negative_texts"] = negatives
             recovered["review_status"] = row.get("review_status", "unverified")

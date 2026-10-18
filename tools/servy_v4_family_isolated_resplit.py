@@ -180,6 +180,13 @@ def run(bundle, corpus, recommendations, quarantine, out_dir):
     for name, path in inputs.items():
         require(path.is_file(), "MISSING_INPUT:" + name + ":" + str(path))
     loaded = {name: read_jsonl(path) for name, path in inputs.items()}
+    manifest_path = recommendations.parent / "ai_source_evidence_manifest.json"
+    require(manifest_path.is_file(), "MISSING_AI_EVIDENCE_MANIFEST")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    require(manifest.get("corpus_sha256") == digest(corpus),
+            "AI_EVIDENCE_CORPUS_HASH_MISMATCH")
+    require(manifest.get("documents_analyzed") == len(loaded["recommendations"]),
+            "AI_EVIDENCE_DOCUMENT_COUNT_MISMATCH")
     # Never silently discard a prior recorded decision, even if proposed.
     require(all(x.get("decision") == "PENDING" for x in loaded["source_queue"]),
             "SOURCE_REVIEWS_PRESENT_STOP_FOR_HUMAN_MIGRATION")
@@ -194,6 +201,12 @@ def run(bundle, corpus, recommendations, quarantine, out_dir):
         (out_dir / "resplit_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         return report
     new_train, new_dev, ledger = output
+    if not all(any(refs(row, "negative_chunk_ids") or refs(row, "negative_chunk_id")
+                   for row in split) for split in (new_train, new_dev)):
+        report["status"] = "BLOCKED_ONE_CLASS_SPLIT"
+        (out_dir / "resplit_report.json").write_text(
+            json.dumps(report, indent=2), encoding="utf-8")
+        return report
     structural, proposals, queue, sources = reconcile(
         new_train, new_dev, loaded["corpus"], quarantine=ledger)
     report["reconciliation_issues"] = structural["issue_counts"]
@@ -205,10 +218,14 @@ def run(bundle, corpus, recommendations, quarantine, out_dir):
         report["status"] = "BLOCKED_RECONCILIATION"
         (out_dir / "resplit_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         return report
+    require({(str(x.get("tenant_id")), str(x.get("document_id"))) for x in sources} ==
+            {(str(x.get("tenant_id")), str(x.get("document_id")))
+             for x in loaded["source_queue"]},
+            "SOURCE_REVIEW_QUEUE_NO_LONGER_MATCHES_CORPUS")
     artifacts = {
         "train_unapproved_candidate.jsonl": proposals["train"],
         "dev_unapproved_candidate.jsonl": proposals["dev"],
-        "source_family_review_queue.jsonl": sources,
+        "source_family_review_queue.jsonl": loaded["source_queue"],
         "expert_review_queue.jsonl": queue,
         "quarantined_negatives.jsonl": ledger,
     }

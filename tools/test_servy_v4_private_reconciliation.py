@@ -194,3 +194,9 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
         self.assertIn("INVALID_OR_CONFLICTING_SOURCE_CHECKSUM", report["issue_counts"])
 
+
+    def test_repeat_reconciliation_preserves_unverified_source_group(self):
+        _, first, _, _ = reconcile(self.train, self.dev, self.corpus)
+        previous = first["train"][0].get("unverified_declared_source_group")
+        _, second, _, _ = reconcile(first["train"], first["dev"], self.corpus)
+        self.assertEqual(second["train"][0].get("unverified_declared_source_group"), previous)
