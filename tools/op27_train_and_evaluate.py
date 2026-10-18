@@ -51,6 +51,7 @@ from core.ml.embeddings import (
     EmbeddingProfile,
     cached_checkpoint_fingerprint,
     INDEX_SCHEMA_VERSION,
+    PASSAGE_FORMAT_VERSION,
 )
 from core.services.retriever import retrieve
 import core.services.retriever as retriever_module
@@ -130,6 +131,10 @@ def train_single_model(model_id, query_prefix, output_dir, train_resolved, val_r
     print(f"Epochs: {epochs}, Batch size: {batch_size}, LR: {lr}")
     print(f"{'='*80}")
 
+    if not val_resolved or len(val_resolved) < 8:
+        raise ValueError("At least eight separate development questions required before training")
+    if (output_dir / "final").exists():
+        raise FileExistsError("Existing model checkpoint is protected: " + str(output_dir / "final"))
     output_dir.mkdir(parents=True, exist_ok=True)
     kwargs = {"device": "cpu"}
     if revision:
@@ -233,10 +238,10 @@ def build_and_stamp_chroma_collection(model_path, collection_name, query_prefix,
     if collection_name in PROTECTED_COLLECTIONS:
         raise ValueError(f"Cannot delete or overwrite protected production collection: {collection_name}")
 
-    # If experimental collection exists, delete to ensure clean index
+    # NEVER destructively replace an experimental vector collection during evaluation.
     existing = [c.name for c in client.list_collections()]
     if collection_name in existing:
-        client.delete_collection(collection_name)
+        raise FileExistsError("Existing research vector collection is protected: " + collection_name)
 
     model = SentenceTransformer(str(model_path), device="cpu")
 
@@ -260,7 +265,7 @@ def build_and_stamp_chroma_collection(model_path, collection_name, query_prefix,
         "servy_revision": "",
         "servy_dim": 384,
         "servy_query_prefix": query_prefix,
-        "servy_passage_format": "legacy_metadata_v0",
+        "servy_passage_format": PASSAGE_FORMAT_VERSION if content_first else "legacy_metadata_v0",
         "servy_schema_version": INDEX_SCHEMA_VERSION,
         "servy_checkpoint_fp": fp,
     }
