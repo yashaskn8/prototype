@@ -140,5 +140,60 @@ class TestServyAIEvidenceAuditor(unittest.TestCase):
         finally:
             auditor.close()
 
+
+    def test_proposed_family_collision_across_train_and_dev_is_flagged(self):
+        # Same physical equipment family but two different document IDs.
+        # A document-isolated split can still leak after family review.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO core_knowledgedocument "
+                "(id,title,version,checksum_sha256,product_id,category_id,domain_id,tenant_id) "
+                "VALUES (136,'Second Shredder Guide','1.0',?,10,10,8,6)",
+                ("b" * 64,))
+            conn.commit()
+        finally:
+            conn.close()
+        with self.corpus_path.open("a", encoding="utf-8") as out:
+            out.write(json.dumps({
+                "chunk_id": "60", "tenant_id": "6",
+                "document_id": "136", "passage": "Check the gear assembly"
+            }) + "\n")
+        with (self.bundle_dir / "source_family_review_queue.jsonl").open("a", encoding="utf-8") as out:
+            out.write(json.dumps({
+                "tenant_id": "6", "document_id": "136",
+                "chunk_count": 1, "document_versions": ["1.0"],
+                "source_document_sha256": ["b" * 64]
+            }) + "\n")
+        with (self.bundle_dir / "expert_review_queue.jsonl").open("a", encoding="utf-8") as out:
+            out.write(json.dumps({
+                "split": "dev", "query_id": "Q2",
+                "query_text": "Paper shredder gear assembly",
+                "references": [{
+                    "role": "positive", "chunk_id": "60", "document_id": "136",
+                    "passage": "Check the gear assembly"
+                }]
+            }) + "\n")
+        auditor = ServyAIEvidenceAuditor(self.bundle_dir, self.corpus_path, self.db_path)
+        try:
+            sources, _ = auditor.audit_document_provenance()
+            risk = auditor.projected_source_family_split_risk(sources)
+            self.assertEqual(risk["collision_count"], 1)
+            self.assertEqual(risk["status"], "PROPOSED_FAMILY_COLLISIONS")
+            self.assertEqual(risk["collisions"][0]["train_queries"], 1)
+            self.assertEqual(risk["collisions"][0]["dev_queries"], 1)
+        finally:
+            auditor.close()
+
+    def test_projected_split_check_counts_negative_references(self):
+        auditor = ServyAIEvidenceAuditor(self.bundle_dir, self.corpus_path, self.db_path)
+        try:
+            sources, _ = auditor.audit_document_provenance()
+            risk = auditor.projected_source_family_split_risk(sources)
+            self.assertEqual(risk["collision_count"], 0)
+            self.assertFalse(risk["unresolved_references"])
+        finally:
+            auditor.close()
+
 if __name__ == "__main__":
     unittest.main()

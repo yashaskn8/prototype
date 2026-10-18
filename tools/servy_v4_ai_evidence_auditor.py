@@ -351,6 +351,67 @@ class ServyAIEvidenceAuditor:
         }
         return recommendations, uncertain_cases, false_negative_candidates, summary
 
+    def projected_source_family_split_risk(self, source_recommendations):
+        """Advisory: detect families used in BOTH splits before human review.
+
+        Includes negatives as well as positives. These are machine-proposed
+        families, never treated as verified, and are not used to rewrite data.
+        """
+        family_by_document = {
+            (str(x["tenant_id"]), str(x["document_id"])):
+            str(x["proposed_canonical_source_family"])
+            for x in source_recommendations
+        }
+        uses = defaultdict(lambda: {"train": set(), "dev": set(),
+                                    "train_docs": set(), "dev_docs": set()})
+        unresolved = []
+        for row in self.label_queue:
+            split = str(row.get("split") or "")
+            qid = str(row.get("query_id") or "")
+            if split not in ("train", "dev") or not qid:
+                unresolved.append({"query_id": qid, "split": split, "reason": "BAD_QUERY_IDENTITY"})
+                continue
+            for ref in row.get("references", []):
+                cid = str(ref.get("chunk_id") or "")
+                chunk = self.chunk_by_id.get(cid)
+                if not chunk:
+                    unresolved.append({"query_id": qid, "chunk_id": cid, "reason": "UNKNOWN_CHUNK"})
+                    continue
+                tenant, document = str(chunk.get("tenant_id")), str(chunk.get("document_id"))
+                if document != str(ref.get("document_id")):
+                    unresolved.append({"query_id": qid, "chunk_id": cid,
+                                       "reason": "DOCUMENT_MISMATCH"})
+                    continue
+                family = family_by_document.get((tenant, document))
+                if not family:
+                    unresolved.append({"query_id": qid, "chunk_id": cid,
+                                       "reason": "MISSING_FAMILY_PROPOSAL"})
+                    continue
+                group = uses[(tenant, family)]
+                group[split].add(qid)
+                group[split + "_docs"].add(document)
+        collisions = []
+        for (tenant, family), used in sorted(uses.items()):
+            if used["train"] and used["dev"]:
+                collisions.append({
+                    "tenant_id": tenant,
+                    "proposed_canonical_source_family": family,
+                    "train_queries": len(used["train"]),
+                    "dev_queries": len(used["dev"]),
+                    "train_documents": sorted(used["train_docs"]),
+                    "dev_documents": sorted(used["dev_docs"]),
+                    "human_review_required": True,
+                })
+        return {
+            "status": "PROPOSED_FAMILY_COLLISIONS" if collisions else "NO_PROPOSED_FAMILY_COLLISIONS",
+            "collision_count": len(collisions),
+            "collisions": collisions,
+            "unresolved_references": unresolved,
+            "note": "Machine-proposed grouping only; these are not attested source families. "
+                    "Do not rename real shared families to evade leakage checks. "
+                    "Repair a collision using an expert-reviewed source-isolated resplit.",
+        }
+
     def run_full_audit(self, out_dir: Path) -> dict:
         """Run all audit phases and export the structured machine evidence package."""
         out_dir = Path(out_dir).resolve()
@@ -358,6 +419,7 @@ class ServyAIEvidenceAuditor:
         
         doc_recs, doc_summary = self.audit_document_provenance()
         lbl_recs, uncertain, false_negs, lbl_summary = self.audit_label_references()
+        split_risk = self.projected_source_family_split_risk(doc_recs)
         
         # 1. ai_source_family_recommendations.jsonl
         with (out_dir / "ai_source_family_recommendations.jsonl").open("w", encoding="utf-8") as f:
@@ -389,6 +451,9 @@ class ServyAIEvidenceAuditor:
             "references_analyzed": len(lbl_recs),
             "document_summary": doc_summary,
             "label_summary": lbl_summary,
+            "projected_family_split_risk": split_risk,
+            "analysis_method": "SQLITE_METADATA_PLUS_UNVALIDATED_LEXICAL_HEURISTICS",
+            "independent_original_document_byte_verification": False,
             "note": "Machine review recommendations only; human expert approval remains mandatory."
         }
         (out_dir / "ai_source_evidence_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -397,6 +462,8 @@ class ServyAIEvidenceAuditor:
         full_summary = {
             "provenance_audit": doc_summary,
             "relevance_audit": lbl_summary,
+            "projected_family_split_risk": split_risk,
+            "independent_original_document_byte_verification": False,
             "out_directory": str(out_dir),
             "training_ready": False,
             "human_approval_complete": False,
