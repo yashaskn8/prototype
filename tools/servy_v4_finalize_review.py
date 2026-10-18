@@ -15,7 +15,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from servy_v4_private_reconciliation import read_jsonl, refs, normalize
+from servy_v4_private_reconciliation import read_jsonl, refs, normalize, source_sha256
 
 
 class ReviewBlocked(ValueError):
@@ -74,8 +74,10 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
             str(chunk.get("source_version") or "").strip() for chunk in source_chunks
         }
         require(declared_versions == {version}, "Source-version mismatch: " + repr(key))
-        hashes = {str(chunk.get("source_checksum_sha256") or "").strip().lower()
-                  for chunk in source_chunks}
+        try:
+            hashes = {source_sha256(chunk) for chunk in source_chunks}
+        except ValueError as error:
+            raise ReviewBlocked(str(error)) from error
         require(hashes and all(re.fullmatch(r"[0-9a-f]{64}", h) for h in hashes),
                 "Missing or malformed original source checksum: " + repr(key))
         require(len(hashes) == 1, "Conflicting document checksums: " + repr(key))

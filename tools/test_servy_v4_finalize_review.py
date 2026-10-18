@@ -212,5 +212,18 @@ class ReviewFinalizationTests(unittest.TestCase):
             self.apply()
 
 
+    def test_original_checksum_alias_is_supported_with_verifiable_source(self):
+        for chunk in self.corpus:
+            chunk["checksum_sha256"] = chunk.pop("source_checksum_sha256")
+        export, corpus, report = self.apply()
+        self.assertEqual(report["result"], "REVIEW_RECORDS_STRUCTURALLY_CONSISTENT")
+        self.assertEqual(export["train"][0]["review_status"], "approved")
+
+    def test_conflicting_checksum_aliases_block_approval(self):
+        self.corpus[0]["checksum_sha256"] = "f" * 64
+        with self.assertRaisesRegex(ReviewBlocked, "Contradictory original source checksum"):
+            self.apply()
+
+
 if __name__ == "__main__":
     unittest.main()

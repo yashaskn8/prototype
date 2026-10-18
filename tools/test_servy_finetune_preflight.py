@@ -449,5 +449,14 @@ class TestTrainingAdmission(unittest.TestCase):
         result = self.check(dev=dev)
         self.assertIn("SPLIT_CROSS_TENANT_QUERY_COLLISION", result["issue_counts"])
 
+    def test_conflicting_checksum_field_aliases_block_structural_gate(self):
+        corpus = [dict(row) for row in self.corpus]
+        corpus[0]["source_checksum_sha256"] = "a" * 64
+        corpus[0]["checksum_sha256"] = "b" * 64
+        result = self.check(corpus=corpus)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("INVALID_OR_CONFLICTING_SOURCE_CHECKSUM", result["issue_counts"])
+
+
 if __name__ == "__main__":
     unittest.main()

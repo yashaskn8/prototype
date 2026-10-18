@@ -67,9 +67,10 @@ def make_corpus(rows, add):
             "chunk": chunk_id, "tenant": tenant, "document": doc_id,
             "passage": passage,
             "source_group": norm(row.get("source_group", "")),
-            "source_checksum": str(
-                row.get("source_checksum_sha256") or row.get("checksum_sha256") or ""
-            ).strip().lower(),
+            "source_checksum": (
+                str(row.get("source_checksum_sha256") or row.get("checksum_sha256") or "")
+                .strip().lower()
+            ),
             "passage_chars": len(str(row.get("passage", row.get("text", "")))),
             "asset_id": str(row.get("asset_id", "")).strip(),
             "customer_id": str(row.get("customer_id", "")).strip(),
@@ -77,7 +78,17 @@ def make_corpus(rows, add):
         by_passage[(tenant, passage)].add(chunk_id)
         group = norm(row.get("source_group"))
         source_version = str(row.get("source_version") or "").strip()
-        checksum = str(row.get("source_checksum_sha256") or row.get("checksum_sha256") or "").strip().lower()
+        provided_checksums = {
+            str(row.get(field) or "").strip().lower()
+            for field in ("source_checksum_sha256", "checksum_sha256")
+            if str(row.get(field) or "").strip()
+        }
+        if len(provided_checksums) > 1 or any(
+            not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for digest in provided_checksums
+        ):
+            add("BLOCKER", "INVALID_OR_CONFLICTING_SOURCE_CHECKSUM", f"corpus:{index}")
+        checksum = next(iter(provided_checksums), "")
         if group:
             doc_groups[(tenant, doc_id)].add(group)
         if source_version:

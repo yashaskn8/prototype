@@ -177,3 +177,20 @@ class TestReconcile(unittest.TestCase):
         report, _, _, _ = reconcile(train, dev, corpus)
         self.assertEqual(report["train_dev_overlap"]["identical_passages_across_tenants"], 1)
 
+
+    def test_alternate_original_document_checksum_is_not_dropped(self):
+        corpus = [dict(chunk) for chunk in self.corpus]
+        for chunk in corpus:
+            chunk["checksum_sha256"] = chunk.pop("source_checksum_sha256")
+        report, proposed, reviews, families = reconcile(self.train, self.dev, corpus)
+        self.assertNotIn("INVALID_OR_CONFLICTING_SOURCE_CHECKSUM", report["issue_counts"])
+        self.assertTrue(all(family["source_document_sha256"] for family in families))
+        self.assertFalse(report["ready_for_training"])
+
+    def test_conflicting_checksum_aliases_block_data(self):
+        corpus = [dict(chunk) for chunk in self.corpus]
+        corpus[0]["checksum_sha256"] = "f" * 64
+        report, _, _, _ = reconcile(self.train, self.dev, corpus)
+        self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("INVALID_OR_CONFLICTING_SOURCE_CHECKSUM", report["issue_counts"])
+

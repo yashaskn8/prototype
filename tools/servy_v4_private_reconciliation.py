@@ -38,6 +38,19 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def source_sha256(record):
+    """Resolve explicit document checksum aliases without guessing source identity."""
+    names = ("source_checksum_sha256", "checksum_sha256")
+    supplied = {str(record.get(key) or "").strip().lower()
+                for key in names if str(record.get(key) or "").strip()}
+    if len(supplied) > 1:
+        raise ValueError("Contradictory original source checksum fields")
+    value = next(iter(supplied), "")
+    if value and not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("Malformed original source SHA-256")
+    return value
+
+
 def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
     """Structural evidence only. Never certifies expert labels or source groups."""
     issues = Counter()
@@ -62,11 +75,13 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
             info["groups"].add(str(chunk["source_group"]).strip())
         if chunk.get("source_version"):
             info["versions"].add(str(chunk["source_version"]).strip())
-        checksum = str(chunk.get("source_checksum_sha256") or "").strip().lower()
-        if re.fullmatch(r"[0-9a-f]{64}", checksum):
+        try:
+            checksum = source_sha256(chunk)
+        except ValueError:
+            issues["INVALID_OR_CONFLICTING_SOURCE_CHECKSUM"] += 1
+            checksum = ""
+        if checksum:
             info["checksums"].add(checksum)
-        elif checksum:
-            issues["INVALID_SOURCE_CHECKSUM"] += 1
 
     inventory = {}
     review = []
