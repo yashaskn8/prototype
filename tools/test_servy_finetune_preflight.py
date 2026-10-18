@@ -184,5 +184,65 @@ class TestTrainingAdmission(unittest.TestCase):
                       report["issue_counts"])
 
 
+    def test_corpus_source_family_collision_without_row_group_blocks(self):
+        corpus = [
+            dict(self.corpus[0], source_group="manual-family-same"),
+            dict(self.corpus[1], source_group="manual-family-same"),
+            *self.corpus[2:],
+        ]
+        report = self.check(corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("SPLIT_SOURCE_GROUP_COLLISION", report["issue_counts"])
+
+    def test_in_batch_negative_of_other_positive_blocks(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "passage": "new technician procedure"},
+        ]
+        train = [dict(self.train[0], negative_chunk_ids=[3],
+                      negative_text="unrelated filter gamma"),
+                 {"query_id": "T-2", "query": "filter repair", "tenant_id": 9,
+                  "chunk_id": 3, "positive_text": "unrelated filter gamma"}]
+        report = self.check(train=train, corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("TRAIN_NEGATIVE_IS_ANOTHER_POSITIVE", report["issue_counts"])
+
+    def test_equivalent_text_under_distinct_chunks_blocks(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "passage": "compressor fault alpha"}
+        ]
+        train = [dict(self.train[0], negative_chunk_ids=[5],
+                      negative_text="compressor fault alpha")]
+        report = self.check(train=train, corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("TRAIN_NEGATIVE_EQUIVALENT_POSITIVE_TEXT", report["issue_counts"])
+
+    def test_stage2_negative_colliding_with_train_positive_blocks(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "passage": "new technician procedure"}
+        ]
+        stage2 = [
+            {"query_id": "S-1", "query": "why compressor fault", "tenant_id": 9,
+             "positive": "compressor fault alpha",
+             "candidate_negative": "compressor fault alpha"}
+        ]
+        report = self.check(corpus=corpus, stage2=stage2)
+        self.assertIn("TRAIN_NEGATIVE_IS_ANOTHER_POSITIVE", report["issue_counts"])
+
+    def test_holdout_missing_gold_not_silently_unanswerable(self):
+        train = self.dump("train.jsonl", self.train)
+        dev = self.dump("dev.jsonl", self.dev)
+        corpus = self.dump("corpus.jsonl", self.corpus)
+        holdout = self.dump("holdout.jsonl", [
+            {"query_id": "H-1", "query": "needs a manual", "tenant_id": 9,
+             "positive_chunk_ids": []}
+        ])
+        report = audit(train, dev, corpus, holdout_path=holdout)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("HOLDOUT_NO_GOLD_WITHOUT_UNANSWERABLE_LABEL", report["issue_counts"])
+
+
 if __name__ == "__main__":
     unittest.main()
