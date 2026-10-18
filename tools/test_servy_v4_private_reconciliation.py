@@ -31,6 +31,8 @@ class TestReconcile(unittest.TestCase):
     def test_clean_structural_candidate_stays_unapproved(self):
         report, proposed, review, families = reconcile(
             self.train, self.dev, self.corpus)
+        self.assertTrue(report["quarantine_ledger_matches_split_proposals"])
+        self.assertEqual(report["unapproved_negative_rows"], 1)
         self.assertEqual(report["train_dev_overlap"]["documents"], 0)
         self.assertEqual(report["status"], "BLOCKED_SOURCE_FAMILY_VERIFICATION")
         self.assertEqual(report["unapproved_label_rows"], 2)
@@ -84,10 +86,12 @@ class TestReconcile(unittest.TestCase):
             proposal.mkdir(parents=True)
             corpus_file = p / "corpus.jsonl"
             for path, rows in (
-                (proposal / "train_proposed.jsonl", self.train),
+                (proposal / "train_proposed.jsonl", [
+                    dict(self.train[0], quarantined_negative_chunk_ids=["2"])]),
                 (proposal / "dev_proposed.jsonl", self.dev),
                 (proposal / "quarantined_negatives.jsonl", [
-                    {"query_id": "t1", "negative_chunk_id": "2", "review_status": "PENDING"}
+                    {"split": "train", "query_id": "t1",
+                     "negative_chunk_id": "2", "review_status": "PENDING"}
                 ]),
                 (corpus_file, self.corpus),
             ):
@@ -101,3 +105,50 @@ class TestReconcile(unittest.TestCase):
                 process(proposal, corpus_file, None, target)
             with self.assertRaisesRegex(ValueError, "private_training_data"):
                 process(proposal, corpus_file, None, Path(tmp) / "public")
+
+    def test_quarantine_ledger_matches_proposal(self):
+        train = [dict(self.train[0], quarantined_negative_chunk_ids=["2"])]
+        quarantine = [{"split": "train", "query_id": "t1",
+                       "negative_chunk_id": "2", "review_status": "PENDING"}]
+        report, proposed, _, _ = reconcile(
+            train, self.dev, self.corpus, quarantine=quarantine)
+        self.assertTrue(report["quarantine_ledger_matches_split_proposals"])
+        self.assertNotIn("QUARANTINE_LEDGER_MISSING_REFERENCES", report["issue_counts"])
+        self.assertEqual(proposed["train"][0]["quarantined_negative_chunk_ids"], ["2"])
+
+    def test_missing_ledger_reference_blocks(self):
+        train = [dict(self.train[0], quarantined_negative_chunk_ids=["2"])]
+        report, _, _, _ = reconcile(train, self.dev, self.corpus, quarantine=[])
+        self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("QUARANTINE_LEDGER_MISSING_REFERENCES", report["issue_counts"])
+
+    def test_fake_or_duplicate_ledger_reference_blocks(self):
+        train = [dict(self.train[0], quarantined_negative_chunk_ids=["2"])]
+        quarantine = [{"split": "train", "query_id": "t1",
+                       "negative_chunk_id": "2", "review_status": "PENDING"}]
+        for ledger in (quarantine*2,
+                       quarantine + [{"split": "dev", "query_id": "d1",
+                                      "negative_chunk_id": "3"}],
+                       [{"split": "train", "query_id": "t1",
+                         "negative_chunk_id": "999"}]):
+            report, _, _, _ = reconcile(train, self.dev, self.corpus, quarantine=ledger)
+            self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+            self.assertFalse(report["quarantine_ledger_matches_split_proposals"])
+
+    def test_quarantined_reference_cannot_remain_active(self):
+        train = [dict(self.train[0], quarantined_negative_chunk_ids=["3"])]
+        quarantine = [{"split": "train", "query_id": "t1",
+                       "negative_chunk_id": "3"}]
+        report, _, _, _ = reconcile(train, self.dev, self.corpus, quarantine=quarantine)
+        self.assertIn("QUARANTINED_NEGATIVE_STILL_ACTIVE", report["issue_counts"])
+        self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+
+    def test_no_autopromotion_of_negative_approval(self):
+        train = [dict(self.train[0], review_status="approved",
+                      reviewer_id="reviewer-1")]
+        report, proposed, _, _ = reconcile(train, self.dev, self.corpus)
+        self.assertEqual(report["unapproved_negative_rows"], 1)
+        self.assertFalse(report["expert_label_verification_complete"])
+        self.assertFalse(report["ready_for_training"])
+        self.assertNotIn("negative_review_status", proposed["train"][0])
+

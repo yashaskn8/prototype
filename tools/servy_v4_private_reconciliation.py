@@ -71,6 +71,9 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
     inventory = {}
     review = []
     proposed = {}
+    expected_quarantine = Counter()
+    active_negative_references = set()
+    row_by_split_qid = {}
     for split, rows in (("train", train), ("dev", dev)):
         inv = {"chunks": set(), "docs": set(), "checksums": set(),
                "passages": set(), "queries": set()}
@@ -85,9 +88,32 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
             if (tid, qid) in seen_qids:
                 issues["DUPLICATE_QUERY_ID"] += 1
             seen_qids.add((tid, qid))
+            if (split, qid) in row_by_split_qid:
+                # The quarantine ledger identifies rows by split/query_id,
+                # not tenant. Ambiguous IDs cannot be reconciled reliably.
+                issues["AMBIGUOUS_QUARANTINE_QUERY_ID"] += 1
+            row_by_split_qid[(split, qid)] = tid
             inv["queries"].add((tid, normalize(query)))
             pos_ids = refs(row, "positive_chunk_ids") or refs(row, "positive_chunk_id")
             neg_ids = refs(row, "negative_chunk_ids") or refs(row, "negative_chunk_id")
+            quarantined_ids = refs(row, "quarantined_negative_chunk_ids")
+            if len(quarantined_ids) != len(set(quarantined_ids)):
+                issues["DUPLICATED_QUARANTINE_IN_PROPOSAL"] += 1
+            if len(neg_ids) != len(set(neg_ids)):
+                issues["DUPLICATED_ACTIVE_NEGATIVE"] += 1
+            if set(neg_ids) & set(quarantined_ids):
+                issues["QUARANTINED_NEGATIVE_STILL_ACTIVE"] += 1
+            if set(pos_ids) & set(quarantined_ids):
+                issues["QUARANTINE_CONTAINS_POSITIVE"] += 1
+            for cid in neg_ids:
+                active_negative_references.add((split, qid, cid))
+            for cid in quarantined_ids:
+                expected_quarantine[(split, qid, cid)] += 1
+                chunk = by_id.get(cid)
+                if chunk is None:
+                    issues["QUARANTINED_REFERENCE_MISSING_FROM_CORPUS"] += 1
+                elif str(chunk["tenant_id"]) != tid:
+                    issues["QUARANTINED_REFERENCE_CROSS_TENANT"] += 1
             if not pos_ids:
                 issues["MISSING_POSITIVE_REFERENCE"] += 1
             if set(pos_ids) & set(neg_ids):
@@ -140,6 +166,30 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
             })
         inventory[split] = inv
         proposed[split] = new_rows
+
+    observed_quarantine = Counter()
+    for entry in quarantine:
+        split = str(entry.get("split") or "").strip()
+        qid = str(entry.get("query_id") or "").strip()
+        cid = str(entry.get("negative_chunk_id") or "").strip()
+        if split not in ("train", "dev") or not qid or not cid:
+            issues["INVALID_QUARANTINE_LEDGER_ENTRY"] += 1
+            continue
+        key = (split, qid, cid)
+        observed_quarantine[key] += 1
+        if (split, qid) not in row_by_split_qid:
+            issues["QUARANTINE_ORPHAN_QUERY"] += 1
+        if key in active_negative_references:
+            issues["QUARANTINE_LEDGER_REFERENCE_STILL_ACTIVE"] += 1
+        if entry.get("review_status") == "approved":
+            # Historical quarantine is a pending decision, never approved
+            # merely because it was present in a reconstructed ledger.
+            issues["QUARANTINE_UNEXPECTED_APPROVED_STATUS"] += 1
+    if expected_quarantine != observed_quarantine:
+        missing = expected_quarantine - observed_quarantine
+        extra = observed_quarantine - expected_quarantine
+        issues["QUARANTINE_LEDGER_MISSING_REFERENCES"] += sum(missing.values())
+        issues["QUARANTINE_LEDGER_EXTRA_REFERENCES"] += sum(extra.values())
 
     for doc in documents.values():
         if len(doc["groups"]) > 1:
@@ -200,11 +250,22 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
         "corpus_chunks": len(by_id),
         "train_rows": len(train), "dev_rows": len(dev),
         "quarantined_negatives_preserved": quarantine_refs,
+        "quarantine_ledger_matches_split_proposals":
+            expected_quarantine == observed_quarantine
+            and not any(key.startswith("QUARANTINE_") or
+                        key.startswith("DUPLICATED_QUARANTINE") or
+                        key == "AMBIGUOUS_QUARANTINE_QUERY_ID"
+                        for key in issues),
         "train_dev_overlap": overlap,
         "historical_holdout": holdout_report,
         "documents_requiring_canonical_family_review": len(source_review),
         "unapproved_label_rows": sum(
             1 for x in train + dev if x.get("review_status") != "approved"),
+        "unapproved_negative_rows": sum(
+            1 for x in train + dev
+            if (refs(x, "negative_chunk_ids") or refs(x, "negative_chunk_id"))
+            and (x.get("negative_review_status") != "approved"
+                 or not x.get("negative_reviewer_id"))),
         "conflicting_declared_document_groups":
             issues["CONFLICTING_SOURCE_GROUP_CLAIMS"],
         "issue_counts": dict(sorted(issues.items())),
