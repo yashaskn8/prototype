@@ -56,6 +56,16 @@ def is_temporary_colab_path(path):
 
 def backup_checkpoint(source, destination):
     src, dst = Path(source), Path(destination)
+    if not dst.is_absolute():
+        raise ValueError("Backup destination must be an absolute approved persistent path")
+    # In Colab, /content/drive can exist as an ordinary empty directory after
+    # a disconnected runtime. It is NOT persistent until the Drive mount is live.
+    target_path = dst.as_posix()
+    if (target_path == "/content/drive" or target_path.startswith("/content/drive/")):
+        if not os.path.ismount("/content/drive"):
+            raise ValueError(
+                "Google Drive is not mounted at /content/drive; refusing ephemeral backup"
+            )
     if not src.exists():
         raise FileNotFoundError(f"Source checkpoint missing: {src}")
     if is_temporary_colab_path(dst):
