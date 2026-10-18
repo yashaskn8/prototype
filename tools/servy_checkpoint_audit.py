@@ -485,7 +485,7 @@ def run(args):
     summary = {
         "warning": "DEVELOPMENT DIAGNOSTIC; reused weak labels are not independent accuracy evidence.",
         "gold_document_note": "Inferred from corpus gold chunk metadata, not independently adjudicated.",
-        "scoring": "raw single-logit CrossEncoder score; higher is better; top pool only",
+        "scoring": "Raw single-logit scores for all candidates; descending rank applied ONLY to the bounded head pool; tail retains Qwen order.",
         "cases_sha256": _sha256(args.cases),
         "corpus_sha256": _sha256(args.corpus),
         "candidates_sha256": _sha256(out / "frozen_candidates.jsonl"),
