@@ -33,6 +33,7 @@ import django
 django.setup()
 
 from core.models import KnowledgeDocument, KnowledgeChunk, Tenant
+from tools.op26_source_isolated_split import source_isolated_split
 
 
 def chunk_passage_text(chunk, content_first=True):
@@ -394,33 +395,18 @@ def build_dataset():
 
     print(f"After deduplication: {len(deduped)} examples")
 
-    # Split into TRAIN and DEVELOPMENT by source_group
-    random.seed(42)
-    groups = defaultdict(list)
-    for ex in deduped:
-        groups[ex["source_group"]].append(ex)
-
-    group_keys = sorted(groups.keys())
-    random.shuffle(group_keys)
-
-    # 85% train, 15% dev (by source group)
-    n_dev_groups = max(1, int(len(group_keys) * 0.15))
-    dev_groups = set(group_keys[:n_dev_groups])
-
-    train_examples = []
-    dev_examples = []
-    for gk in group_keys:
-        if gk in dev_groups:
-            dev_examples.extend(groups[gk])
-        else:
-            train_examples.extend(groups[gk])
-
-    # Shuffle within splits
-    random.shuffle(train_examples)
-    random.shuffle(dev_examples)
-
-    print(f"\nTRAIN: {len(train_examples)} examples across {len(group_keys) - n_dev_groups} source groups")
-    print(f"DEVELOPMENT: {len(dev_examples)} examples across {n_dev_groups} source groups")
+    # Root-cause fix: positive-only source_group partitioning leaked
+    # negative-reference documents into the opposite split.
+    # Partition by connected positives + negatives + document checksums
+    # + identical passages + normalized queries. Human source review remains required.
+    train_examples, dev_examples, split_evidence = source_isolated_split(
+        deduped, chunk_map, dev_fraction=0.15, seed=42
+    )
+    n_dev_groups = split_evidence["dev_components"]
+    group_keys = list(range(split_evidence["source_components"]))
+    print(f"\nTRAIN: {len(train_examples)} examples")
+    print(f"DEVELOPMENT: {len(dev_examples)} examples")
+    print(f"Connected source components: {split_evidence['source_components']}")
 
     # Equipment coverage
     train_equipment = defaultdict(int)
@@ -436,12 +422,18 @@ def build_dataset():
 
     train_path = out_dir / "op26_train.jsonl"
     dev_path = out_dir / "op26_dev.jsonl"
+    manifest_path = out_dir / "op26_dataset_manifest.json"
+    if any(p.exists() for p in (train_path, dev_path, manifest_path)):
+        raise FileExistsError(
+            "Refusing to overwrite historical Op26 datasets. "
+            "Preserve or explicitly relocate them before regenerating."
+        )
 
-    with open(train_path, "w", encoding="utf-8") as f:
+    with open(train_path, "x", encoding="utf-8") as f:
         for ex in train_examples:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
-    with open(dev_path, "w", encoding="utf-8") as f:
+    with open(dev_path, "x", encoding="utf-8") as f:
         for ex in dev_examples:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
@@ -496,11 +488,12 @@ def build_dataset():
             "n_dev": len(dev_examples),
             "n_source_groups_train": len(group_keys) - n_dev_groups,
             "n_source_groups_dev": n_dev_groups,
+            "source_graph_isolation": split_evidence,
+            "expert_label_approval": "UNVERIFIED_WEAK_SUPERVISION",
         },
     }
 
-    manifest_path = out_dir / "op26_dataset_manifest.json"
-    with open(manifest_path, "w", encoding="utf-8") as f:
+    with open(manifest_path, "x", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
     print(f"\n{'='*80}")
