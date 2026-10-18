@@ -39,6 +39,7 @@ class ReviewFinalizationTests(unittest.TestCase):
                                  ("dev","D1",[("positive","2"),("negative","4")])):
             self.reviews.append({
                 "split": split, "query_id": qid,
+                "query_text": "compressor fault" if split == "train" else "calibrate sensor",
                 "references": [{
                     "role": role, "chunk_id": cid,
                     "document_id": self.corpus[int(cid)-1]["document_id"],
@@ -168,6 +169,23 @@ class ReviewFinalizationTests(unittest.TestCase):
             self.assertEqual(result["status"], "READY_FOR_RESEARCH_EXPERIMENT",
                              result["issues"])
             self.assertFalse(result["training_performed"])
+
+    def test_changed_question_not_covered_by_original_review(self):
+        self.train[0]["query_text"] = "Different unreviewed question"
+        with self.assertRaisesRegex(ReviewBlocked, "Reviewed question text differs"):
+            self.apply()
+
+    def test_conflicting_legacy_passage_does_not_get_overwritten(self):
+        self.train[0]["negative_text"] = "Unreviewed second negative"
+        with self.assertRaisesRegex(ReviewBlocked, "Legacy negative passage conflicts"):
+            self.apply()
+
+    def test_identical_legacy_alias_does_not_double_count_BCE(self):
+        from servy_v4_colab_train import make_bce_pairs
+        self.train[0]["negative_text"] = "Unrelated checklist"
+        exports, _, _ = self.apply()
+        self.assertNotIn("negative_text", exports["train"][0])
+        self.assertEqual(len(make_bce_pairs(exports["train"])), 2)
 
 
 if __name__ == "__main__":

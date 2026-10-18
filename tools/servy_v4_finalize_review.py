@@ -114,6 +114,8 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
             require(qid and tenant and question and key in decisions,
                     "Unreviewed training example: " + repr(key))
             review = decisions[key]
+            require(str(review.get("query_text") or "").strip() == question,
+                    "Reviewed question text differs from training export: " + repr(key))
             used_reviews.add(key)
             pos = refs(row, "positive_chunk_ids") or refs(row, "positive_chunk_id")
             neg = refs(row, "negative_chunk_ids") or refs(row, "negative_chunk_id")
@@ -161,6 +163,24 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
                 else:
                     neg_texts.append(str(chunk["passage"]))
                     neg_reviewers.add(reviewer)
+            # Do not silently discard older exported passage aliases that
+            # contradict the actual adjudicated source passages.
+            for alias in ("positive_text", "positive"):
+                old = str(row.get(alias) or "").strip()
+                if old:
+                    require(old in pos_texts,
+                            "Legacy positive passage conflicts with reviewed source: " + repr(key))
+            for alias in ("negative_text", "negative", "candidate_negative"):
+                old = str(row.get(alias) or "").strip()
+                if old:
+                    require(old in neg_texts,
+                            "Legacy negative passage conflicts with reviewed source: " + repr(key))
+            if isinstance(row.get("positive_texts"), list) and row["positive_texts"]:
+                require(row["positive_texts"] == pos_texts,
+                        "Original positive passage list differs from reviewed sources: " + repr(key))
+            if isinstance(row.get("negative_texts"), list) and row["negative_texts"]:
+                require(row["negative_texts"] == neg_texts,
+                        "Original negative passage list differs from reviewed sources: " + repr(key))
             require(len(pos_reviewers) == 1 and len(neg_reviewers) <= 1,
                     "Different reviewers across one label row need separate adjudication")
             require(len(positive_families) == 1,
@@ -169,6 +189,11 @@ def finalize(train, dev, corpus, reviews, families, reviewer_manifest):
                          {normalize(x) for x in neg_texts}),
                     "Identical positive/negative passage for one query")
             approved = dict(row)
+            # The canonical exporter owns the training text fields. Remove
+            # equivalent legacy aliases so the BCE runner cannot double-count
+            # the same passage through multiple schema spellings.
+            for alias in ("positive", "negative", "negative_text", "candidate_negative"):
+                approved.pop(alias, None)
             approved["positive_texts"] = pos_texts
             approved["positive_text"] = pos_texts[0]
             approved["negative_texts"] = neg_texts
