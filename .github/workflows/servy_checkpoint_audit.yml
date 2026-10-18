@@ -5,6 +5,8 @@ on:
     paths:
       - "tools/servy_checkpoint_audit.py"
       - "tools/test_servy_checkpoint_audit.py"
+      - "tools/servy_v4_colab_train.py"
+      - "tools/test_servy_v4_colab_train.py"
       - "tools/servy_training_preflight.py"
       - "tools/test_servy_training_preflight.py"
       - "tools/servy_finetune_preflight.py"
@@ -25,6 +27,8 @@ on:
     paths:
       - "tools/servy_checkpoint_audit.py"
       - "tools/test_servy_checkpoint_audit.py"
+      - "tools/servy_v4_colab_train.py"
+      - "tools/test_servy_v4_colab_train.py"
       - "tools/servy_training_preflight.py"
       - "tools/test_servy_training_preflight.py"
       - "tools/servy_finetune_preflight.py"
@@ -45,7 +49,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile audit scripts
-        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_training_preflight.py tools/test_servy_training_preflight.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py tools/op27_split_integrity.py tools/test_op27_split_integrity.py tools/servy_checkpoint_backup.py tools/test_servy_checkpoint_backup.py
+        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_training_preflight.py tools/test_servy_training_preflight.py tools/servy_v4_colab_train.py tools/test_servy_v4_colab_train.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py tools/op27_split_integrity.py tools/test_op27_split_integrity.py tools/servy_checkpoint_backup.py tools/test_servy_checkpoint_backup.py
       - name: Test audit tool offline (no Docker, database, or GPU)
         run: python -m unittest discover -s tools -p "test_servy_checkpoint_audit.py" -v
       - name: Test training preflight offline (no models or DB)
@@ -54,6 +58,8 @@ jobs:
         run: python -m unittest discover -s tools -p "test_servy_finetune_preflight.py" -v
       - name: Test strict V4 admission gate (synthetic only)
         run: python -m unittest discover -s tools -p "test_servy_training_preflight.py" -v
+      - name: Test research runner schema and backup guards (no GPU)
+        run: python -m unittest discover -s tools -p "test_servy_v4_colab_train.py" -v
       - name: Test Op27 training safety contracts (no ML runtime)
         run: python -m unittest discover -s tools -p "test_op27_passages.py" -v
 
