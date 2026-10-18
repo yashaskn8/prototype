@@ -243,52 +243,71 @@ def build_qwen_candidates(cases, chunks, top_k=10,
 
 
 def rerank_fixed(query, candidate_ids, chunks, predict, pool_size=5):
-    """Higher logit is better; rerank only head, preserve tail exactly."""
-    pool = candidate_ids[:pool_size]
-    pairs = [[query, chunks[cid]["passage"]] for cid in pool]
-    scores = list(predict(pairs)) if pairs else []
-    if len(scores) != len(pool):
+    """Score every candidate, reorder only the head and leave the tail intact.
+
+    All raw logits are diagnostic observations, including tail items that MUST
+    NOT be promoted by the bounded serving-style top-N rerank.
+    """
+    pairs = [[query, chunks[cid]["passage"]] for cid in candidate_ids]
+    raw_scores = list(predict(pairs)) if pairs else []
+    if len(raw_scores) != len(candidate_ids):
         raise ValueError("Reranker returned wrong score count")
     by_chunk = {}
-    for cid, value in zip(pool, scores):
-        score = float(value)
+    for cid, value in zip(candidate_ids, raw_scores):
+        try:
+            score = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid reranker score for {cid}") from exc
         if not math.isfinite(score):
             raise ValueError(f"Invalid reranker score for {cid}")
         by_chunk[cid] = score
-    head = sorted(pool, key=lambda cid: (-by_chunk[cid], pool.index(cid)))
+    pool = candidate_ids[:pool_size]
+    head = sorted(pool, key=lambda cid: -by_chunk[cid])  # stable score ties
     return head + candidate_ids[len(pool):], by_chunk
-
 
 def _metrics(cases, rows):
     n = len(cases)
-    def hit(k):
-        return round(100 * sum(r["gold_rank"] is not None and r["gold_rank"] <= k
-                               for r in rows) / n, 2)
+    def hit(k, key):
+        return round(100 * sum(
+            r[key] is not None and r[key] <= k for r in rows
+        ) / n, 2)
     return {
-        "queries": n, "hit_at_1": hit(1), "hit_at_5": hit(5),
-        "hit_at_10": hit(10),
-        "mrr_at_10": round(sum(1 / r["gold_rank"] for r in rows
-                             if r["gold_rank"] is not None and r["gold_rank"] <= 10) / n, 4),
+        "queries": n,
+        "hit_at_1": hit(1, "gold_rank"),
+        "hit_at_5": hit(5, "gold_rank"),
+        "hit_at_10": hit(10, "gold_rank"),
+        "document_hit_at_1_unverified": hit(1, "gold_document_rank"),
+        "document_hit_at_5_unverified": hit(5, "gold_document_rank"),
+        "candidate_recall_at_10": hit(10, "original_gold_rank"),
+        "mrr_at_10": round(sum(
+            1 / r["gold_rank"] for r in rows
+            if r["gold_rank"] is not None and r["gold_rank"] <= 10
+        ) / n, 4),
     }
-
 
 def evaluate_one(cases, chunks, candidates, predict, pool_size=5):
     rows = []
     for qid, case in cases.items():
-        ordered, scores = rerank_fixed(case["query"], candidates[qid],
-                                       chunks, predict, pool_size)
+        ordered, scores = rerank_fixed(
+            case["query"], candidates[qid], chunks, predict, pool_size
+        )
         gold = set(case["gold_chunk_ids"])
         documents = set(case["gold_document_ids"])
         rank = next((i for i, cid in enumerate(ordered, 1) if cid in gold), None)
-        doc_rank = next((i for i, cid in enumerate(ordered, 1)
-                         if chunks[cid]["document_id"] in documents), None)
+        original_rank = next(
+            (i for i, cid in enumerate(candidates[qid], 1) if cid in gold), None
+        )
+        doc_rank = next(
+            (i for i, cid in enumerate(ordered, 1)
+             if chunks[cid]["document_id"] in documents), None
+        )
         rows.append({
             **case, "candidate_chunk_ids": candidates[qid],
             "ranked_chunk_ids": ordered, "reranker_scores": scores,
-            "gold_rank": rank, "gold_document_rank": doc_rank,
+            "gold_rank": rank, "original_gold_rank": original_rank,
+            "gold_document_rank": doc_rank,
         })
     return {"metrics": _metrics(cases, rows), "queries": rows}
-
 
 def _sha256(path):
     digest = hashlib.sha256()
@@ -298,12 +317,78 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+def checkpoint_fingerprint(path):
+    """Hash local checkpoint files; remote model identifiers are not immutable."""
+    p = Path(path)
+    if not p.exists():
+        if p.is_absolute() or path.startswith("."):
+            raise FileNotFoundError(
+                f"Local checkpoint missing: {path}. Do not retrain implicitly."
+            )
+        return {"source": path, "sha256": None,
+                "status": "REMOTE_MODEL_REVISION_UNPINNED"}
+    if p.is_file():
+        return {"source": str(p), "sha256": _sha256(p), "status": "LOCAL_FILE"}
+    h = hashlib.sha256()
+    paths = sorted(x for x in p.rglob("*") if x.is_file())
+    if not paths:
+        raise ValueError(f"No checkpoint files found in {p}")
+    for file in paths:
+        rel = file.relative_to(p).as_posix()
+        # File name length-prefix ensures no ambiguity from concatenation.
+        key = rel.encode("utf-8")
+        h.update(len(key).to_bytes(8, "big"))
+        h.update(key)
+        h.update(bytes.fromhex(_sha256(file)))
+    return {"source": str(p), "sha256": h.hexdigest(),
+            "file_count": len(paths), "status": "LOCAL_DIRECTORY"}
+
+
+def load_training_input(path):
+    """Read exact-used train examples from JSONL or reviewer-exported CSV/XLSX."""
+    p = Path(path)
+    if p.suffix.lower() == ".jsonl":
+        return load_jsonl(p)
+    if p.suffix.lower() == ".csv":
+        with p.open(encoding="utf-8-sig", newline="") as stream:
+            return list(csv.DictReader(stream))
+    if p.suffix.lower() == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise RuntimeError("openpyxl required to read reviewer XLSX") from exc
+        book = load_workbook(p, read_only=True, data_only=True)
+        try:
+            if "AI Triage - 50" not in book.sheetnames:
+                raise ValueError("Expected the 'AI Triage - 50' review sheet")
+            ws = book["AI Triage - 50"]
+            iterator = ws.values
+            columns = [str(v or "").strip() for v in next(iterator)]
+            return [dict(zip(columns, values)) for values in iterator
+                    if any(v is not None for v in values)]
+        finally:
+            book.close()
+    raise ValueError(f"Unsupported training input: {path}")
+ 
+
 def run(args):
     cases, chunks = normalize_inputs(load_jsonl(args.cases), load_jsonl(args.corpus))
-    if args.train:
-        collisions = check_split_overlap(cases, load_jsonl(args.train), chunks)
-        if collisions:
-            raise ValueError(f"TRAIN/CASE LEAKAGE: {json.dumps(collisions[:20])}")
+    collision_details, unresolved_provenance = [], []
+    for training_path in args.train or []:
+        collisions, unknown = check_split_overlap(
+            cases, load_training_input(training_path), chunks
+        )
+        collision_details.extend({"input": training_path, **x} for x in collisions)
+        unresolved_provenance.extend({"input": training_path, **x} for x in unknown)
+    if collision_details:
+        raise ValueError(
+            f"TRAIN/CASE LEAKAGE: {json.dumps(collision_details[:20])}"
+        )
+    if unresolved_provenance and not args.allow_untraceable_training:
+        raise ValueError(
+            "UNTRACEABLE TRAINING SOURCES: cannot certify separation: "
+            + json.dumps(unresolved_provenance[:20])
+        )
     if args.candidates:
         candidates = validate_candidates(
             cases, chunks, load_jsonl(args.candidates), args.top_k,
@@ -320,17 +405,14 @@ def run(args):
 
     from sentence_transformers import CrossEncoder
     import torch
-    results = {}
+    results, fingerprints = {}, {}
     for spec in args.model:
         if "=" not in spec:
             raise ValueError(f"Invalid --model {spec!r}; expected label=path")
         name, path = spec.split("=", 1)
         if not name or name in results:
             raise ValueError("Duplicate or empty model label")
-        if path.startswith("/content/") and not Path(path).is_dir():
-            raise FileNotFoundError(
-                f"Checkpoint missing: {path}. Restore from backup; do not retrain implicitly."
-            )
+        fingerprints[name] = checkpoint_fingerprint(path)
         model = CrossEncoder(path, device=args.device, max_length=384)
         if model.num_labels != 1:
             raise ValueError(f"{name}: num_labels={model.num_labels}; expected one ranking logit")
@@ -363,6 +445,16 @@ def run(args):
                 "gold_rank": query_result["gold_rank"],
                 "gold_document_rank": query_result["gold_document_rank"],
             }
+        if results:
+            baseline_name = next(iter(results))
+            baseline_rank = row[baseline_name]["gold_rank"]
+            for name in results:
+                current_rank = row[name]["gold_rank"]
+                row[name]["rank_change_vs_baseline"] = (
+                    baseline_rank - current_rank
+                    if baseline_rank is not None and current_rank is not None
+                    else None
+                )
         per_query.append(row)
     with (out / "per_query.jsonl").open("w", encoding="utf-8") as f:
         for row in per_query:
@@ -372,7 +464,8 @@ def run(args):
                    "gold_document_ids", "fixed_candidates"]
         for name in results:
             columns += [f"{name}_ranked", f"{name}_scores",
-                        f"{name}_gold_rank", f"{name}_document_rank"]
+                        f"{name}_gold_rank", f"{name}_document_rank",
+                        f"{name}_rank_change_vs_baseline"]
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
         for row in per_query:
@@ -386,6 +479,7 @@ def run(args):
                 flat[f"{name}_scores"] = json.dumps(data["reranker_scores"])
                 flat[f"{name}_gold_rank"] = data["gold_rank"]
                 flat[f"{name}_document_rank"] = data["gold_document_rank"]
+                flat[f"{name}_rank_change_vs_baseline"] = data["rank_change_vs_baseline"]
             writer.writerow(flat)
 
     summary = {
@@ -396,7 +490,16 @@ def run(args):
         "corpus_sha256": _sha256(args.corpus),
         "candidates_sha256": _sha256(out / "frozen_candidates.jsonl"),
         "pool_size": args.pool_size, "top_k": args.top_k,
-        "checkpoint_paths": args.model,
+        "checkpoint_fingerprints": fingerprints,
+        "training_inputs": list(args.train or []),
+        "train_overlap_check": (
+            "POTENTIALLY_INCOMPLETE" if unresolved_provenance else
+            "PARTIAL_EXACT_PROVENANCE_CHECK" if args.train else
+            "NOT_PERFORMED"
+        ),
+        "untraceable_training_sources": unresolved_provenance[:100],
+        "holdout_independent": False,
+        "production_authorization_tested": False,
         "results": {name: report["metrics"] for name, report in results.items()},
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -408,7 +511,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", required=True)
     parser.add_argument("--corpus", required=True)
-    parser.add_argument("--train", help="Optional train JSONL; fail on query/chunk/source-doc overlap")
+    parser.add_argument("--train", action="append",
+                        help="Exact training JSONL/CSV/XLSX; repeat for Stage 1 and exact Stage 2 rows")
+    parser.add_argument("--allow-untraceable-training", action="store_true",
+                        help="Research only: report unknown training provenance, do not treat splits as verified")
     parser.add_argument("--candidates", help="Optional frozen Qwen top-10 candidate JSONL")
     parser.add_argument("--model", action="append", required=True,
                         help="name=HF_model_or_local_checkpoint")
