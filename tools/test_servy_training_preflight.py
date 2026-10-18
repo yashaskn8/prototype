@@ -128,5 +128,21 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertEqual(self.evaluate()["status"], "BLOCKED_MODEL_COMPATIBILITY")
 
 
+    def test_singular_negative_id_cannot_bypass_review(self):
+        self.train[0]["negative_chunk_id"] = 3
+        self.inputs["train"].write_text(json.dumps(self.train[0]) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_LABEL_VERIFICATION")
+        self.assertIn("NEGATIVE_REVIEW_UNATTESTED", [issue["code"] for issue in result["issues"]])
+
+    def test_unapproved_candidate_negative_id_blocks(self):
+        self.train[0]["candidate_negative_chunk_id"] = 3
+        self.inputs["train"].write_text(json.dumps(self.train[0]) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertIn("NEGATIVE_REVIEW_UNATTESTED", [issue["code"] for issue in result["issues"]])
+
+
 if __name__ == "__main__":
     unittest.main()
