@@ -1,0 +1,31 @@
+name: Servy Checkpoint Audit Tests
+
+on:
+  pull_request:
+    paths:
+      - "tools/servy_checkpoint_audit.py"
+      - "tools/test_servy_checkpoint_audit.py"
+      - ".github/workflows/servy_checkpoint_audit.yml"
+  push:
+    branches:
+      - "audit/**"
+    paths:
+      - "tools/servy_checkpoint_audit.py"
+      - "tools/test_servy_checkpoint_audit.py"
+      - ".github/workflows/servy_checkpoint_audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline-audit-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile audit scripts
+        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py
+      - name: Test audit tool offline (no Docker, database, or GPU)
+        run: python -m unittest discover -s tools -p "test_servy_checkpoint_audit.py" -v
