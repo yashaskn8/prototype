@@ -36,10 +36,10 @@ class TestStrictV4Admission(unittest.TestCase):
         ]
         self.model_config = {
             "base_model_id": "BAAI/bge-reranker-v2-m3",
-            "base_revision": "pinned-revision-set-after-runtime-verification",
+            "base_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "tokenizer_id": "BAAI/bge-reranker-v2-m3",
-            "tokenizer_revision": "pinned-revision-set-after-runtime-verification",
-            "sentence_transformers_version": "pin-after-runtime-verification",
+            "tokenizer_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sentence_transformers_version": "5.1.0",
             "loss_name": "BinaryCrossEntropyLoss",
             "max_seq_length": 256, "candidate_pool": 10,
             "query_format": "raw-question", "passage_format": "heading-body"
@@ -63,6 +63,7 @@ class TestStrictV4Admission(unittest.TestCase):
                 name: hashlib.sha256(path.read_bytes()).hexdigest()
                 for name, path in self.inputs.items()
             },
+            "authorized_model_config_sha256": hashlib.sha256(self.model_path.read_bytes()).hexdigest(),
             "authorized_reviewer_ids": ["domain-engineer-a"],
             "approved_persistent_destination": str(self.destination),
             "approval_reference": "synthetic-unit-test-only"
