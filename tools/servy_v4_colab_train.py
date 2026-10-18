@@ -17,11 +17,24 @@ from importlib.metadata import version
 from pathlib import Path
 
 from servy_training_preflight import inspect_inputs, sha256_file, _load_object
-from servy_finetune_preflight import read_rows, get_positive_text, get_negative_texts
+from servy_finetune_preflight import read_rows, get_positive_text
 from servy_checkpoint_audit import (
     load_jsonl, normalize_inputs, validate_candidates, evaluate_one,
 )
 from servy_checkpoint_backup import backup_checkpoint
+
+
+def raw_negative_texts(row):
+    """Preserve original technical capitalization, error codes and units."""
+    values = []
+    for key in ("candidate_negative", "negative_text", "negative"):
+        if row.get(key):
+            values.append(str(row[key]).strip())
+    extra = row.get("negative_texts") or []
+    if not isinstance(extra, list):
+        raise ValueError("negative_texts must be a list")
+    values.extend(str(value).strip() for value in extra if str(value).strip())
+    return list(dict.fromkeys(values))
 
 
 def make_bce_pairs(rows):
@@ -33,11 +46,11 @@ def make_bce_pairs(rows):
         if not q or not positive or row.get("review_status") != "approved":
             raise ValueError("BCE source lacks approved query/positive")
         examples.append({"text1": q, "text2": positive, "label": 1.0})
-        negatives = get_negative_texts(row)
+        negatives = raw_negative_texts(row)
         if negatives and row.get("negative_review_status") != "approved":
             raise ValueError("BCE negatives have not been approved")
         for negative in negatives:
-            if negative == positive.casefold().strip():
+            if " ".join(negative.casefold().split()) == " ".join(positive.casefold().split()):
                 raise ValueError("A negative repeats the positive passage")
             examples.append({"text1": q, "text2": negative, "label": 0.0})
     if not examples or {p["label"] for p in examples} != {0.0, 1.0}:
