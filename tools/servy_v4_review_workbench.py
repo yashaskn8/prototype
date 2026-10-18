@@ -331,12 +331,12 @@ def gui(session):
             family.set(item.get("verified_canonical_source_family") or "")
             
         versions = item.get("document_versions") or []
-        default_ver = ai_s.get("proposed_source_version") if ai_s else (str(versions[0]) if len(versions) == 1 else "")
-        family_version.set(item.get("approved_source_version") or default_ver or "")
-        
-        default_ev = (f"SQLite core_knowledgedocument id={item['document_id']}; sha256={ai_s.get('authoritative_checksum')}" 
-                      if ai_s and ai_s.get("evidence_status") == "VERIFIED_SOURCE_EVIDENCE" else "")
-        family_evidence.set(item.get("evidence_reference") or default_ev or "")
+        # Original version can contain an index-version suffix required by
+        # the finalizer. The registry's plain content version is not enough.
+        original_ver = str(versions[0]) if len(versions) == 1 else ""
+        family_version.set(item.get("approved_source_version") or original_ver)
+        # AI text is NOT reviewed evidence. Human reviewer must supply it.
+        family_evidence.set(item.get("evidence_reference") or "")
         
         ai_header = ""
         if ai_s:
@@ -366,12 +366,8 @@ def gui(session):
         ref = row["references"][selection[0]]
         ai_l = session.ai_labels.get((str(row.get("query_id")), selection[0]))
         
-        default_ref_ev = (
-            f"AI verified: {ai_l.get('heading')}" if ai_l and ai_l.get("proposed_ai_decision") == "RECOMMEND_APPROVE"
-            else f"AI flagged: {ai_l.get('proposed_ai_decision')}" if ai_l and "FALSE_NEGATIVE" in ai_l.get("proposed_ai_decision", "")
-            else ""
-        )
-        label_evidence.set(ref.get("review_evidence_reference") or default_ref_ev or "")
+        # Never use machine-generated recommendations as a reviewer's own evidence.
+        label_evidence.set(ref.get("review_evidence_reference") or "")
         
         ai_ref_section = ""
         if ai_l:

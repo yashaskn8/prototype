@@ -104,11 +104,11 @@ class TestServyAIEvidenceAuditor(unittest.TestCase):
         try:
             recs, summary = auditor.audit_document_provenance()
             self.assertEqual(len(recs), 1)
-            self.assertEqual(recs[0]["evidence_status"], "VERIFIED_SOURCE_EVIDENCE")
+            self.assertEqual(recs[0]["evidence_status"], "REGISTRY_METADATA_MATCH")
             self.assertEqual(recs[0]["proposed_canonical_source_family"], "FAMILY-PAPER_SHREDDER")
             self.assertEqual(recs[0]["confidence"], "HIGH")
             self.assertEqual(summary["total_documents"], 1)
-            self.assertEqual(summary["status_counts"]["VERIFIED_SOURCE_EVIDENCE"], 1)
+            self.assertEqual(summary["status_counts"]["REGISTRY_METADATA_MATCH"], 1)
         finally:
             auditor.close()
 
@@ -128,6 +128,17 @@ class TestServyAIEvidenceAuditor(unittest.TestCase):
         finally:
             auditor.close()
 
+
+
+    def test_metadata_match_is_not_verified_original_document_bytes(self):
+        auditor = ServyAIEvidenceAuditor(self.bundle_dir, self.corpus_path, self.db_path)
+        try:
+            recs, summary = auditor.audit_document_provenance()
+            self.assertEqual(recs[0]["evidence_status"], "REGISTRY_METADATA_MATCH")
+            self.assertFalse(recs[0]["original_document_bytes_verified"])
+            self.assertEqual(summary["original_document_bytes_independently_verified"], 0)
+        finally:
+            auditor.close()
 
 if __name__ == "__main__":
     unittest.main()

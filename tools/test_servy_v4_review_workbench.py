@@ -106,5 +106,17 @@ class ReviewWorkbenchTests(unittest.TestCase):
             gui.index('ttk.Entry(labels_tab, textvariable=label_evidence'),
             gui.index('label_text.pack'))
 
+
+    def test_ai_does_not_autofill_human_evidence(self):
+        import ast
+        source = Path(__file__).with_name("servy_v4_review_workbench.py").read_text(encoding="utf-8")
+        ast.parse(source)
+        gui = source.split("def gui(session):", 1)[1].split("\ndef main():", 1)[0]
+        self.assertIn('family_evidence.set(item.get("evidence_reference") or "")', gui)
+        self.assertIn('label_evidence.set(ref.get("review_evidence_reference") or "")', gui)
+        self.assertIn('original_ver = str(versions[0])', gui)
+        self.assertNotIn('default_ref_ev = (', gui)
+        self.assertNotIn('default_ev = (', gui)
+
 if __name__=='__main__':
     unittest.main()

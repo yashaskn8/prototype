@@ -103,7 +103,7 @@ class ServyAIEvidenceAuditor:
                 tid_matches = (db_tid == tenant_id)
                 
                 if sha_matches and tid_matches:
-                    status = "VERIFIED_SOURCE_EVIDENCE"
+                    status = "REGISTRY_METADATA_MATCH"
                     confidence = "HIGH"
                 elif sha_matches or tid_matches:
                     status = "LIKELY_MATCH"
@@ -131,7 +131,8 @@ class ServyAIEvidenceAuditor:
                     f"Authoritative record matched in SQLite core_knowledgedocument (id={doc_id}). "
                     f"Title: '{title}'. Product: '{prod}'. Category: '{cat}'. "
                     f"Tenant: '{db_doc.get('tenant_name')}' (id={db_tid}). "
-                    f"Authoritative checksum SHA-256: {db_sha} matched recovered corpus checksums."
+                    f"Registry checksum SHA-256: {db_sha} matched stored recovered metadata. " 
+                    "Original source bytes were NOT independently verified."
                 )
             else:
                 status = "SOURCE_NOT_FOUND"
@@ -156,6 +157,8 @@ class ServyAIEvidenceAuditor:
                 "declared_unverified_groups": declared_groups,
                 "reasoning": reasoning,
                 "requires_human_approval": True,
+                "verification_scope": "SQLITE_REGISTRY_METADATA_ONLY",
+                "original_document_bytes_verified": False,
             }
             recommendations.append(rec)
             family_grouping[canonical_family].append(item["document_id"])
@@ -166,6 +169,8 @@ class ServyAIEvidenceAuditor:
             "canonical_families_identified": len(family_grouping),
             "family_distributions": {k: len(v) for k, v in sorted(family_grouping.items())},
         }
+        summary["original_document_bytes_independently_verified"] = 0
+        summary["verification_scope"] = "SQLITE_REGISTRY_METADATA_ONLY"
         return recommendations, summary
 
     def audit_label_references(self) -> tuple[list[dict], list[dict], list[dict], dict]:
@@ -329,6 +334,8 @@ class ServyAIEvidenceAuditor:
                     "reasoning": reasoning,
                     "recommended_human_action": human_action,
                     "requires_human_approval": True,
+                    "recommendation_method": "UNVALIDATED_LEXICAL_HEURISTIC",
+                    "not_independent_domain_expert_judgment": True,
                 }
                 recommendations.append(rec_record)
                 
