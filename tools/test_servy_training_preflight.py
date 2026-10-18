@@ -286,6 +286,36 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertIn("MODEL_NOT_SUPPORTED_BY_V4_RUNNER",
                       [issue["code"] for issue in result["issues"]])
 
+    def test_bce_approved_cross_question_reuse_passes_structural_admission(self):
+        self.train.append({
+            "query_id": "q3", "query": "unrelated procedure use", "tenant_id": 9,
+            "positive_chunk_id": 3, "positive_text": "unrelated approved procedure",
+            "review_status": "approved", "reviewer_id": "domain-engineer-a",
+        })
+        self.inputs["train"].write_text(
+            "".join(json.dumps(row) + "\\n" for row in self.train),
+            encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "READY_FOR_RESEARCH_EXPERIMENT")
+        self.assertIn("BCE_CROSS_QUERY_NEGATIVE_REUSE_REQUIRES_EXPERT_REVIEW",
+                      result["structural_issue_counts"])
+
+    def test_conflicting_corpus_family_blocks_strict_gate(self):
+        self.corpus.append({
+            "chunk_id": 5, "tenant_id": 9, "document_id": 100,
+            "source_group": "conflicting-family", "source_version": "1",
+            "passage": "second compressor procedure"
+        })
+        self.inputs["corpus"].write_text(
+            "".join(json.dumps(row) + "\\n" for row in self.corpus),
+            encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("CONFLICTING_SOURCE_GROUP_FOR_DOCUMENT",
+                      result["structural_issue_counts"])
+
 
 if __name__ == "__main__":
     unittest.main()

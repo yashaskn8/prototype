@@ -61,6 +61,7 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
             structure = structural_audit(
                 train, dev, corpus, stage2_path=stage2,
                 holdout_path=holdout, artifact_dir=artifact_dir,
+                loss_name="BinaryCrossEntropyLoss",
             )
             # The structural audit intentionally limits detailed findings to
             # 300. Never silently admit training when that summary is incomplete.

@@ -50,6 +50,7 @@ def read_rows(path):
 
 def make_corpus(rows, add):
     by_chunk, by_passage = {}, defaultdict(set)
+    doc_groups, doc_versions, checksum_groups = defaultdict(set), defaultdict(set), defaultdict(set)
     for index, row in enumerate(rows, 1):
         chunk_id = str(row.get("chunk_id", row.get("passage_id", ""))).strip()
         tenant = str(row.get("tenant_id", "")).strip()
@@ -71,6 +72,24 @@ def make_corpus(rows, add):
             "customer_id": str(row.get("customer_id", "")).strip(),
         }
         by_passage[(tenant, passage)].add(chunk_id)
+        group = norm(row.get("source_group"))
+        source_version = str(row.get("source_version") or "").strip()
+        checksum = str(row.get("source_checksum_sha256") or row.get("checksum_sha256") or "").strip().lower()
+        if group:
+            doc_groups[(tenant, doc_id)].add(group)
+        if source_version:
+            doc_versions[(tenant, doc_id)].add(source_version)
+        if group and re.fullmatch(r"[0-9a-f]{64}", checksum):
+            checksum_groups[(tenant, checksum)].add(group)
+    for (tenant, doc_id), groups in doc_groups.items():
+        if len(groups) > 1:
+            add("BLOCKER", "CONFLICTING_SOURCE_GROUP_FOR_DOCUMENT", f"document:{tenant}:{doc_id}")
+    for (tenant, doc_id), versions in doc_versions.items():
+        if len(versions) > 1:
+            add("BLOCKER", "CONFLICTING_SOURCE_VERSION_FOR_DOCUMENT", f"document:{tenant}:{doc_id}")
+    for (tenant, checksum), groups in checksum_groups.items():
+        if len(groups) > 1:
+            add("BLOCKER", "CONFLICTING_SOURCE_GROUP_FOR_IDENTICAL_SOURCE", f"checksum:{tenant}:{checksum[:12]}")
     if not by_chunk:
         add("BLOCKER", "NO_ELIGIBLE_CORPUS", "corpus")
     if any(x["passage_chars"] > 1400 for x in by_chunk.values()):
@@ -270,29 +289,56 @@ def verify_disjoint(a, b, add, a_name="train", b_name="dev"):
             add("BLOCKER", "SPLIT_PASSAGE_CONTENT_COLLISION", row["tag"])
 
 
-def training_collisions(rows, add, corpus):
+def training_collisions(rows, add, corpus, *, loss_name=None):
+    """Use query-specific labels for BCE; keep global collision safeguards for in-batch losses.
+
+    BinaryCrossEntropyLoss scores explicit (question, passage) pairs. A passage
+    positive for a *different* question is not necessarily a false negative.
+    Its relevance still needs real expert review. Contrastive/in-batch losses
+    retain the conservative global-positive exclusion.
+    """
     by_question = defaultdict(list)
     by_positive = defaultdict(list)
-    positive_chunks = set()
-    positive_passages = set()
+    positive_chunks, positive_passages = set(), set()
+    question_positive_chunks = defaultdict(set)
+    question_positive_passages = defaultdict(set)
     for row in rows:
-        for cid in row["pos"]:
-            positive_chunks.add((row["tenant"], cid))
-            if cid in corpus:
-                positive_passages.add((row["tenant"], corpus[cid]["passage"]))
-    for row in rows:
-        by_question[(row["tenant"], row["query"])].append(row)
+        question_key = (row["tenant"], row["query"])
+        by_question[question_key].append(row)
+        question_positive_chunks[question_key].update(row["pos"])
         for cid in row["pos"]:
             by_positive[(row["tenant"], cid)].append(row)
-    # In-batch contrastive objectives can optimize a known positive as a
-    # negative. A collision anywhere in the training pool is unsafe even
-    # when it is absent from the same JSONL row.
+            positive_chunks.add((row["tenant"], cid))
+            if cid in corpus:
+                text = corpus[cid]["passage"]
+                positive_passages.add((row["tenant"], text))
+                question_positive_passages[question_key].add(text)
+    cross_query_reuse = 0
     for row in rows:
+        question_key = (row["tenant"], row["query"])
         for cid in row["neg"]:
-            if (row["tenant"], cid) in positive_chunks:
-                add("BLOCKER", "TRAIN_NEGATIVE_IS_ANOTHER_POSITIVE", row["tag"])
-            if cid in corpus and (row["tenant"], corpus[cid]["passage"]) in positive_passages:
-                add("BLOCKER", "TRAIN_NEGATIVE_EQUIVALENT_POSITIVE_TEXT", row["tag"])
+            key = (row["tenant"], cid)
+            passage = corpus[cid]["passage"] if cid in corpus else None
+            if loss_name == "BinaryCrossEntropyLoss":
+                if cid in question_positive_chunks[question_key]:
+                    add("BLOCKER", "BCE_NEGATIVE_IS_SAME_QUERY_POSITIVE", row["tag"])
+                if passage is not None and passage in question_positive_passages[question_key]:
+                    add("BLOCKER", "BCE_NEGATIVE_EQUIVALENT_SAME_QUERY_POSITIVE_TEXT", row["tag"])
+                if ((key in positive_chunks or
+                     (passage is not None and (row["tenant"], passage) in positive_passages))
+                        and cid not in question_positive_chunks[question_key]
+                        and (passage is None or passage not in question_positive_passages[question_key])):
+                    cross_query_reuse += 1
+            else:
+                if key in positive_chunks:
+                    add("BLOCKER", "TRAIN_NEGATIVE_IS_ANOTHER_POSITIVE", row["tag"])
+                if passage is not None and (row["tenant"], passage) in positive_passages:
+                    add("BLOCKER", "TRAIN_NEGATIVE_EQUIVALENT_POSITIVE_TEXT", row["tag"])
+    if cross_query_reuse:
+        # One aggregate finding avoids truncating the strict gate's finite
+        # report when large reviewed datasets legitimately reuse passages.
+        add("REVIEW", "BCE_CROSS_QUERY_NEGATIVE_REUSE_REQUIRES_EXPERT_REVIEW",
+            f"negative_references:{cross_query_reuse}")
     for records in by_question.values():
         if len({r["positive_text"] for r in records}) > 1:
             add("REVIEW", "MULTI_POSITIVE_SAME_QUESTION_IN_BATCH", records[0]["tag"])
@@ -309,7 +355,7 @@ def training_collisions(rows, add, corpus):
         add("REVIEW", "NO_CUSTOMER_ID_FOR_SCOPE_VALIDATION", "training")
 
 
-def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None, artifact_dir=None):
+def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None, artifact_dir=None, *, loss_name=None):
     findings = []
     def add(severity, code, ref):
         findings.append({"severity": severity, "code": code, "ref": ref})
@@ -340,7 +386,7 @@ def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None
     else:
         add("REVIEW", "EXACT_STAGE2_USED_EXAMPLES_NOT_PROVIDED", "stage2")
 
-    training_collisions(train + stage2, add, corpus)
+    training_collisions(train + stage2, add, corpus, loss_name=loss_name)
 
     # Compare against frozen holdout *only for structural leakage*; never score it.
     if holdout_path:
@@ -390,13 +436,15 @@ def main():
     parser.add_argument("--train", required=True, help="Exact first-stage exported train JSONL")
     parser.add_argument("--dev", required=True, help="Separate development JSONL")
     parser.add_argument("--corpus", required=True, help="Tenant-scoped document corpus JSONL")
+    parser.add_argument("--loss-name", choices=("BinaryCrossEntropyLoss", "Contrastive"),
+                        help="Defaults to conservative contrastive collision rules")
     parser.add_argument("--stage2", help="EXACT used 27 selected Stage 2 examples JSONL/CSV")
     parser.add_argument("--holdout", help="Optional frozen independent holdout: leakage check only")
     parser.add_argument("--artifact-dir", help="Planned persistent checkpoint destination (no file writes)")
     parser.add_argument("--report", required=True, help="Private local report path")
     args = parser.parse_args()
     report = audit(args.train, args.dev, args.corpus, args.stage2, args.holdout,
-                   artifact_dir=args.artifact_dir)
+                   artifact_dir=args.artifact_dir, loss_name=args.loss_name)
     path = Path(args.report)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")

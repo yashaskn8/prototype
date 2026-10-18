@@ -27,6 +27,7 @@ on:
       - ".github/workflows/servy_checkpoint_audit.yml"
   push:
     branches:
+      - "main"
       - "audit/**"
     paths:
       - "tools/servy_checkpoint_audit.py"

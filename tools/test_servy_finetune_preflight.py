@@ -34,12 +34,12 @@ class TestTrainingAdmission(unittest.TestCase):
                 file.write(json.dumps(row) + "\n")
         return str(path)
 
-    def check(self, train=None, dev=None, corpus=None, stage2=None):
+    def check(self, train=None, dev=None, corpus=None, stage2=None, loss_name=None):
         a = self.dump("train.jsonl", self.train if train is None else train)
         b = self.dump("dev.jsonl", self.dev if dev is None else dev)
         c = self.dump("corpus.jsonl", self.corpus if corpus is None else corpus)
         d = self.dump("stage2.jsonl", stage2) if stage2 is not None else None
-        return audit(a, b, c, d)
+        return audit(a, b, c, d, loss_name=loss_name)
 
     def test_clean_research_case_never_claims_expert_approval(self):
         report = self.check()
@@ -297,6 +297,77 @@ class TestTrainingAdmission(unittest.TestCase):
         report = self.check(train=train, corpus=corpus)
         self.assertEqual(report["status"], "BLOCKED")
         self.assertIn("NEGATIVE_ID_TEXT_SET_MISMATCH", report["issue_counts"])
+
+    def test_bce_cross_question_negative_reuse_is_review_not_blocker(self):
+        train = [
+            dict(self.train[0], negative_chunk_ids=[3],
+                 negative_text="unrelated filter gamma"),
+            {"query_id": "T-2", "query_text": "filter repair procedure",
+             "tenant_id": 9, "chunk_id": 3,
+             "positive_text": "unrelated filter gamma"},
+        ]
+        result = self.check(train=train, loss_name="BinaryCrossEntropyLoss")
+        self.assertEqual(result["status"], "REVIEW_REQUIRED")
+        self.assertEqual(result["numbers"]["blockers"], 0)
+        self.assertIn("BCE_CROSS_QUERY_NEGATIVE_REUSE_REQUIRES_EXPERT_REVIEW",
+                      result["issue_counts"])
+        # Unknown or in-batch objectives retain the conservative safeguard.
+        contrastive = self.check(train=train)
+        self.assertIn("TRAIN_NEGATIVE_IS_ANOTHER_POSITIVE",
+                      contrastive["issue_counts"])
+
+    def test_bce_same_query_alternative_positive_negative_blocks(self):
+        train = [
+            dict(self.train[0], negative_chunk_ids=[3],
+                 negative_text="unrelated filter gamma"),
+            {"query_id": "T-2", "query_text": "why compressor fault",
+             "tenant_id": 9, "chunk_id": 3,
+             "positive_text": "unrelated filter gamma"},
+        ]
+        report = self.check(train=train, loss_name="BinaryCrossEntropyLoss")
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("BCE_NEGATIVE_IS_SAME_QUERY_POSITIVE",
+                      report["issue_counts"])
+
+    def test_conflicting_canonical_groups_within_document_block(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 10,
+             "source_group": "manual-family-two",
+             "passage": "different paragraph of compressor guide"}
+        ]
+        corpus[0] = dict(corpus[0], source_group="manual-family-one")
+        report = self.check(corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("CONFLICTING_SOURCE_GROUP_FOR_DOCUMENT",
+                      report["issue_counts"])
+
+    def test_conflicting_source_versions_within_document_block(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 10,
+             "source_version": "v2",
+             "passage": "updated document paragraph"}
+        ]
+        corpus[0] = dict(corpus[0], source_version="v1")
+        report = self.check(corpus=corpus)
+        self.assertIn("CONFLICTING_SOURCE_VERSION_FOR_DOCUMENT",
+                      report["issue_counts"])
+
+    def test_identical_source_checksum_conflicting_groups_block(self):
+        checksum = "a" * 64
+        corpus = [dict(self.corpus[0], source_group="source-family-a",
+                       source_checksum_sha256=checksum),
+                  dict(self.corpus[1], source_group="source-family-b",
+                       source_checksum_sha256=checksum), *self.corpus[2:]]
+        report = self.check(corpus=corpus)
+        self.assertIn("CONFLICTING_SOURCE_GROUP_FOR_IDENTICAL_SOURCE",
+                      report["issue_counts"])
+
+    def test_bce_cross_tenant_negative_still_blocks(self):
+        train = [dict(self.train[0], negative_chunk_ids=[4],
+                      negative_text="another tenant delta")]
+        report = self.check(train=train, loss_name="BinaryCrossEntropyLoss")
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("CROSS_TENANT_SOURCE", report["issue_counts"])
 
 
 if __name__ == "__main__":
