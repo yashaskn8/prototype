@@ -66,12 +66,15 @@ def make_corpus(rows, add):
             "chunk": chunk_id, "tenant": tenant, "document": doc_id,
             "passage": passage,
             "source_group": norm(row.get("source_group", "")),
+            "passage_chars": len(str(row.get("passage", row.get("text", "")))),
             "asset_id": str(row.get("asset_id", "")).strip(),
             "customer_id": str(row.get("customer_id", "")).strip(),
         }
         by_passage[(tenant, passage)].add(chunk_id)
     if not by_chunk:
         add("BLOCKER", "NO_ELIGIBLE_CORPUS", "corpus")
+    if any(x["passage_chars"] > 1400 for x in by_chunk.values()):
+        add("REVIEW", "CHECK_TOKENIZER_TRUNCATION_FOR_LONG_PASSAGES", "corpus")
     return by_chunk, by_passage
 
 
@@ -152,6 +155,8 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
                                     and not row.get("positive"))
         if not pos_ids and row.get("chunk_id") is not None:
             pos_ids = [str(row["chunk_id"])]
+        if not get_positive_text(row) and not allow_unanswerable:
+            add("BLOCKER", "MISSING_EXPORTED_TRAINING_PASSAGE", tag)
         pos, docs = resolve_source(
             tenant, pos_ids, get_positive_text(row), corpus, by_passage,
             add, f"{tag}:positive", allow_no_passage=no_positive_expected
@@ -244,6 +249,10 @@ def training_collisions(rows, add):
             add("REVIEW", "SHARED_POSITIVE_ACROSS_QUESTIONS", records[0]["tag"])
     if len(by_question) < 100:
         add("REVIEW", "SMALL_UNIQUE_QUESTION_POPULATION", "training")
+    if rows and not any(r["asset_id"] for r in rows):
+        add("REVIEW", "NO_EQUIPMENT_ID_FOR_SCOPE_VALIDATION", "training")
+    if rows and not any(r["customer_id"] for r in rows):
+        add("REVIEW", "NO_CUSTOMER_ID_FOR_SCOPE_VALIDATION", "training")
 
 
 def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None, artifact_dir=None):
