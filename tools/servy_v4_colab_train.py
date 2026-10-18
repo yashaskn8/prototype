@@ -60,6 +60,16 @@ def make_bce_pairs(rows):
     return examples
 
 
+def validate_model_tokenizer_binding(config):
+    """Require the exact tokenizer revision actually consumed by CrossEncoder."""
+    if config.get("base_model_id") != "BAAI/bge-reranker-v2-m3":
+        raise ValueError("Only the explicitly reviewed BGE reranker can be trained")
+    if config.get("tokenizer_id") != config.get("base_model_id"):
+        raise ValueError("Configured tokenizer ID differs from the CrossEncoder model")
+    if config.get("tokenizer_revision") != config.get("base_revision"):
+        raise ValueError("Configured tokenizer revision differs from actual model revision")
+
+
 def candidate_gate(cases_path, corpus_path, candidates_path, approved, top_k=10):
     """Forbid gold injection or changing candidates after research comparison."""
     approved_hash = approved.get("authorized_input_sha256", {}).get("candidates")
@@ -108,8 +118,10 @@ def main():
     config = _load_object(a.model_config)
     if config["loss_name"] != "BinaryCrossEntropyLoss":
         raise SystemExit("BLOCKED: this controlled experiment only supports verified BCE")
-    if config["base_model_id"] != "BAAI/bge-reranker-v2-m3":
-        raise SystemExit("BLOCKED: unexpected base model; no automatic model substitution")
+    try:
+        validate_model_tokenizer_binding(config)
+    except ValueError as exc:
+        raise SystemExit(f"BLOCKED_MODEL_COMPATIBILITY: {exc}") from exc
     if a.artifact_dir != str(Path(a.artifact_dir).parent / a.run_id):
         raise SystemExit("BLOCKED: approved artifact directory must end with exact run ID")
     check_backup_destination(a.artifact_dir)
