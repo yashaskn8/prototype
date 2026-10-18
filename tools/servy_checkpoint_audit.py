@@ -394,6 +394,35 @@ def run(args):
             "UNTRACEABLE TRAINING SOURCES: cannot certify separation: "
             + json.dumps(unresolved_provenance[:20])
         )
+    if args.validate_only:
+        out = Path(args.out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        if args.candidates:
+            validate_candidates(cases, chunks, load_jsonl(args.candidates),
+                                args.top_k)
+        summary = {
+            "mode": "PREFLIGHT_ONLY_NO_MODELS",
+            "cases": len(cases),
+            "corpus_chunks": len(chunks),
+            "cases_sha256": _sha256(args.cases),
+            "corpus_sha256": _sha256(args.corpus),
+            "train_overlap_check": (
+                "POTENTIALLY_INCOMPLETE" if unresolved_provenance else
+                "PARTIAL_EXACT_PROVENANCE_CHECK" if args.train else
+                "NOT_PERFORMED"
+            ),
+            "training_inputs": list(args.train or []),
+            "untraceable_training_sources": unresolved_provenance[:100],
+            "holdout_independent": False,
+            "production_authorization_tested": False,
+        }
+        (out / "preflight.json").write_text(
+            json.dumps(summary, indent=2), encoding="utf-8"
+        )
+        print(json.dumps(summary, indent=2))
+        return summary
+    if not args.model:
+        raise ValueError("At least one --model is required unless --validate-only")
     if args.candidates:
         candidates = validate_candidates(
             cases, chunks, load_jsonl(args.candidates), args.top_k,
@@ -521,9 +550,11 @@ def main():
     parser.add_argument("--allow-untraceable-training", action="store_true",
                         help="Research only: report unknown training provenance, do not treat splits as verified")
     parser.add_argument("--candidates", help="Optional frozen Qwen top-10 candidate JSONL")
-    parser.add_argument("--model", action="append", required=True,
+    parser.add_argument("--model", action="append",
                         help="name=HF_model_or_local_checkpoint")
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--validate-only", action="store_true",
+                        help="No GPU: audit corpus and split overlap only")
     parser.add_argument("--pool-size", type=int, default=5)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--device", default="cuda")
