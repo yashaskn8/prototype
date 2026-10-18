@@ -62,6 +62,12 @@ class Op27TrainingReadinessTests(unittest.TestCase):
         self.assertIn('"positive": [r["positive_text"] for r in val_resolved]', src)
         self.assertIn("len(val_resolved) < 8", src)
 
+    def test_direct_training_helper_must_enforce_split_and_research_ack(self):
+        src = function_source("train_single_model")
+        self.assertIn("enforce_train_dev_separation(train_resolved, val_resolved)", src)
+        self.assertIn('SERVY_OP27_WEAK_RESEARCH_ACK', src)
+        self.assertIn('TRAINING_BLOCKED', src)
+
     def test_training_and_index_overwrite_protected(self):
         self.assertIn('if (output_dir / "final").exists():',
                       function_source("train_single_model"))
