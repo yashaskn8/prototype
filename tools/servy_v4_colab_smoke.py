@@ -55,18 +55,38 @@ def smoke(expected_version, require_gpu=True):
     actual_version = version("sentence-transformers")
     if expected_version and actual_version != expected_version:
         raise RuntimeError("Installed Sentence Transformers version does not match requested pin")
+    # Inspect PyTorch directly. TensorFlow may print a misleading cudart_stub
+    # CPU warning even when the PyTorch CUDA build works. Do not use TF logs
+    # as a substitute for this check, and do not download a model on CPU.
+    import os
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
     import torch
+    if require_gpu and not torch.cuda.is_available():
+        raise RuntimeError(
+            "PyTorch CUDA unavailable. In Colab choose Runtime > Change runtime type "
+            "> L4/T4 GPU, reconnect, then verify torch.cuda.is_available() is True. "
+            f"torch={torch.__version__}, torch_cuda={torch.version.cuda}"
+        )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     from datasets import Dataset
     from sentence_transformers import CrossEncoder
     from sentence_transformers.cross_encoder import (
         CrossEncoderTrainer, CrossEncoderTrainingArguments,
     )
     from sentence_transformers.cross_encoder.losses import BinaryCrossEntropyLoss
-    if require_gpu and not torch.cuda.is_available():
-        raise RuntimeError("CUDA GPU required for Colab compatibility test")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     with tempfile.TemporaryDirectory(prefix="servy-v4-public-smoke-") as tmp:
-        model = CrossEncoder(PUBLIC_TINY_MODEL, num_labels=1, max_length=64, device=device)
+        # This public checkpoint ships a 2-logit classification head.
+        # BCE requires a SINGLE logit. Discard ONLY the incompatible public
+        # classifier and initialize a fresh 1-logit head for the smoke test.
+        # The pretrained backbone stays intact. The production BGE V4 model
+        # initialization is unchanged.
+        model = CrossEncoder(
+            PUBLIC_TINY_MODEL, num_labels=1, max_length=64, device=device,
+            model_kwargs={"ignore_mismatched_sizes": True},
+        )
+        if model.model.config.num_labels != 1:
+            raise RuntimeError("Expected exactly one classifier logit for BCE")
         args = CrossEncoderTrainingArguments(
             output_dir=str(Path(tmp) / "checkpoints"),
             max_steps=2,

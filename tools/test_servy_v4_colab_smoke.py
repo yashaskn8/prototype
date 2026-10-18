@@ -34,6 +34,26 @@ class SmokeContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "both relevance classes"):
             validate_pairs(train, dev[:1])
 
+    def test_checkpoint_head_is_reinitialized_for_binary_loss(self):
+        tree = ast.parse(Path(__file__).with_name("servy_v4_colab_smoke.py").read_text(encoding="utf-8"))
+        matched = [node for node in ast.walk(tree)
+                   if isinstance(node, ast.Call)
+                   and isinstance(node.func, ast.Name) and node.func.id == "CrossEncoder"]
+        self.assertEqual(len(matched), 2)
+        initial = next(node for node in matched if any(
+            kw.arg == "num_labels" for kw in node.keywords))
+        labels = next(kw.value for kw in initial.keywords if kw.arg == "num_labels")
+        self.assertEqual(ast.literal_eval(labels), 1)
+        opts = next(kw.value for kw in initial.keywords if kw.arg == "model_kwargs")
+        self.assertTrue(ast.literal_eval(opts)["ignore_mismatched_sizes"])
+
+    def test_gpu_guard_comes_before_model_download(self):
+        source = Path(__file__).with_name("servy_v4_colab_smoke.py").read_text(encoding="utf-8")
+        guard_at = source.index('if require_gpu and not torch.cuda.is_available():')
+        model_at = source.index('model = CrossEncoder(')
+        self.assertLess(guard_at, model_at)
+        self.assertIn("torch.version.cuda", source)
+
 
 if __name__ == "__main__":
     unittest.main()
