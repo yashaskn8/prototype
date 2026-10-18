@@ -99,6 +99,7 @@ def normalize_inputs(cases, corpus):
             "tenant_id": tenant,
             "gold_chunk_ids": gold,
             "gold_document_ids": sorted({chunks[x]["document_id"] for x in gold}),
+            "source_group": _norm(row["source_group"]) if row.get("source_group") else None,
         }
     return queries, chunks
 
@@ -128,12 +129,14 @@ def check_split_overlap(cases, train_rows, chunks):
     for chunk in chunks.values():
         by_text[_norm(chunk["passage"])].add(chunk["chunk_id"])
 
-    train_queries, train_chunks, train_documents = set(), set(), set()
+    train_queries, train_chunks, train_documents, train_groups = set(), set(), set(), set()
     untraceable = []
     for index, row in enumerate(train_rows):
         query = row.get("query_text") or row.get("query")
         if query:
             train_queries.add(_norm(query))
+        if row.get("source_group"):
+            train_groups.add(_norm(row["source_group"]))
         ids = []
         for plural, singular in (
             ("positive_chunk_ids", "positive_chunk_id"),
@@ -181,6 +184,8 @@ def check_split_overlap(cases, train_rows, chunks):
             found.append("gold_chunk")
         if set(case["gold_document_ids"]) & train_documents:
             found.append("source_document")
+        if case.get("source_group") and case["source_group"] in train_groups:
+            found.append("source_group")
         if found:
             collisions.append({"query_id": case["query_id"], "collision_types": found})
     return collisions, untraceable
