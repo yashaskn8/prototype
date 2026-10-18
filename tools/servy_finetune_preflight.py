@@ -154,7 +154,7 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
             pos_ids = [str(row["chunk_id"])]
         pos, docs = resolve_source(
             tenant, pos_ids, get_positive_text(row), corpus, by_passage,
-            add, f"{tag}:positive"
+            add, f"{tag}:positive", allow_no_passage=no_positive_expected
         )
         neg_ids = ids(row, "negative_chunk_ids", "negative_chunk_id")
         if row.get("candidate_negative_chunk_id"):
