@@ -7,6 +7,8 @@ on:
       - "tools/test_servy_checkpoint_audit.py"
       - "tools/servy_finetune_preflight.py"
       - "tools/test_servy_finetune_preflight.py"
+      - "tools/servy_checkpoint_backup.py"
+      - "tools/test_servy_checkpoint_backup.py"
       - "tools/servy_finetune_readiness.py"
       - "tools/test_servy_finetune_readiness.py"
       - "tools/op27_train_and_evaluate.py"
@@ -19,6 +21,8 @@ on:
     paths:
       - "tools/servy_checkpoint_audit.py"
       - "tools/test_servy_checkpoint_audit.py"
+      - "tools/servy_checkpoint_backup.py"
+      - "tools/test_servy_checkpoint_backup.py"
       - ".github/workflows/servy_checkpoint_audit.yml"
 
 permissions:
@@ -33,7 +37,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile audit scripts
-        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py
+        run: python -m py_compile tools/servy_checkpoint_audit.py tools/test_servy_checkpoint_audit.py tools/servy_finetune_preflight.py tools/test_servy_finetune_preflight.py tools/servy_finetune_readiness.py tools/test_servy_finetune_readiness.py tools/op27_train_and_evaluate.py tools/op27_passages.py tools/test_op27_passages.py tools/servy_checkpoint_backup.py tools/test_servy_checkpoint_backup.py
       - name: Test audit tool offline (no Docker, database, or GPU)
         run: python -m unittest discover -s tools -p "test_servy_checkpoint_audit.py" -v
       - name: Test training preflight offline (no models or DB)
@@ -42,3 +46,6 @@ jobs:
         run: python -m unittest discover -s tools -p "test_servy_finetune_preflight.py" -v
       - name: Test Op27 training safety contracts (no ML runtime)
         run: python -m unittest discover -s tools -p "test_op27_passages.py" -v
+
+      - name: Test verified checkpoint backups (no cloud access)
+        run: python -m unittest discover -s tools -p "test_servy_checkpoint_backup.py" -v
