@@ -41,7 +41,11 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(proposed["train"][0]["negative_texts"], ["Filter cleaning"])
         self.assertEqual(proposed["train"][0]["review_status"], "weakly_supervised")
         self.assertEqual(len(review), 2)
-        self.assertTrue(all(f["verified_canonical_source_family"] is None for f in families))
+        self.assertTrue(all(ref["decision"] == "PENDING"
+                            for row in review for ref in row["references"]))
+        self.assertTrue(all(f["decision"] == "PENDING" and
+                            f["verified_canonical_source_family"] is None
+                            for f in families))
 
     def test_negative_bridge_blocks(self):
         rows = [dict(self.train[0], negative_chunk_ids=["2"])]

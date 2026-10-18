@@ -142,7 +142,12 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
                         info["groups"].add(str(row["source_group"]).strip())
                     evidence.append({"role": role, "chunk_id": cid,
                                      "document_id": document,
-                                     "passage": chunk["passage"]})
+                                     "passage": chunk["passage"],
+                                     # An actual reviewer supplies each decision
+                                     # and supporting source reference.
+                                     "decision": "PENDING",
+                                     "reviewer_id": None,
+                                     "review_evidence_reference": None})
             if set(map(normalize, positives)) & set(map(normalize, negatives)):
                 issues["SAME_ROW_POSITIVE_NEGATIVE_PASSAGE"] += 1
             recovered = dict(row)
@@ -239,6 +244,7 @@ def reconcile(train, dev, corpus, quarantine=(), historical_holdout=()):
             "conflicting_group_claims": len(info["groups"]) > 1,
             "verified_canonical_source_family": None,
             "approved_source_version": None,
+            "decision": "PENDING",
             "reviewer_id": None, "evidence_reference": None,
         })
     quarantine_refs = len(quarantine)
