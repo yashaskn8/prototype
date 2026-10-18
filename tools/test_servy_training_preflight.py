@@ -58,6 +58,11 @@ class TestStrictV4Admission(unittest.TestCase):
                 for row in getattr(self, key):
                     f.write(json.dumps(row) + "\n")
             self.inputs[key] = path
+        candidate_path = self.root / "candidates.jsonl"
+        candidate_path.write_text(
+            json.dumps({"query_id": "q2", "chunk_ids": [2, 4]}) + "\n",
+            encoding="utf-8")
+        self.inputs["candidates"] = candidate_path
         self.model_path = self.root / "model.json"
         self.model_path.write_text(json.dumps(self.model_config), encoding="utf-8")
         self.destination = self.root / "approved-model-output"
@@ -81,7 +86,8 @@ class TestStrictV4Admission(unittest.TestCase):
         return inspect_inputs(
             str(self.inputs["train"]), str(self.inputs["dev"]),
             str(self.inputs["corpus"]), str(self.model_path),
-            str(self.approval_path), str(self.destination))
+            str(self.approval_path), str(self.destination),
+            candidates=str(self.inputs["candidates"]))
 
     def test_structurally_eligible_synthetic_research_does_not_prove_truth(self):
         report = self.evaluate()
@@ -170,6 +176,43 @@ class TestStrictV4Admission(unittest.TestCase):
         result = self.evaluate()
         self.assertEqual(result["status"], "BLOCKED_DATA_INTEGRITY")
         self.assertIn("NEGATIVE_IDS_WITHOUT_TRAINING_TEXT", [x["code"] for x in result["issues"]])
+
+
+    def test_research_gate_requires_frozen_candidates(self):
+        report = inspect_inputs(
+            str(self.inputs["train"]), str(self.inputs["dev"]),
+            str(self.inputs["corpus"]), str(self.model_path),
+            str(self.approval_path), str(self.destination))
+        self.assertEqual(report["status"], "BLOCKED_MISSING_ARTIFACT")
+        self.assertIn("FROZEN_CANDIDATES_REQUIRED",
+                      [x["code"] for x in report["issues"]])
+
+    def test_frozen_candidates_must_match_authorized_hash(self):
+        self.inputs["candidates"].write_text(
+            json.dumps({"query_id": "q2", "chunk_ids": [2]}) + "\n", encoding="utf-8")
+        report = self.evaluate()
+        self.assertEqual(report["status"], "BLOCKED_LABEL_VERIFICATION")
+        self.assertIn("INPUT_NOT_IN_APPROVED_EXPORT",
+                      [x["code"] for x in report["issues"]])
+
+    def test_unmapped_frozen_candidate_is_rejected(self):
+        self.inputs["candidates"].write_text(
+            json.dumps({"query_id": "q2", "chunk_ids": [999]}) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        report = self.evaluate()
+        self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("INVALID_FROZEN_CANDIDATES",
+                      [x["code"] for x in report["issues"]])
+
+    def test_zero_gold_candidate_coverage_blocks_training(self):
+        self.inputs["candidates"].write_text(
+            json.dumps({"query_id": "q2", "chunk_ids": [4]}) + "\n", encoding="utf-8")
+        self.refresh_approval()
+        report = self.evaluate()
+        self.assertEqual(report["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertEqual(report["candidate_coverage"]["gold_absent"], 1)
+        self.assertIn("ZERO_GOLD_CANDIDATE_COVERAGE",
+                      [x["code"] for x in report["issues"]])
 
 
 if __name__ == "__main__":

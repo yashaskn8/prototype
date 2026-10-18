@@ -92,6 +92,7 @@ python tools/servy_training_preflight.py `
   --train "C:/company-approved/servy/train.jsonl" `
   --dev "C:/company-approved/servy/dev.jsonl" `
   --corpus "C:/company-approved/servy/corpus.jsonl" `
+  --candidates "C:/company-approved/servy/frozen_candidates.jsonl" `
   --model-config "C:/company-approved/servy/model.json" `
   --authorization "C:/company-approved/servy/authorization.json" `
   --artifact-dir "C:/company-approved/models/servy-v4-UNIQUE-RUN-ID" `

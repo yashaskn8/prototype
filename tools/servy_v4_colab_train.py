@@ -113,7 +113,7 @@ def main():
             math.isfinite(a.learning_rate) and 0 < a.learning_rate <= 2e-5):
         parser.error("Research bounds: epochs 1-3, batch 1-8, lr >0 and <=2e-5")
     gate = inspect_inputs(a.train, a.dev, a.corpus, a.model_config, a.authorization,
-                          a.artifact_dir, stage2=a.stage2)
+                          a.artifact_dir, stage2=a.stage2, candidates=a.candidates)
     print("TRAINING ADMISSION:", gate["status"], flush=True)
     if gate["status"] != "READY_FOR_RESEARCH_EXPERIMENT":
         raise SystemExit("BLOCKED: inspect preflight locally. No GPU/model initialized.")

@@ -31,17 +31,21 @@ def _load_object(path):
 
 
 def inspect_inputs(train, dev, corpus, model_config, authorization,
-                   artifact_dir, stage2=None, holdout=None):
+                   artifact_dir, stage2=None, holdout=None, candidates=None):
     """Machine-verifiable structural admission, not independent label adjudication."""
     paths = {"train": train, "dev": dev, "corpus": corpus}
     if stage2:
         paths["stage2"] = stage2
     if holdout:
         paths["holdout"] = holdout
+    if candidates:
+        paths["candidates"] = candidates
     issues = []
     def issue(status, code, role):
         issues.append({"status": status, "code": code, "role": role})
 
+    if not candidates:
+        issue("BLOCKED_MISSING_ARTIFACT", "FROZEN_CANDIDATES_REQUIRED", "candidates")
     missing = [name for name, path in paths.items() if not Path(path).is_file()]
     for name in missing:
         issue("BLOCKED_MISSING_ARTIFACT", "INPUT_FILE_MISSING", name)
@@ -107,6 +111,32 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 issue("BLOCKED_MODEL_COMPATIBILITY", "LIBRARY_VERSION_NOT_PINNED", "model")
         except (ValueError, OSError, TypeError) as error:
             issue("BLOCKED_MODEL_COMPATIBILITY", type(error).__name__, "model")
+
+    candidate_coverage = {}
+    if candidates and not any(role in missing for role in ("candidates", "dev", "corpus")):
+        # Strict evaluation uses frozen IDs, never injects gold or initializes GPU.
+        try:
+            from servy_checkpoint_audit import load_jsonl, normalize_inputs, validate_candidates
+            cases, chunks = normalize_inputs(load_jsonl(dev), load_jsonl(corpus))
+            pool_size = config.get("candidate_pool", 10)
+            if not isinstance(pool_size, int) or pool_size < 1:
+                pool_size = 10
+            frozen = validate_candidates(
+                cases, chunks, load_jsonl(candidates), top_k=pool_size
+            )
+            present = sum(
+                bool(set(case["gold_chunk_ids"]) & set(frozen[qid]))
+                for qid, case in cases.items()
+            )
+            candidate_coverage = {
+                "questions": len(cases),
+                "gold_present": present,
+                "gold_absent": len(cases) - present,
+            }
+            if present == 0:
+                issue("BLOCKED_DATA_INTEGRITY", "ZERO_GOLD_CANDIDATE_COVERAGE", "candidates")
+        except (ValueError, OSError, TypeError, KeyError):
+            issue("BLOCKED_DATA_INTEGRITY", "INVALID_FROZEN_CANDIDATES", "candidates")
 
     approved = {}
     if Path(authorization).is_file():
@@ -205,6 +235,7 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
         "model_configuration_sha256": sha256_file(model_config) if Path(model_config).is_file() else None,
         "authorization_manifest_sha256": sha256_file(authorization) if Path(authorization).is_file() else None,
         "structural_issue_counts": structure["issue_counts"] if structure else {},
+        "candidate_coverage": candidate_coverage,
         "issues": issues[:500],
         "issues_truncated": len(issues) > 500,
         "limitations": [
@@ -219,15 +250,16 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for flag in ("train", "dev", "corpus", "model_config", "authorization",
-                 "artifact_dir", "report"):
+    for flag in ("train", "dev", "corpus", "candidates", "model_config",
+                 "authorization", "artifact_dir", "report"):
         p.add_argument("--" + flag.replace("_", "-"), required=True)
     p.add_argument("--stage2")
     p.add_argument("--holdout")
     a = p.parse_args()
     try:
         report = inspect_inputs(a.train, a.dev, a.corpus, a.model_config,
-                                a.authorization, a.artifact_dir, a.stage2, a.holdout)
+                                a.authorization, a.artifact_dir, a.stage2, a.holdout,
+                                candidates=a.candidates)
     except (ValueError, OSError, TypeError, KeyError) as error:
         report = {"schema_version": "servy-v4-strict-1",
                   "status": "BLOCKED_DATA_INTEGRITY", "training_performed": False,
