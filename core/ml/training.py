@@ -44,6 +44,24 @@ def evaluate_profile(profile_key: str, rows, k_max: int = 10) -> dict:
             "latency_ms_p50": lat[len(lat) // 2] if lat else None}
 
 
+def _best_validation_checkpoint(trainer, *, validation_required):
+    """Fail closed if Trainer did not select a finite best-dev checkpoint."""
+    if not validation_required:
+        return None
+    state = getattr(trainer, "state", None)
+    checkpoint = getattr(state, "best_model_checkpoint", None)
+    metric = getattr(state, "best_metric", None)
+    if not checkpoint:
+        raise RuntimeError("TRAINING_BLOCKED: no selected best validation checkpoint")
+    try:
+        valid = math.isfinite(float(metric))
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise RuntimeError("TRAINING_BLOCKED: best validation loss is missing or non-finite")
+    return str(checkpoint)
+
+
 TRAINING_MODE_POSITIVE_PAIRS = "positive_pairs_only"
 TRAINING_MODE_VERIFIED_TRIPLETS = "verified_triplets_only"
 TRAINING_MODE_MIXED = "mixed_verified_examples"
@@ -112,6 +130,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
 
     if not train_rows:
         raise ValueError("No training rows: BLOCKED — VALID TRAINING DATA REQUIRED.")
+    if not val_rows and not synthetic_smoke_test:
+        raise ValueError("TRAINING_BLOCKED: an independent development set is required "
+                         "for best-validation checkpoint selection.")
 
     # ---- Triplet expansion (no model required) ----
     from .labels import expand_training_triplets
@@ -279,6 +300,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         learning_rate=lr, warmup_ratio=0.1, seed=seed, report_to="none",
         batch_sampler=BatchSamplers.NO_DUPLICATES, dataloader_num_workers=0,
         save_strategy="epoch", eval_strategy="epoch" if val_rows else "no",
+        load_best_model_at_end=bool(val_rows),
+        metric_for_best_model="eval_loss" if val_rows else None,
+        greater_is_better=False,
         logging_steps=1, use_cpu=True,
     )
     trainer = SentenceTransformerTrainer(
@@ -289,8 +313,13 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
     )
     t = time.time()
     result = trainer.train()
+    best_checkpoint = _best_validation_checkpoint(
+        trainer, validation_required=bool(val_rows)
+    )
     final = out_dir / "final"
-    model.save(str(final))
+    # load_best_model_at_end restores the selected validation checkpoint.
+    # Never export the independent last-epoch model when dev metrics exist.
+    trainer.model.save(str(final))
     # Compute deterministic checkpoint hash
     import hashlib
     h = hashlib.sha256()
@@ -352,6 +381,9 @@ def finetune(train_rows, val_rows, out_dir, base_revision, *, epochs=1, batch_si
         "base_revision": base_revision,
         "checkpoint": str(final),
         "checkpoint_sha256": ckpt_hash,
+        "checkpoint_selection": "best_eval_loss" if best_checkpoint else "synthetic_smoke_last_epoch",
+        "best_validation_checkpoint": best_checkpoint,
+        "best_validation_metric": float(trainer.state.best_metric) if best_checkpoint else None,
         "reload_dim": int(vec.shape[1]),
         "seconds": round(time.time() - t, 1),
     }
