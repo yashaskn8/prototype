@@ -62,6 +62,18 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 train, dev, corpus, stage2_path=stage2,
                 holdout_path=holdout, artifact_dir=artifact_dir,
             )
+            # The structural audit intentionally limits detailed findings to
+            # 300. Never silently admit training when that summary is incomplete.
+            # Cross-check counts even if the producer forgot its truncated flag.
+            summary_blockers = structure["numbers"]["blockers"]
+            if not isinstance(summary_blockers, int) or isinstance(summary_blockers, bool) or summary_blockers < 0:
+                issue("BLOCKED_DATA_INTEGRITY", "INVALID_STRUCTURAL_BLOCKER_COUNT", "structural_validation")
+            elif summary_blockers != sum(
+                finding["severity"] == "BLOCKER" for finding in structure["findings"]
+            ):
+                issue("BLOCKED_DATA_INTEGRITY", "STRUCTURAL_BLOCKER_COUNT_MISMATCH", "structural_validation")
+            if structure.get("findings_truncated"):
+                issue("BLOCKED_DATA_INTEGRITY", "STRUCTURAL_FINDINGS_TRUNCATED", "structural_validation")
             for finding in structure["findings"]:
                 if finding["severity"] != "BLOCKER":
                     continue

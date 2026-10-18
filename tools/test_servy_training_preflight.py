@@ -3,6 +3,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from servy_training_preflight import inspect_inputs
@@ -213,6 +214,39 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertEqual(report["candidate_coverage"]["gold_absent"], 1)
         self.assertIn("ZERO_GOLD_CANDIDATE_COVERAGE",
                       [x["code"] for x in report["issues"]])
+
+
+    def test_truncated_structural_report_cannot_pass_admission(self):
+        # 300 early warnings can hide a later critical defect. Admission
+        # must trust the full structural blocker counts, not a capped excerpt.
+        reported = {
+            "findings": [
+                {"severity": "REVIEW", "code": "REVIEW_ITEM", "ref": str(i)}
+                for i in range(300)
+            ],
+            "findings_truncated": True,
+            "numbers": {"blockers": 1},
+            "issue_counts": {"REVIEW_ITEM": 300, "SPLIT_DOCUMENT_COLLISION": 1},
+        }
+        with patch("servy_training_preflight.structural_audit", return_value=reported):
+            decision = self.evaluate()
+        self.assertNotEqual(decision["status"], "READY_FOR_RESEARCH_EXPERIMENT")
+        codes = {issue["code"] for issue in decision["issues"]}
+        self.assertIn("STRUCTURAL_FINDINGS_TRUNCATED", codes)
+        self.assertIn("STRUCTURAL_BLOCKER_COUNT_MISMATCH", codes)
+
+    def test_inconsistent_structural_counts_fail_even_without_truncation(self):
+        reported = {
+            "findings": [],
+            "findings_truncated": False,
+            "numbers": {"blockers": 1},
+            "issue_counts": {"SPLIT_DOCUMENT_COLLISION": 1},
+        }
+        with patch("servy_training_preflight.structural_audit", return_value=reported):
+            decision = self.evaluate()
+        self.assertEqual(decision["status"], "BLOCKED_DATA_INTEGRITY")
+        self.assertIn("STRUCTURAL_BLOCKER_COUNT_MISMATCH",
+                      [i["code"] for i in decision["issues"]])
 
 
 if __name__ == "__main__":
