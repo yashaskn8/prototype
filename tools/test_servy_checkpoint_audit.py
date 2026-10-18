@@ -198,7 +198,9 @@ class CheckpointAuditTests(unittest.TestCase):
             self.assertEqual(report["results"]["mock"]["hit_at_1"], 100)
             self.assertEqual(report["train_overlap_check"],
                              "PARTIAL_EXACT_PROVENANCE_CHECK")
-            data = json.loads((root / "reports" / "per_query.jsonl").read_text())
+            data = [json.loads(line) for line in
+                    (root / "reports" / "per_query.jsonl").read_text().splitlines()
+                    if line.strip()]
             row = data[0]
             self.assertEqual(row["mock"]["ranked_chunk_ids"], ["1", "2", "3"])
             self.assertEqual(len(row["mock"]["reranker_scores"]), 3)
