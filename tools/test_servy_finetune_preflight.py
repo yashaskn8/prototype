@@ -273,5 +273,31 @@ class TestTrainingAdmission(unittest.TestCase):
         self.assertIn("SPLIT_PASSAGE_CONTENT_COLLISION", report["issue_counts"])
 
 
+    def test_ambiguous_text_only_gold_source_is_blocked(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "passage": "compressor fault alpha"}
+        ]
+        train = [dict(self.train[0])]
+        train[0].pop("chunk_id")
+        report = self.check(train=train, corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("AMBIGUOUS_IDENTICAL_PASSAGE", report["issue_counts"])
+
+    def test_multiple_negative_ids_have_matching_exported_texts(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "passage": "correctly declared negative"},
+            {"chunk_id": 6, "tenant_id": 9, "document_id": 60,
+             "passage": "wrong alternative negative"}
+        ]
+        train = [dict(self.train[0], negative_chunk_ids=[3, 5],
+                      negative_texts=["unrelated filter gamma",
+                                      "wrong alternative negative"])]
+        report = self.check(train=train, corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("NEGATIVE_ID_TEXT_SET_MISMATCH", report["issue_counts"])
+
+
 if __name__ == "__main__":
     unittest.main()

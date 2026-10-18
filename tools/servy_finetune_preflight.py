@@ -106,7 +106,9 @@ def resolve_source(tenant, known_ids, passage, corpus, by_passage, add, label,
                 seen.update(matches)
                 doc_ids.update(corpus[x]["document"] for x in matches)
                 if len(matches) > 1:
-                    add("REVIEW", "AMBIGUOUS_IDENTICAL_PASSAGE", label)
+                    # Without an explicit chunk ID, identical text may belong
+                    # to different equipment/manual versions. Reject ambiguity.
+                    add("BLOCKER", "AMBIGUOUS_IDENTICAL_PASSAGE", label)
     elif not known_ids and not allow_no_passage:
         add("BLOCKER", "UNRESOLVED_PASSAGE_SOURCE", label)
     return seen, doc_ids
@@ -169,6 +171,16 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
         if row.get("candidate_negative_chunk_id"):
             neg_ids.append(str(row["candidate_negative_chunk_id"]))
         negatives = get_negative_texts(row)
+        if neg_ids and negatives:
+            # All declared negative IDs must correspond to exported texts,
+            # not just one of them. This previously leaked unrelated sources
+            # into split comparisons while silently training different pairs.
+            declared_texts = {
+                corpus[cid]["passage"] for cid in neg_ids
+                if cid in corpus and corpus[cid]["tenant"] == tenant
+            }
+            if declared_texts != set(negatives):
+                add("BLOCKER", "NEGATIVE_ID_TEXT_SET_MISMATCH", tag)
         neg, neg_docs = resolve_source(
             tenant, neg_ids, negatives[0] if len(negatives) == 1 else "",
             corpus, by_passage, add, f"{tag}:negative",
@@ -177,8 +189,12 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
         # Each additional textual negative must be traceable independently
         if len(negatives) > 1:
             for number, passage in enumerate(negatives, 1):
+                matching_ids = [
+                    cid for cid in neg_ids
+                    if cid in corpus and corpus[cid]["passage"] == passage
+                ]
                 cids, dids = resolve_source(
-                    tenant, [], passage, corpus, by_passage, add,
+                    tenant, matching_ids, passage, corpus, by_passage, add,
                     f"{tag}:negative:{number}",
                 )
                 neg.update(cids)
