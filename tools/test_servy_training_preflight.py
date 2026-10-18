@@ -30,16 +30,16 @@ class TestStrictV4Admission(unittest.TestCase):
         ]
         self.corpus = [
             {"chunk_id": 1, "tenant_id": 9, "document_id": 100,
-             "source_group": "manual-one", "source_version": "1",
+             "source_group": "manual-one", "source_version": "1", "source_group_status": "VERIFIED",
              "passage": "compressor repair procedure"},
             {"chunk_id": 2, "tenant_id": 9, "document_id": 200,
-             "source_group": "manual-two", "source_version": "1",
+             "source_group": "manual-two", "source_version": "1", "source_group_status": "VERIFIED",
              "passage": "sensor calibration sequence"},
             {"chunk_id": 3, "tenant_id": 9, "document_id": 300,
-             "source_group": "manual-three", "source_version": "1",
+             "source_group": "manual-three", "source_version": "1", "source_group_status": "VERIFIED",
              "passage": "unrelated approved procedure"},
             {"chunk_id": 4, "tenant_id": 9, "document_id": 400,
-             "source_group": "manual-four", "source_version": "1",
+             "source_group": "manual-four", "source_version": "1", "source_group_status": "VERIFIED",
              "passage": "unrelated sensor procedure"},
         ]
         self.model_config = {
@@ -330,6 +330,28 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertEqual(report["status"], "READY_FOR_RESEARCH_EXPERIMENT")
         self.assertNotIn("UNSAFE_IN_BATCH_COLLISION",
                          [x["code"] for x in report["issues"]])
+    def test_unverified_family_even_if_named_blocks_real_data_admission(self):
+        self.corpus[0]["source_group_status"] = "UNVERIFIED"
+        self.inputs["corpus"].write_text(
+            "".join(json.dumps(row) + "\n" for row in self.corpus),
+            encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_LABEL_VERIFICATION")
+        self.assertIn("SOURCE_FAMILY_NOT_VERIFIED",
+                      [x["code"] for x in result["issues"]])
+
+    def test_missing_family_attestation_blocks(self):
+        self.corpus[0].pop("source_group_status")
+        self.inputs["corpus"].write_text(
+            "".join(json.dumps(row) + "\n" for row in self.corpus),
+            encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertIn("SOURCE_FAMILY_NOT_VERIFIED",
+                      [x["code"] for x in result["issues"]])
+
+
 
 if __name__ == "__main__":
     unittest.main()

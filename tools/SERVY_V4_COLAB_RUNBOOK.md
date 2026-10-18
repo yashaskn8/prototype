@@ -15,7 +15,7 @@ actual bytes and SHA-256 digests are recovered from an **authorized** store.
    is external to this Git repository and is **not inferred from a file path**.
 2. Exact JSONL train/dev/corpus exports with `tenant_id`, stable
    `query_id`, `document_id`, `chunk_id`, `source_group`, `source_version`,
-   positive IDs and matching text. Every answer-bearing alternate requires
+   positive IDs and matching text. Each corpus row additionally requires `source_group_status: "VERIFIED"` from an accountable source-family review; a nonempty group string or recovered `UNVERIFIED` marker is not enough. Every answer-bearing alternate requires
    explicit review; do **not** turn an AI-screened negative into an approved
    label. Each approved pair needs `review_status: "approved"` and a real
    `reviewer_id`; a negative requires `negative_review_status: "approved"`

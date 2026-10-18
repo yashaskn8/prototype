@@ -224,6 +224,13 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                 for index, row in enumerate(read_rows(corpus), 1):
                     if not row.get("source_group") or not row.get("source_version"):
                         issue("BLOCKED_DATA_INTEGRITY", "MISSING_SOURCE_FAMILY_OR_VERSION", f"corpus:{index}")
+                    # Source-family names alone are not provenance evidence.
+                    # Recovered corpora explicitly mark these as UNVERIFIED.
+                    # Fail closed until an accountable review establishes a
+                    # canonical family mapping. Status remains an attestation
+                    # claim, not cryptographic proof of reviewer expertise.
+                    if str(row.get("source_group_status") or "").upper() != "VERIFIED":
+                        issue("BLOCKED_LABEL_VERIFICATION", "SOURCE_FAMILY_NOT_VERIFIED", f"corpus:{index}")
         except (ValueError, OSError, TypeError) as error:
             issue("BLOCKED_LABEL_VERIFICATION", type(error).__name__, "approval")
 
