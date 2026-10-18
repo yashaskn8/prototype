@@ -50,3 +50,13 @@ For a real independent holdout, source-document isolation must be verified using
 - Serving authorization, citations, safety and correct-equipment actions remain separate production acceptance gates.
 
 No fine-tuning, private model loading, production document mutation or vector-index rewriting was performed in this audit.
+
+## Additional blockers verified during continuation
+
+- **Existing full CI red before this branch:** The main branch workflow at commit `ed3bb8e` already failed five backend reference/retrieval tests out of 540. The same five failures appeared on the audit branch. This does not prove the source of the regression. Do not weaken `check_evidence_sufficiency` or publish ungrounded references simply to make those tests pass; investigate expected evidence and retrieval guards separately.
+- **Train/dev groups and negative docs:** `tools/op27_split_integrity.py` is now invoked before loading research models. It rejects exact/normalized train/dev query, source-group, passage, positive/negative chunk and any positive/negative document overlap. The Op27 text resolver preserves positive and negative document IDs rather than silently dropping them.
+- **Weak-label acknowledgment:** To deliberately rerun the *legacy Op27 research script only*, set `SERVY_OP27_WEAK_RESEARCH_ACK=acknowledge` after inspecting the full structural report. This is not human review or approval. Do not set it for any promotion workflow.
+- **False permanent backup risk:** `tools/servy_checkpoint_backup.py` now rejects relative destinations and `/content/drive/...` locations when Google Drive is not actually mounted. Source/destination byte hashes and archive integrity are checked before reporting a successful backup.
+- **No data-driven readiness conclusion yet:** The private 198/32 train/dev exports and exact 27 used Stage2 rows were not available to these GitHub Actions jobs. All current audit passes are synthetic/unit checks. Run them against the real approved exports before L4 fine-tuning. Production serving's evidence approval, equipment, customer, confidentiality and tenant guards are not reproduced by the research corpus.
+
+**Mandatory next step:** Run the two private-data preflights against the actual local Servy export, inspect `BLOCKED` and `REVIEW` findings, reconcile the 5 already-failing full-suite tests without bypassing safety, then restore or rebuild dataset and checkpoints in approved storage. Only after these checks should another controlled research experiment be considered. **Zero training loss and guaranteed 95% accuracy are not scientifically defensible targets.**
