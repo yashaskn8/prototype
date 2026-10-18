@@ -370,5 +370,32 @@ class TestTrainingAdmission(unittest.TestCase):
         self.assertIn("CROSS_TENANT_SOURCE", report["issue_counts"])
 
 
+    def test_large_weak_supervision_audit_preserves_all_findings(self):
+        train = [
+            {"query_id": "t-" + str(i), "query_text": "compressor " + str(i),
+             "tenant_id": 9, "chunk_id": 1, "positive_text": "compressor fault alpha"}
+            for i in range(350)
+        ]
+        report = self.check(train=train, loss_name="BinaryCrossEntropyLoss")
+        self.assertEqual(report["numbers"]["blockers"], 0)
+        self.assertFalse(report["findings_truncated"])
+        self.assertGreaterEqual(report["numbers"]["review_items"], 350)
+        self.assertEqual(len(report["findings"]),
+                         report["numbers"]["review_items"])
+
+    def test_large_warning_queue_does_not_hide_cross_split_blocker(self):
+        train = [
+            {"query_id": "t-" + str(i), "query_text": "compressor " + str(i),
+             "tenant_id": 9, "chunk_id": 1, "positive_text": "compressor fault alpha"}
+            for i in range(350)
+        ]
+        dev = [dict(self.dev[0], negative_chunk_ids=[1],
+                    negative_text="compressor fault alpha")]
+        report = self.check(train=train, dev=dev, loss_name="BinaryCrossEntropyLoss")
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("SPLIT_DOCUMENT_COLLISION", report["issue_counts"])
+        self.assertEqual(sum(f["severity"] == "BLOCKER" for f in report["findings"]),
+                         report["numbers"]["blockers"])
+
 if __name__ == "__main__":
     unittest.main()

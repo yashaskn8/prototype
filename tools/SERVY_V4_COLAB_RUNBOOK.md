@@ -34,8 +34,8 @@ From the cloned repository root:
 
 ```powershell
 git fetch origin
-git switch audit/servy-fixed-candidate-checkpoints-20261018
-git pull --ff-only origin audit/servy-fixed-candidate-checkpoints-20261018
+git switch main
+git pull --ff-only origin main
 
 python -m unittest discover -s tools -p "test_servy_finetune_preflight.py" -v
 python -m unittest discover -s tools -p "test_servy_training_preflight.py" -v
@@ -181,9 +181,8 @@ unless the actual bytes are found and verified.
 
 ## Rollback
 
-All changes are on the audit branch and PR #2 remains draft. Production
-MySQL data, Chroma indexes, currently served MiniLM reranker, and `main`
-must not be modified by this workflow. Revert a candidate patch on the
-audit branch by a normal `git revert <verified-commit-sha>`; do not force-push
-or deploy research weights. Abort any planned training if a gate changes or
+The audit PR #2 has been merged into `main`. Production MySQL data,
+Chroma indexes, currently served MiniLM reranker and private datasets
+must not be modified by research experiments. Use ordinary revert commits;
+do not force-push or deploy research weights. Abort any planned training if a gate changes or
 a frozen dataset hash fails verification.

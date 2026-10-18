@@ -317,5 +317,19 @@ class TestStrictV4Admission(unittest.TestCase):
                       result["structural_issue_counts"])
 
 
+    def test_approved_bce_shared_positive_across_questions_is_not_in_batch(self):
+        self.train.append({
+            "query_id": "q3", "query": "second unrelated compressor question",
+            "tenant_id": 9, "positive_chunk_id": 1,
+            "positive_text": "compressor repair procedure",
+            "review_status": "approved", "reviewer_id": "domain-engineer-a"})
+        self.inputs["train"].write_text(
+            "".join(json.dumps(row) + "\n" for row in self.train), encoding="utf-8")
+        self.refresh_approval()
+        report = self.evaluate()
+        self.assertEqual(report["status"], "READY_FOR_RESEARCH_EXPERIMENT")
+        self.assertNotIn("UNSAFE_IN_BATCH_COLLISION",
+                         [x["code"] for x in report["issues"]])
+
 if __name__ == "__main__":
     unittest.main()

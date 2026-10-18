@@ -425,8 +425,10 @@ def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None
             "blockers": blocking, "review_items": warnings,
         },
         "issue_counts": dict(sorted(count.items())),
-        "findings": findings[:300],
-        "findings_truncated": len(findings) > 300,
+        # Full list contains only references/codes, not private passages.
+        # Never hide critical findings behind 300 review warnings.
+        "findings": findings,
+        "findings_truncated": False,
         "training_not_performed": True,
     }
 

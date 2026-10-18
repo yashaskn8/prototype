@@ -83,13 +83,10 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                                   if code.startswith(("SPLIT_", "STAGE2_"))
                                   else "BLOCKED_DATA_INTEGRITY")
                 issue(classification, code, finding["ref"])
-            # A set-level collision warning is unsafe for in-batch contrastive
-            # training unless a collision-free sampler is demonstrated.
-            for code in ("MULTI_POSITIVE_SAME_QUESTION_IN_BATCH",
-                         "SHARED_POSITIVE_ACROSS_QUESTIONS",
-                         "REPEATED_QUERY_POSITIVE_PAIR"):
-                if code in structure["issue_counts"]:
-                    issue("BLOCKED_DATA_INTEGRITY", "UNSAFE_IN_BATCH_COLLISION", code)
+            # V4 uses explicit BCE (question, passage) pairs. A positive for
+            # another question does not become an implicit in-batch negative.
+            # Same-question contradictions and duplicate pairs are enforced
+            # independently. Reintroduce the global rule for contrastive loss.
         except (ValueError, OSError, KeyError, TypeError) as error:
             issue("BLOCKED_DATA_INTEGRITY", type(error).__name__, "structural_validation")
 
