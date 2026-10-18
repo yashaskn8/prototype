@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 from servy_v4_colab_train import (
-    make_bce_pairs, raw_negative_texts, candidate_gate, check_backup_destination,\n    validate_model_tokenizer_binding
+    make_bce_pairs, raw_negative_texts, candidate_gate, check_backup_destination,
+    validate_model_tokenizer_binding
 )
 
 
