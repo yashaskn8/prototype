@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from servy_checkpoint_backup import backup_checkpoint, is_temporary_colab_path
 
@@ -64,6 +65,19 @@ class TestCheckpointBackup(unittest.TestCase):
         source.write_bytes(b"test")
         with self.assertRaisesRegex(ValueError, "ephemeral"):
             backup_checkpoint(source, "/content/disposable.zip")
+
+    def test_unmounted_colab_drive_is_not_a_backup(self):
+        source = self.root / "weights.bin"
+        source.write_bytes(b"small")
+        with patch("servy_checkpoint_backup.os.path.ismount", return_value=False):
+            with self.assertRaisesRegex(ValueError, "not mounted"):
+                backup_checkpoint(source, "/content/drive/MyDrive/Servy_Research_Backup/model.bin")
+
+    def test_relative_path_not_assumed_persistent(self):
+        source = self.root / "weights.bin"
+        source.write_bytes(b"small")
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            backup_checkpoint(source, "Servy_Research_Backup/model.bin")
 
     def test_source_symlink_rejected(self):
         source = self.root / "source"
