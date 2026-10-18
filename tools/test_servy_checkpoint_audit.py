@@ -204,10 +204,14 @@ class CheckpointAuditTests(unittest.TestCase):
             row = data[0]
             self.assertEqual(row["mock"]["ranked_chunk_ids"], ["1", "2", "3"])
             self.assertEqual(len(row["mock"]["reranker_scores"]), 3)
+            self.assertEqual(row["mock"]["ranked_document_ids"], ["31", "32", "31"])
+            self.assertEqual(row["mock"]["movement_vs_baseline"], "UNCHANGED")
             with (root / "reports" / "per_query.csv").open(newline="") as stream:
                 cells = list(csv.DictReader(stream))
             self.assertEqual(len(cells), 1)
             self.assertIn("mock_rank_change_vs_baseline", cells[0])
+            self.assertIn("mock_ranked_documents", cells[0])
+            self.assertIn("mock_movement_vs_baseline", cells[0])
 
     def test_no_training_input_is_not_verified(self):
         """The tool must not suggest holdout independence without a training file."""
