@@ -239,7 +239,7 @@ def pair_collisions(a, b, a_name, b_name, failures, observations):
             failures.append(f"{prefix}: source_group collision")
         # Stage2 negative passages from validation/holdout are also contamination.
         if row["neg_docs"] & ad:
-            observations.append(f"{prefix}: negative source document also appears in other split")
+            failures.append(f"{prefix}: negative source document also appears in other split")
 
 
 def _sha256(path):
@@ -273,7 +273,10 @@ def assess(train, dev, corpus, *, stage2=None, holdout=None):
         # Stage2 may repeat the Stage1 TRAIN positives intentionally.
         pair_collisions(stage2_rows, validation, "stage2", "dev", failures, warnings)
         train_docs = {d for r in training for d in r["pos_docs"]}
+        train_queries = {(r["tenant"], r["query_key"]) for r in training}
         for row in stage2_rows:
+            if (row["tenant"], row["query_key"]) not in train_queries:
+                failures.append(f"stage2/{row['qid']}: question not found in Stage1 training split")
             if not row["pos_docs"].issubset(train_docs):
                 failures.append(f"stage2/{row['qid']}: positive source is not in Stage1 training documents")
         for row in stage2_rows:
