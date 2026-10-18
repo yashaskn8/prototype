@@ -1,7 +1,13 @@
 """Synthetic review-finalization tests. Never use production data."""
 import copy
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from servy_v4_finalize_review import finalize, ReviewBlocked
+from servy_training_preflight import inspect_inputs
+from servy_v4_colab_train import make_bce_pairs
 
 
 class ReviewFinalizationTests(unittest.TestCase):
@@ -108,6 +114,60 @@ class ReviewFinalizationTests(unittest.TestCase):
         self.families[0]["decision"] = "rejected"
         with self.assertRaisesRegex(ReviewBlocked, "Unapproved or unattested"):
             self.apply()
+
+    def test_structurally_reviewed_export_matches_real_v4_strict_gate(self):
+        exports, corpus, _ = self.apply()
+        self.assertEqual(len(make_bce_pairs(exports["train"])), 2)
+        self.assertEqual(len(make_bce_pairs(exports["dev"])), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def write(name, rows):
+                path = root / (name + ".jsonl")
+                path.write_text("".join(json.dumps(r) + "\n" for r in rows),
+                                encoding="utf-8")
+                return path
+            data = {
+                "train": write("train", exports["train"]),
+                "dev": write("dev", exports["dev"]),
+                "corpus": write("corpus", corpus),
+                "candidates": write("candidates", [
+                    {"query_id": "D1", "chunk_ids": ["2", "4"]}
+                ]),
+            }
+            model = root / "model.json"
+            model.write_text(json.dumps({
+                "base_model_id": "BAAI/bge-reranker-v2-m3",
+                "base_revision": "a"*40,
+                "tokenizer_id": "BAAI/bge-reranker-v2-m3",
+                "tokenizer_revision": "a"*40,
+                "sentence_transformers_version": "5.1.0",
+                "loss_name": "BinaryCrossEntropyLoss",
+                "max_seq_length": 256,
+                "candidate_pool": 10,
+                "query_format": "raw-question",
+                "passage_format": "approved-frozen-corpus"
+            }), encoding="utf-8")
+            target = root / "never_created_checkpoints"
+            authorization = root / "authorization.json"
+            authorization.write_text(json.dumps({
+                "authorized_input_sha256": {
+                    role: hashlib.sha256(path.read_bytes()).hexdigest()
+                    for role, path in data.items()
+                },
+                "authorized_model_config_sha256":
+                    hashlib.sha256(model.read_bytes()).hexdigest(),
+                "authorized_reviewer_ids": ["reviewer"],
+                "approval_reference": "SYNTHETIC_TEST_ONLY",
+                "approved_persistent_destination": str(target),
+            }), encoding="utf-8")
+            result = inspect_inputs(
+                str(data["train"]), str(data["dev"]),
+                str(data["corpus"]), str(model), str(authorization),
+                str(target), candidates=str(data["candidates"])
+            )
+            self.assertEqual(result["status"], "READY_FOR_RESEARCH_EXPERIMENT",
+                             result["issues"])
+            self.assertFalse(result["training_performed"])
 
 
 if __name__ == "__main__":
