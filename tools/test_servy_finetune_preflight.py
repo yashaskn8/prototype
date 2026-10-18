@@ -170,5 +170,19 @@ class TestTrainingAdmission(unittest.TestCase):
         self.assertIn("HARD_NEGATIVE_SAME_SOURCE_DOCUMENT", report["issue_counts"])
 
 
+    def test_missing_training_passage_blocks_even_with_id(self):
+        train = [dict(self.train[0], positive_text="")]
+        report = self.check(train=train)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("MISSING_EXPORTED_TRAINING_PASSAGE", report["issue_counts"])
+
+    def test_long_corpus_flags_tokenization_review(self):
+        corpus = list(self.corpus)
+        corpus[2] = dict(corpus[2], passage="a" * 1500)
+        report = self.check(corpus=corpus)
+        self.assertIn("CHECK_TOKENIZER_TRUNCATION_FOR_LONG_PASSAGES",
+                      report["issue_counts"])
+
+
 if __name__ == "__main__":
     unittest.main()
