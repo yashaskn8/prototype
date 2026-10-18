@@ -56,7 +56,7 @@ def _field(row, *names):
 
 
 def normalize_inputs(cases, corpus):
-    """Fail closed on duplicate IDs, missing tenant, missing query/passage."""
+    """Fail closed on missing metadata, ID collisions and absent gold chunks."""
     chunks = {}
     for row in corpus:
         cid = _id(_field(row, "chunk_id", "passage_id"))
@@ -84,39 +84,98 @@ def normalize_inputs(cases, corpus):
         if not gold:
             raise ValueError(f"{qid}: empty gold IDs")
         tenant = _id(_field(row, "tenant_id"))
+        missing = [cid for cid in gold if cid not in chunks]
+        if missing:
+            raise ValueError(
+                f"{qid}: gold chunk(s) absent from exported corpus: {missing}. "
+                "Cannot score or infer gold document identity."
+            )
         for cid in gold:
-            if cid in chunks and chunks[cid]["tenant_id"] != tenant:
+            if chunks[cid]["tenant_id"] != tenant:
                 raise ValueError(f"{qid}: gold chunk {cid} belongs to different tenant")
         queries[qid] = {
             "query_id": qid,
             "query": str(_field(row, "query_text", "query")),
             "tenant_id": tenant,
             "gold_chunk_ids": gold,
-            "gold_document_ids": sorted({chunks[x]["document_id"] for x in gold if x in chunks}),
+            "gold_document_ids": sorted({chunks[x]["document_id"] for x in gold}),
         }
     return queries, chunks
 
+def _norm(value):
+    return " ".join(str(value).casefold().split())
+
+
+def _ids(row, plural, singular):
+    values = row.get(plural)
+    if values is None:
+        values = row.get(singular)
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        values = [values]
+    return [_id(x) for x in values]
+
 
 def check_split_overlap(cases, train_rows, chunks):
-    """Conservative, fail-closed query/chunk/source-document leak check."""
+    """Conservatively inspect every known training passage and source document.
+
+    Note: absence of collisions is NOT proof of independence if training examples
+    cannot be mapped to source documents or if paraphrased queries are present.
+    """
+    from collections import defaultdict
+    by_text = defaultdict(set)
+    for chunk in chunks.values():
+        by_text[_norm(chunk["passage"])].add(chunk["chunk_id"])
+
     train_queries, train_chunks, train_documents = set(), set(), set()
-    for row in train_rows:
+    untraceable = []
+    for index, row in enumerate(train_rows):
         query = row.get("query_text") or row.get("query")
         if query:
-            train_queries.add(" ".join(str(query).lower().split()))
-        chunk_ids = row.get("positive_chunk_ids") or [row.get("positive_chunk_id", row.get("chunk_id"))]
-        for cid in chunk_ids:
-            if cid is not None:
-                cid = _id(cid)
+            train_queries.add(_norm(query))
+        ids = []
+        for plural, singular in (
+            ("positive_chunk_ids", "positive_chunk_id"),
+            ("negative_chunk_ids", "negative_chunk_id"),
+            ("candidate_chunk_ids", "candidate_chunk_id"),
+        ):
+            ids.extend(_ids(row, plural, singular))
+        for field in ("chunk_id", "candidate_negative_chunk_id"):
+            if row.get(field) is not None:
+                ids.append(_id(row[field]))
+        known_sources = set()
+        for cid in ids:
+            train_chunks.add(cid)
+            if cid in chunks:
+                known_sources.add(chunks[cid]["document_id"])
+            else:
+                untraceable.append({"row": index, "reason": f"unknown chunk ID: {cid}"})
+        for field in ("document_id", "source_document_id",
+                      "positive_document_id", "negative_document_id"):
+            if row.get(field) is not None:
+                known_sources.add(_id(row[field]))
+        # Stage 2 spreadsheet exports often contain only raw passage text.
+        # Resolve both positive AND negative against the exact exported corpus.
+        for field in ("positive", "positive_text", "candidate_negative",
+                      "negative", "negative_text"):
+            passage = row.get(field)
+            if not passage:
+                continue
+            matches = by_text.get(_norm(passage), set())
+            if not matches:
+                untraceable.append({"row": index, "reason": f"{field}: no exact passage match"})
+            for cid in matches:
                 train_chunks.add(cid)
-                if cid in chunks:
-                    train_documents.add(chunks[cid]["document_id"])
-        if row.get("document_id") is not None:
-            train_documents.add(_id(row["document_id"]))
+                known_sources.add(chunks[cid]["document_id"])
+        if not known_sources:
+            untraceable.append({"row": index, "reason": "source document not established"})
+        train_documents.update(known_sources)
+
     collisions = []
     for case in cases.values():
         found = []
-        if " ".join(case["query"].lower().split()) in train_queries:
+        if _norm(case["query"]) in train_queries:
             found.append("query")
         if set(case["gold_chunk_ids"]) & train_chunks:
             found.append("gold_chunk")
@@ -124,16 +183,19 @@ def check_split_overlap(cases, train_rows, chunks):
             found.append("source_document")
         if found:
             collisions.append({"query_id": case["query_id"], "collision_types": found})
-    return collisions
-
+    return collisions, untraceable
 
 def validate_candidates(cases, chunks, rows, top_k=10):
+    """Validate a frozen candidate file without silently dropping any query."""
     result = {}
     for row in rows:
         qid = _id(_field(row, "query_id"))
         if qid in result or qid not in cases:
             raise ValueError(f"Unexpected or duplicate candidates for query: {qid}")
-        ids = [_id(x) for x in _field(row, "chunk_ids", "candidate_chunk_ids")]
+        ids_raw = row.get("chunk_ids", row.get("candidate_chunk_ids"))
+        if not isinstance(ids_raw, list) or not ids_raw:
+            raise ValueError(f"{qid}: candidates must be a nonempty list")
+        ids = [_id(x) for x in ids_raw]
         if len(ids) != len(set(ids)):
             raise ValueError(f"{qid}: duplicate candidate chunk")
         if len(ids) > top_k:
@@ -145,9 +207,11 @@ def validate_candidates(cases, chunks, rows, top_k=10):
                 raise ValueError(f"{qid}: cross-tenant candidate {cid}")
         result[qid] = ids
     if set(result) != set(cases):
-        raise ValueError(f"Candidate query IDs differ from case IDs (missing: {sorted(set(cases) - set(result))[:5]})")
+        raise ValueError(
+            f"Candidate query IDs differ from case IDs "
+            f"(missing: {sorted(set(cases) - set(result))[:5]})"
+        )
     return result
-
 
 def build_qwen_candidates(cases, chunks, top_k=10,
                           model_id="Qwen/Qwen3-Embedding-0.6B"):
