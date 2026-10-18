@@ -65,3 +65,51 @@ The comparator exports `per_query.jsonl`, `per_query.csv`, `frozen_candidates.js
 4. This report contains **no actual CPU/GPU evaluation on the private Servy corpus or recovered V2/V3 checkpoints**. Source-level findings are separate from measured ML results.
 
 **Promotion gate:** Independently reviewed train/dev/test manifests, verified source isolation, saved and hashed model artifacts, production-equivalent scoped candidate generation, CI green and correct-evidence/answer-safety evaluations. Until then, leave production unchanged.
+
+
+## V4 fine-tuning admission: run BEFORE starting a Colab GPU session
+
+The separate standard-library-only preflight does not load a model. Run it
+against the **exact** exported Stage 1 and dev records and the same 123-chunk
+corpus used for those exports. Do not upload this proprietary data to GitHub.
+
+Windows PowerShell from the nested `prototype` Git checkout:
+
+```powershell
+python -m unittest discover -s tools -p "test_servy_finetune_preflight.py" -v
+
+python tools/servy_finetune_preflight.py `
+  --train private_training_data/servy_colab_train.jsonl `
+  --dev private_training_data/servy_colab_dev.jsonl `
+  --corpus private_training_data/servy_colab_corpus.jsonl `
+  --artifact-dir "C:/approved-model-storage/servy-v4" `
+  --report private_training_data/servy_v4_preflight.json
+```
+
+If the exact 27 **used** Stage 2 hard-negative triples have been reconstructed
+with tenant IDs, add `--stage2 private_training_data/v3_stage2_exact_27.jsonl`.
+Do **not** substitute the original 50-row AI-triage Excel spreadsheet. The
+validator accepts selected JSONL or CSV, not the review workbook, because it
+needs to establish which exact examples actually influenced the weights.
+
+Optional `--holdout private_training_data/frozen_independent_holdout_benchmark.jsonl`
+checks only for structural overlap (including unanswerable holdout queries); it
+does **not** score, select on, or inspect final holdout performance.
+
+Outcomes:
+- `BLOCKED` (exit 2): the supplied data cannot safely enter training as-is.
+  Inspect the report; do not weaken checks or silently remove failures.
+- `REVIEW_REQUIRED` (exit 0): no mechanically provable blocker remains in
+  the submitted subset, but labels, hard negatives, source authority and
+  independent accuracy remain unverified until expert adjudication.
+- `CHECK_TOKENIZER_TRUNCATION_FOR_LONG_PASSAGES` is only a character-count
+  heuristic; examine model-specific tokenizer lengths separately.
+- `PERSISTENT_CHECKPOINT_DESTINATION_UNSET` or
+  `CHECKPOINT_TARGET_IS_EPHEMERAL_COLAB_STORAGE` alerts to lost checkpoint risk.
+  A Google Drive folder is not by itself proof of company permission.
+
+The preflight checks exact text and document identity, not semantic
+paraphrases, guide-version lineage, or row-level customer ACLs. Passing it does
+not imply "zero training loss", no overfitting or 95% retrieval accuracy. Use
+best-validation-checkpoint selection, bounded tuning, immutable saved artifacts,
+and an independent expert-reviewed test set to control regression.
