@@ -231,6 +231,9 @@ def inspect_inputs(train, dev, corpus, model_config, authorization,
                     # claim, not cryptographic proof of reviewer expertise.
                     if str(row.get("source_group_status") or "").upper() != "VERIFIED":
                         issue("BLOCKED_LABEL_VERIFICATION", "SOURCE_FAMILY_NOT_VERIFIED", f"corpus:{index}")
+                    if (row.get("source_group_reviewer_id") not in reviewers
+                            or not str(row.get("source_group_evidence_reference") or "").strip()):
+                        issue("BLOCKED_LABEL_VERIFICATION", "SOURCE_FAMILY_ATTESTATION_MISSING", f"corpus:{index}")
         except (ValueError, OSError, TypeError) as error:
             issue("BLOCKED_LABEL_VERIFICATION", type(error).__name__, "approval")
 

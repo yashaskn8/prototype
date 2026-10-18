@@ -30,16 +30,16 @@ class TestStrictV4Admission(unittest.TestCase):
         ]
         self.corpus = [
             {"chunk_id": 1, "tenant_id": 9, "document_id": 100,
-             "source_group": "manual-one", "source_version": "1", "source_group_status": "VERIFIED",
+             "source_group": "manual-one", "source_version": "1", "source_group_status": "VERIFIED", "source_group_reviewer_id": "domain-engineer-a", "source_group_evidence_reference": "synthetic-evidence",
              "passage": "compressor repair procedure"},
             {"chunk_id": 2, "tenant_id": 9, "document_id": 200,
-             "source_group": "manual-two", "source_version": "1", "source_group_status": "VERIFIED",
+             "source_group": "manual-two", "source_version": "1", "source_group_status": "VERIFIED", "source_group_reviewer_id": "domain-engineer-a", "source_group_evidence_reference": "synthetic-evidence",
              "passage": "sensor calibration sequence"},
             {"chunk_id": 3, "tenant_id": 9, "document_id": 300,
-             "source_group": "manual-three", "source_version": "1", "source_group_status": "VERIFIED",
+             "source_group": "manual-three", "source_version": "1", "source_group_status": "VERIFIED", "source_group_reviewer_id": "domain-engineer-a", "source_group_evidence_reference": "synthetic-evidence",
              "passage": "unrelated approved procedure"},
             {"chunk_id": 4, "tenant_id": 9, "document_id": 400,
-             "source_group": "manual-four", "source_version": "1", "source_group_status": "VERIFIED",
+             "source_group": "manual-four", "source_version": "1", "source_group_status": "VERIFIED", "source_group_reviewer_id": "domain-engineer-a", "source_group_evidence_reference": "synthetic-evidence",
              "passage": "unrelated sensor procedure"},
         ]
         self.model_config = {
@@ -351,6 +351,27 @@ class TestStrictV4Admission(unittest.TestCase):
         self.assertIn("SOURCE_FAMILY_NOT_VERIFIED",
                       [x["code"] for x in result["issues"]])
 
+
+    def test_verified_family_without_approved_reviewer_evidence_blocks(self):
+        self.corpus[0].pop("source_group_evidence_reference")
+        self.inputs["corpus"].write_text(
+            "".join(json.dumps(row) + "\n" for row in self.corpus),
+            encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertEqual(result["status"], "BLOCKED_LABEL_VERIFICATION")
+        self.assertIn("SOURCE_FAMILY_ATTESTATION_MISSING",
+                      [x["code"] for x in result["issues"]])
+
+    def test_source_family_unknown_reviewer_blocks(self):
+        self.corpus[0]["source_group_reviewer_id"] = "unknown-reviewer"
+        self.inputs["corpus"].write_text(
+            "".join(json.dumps(row) + "\n" for row in self.corpus),
+            encoding="utf-8")
+        self.refresh_approval()
+        result = self.evaluate()
+        self.assertIn("SOURCE_FAMILY_ATTESTATION_MISSING",
+                      [x["code"] for x in result["issues"]])
 
 
 if __name__ == "__main__":
