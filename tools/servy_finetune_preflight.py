@@ -95,7 +95,7 @@ def resolve_source(tenant, known_ids, passage, corpus, by_passage, add, label,
             if not known_ids:
                 add("BLOCKER", "PASSAGE_NOT_IN_CORPUS", label)
             else:
-                add("REVIEW", "PASSAGE_TEXT_DIFFERS_FROM_CORPUS", label)
+                add("BLOCKER", "PASSAGE_TEXT_DIFFERS_FROM_CORPUS", label)
         else:
             if known_ids and not matches.intersection(seen):
                 add("BLOCKER", "PASSAGE_CHUNK_ID_CONFLICT", label)
@@ -110,8 +110,9 @@ def resolve_source(tenant, known_ids, passage, corpus, by_passage, add, label,
 
 
 def get_positive_text(row):
-    return (row.get("positive_text") or row.get("positive")
-            or (row.get("positive_texts") or [""])[0] or "")
+    values = row.get("positive_texts")
+    fallback = values[0] if isinstance(values, list) and values else ""
+    return row.get("positive_text") or row.get("positive") or fallback or ""
 
 
 def get_negative_texts(row):
@@ -126,7 +127,7 @@ def get_negative_texts(row):
     return list(dict.fromkeys(norm(x) for x in texts if norm(x)))
 
 
-def inspect_split(name, rows, corpus, by_passage, add):
+def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False):
     analyzed = []
     query_ids = set()
     for index, row in enumerate(rows, 1):
@@ -146,6 +147,9 @@ def inspect_split(name, rows, corpus, by_passage, add):
             continue
 
         pos_ids = ids(row, "positive_chunk_ids", "positive_chunk_id")
+        no_positive_expected = bool(allow_unanswerable and not pos_ids
+                                    and not row.get("positive_text")
+                                    and not row.get("positive"))
         if not pos_ids and row.get("chunk_id") is not None:
             pos_ids = [str(row["chunk_id"])]
         pos, docs = resolve_source(
@@ -173,10 +177,12 @@ def inspect_split(name, rows, corpus, by_passage, add):
 
         if pos.intersection(neg):
             add("BLOCKER", "CONTRADICTORY_POSITIVE_AND_NEGATIVE", tag)
+        if pos and neg and docs.intersection(neg_docs):
+            add("REVIEW", "HARD_NEGATIVE_SAME_SOURCE_DOCUMENT", tag)
         pos_text = norm(get_positive_text(row))
         if pos_text and pos_text in negatives:
             add("BLOCKER", "IDENTICAL_POSITIVE_AND_NEGATIVE_TEXT", tag)
-        if not pos:
+        if not pos and not (allow_unanswerable and no_positive_expected):
             add("BLOCKER", "UNRESOLVED_POSITIVE_SOURCE", tag)
 
         declared_doc = row.get("positive_document_id") or row.get("document_id")
@@ -186,7 +192,8 @@ def inspect_split(name, rows, corpus, by_passage, add):
         group = norm(row.get("source_group", ""))
         approved = str(row.get("review_status") or "").lower() == "approved"
         if not approved:
-            add("REVIEW", "NOT_HUMAN_VERIFIED", tag)
+            if not allow_unanswerable:
+                add("REVIEW", "NOT_HUMAN_VERIFIED", tag)
 
         analyzed.append({
             "tag": tag, "query": query, "tenant": tenant,
@@ -239,7 +246,7 @@ def training_collisions(rows, add):
         add("REVIEW", "SMALL_UNIQUE_QUESTION_POPULATION", "training")
 
 
-def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None):
+def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None, artifact_dir=None):
     findings = []
     def add(severity, code, ref):
         findings.append({"severity": severity, "code": code, "ref": ref})
@@ -273,11 +280,23 @@ def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None
     # Compare against frozen holdout *only for structural leakage*; never score it.
     if holdout_path:
         holdout = inspect_split(
-            "holdout", read_rows(holdout_path), corpus, by_passage, add
+            "holdout", read_rows(holdout_path), corpus, by_passage, add,
+            allow_unanswerable=True,
         )
         verify_disjoint(train + stage2, holdout, add, "training", "holdout")
         verify_disjoint(dev, holdout, add, "dev", "holdout")
 
+    if artifact_dir is None:
+        add("REVIEW", "PERSISTENT_CHECKPOINT_DESTINATION_UNSET", "artifacts")
+    else:
+        resolved = str(artifact_dir).replace("\\", "/").rstrip("/")
+        if resolved == "/content" or (
+            resolved.startswith("/content/") and
+            not resolved.startswith("/content/drive/")
+        ):
+            add("BLOCKER", "CHECKPOINT_TARGET_IS_EPHEMERAL_COLAB_STORAGE", "artifacts")
+        elif "/content/drive/" in resolved:
+            add("REVIEW", "VERIFY_COMPANY_APPROVAL_FOR_DRIVE_STORAGE", "artifacts")
     count = Counter(x["code"] for x in findings)
     blocking = sum(x["severity"] == "BLOCKER" for x in findings)
     warnings = sum(x["severity"] == "REVIEW" for x in findings)
@@ -308,9 +327,11 @@ def main():
     parser.add_argument("--corpus", required=True, help="Tenant-scoped document corpus JSONL")
     parser.add_argument("--stage2", help="EXACT used 27 selected Stage 2 examples JSONL/CSV")
     parser.add_argument("--holdout", help="Optional frozen independent holdout: leakage check only")
+    parser.add_argument("--artifact-dir", help="Planned persistent checkpoint destination (no file writes)")
     parser.add_argument("--report", required=True, help="Private local report path")
     args = parser.parse_args()
-    report = audit(args.train, args.dev, args.corpus, args.stage2, args.holdout)
+    report = audit(args.train, args.dev, args.corpus, args.stage2, args.holdout,
+                   artifact_dir=args.artifact_dir)
     path = Path(args.report)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2), encoding="utf-8")
