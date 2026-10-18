@@ -153,6 +153,10 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
         no_positive_expected = bool(allow_unanswerable and not pos_ids
                                     and not row.get("positive_text")
                                     and not row.get("positive"))
+        if no_positive_expected and str(row.get("answerability") or "").upper() not in (
+            "UNANSWERABLE_FROM_APPROVED_SOURCES", "UNANSWERABLE"
+        ):
+            add("BLOCKER", "HOLDOUT_NO_GOLD_WITHOUT_UNANSWERABLE_LABEL", tag)
         if not pos_ids and row.get("chunk_id") is not None:
             pos_ids = [str(row["chunk_id"])]
         if not get_positive_text(row) and not allow_unanswerable:
@@ -194,7 +198,13 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
         if declared_doc is not None and docs and str(declared_doc).strip() not in docs:
             add("BLOCKER", "DECLARED_DOCUMENT_MISMATCH", tag)
 
+        # Source-family identity must come from the canonical corpus, not solely
+        # from an optional label-row field. Include negative documents too.
         group = norm(row.get("source_group", ""))
+        source_groups = {
+            corpus[cid]["source_group"] for cid in pos | neg
+            if cid in corpus and corpus[cid]["source_group"]
+        }
         approved = str(row.get("review_status") or "").lower() == "approved"
         if not approved:
             if not allow_unanswerable:
@@ -203,7 +213,7 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
         analyzed.append({
             "tag": tag, "query": query, "tenant": tenant,
             "pos": pos, "neg": neg, "pos_docs": docs, "neg_docs": neg_docs,
-            "groups": {group} if group else set(),
+            "groups": source_groups | ({group} if group else set()),
             "positive_text": pos_text,
             "approved": approved,
             "asset_id": str(row.get("asset_id") or "").strip(),
@@ -232,13 +242,29 @@ def verify_disjoint(a, b, add, a_name="train", b_name="dev"):
             add("BLOCKER", "SPLIT_PASSAGE_TEXT_COLLISION", row["tag"])
 
 
-def training_collisions(rows, add):
+def training_collisions(rows, add, corpus):
     by_question = defaultdict(list)
     by_positive = defaultdict(list)
+    positive_chunks = set()
+    positive_passages = set()
+    for row in rows:
+        for cid in row["pos"]:
+            positive_chunks.add((row["tenant"], cid))
+            if cid in corpus:
+                positive_passages.add((row["tenant"], corpus[cid]["passage"]))
     for row in rows:
         by_question[(row["tenant"], row["query"])].append(row)
         for cid in row["pos"]:
             by_positive[(row["tenant"], cid)].append(row)
+    # In-batch contrastive objectives can optimize a known positive as a
+    # negative. A collision anywhere in the training pool is unsafe even
+    # when it is absent from the same JSONL row.
+    for row in rows:
+        for cid in row["neg"]:
+            if (row["tenant"], cid) in positive_chunks:
+                add("BLOCKER", "TRAIN_NEGATIVE_IS_ANOTHER_POSITIVE", row["tag"])
+            if cid in corpus and (row["tenant"], corpus[cid]["passage"]) in positive_passages:
+                add("BLOCKER", "TRAIN_NEGATIVE_EQUIVALENT_POSITIVE_TEXT", row["tag"])
     for records in by_question.values():
         if len({r["positive_text"] for r in records}) > 1:
             add("REVIEW", "MULTI_POSITIVE_SAME_QUESTION_IN_BATCH", records[0]["tag"])
@@ -263,8 +289,8 @@ def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None
     train = inspect_split("train", read_rows(train_path), corpus, by_passage, add)
     dev = inspect_split("dev", read_rows(dev_path), corpus, by_passage, add)
     verify_disjoint(train, dev, add)
-    training_collisions(train, add)
-
+    # Stage 2 is validated below; perform the complete conflict audit after
+    # loading it so that later negatives cannot contradict Stage 1 positives.
     # Stage 2 negative source must NOT leak from dev or independent holdout.
     stage2 = []
     if stage2_path:
@@ -285,6 +311,8 @@ def audit(train_path, dev_path, corpus_path, stage2_path=None, holdout_path=None
                 add("BLOCKER", "STAGE2_POSITIVE_OUTSIDE_TRAIN_DOCS", row["tag"])
     else:
         add("REVIEW", "EXACT_STAGE2_USED_EXAMPLES_NOT_PROVIDED", "stage2")
+
+    training_collisions(train + stage2, add, corpus)
 
     # Compare against frozen holdout *only for structural leakage*; never score it.
     if holdout_path:
