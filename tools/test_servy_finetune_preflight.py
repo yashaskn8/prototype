@@ -244,5 +244,34 @@ class TestTrainingAdmission(unittest.TestCase):
         self.assertIn("HOLDOUT_NO_GOLD_WITHOUT_UNANSWERABLE_LABEL", report["issue_counts"])
 
 
+    def test_copied_passage_cross_split_alias_negative_blocks(self):
+        # Same exact manual passage with a different source identity.
+        # Old ID/document-only checks missed train-positive vs dev-negative.
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "source_group": "independent-looking-version",
+             "passage": "compressor fault alpha"}
+        ]
+        dev = [dict(self.dev[0], negative_chunk_ids=[5],
+                    negative_text="compressor fault alpha")]
+        report = self.check(dev=dev, corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("SPLIT_PASSAGE_CONTENT_COLLISION", report["issue_counts"])
+
+    def test_copied_negative_passage_cross_split_alias_blocks(self):
+        corpus = self.corpus + [
+            {"chunk_id": 5, "tenant_id": 9, "document_id": 50,
+             "source_group": "different-source",
+             "passage": "unrelated filter gamma"}
+        ]
+        train = [dict(self.train[0], negative_chunk_ids=[3],
+                      negative_text="unrelated filter gamma")]
+        dev = [dict(self.dev[0], negative_chunk_ids=[5],
+                    negative_text="unrelated filter gamma")]
+        report = self.check(train=train, dev=dev, corpus=corpus)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("SPLIT_PASSAGE_CONTENT_COLLISION", report["issue_counts"])
+
+
 if __name__ == "__main__":
     unittest.main()

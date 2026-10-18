@@ -215,6 +215,11 @@ def inspect_split(name, rows, corpus, by_passage, add, allow_unanswerable=False)
             "pos": pos, "neg": neg, "pos_docs": docs, "neg_docs": neg_docs,
             "groups": source_groups | ({group} if group else set()),
             "positive_text": pos_text,
+            # Full canonical corpus passages, both positives and negatives,
+            # detect copied guides under distinct chunk/document/source IDs.
+            "passage_texts": {
+                corpus[cid]["passage"] for cid in pos | neg if cid in corpus
+            },
             "approved": approved,
             "asset_id": str(row.get("asset_id") or "").strip(),
             "customer_id": str(row.get("customer_id") or "").strip(),
@@ -229,6 +234,10 @@ def verify_disjoint(a, b, add, a_name="train", b_name="dev"):
     a_docs = {x for row in a for x in row["pos_docs"] | row["neg_docs"]}
     a_groups = {x for row in a for x in row["groups"]}
     a_texts = {(r["tenant"], r["positive_text"]) for r in a if r["positive_text"]}
+    a_passage_keys = {
+        (r["tenant"], passage)
+        for r in a for passage in r["passage_texts"] if passage
+    }
     for row in b:
         if (row["tenant"], row["query"]) in a_queries:
             add("BLOCKER", "SPLIT_QUERY_COLLISION", row["tag"])
@@ -240,6 +249,9 @@ def verify_disjoint(a, b, add, a_name="train", b_name="dev"):
             add("BLOCKER", "SPLIT_SOURCE_GROUP_COLLISION", row["tag"])
         if (row["tenant"], row["positive_text"]) in a_texts:
             add("BLOCKER", "SPLIT_PASSAGE_TEXT_COLLISION", row["tag"])
+        if any((row["tenant"], passage) in a_passage_keys
+               for passage in row["passage_texts"]):
+            add("BLOCKER", "SPLIT_PASSAGE_CONTENT_COLLISION", row["tag"])
 
 
 def training_collisions(rows, add, corpus):
