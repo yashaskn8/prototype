@@ -218,6 +218,7 @@ def main():
     p.add_argument("--reviewer-manifest", required=True,
                    help="External, locally held authorized reviewers and reference")
     p.add_argument("--out-dir", required=True)
+    p.add_argument("--corpus", required=True)
     a = p.parse_args()
     bundle, target = Path(a.review_bundle), Path(a.out_dir)
     if "private_training_data" not in {part.lower() for part in target.parts}:
@@ -230,12 +231,7 @@ def main():
         "review": "expert_review_queue.jsonl",
         "families": "source_family_review_queue.jsonl",
     }.items()}
-    # The originating source corpus is deliberately not copied into the queue;
-    # the operator must supply the exact unchanged corpus via this field.
-    p.add_argument("--corpus")
-    a = p.parse_args()
-    if not a.corpus:
-        p.error("--corpus required")
+    # Use the unchanged local corpus; never infer it from review comments.
     paths["corpus"] = Path(a.corpus)
     manifest = json.loads(Path(a.reviewer_manifest).read_text(encoding="utf-8"))
     report_path = bundle / "readiness_report.json"
