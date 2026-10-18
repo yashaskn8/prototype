@@ -57,6 +57,7 @@ from core.services.retriever import retrieve
 import core.services.retriever as retriever_module
 
 from tools.op27_passages import op27_passage_text
+from tools.op27_split_integrity import enforce_train_dev_separation
 
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
@@ -118,6 +119,10 @@ def resolve_chunk_texts(rows, *, content_first=False):
         resolved.append({
             **row, "positive_text": pos_texts[0],
             "negative_text": neg_texts[0] if neg_texts else "",
+            "positive_document_ids": sorted({chunks[cid].document_id for cid in positive}),
+            "negative_document_ids": sorted({chunks[cid].document_id for cid in negative}),
+            "positive_texts": pos_texts,
+            "negative_texts": neg_texts,
         })
     if not resolved:
         raise ValueError("No training examples after source validation")
@@ -418,6 +423,17 @@ def main():
     # The Op27 Chroma collections are the legacy metadata-rich passage profile.
     train_resolved = resolve_chunk_texts(train_rows, content_first=False)
     val_resolved = resolve_chunk_texts(dev_rows, content_first=False)
+
+    integrity_report = enforce_train_dev_separation(train_resolved, val_resolved)
+    print("Train/dev structural isolation:", integrity_report)
+    # Operation 27's labels are source-derived, not authenticated expert truth.
+    # Training must be deliberately opted into; production promotion stays disabled.
+    if os.getenv("SERVY_OP27_WEAK_RESEARCH_ACK") != "acknowledge":
+        raise RuntimeError(
+            "TRAINING_BLOCKED: Op27 uses weak supervision. "
+            "Set SERVY_OP27_WEAK_RESEARCH_ACK=acknowledge for an isolated "
+            "research run only after inspecting the integrity report."
+        )
 
     all_eval_results = {}
 
