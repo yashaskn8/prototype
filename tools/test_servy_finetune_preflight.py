@@ -421,5 +421,33 @@ class TestTrainingAdmission(unittest.TestCase):
         report = self.check(train=train, corpus=corpus)
         self.assertIn("MULTI_POSITIVE_ID_MISSING_TEXT_LIST", report["issue_counts"])
 
+
+    def test_cross_tenant_source_checksum_overlap_blocks_strict_preflight(self):
+        corpus = [dict(row) for row in self.corpus]
+        corpus[0]["source_checksum_sha256"] = "a" * 64
+        corpus[3]["source_checksum_sha256"] = "a" * 64
+        dev = [{"query_id": "D-2", "tenant_id": 8,
+                "query_text": "different technical issue", "chunk_id": 4,
+                "positive_text": "another tenant delta"}]
+        result = self.check(corpus=corpus, dev=dev)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("SPLIT_SOURCE_CHECKSUM_COLLISION", result["issue_counts"])
+
+    def test_cross_tenant_identical_passage_blocks_strict_preflight(self):
+        corpus = [dict(row) for row in self.corpus]
+        corpus[3]["passage"] = "compressor fault alpha"
+        dev = [{"query_id": "D-2", "tenant_id": 8,
+                "query_text": "different technical issue", "chunk_id": 4,
+                "positive_text": "compressor fault alpha"}]
+        result = self.check(corpus=corpus, dev=dev)
+        self.assertIn("SPLIT_CROSS_TENANT_PASSAGE_COLLISION", result["issue_counts"])
+
+    def test_cross_tenant_reused_question_blocks_independent_dev(self):
+        dev = [{"query_id": "D-2", "tenant_id": 8,
+                "query_text": "why compressor fault", "chunk_id": 4,
+                "positive_text": "another tenant delta"}]
+        result = self.check(dev=dev)
+        self.assertIn("SPLIT_CROSS_TENANT_QUERY_COLLISION", result["issue_counts"])
+
 if __name__ == "__main__":
     unittest.main()
