@@ -92,6 +92,12 @@ not yet reconciled. Neither is an independent live-UI accuracy guarantee.
   that case. Review backend logs if model verification fails.
 - V5 reranks at most 5 authorized technical documents with the example
   configuration; it cannot retrieve missing passages or change access scope.
+  The implementation accepts an explicitly configured pool size of **up to 10**.
+  Test 5 vs 8 vs 10 against the same frozen authorized candidates, including
+  answer correctness, latency, memory and cite integrity, before deploying a
+  larger size. The research ceiling is not a measured production improvement.
+  A configured SHA-256 without a local checkpoint path now fails closed, rather
+  than silently loading the legacy MS MARCO model.
   Historical service resolution records are not sent to V5 for scoring.
 - Changing `SERVY_RERANKER_MODEL_PATH` does **not** replace the Qwen3 embedding
   model, build a Qwen3 Chroma index, or reproduce the 88.10% research conditions.
