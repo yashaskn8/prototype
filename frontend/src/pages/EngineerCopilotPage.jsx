@@ -271,6 +271,12 @@ export function EngineerCopilotPage({ initialCallId }) {
                 </span>
               </div>
 
+              {result.reranker_applied && result.reranker_model === 'servy_v5_bge_verified' && (
+                <div role="status" style={{ marginBottom: '10px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  V5 BGE reranker applied to retrieved technical passages
+                </div>
+              )}
+
               <div className="rag-answer-body">
                 {result.answer}
               </div>

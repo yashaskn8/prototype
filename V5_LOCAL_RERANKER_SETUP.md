@@ -57,6 +57,12 @@ provisional development questions and is **not a live-UI accuracy guarantee**.
    display a verified model badge or the research benchmark score.
    Both API responses expose `reranker_applied`: it is `true` only when a
    knowledge passage received a finite cross-encoder score in that request.
+   For auditability, API responses also expose `reranker_model`. The value
+   `servy_v5_bge_verified` is emitted only after finite scores from the
+   locally loaded checkpoint with the known V5 SHA-256; `legacy_ms_marco`
+   and `local_cross_encoder` distinguish other opt-in configurations.
+   The React UI displays a V5 status line only for verified V5 scoring.
+   This indicates model usage, **not** answer correctness or source validity.
    It is `false` when V5 is disabled, unavailable, or falls back after a
    scoring error. `retrieval_backend` describes candidate retrieval, not V5.
 

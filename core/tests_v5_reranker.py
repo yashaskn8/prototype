@@ -128,6 +128,44 @@ class V5RerankerTests(SimpleTestCase):
         self.assertEqual(reranker.calibrated_sigmoid_score(-1000), 0)
         self.assertEqual(reranker.calibrated_sigmoid_score(1000), 1)
 
+    @override_settings(
+        SERVY_RERANKER_ENABLED=True,
+        SERVY_RERANKER_POOL_SIZE=5,
+        SERVY_RERANKER_MODEL_PATH="best_model",
+        SERVY_RERANKER_EXPECTED_SHA256=reranker.SERVY_V5_WEIGHTS_SHA256,
+    )
+    def test_v5_model_identity_attached_only_to_scored_chunks(self):
+        docs = [chunk("valid passage"), chunk("other passage")]
+        model = mock.Mock()
+        model.predict.return_value = [2.0, 1.0]
+        with mock.patch.object(reranker, "get_reranker", return_value=model):
+            ranked = reranker.rerank_candidates("diagnostic", docs, top_k=2)
+        self.assertTrue(all(item.reranker_model == "servy_v5_bge_verified" for item in ranked))
+        self.assertEqual([item.text for item in ranked], ["valid passage", "other passage"])
+
+    @override_settings(
+        SERVY_RERANKER_ENABLED=True,
+        SERVY_RERANKER_POOL_SIZE=5,
+        SERVY_RERANKER_MODEL_PATH="best_model",
+        SERVY_RERANKER_EXPECTED_SHA256=reranker.SERVY_V5_WEIGHTS_SHA256,
+    )
+    def test_scoring_failure_does_not_create_v5_identity(self):
+        docs = [chunk("first"), chunk("second")]
+        model = mock.Mock()
+        model.predict.return_value = [1.0, float("nan")]
+        with mock.patch.object(reranker, "get_reranker", return_value=model):
+            ranked = reranker.rerank_candidates("diagnostic", docs, top_k=2)
+        self.assertEqual(ranked, docs)
+        self.assertTrue(all(not hasattr(item, "reranker_model") for item in ranked))
+
+    def test_retrieval_response_omits_unscored_model_identity(self):
+        from core.services.retriever import RetrievedResultList
+        self.assertIsNone(RetrievedResultList(reranker_model="servy_v5_bge_verified").reranker_model)
+        self.assertEqual(
+            RetrievedResultList(reranker_applied=True, reranker_model="servy_v5_bge_verified").reranker_model,
+            "servy_v5_bge_verified",
+        )
+
     def test_stale_minilm_vector_cannot_supply_a_v5_candidate(self):
         source = SimpleNamespace(
             id=7, document_id=5, chunk_index=0, tenant_id=2,

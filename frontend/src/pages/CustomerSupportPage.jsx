@@ -728,6 +728,11 @@ export function CustomerSupportPage() {
               {/* Results Display */}
               {result && (
                 <div className="rag-answer-panel" style={{ padding: '0 24px 24px 24px' }}>
+                  {result.reranker_applied && result.reranker_model === 'servy_v5_bge_verified' && (
+                    <div role="status" style={{ marginBottom: '12px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      V5 BGE reranker applied to retrieved technical passages
+                    </div>
+                  )}
 
                   {/* Case 1: Clarification Needed */}
                   {result.response_type === 'CLARIFICATION' && (
