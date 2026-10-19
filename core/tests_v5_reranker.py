@@ -91,9 +91,13 @@ class V5RerankerTests(SimpleTestCase):
         with mock.patch.object(reranker, "get_reranker", return_value=fake):
             result = reranker.rerank_candidates("repair", docs + [history], top_k=4)
         self.assertEqual([x.text for x in result], ["B", "C", "A", "H"])
-        fake.predict.assert_called_once_with([
+        fake.predict.assert_called_once()
+        self.assertEqual(fake.predict.call_args.args[0], [
             ["repair", "A"], ["repair", "B"], ["repair", "C"]
         ])
+        import torch
+        self.assertIsInstance(fake.predict.call_args.kwargs["activation_fn"], torch.nn.Identity)
+        self.assertIs(fake.predict.call_args.kwargs["show_progress_bar"], False)
         self.assertFalse(hasattr(history, "rerank_score"))
         self.assertAlmostEqual(docs[1].reranker_score, reranker.calibrated_sigmoid_score(4.0))
 
