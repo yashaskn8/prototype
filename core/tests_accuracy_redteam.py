@@ -44,7 +44,7 @@ class AccuracyRedTeamTests(SimpleTestCase):
         result = _qwen_dense_first_merge([top], [low_lex])
         self.assertEqual([r.source_id for r in result], [1, 2])
 
-    def test_company_per_document_cleanup_rejected_before_any_upsert(self):
+    def test_company_per_document_refresh_updates_valid_without_deleting_stale(self):
         profile = SimpleNamespace(
             key="company-qwen3",
             collection="servy_company_qwen3_06b_v1",
@@ -67,14 +67,17 @@ class AccuracyRedTeamTests(SimpleTestCase):
             "ids": ["stale-company-vector"], "metadatas": [{}],
         }
         model = mock.Mock()
+        embeddings = mock.Mock()
+        embeddings.tolist.return_value = [[0.0] * 1024]
         with mock.patch.object(indexer, "get_profile", return_value=profile), \
              mock.patch.object(indexer, "get_collection", return_value=coll), \
              mock.patch.object(indexer, "load_model", return_value=model), \
+             mock.patch.object(indexer, "encode_passages", return_value=embeddings), \
              mock.patch.object(indexer, "_profile_fingerprint", return_value="fingerprint"), \
              mock.patch.object(indexer, "_expected_vector_metadata", return_value={}):
-            with self.assertRaisesRegex(EmbeddingConfigError, "prohibited"):
-                indexer.index_single_document_bge(document, profile_key=profile.key)
-        coll.upsert.assert_not_called()
+            indexed = indexer.index_single_document_bge(document, profile_key=profile.key)
+        self.assertEqual(indexed, 1)
+        coll.upsert.assert_called_once()
         coll.delete.assert_not_called()
 
     def test_company_bge_vector_deletion_also_prohibited(self):
