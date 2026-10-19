@@ -53,6 +53,9 @@ jobs:
       - name: V5 Private Artifact Structural Audit Tests
         run: python -m unittest discover -s tools -p "test_servy_v5_artifact_audit.py" -v
 
+      - name: V6 Continuation and Permission Safety Tests
+        run: python -m unittest discover -s tools -p "test_servy_v6_continuation.py" -v
+
       - name: Verify MySQL Readiness
         run: python manage.py check_mysql_ready
 
