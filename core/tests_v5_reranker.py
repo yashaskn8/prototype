@@ -118,6 +118,40 @@ class V5RerankerTests(SimpleTestCase):
         self.assertEqual([x.text for x in result], ["A", "B"])
         self.assertFalse(hasattr(docs[0], "reranker_score"))
 
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=10)
+    def test_explicit_ten_candidate_pool_can_promote_tenth_authorized_chunk(self):
+        docs = [chunk(f"passage-{i}") for i in range(10)]
+        model = mock.Mock()
+        model.predict.return_value = [float(i) for i in range(10)]
+        with mock.patch.object(reranker, "get_reranker", return_value=model):
+            ranked = reranker.rerank_candidates("diagnose", docs, top_k=10)
+        self.assertEqual(ranked[0].text, "passage-9")
+        self.assertEqual(len(model.predict.call_args.args[0]), 10)
+        self.assertEqual(len(ranked), 10)
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=5)
+    def test_default_five_candidate_pool_does_not_promote_tenth_chunk(self):
+        docs = [chunk(f"passage-{i}") for i in range(10)]
+        model = mock.Mock()
+        model.predict.return_value = [float(i) for i in range(5)]
+        with mock.patch.object(reranker, "get_reranker", return_value=model):
+            ranked = reranker.rerank_candidates("diagnose", docs, top_k=10)
+        self.assertEqual(ranked[0].text, "passage-4")
+        self.assertEqual(ranked[-1].text, "passage-9")
+        self.assertEqual(len(model.predict.call_args.args[0]), 5)
+
+    def test_pinned_v5_digest_requires_local_model_path(self):
+        with override_settings(
+            SERVY_RERANKER_ENABLED=True,
+            SERVY_RERANKER_MODEL_PATH="",
+            SERVY_RERANKER_EXPECTED_SHA256=reranker.SERVY_V5_WEIGHTS_SHA256,
+        ), mock.patch.dict(
+            "sys.modules", {"sentence_transformers": SimpleNamespace(CrossEncoder=mock.Mock())}
+        ) as _:
+            with mock.patch("sentence_transformers.CrossEncoder") as loader:
+                self.assertIsNone(reranker.get_reranker())
+                loader.assert_not_called()
+
     @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=99)
     def test_invalid_pool_size_falls_back(self):
         docs = [chunk("A")]
