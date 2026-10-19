@@ -1061,6 +1061,9 @@ def retrieve(
     qwen_dense_first = (
         bool(dense_results)
         and getattr(settings, "SERVY_QWEN3_DENSE_FIRST", False) is True
+        and getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
+        and getattr(settings, "SERVY_QWEN3_ENABLED", False) is True
+        and getattr(settings, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
         and all(r.model_version in ("qwen3", "company-qwen3") for r in dense_results)
     )
     if qwen_dense_first:
