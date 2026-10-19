@@ -580,11 +580,19 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 def _matches_current_bge_vector(meta, chunk, profile) -> bool:
     """Match an indexed vector to the current authoritative BGE chunk."""
     import hashlib
-    from core.ml.embeddings import passage_text
+    from core.ml.embeddings import passage_text, cached_checkpoint_fingerprint
 
     content_hash = hashlib.sha256(passage_text(profile, chunk).encode("utf-8")).hexdigest()
+    # The collection header alone cannot establish which weights created a
+    # specific vector. Qwen3 rows must also match the selected local checkpoint.
+    qwen_fp = (
+        cached_checkpoint_fingerprint(profile.local_path)
+        if getattr(profile, "query_document_encoder", False) and profile.local_path
+        else None
+    )
     return bool(
-        meta.get("chunk_id") == chunk.id
+        (qwen_fp is None or meta.get("model_checkpoint_fingerprint") == qwen_fp)
+        and meta.get("chunk_id") == chunk.id
         and meta.get("document_id") == chunk.document_id
         and meta.get("chunk_index") == chunk.chunk_index
         and meta.get("tenant_id") == chunk.tenant_id
@@ -608,6 +616,23 @@ def _matches_current_minilm_vector(meta, chunk, profile) -> bool:
         and meta.get("content_sha256") == hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
         and meta.get("embedding_model") == profile.model_id
     )
+
+
+def _qwen3_profile_if_ready(settings_obj, is_real: bool) -> str:
+    """Default-safe selector: three independent flags before Qwen3 serving.
+
+    Returning the MiniLM profile is intentional when the experimental index
+    has not been independently checked. This selector does not grant access to
+    any document; authorization remains enforced in the retrieval query.
+    """
+    enabled = (
+        getattr(settings_obj, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
+        and getattr(settings_obj, "SERVY_QWEN3_ENABLED", False) is True
+        and getattr(settings_obj, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
+    )
+    if enabled:
+        return "company-qwen3" if is_real else "qwen3"
+    return "company-minilm" if is_real else "minilm"
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +664,9 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
         # Explicit serving model profile selection (Operation 13.0)
         serving_profile = getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
-        if serving_profile in ("company-bge-ft", "bge-small-ft"):
+        if serving_profile in ("qwen3", "company-qwen3"):
+            profile_key = _qwen3_profile_if_ready(settings, is_real)
+        elif serving_profile in ("company-bge-ft", "bge-small-ft"):
             profile_key = "company-bge-ft"
         elif serving_profile in ("company-bge-small", "bge-small"):
             profile_key = "company-bge-small" if is_real else "bge-small"
@@ -757,6 +784,13 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 # and no identifier matches, metadata bonus cannot rescue the document.
                 # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
                 _dense_gate = serving_config.dense_relevance_gate if serving_config else _get_dense_gate()
+                if getattr(profile, "query_document_encoder", False):
+                    # Qwen3's similarity scale differs from BGE/MiniLM. This
+                    # gate is a tunable hypothesis, not a calibrated threshold.
+                    # Relevance/answerability validation remains downstream.
+                    _dense_gate = float(getattr(settings, "SERVY_QWEN3_DENSE_GATE", 0.35))
+                    if not 0.0 <= _dense_gate <= 1.0:
+                        raise ValueError("SERVY_QWEN3_DENSE_GATE must be in [0,1]")
                 if not getattr(profile, "content_first", False):
                     # MiniLM vector similarities have a lower ceiling (~0.30-0.50) compared to BGE (~0.60-0.85).
                     # Avoid pruning genuine semantic matches when using non-content-first profiles.

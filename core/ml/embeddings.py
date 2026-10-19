@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -39,6 +39,7 @@ class EmbeddingProfile:
     training_status: str = "production"
     dataset_manifest_hash: str = ""
     base_revision: Optional[str] = None
+    query_document_encoder: bool = False  # Qwen3 requires encode_query/encode_document
 
 
 try:
@@ -68,6 +69,23 @@ PROFILES: Dict[str, EmbeddingProfile] = {
     "company-minilm": EmbeddingProfile(
         key="company-minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
         collection="servy_company_dense_kb", content_first=False, promotion_eligible=True,
+    ),
+    # Separate 1024-D Qwen3 embedding spaces, never combined with 384-D MiniLM/BGE.
+    # Local-only model loading; activation additionally requires explicit flags
+    # and verified index maintenance (see retriever and management command).
+    "qwen3": EmbeddingProfile(
+        key="qwen3", model_id="Qwen/Qwen3-Embedding-0.6B", revision=None,
+        dim=1024, collection="servy_dense_qwen3_06b_v1",
+        content_first=True, promotion_eligible=True,
+        local_path=str(getattr(settings, "SERVY_QWEN3_MODEL_PATH", "") or ""),
+        query_document_encoder=True, training_status="PRETRAINED_EXPERIMENTAL",
+    ),
+    "company-qwen3": EmbeddingProfile(
+        key="company-qwen3", model_id="Qwen/Qwen3-Embedding-0.6B", revision=None,
+        dim=1024, collection="servy_company_qwen3_06b_v1",
+        content_first=True, promotion_eligible=True,
+        local_path=str(getattr(settings, "SERVY_QWEN3_MODEL_PATH", "") or ""),
+        query_document_encoder=True, training_status="PRETRAINED_EXPERIMENTAL",
     ),
     "company-bge-ft": EmbeddingProfile(
         key="company-bge-ft",
@@ -115,9 +133,17 @@ def register_finetuned(
 
 def get_profile(key: str) -> EmbeddingProfile:
     try:
-        return PROFILES[key]
+        profile = PROFILES[key]
     except KeyError:
         raise EmbeddingConfigError(f"Unknown embedding profile '{key}'. Known: {sorted(PROFILES)}")
+    if profile.query_document_encoder:
+        # Respect Django override_settings in tests and keep serving/indexing
+        # bound to the same explicitly configured offline checkpoint.
+        return replace(
+            profile,
+            local_path=str(getattr(settings, "SERVY_QWEN3_MODEL_PATH", "") or ""),
+        )
+    return profile
 
 
 _models: Dict[tuple, object] = {}
@@ -126,6 +152,8 @@ _lock = threading.Lock()
 
 def load_model(profile: EmbeddingProfile, allow_download: bool = False):
     """Load a SentenceTransformer for a profile. Offline by default."""
+    if profile.query_document_encoder and not profile.local_path:
+        raise EmbeddingConfigError("Qwen3 model requires SERVY_QWEN3_MODEL_PATH; no remote download")
     checkpoint_fp = cached_checkpoint_fingerprint(profile.local_path) if profile.local_path else ""
     if profile.local_path and not checkpoint_fp:
         raise EmbeddingConfigError(f"Local checkpoint is missing: {profile.local_path}")
@@ -152,6 +180,11 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         actual = m.get_embedding_dimension() if hasattr(m, "get_embedding_dimension") else m.get_sentence_embedding_dimension()
         if actual != profile.dim:
             raise EmbeddingConfigError(f"{profile.model_id} dim {actual} != expected {profile.dim}")
+        if profile.query_document_encoder:
+            if not (callable(getattr(m, "encode_query", None)) and callable(getattr(m, "encode_document", None))):
+                raise EmbeddingConfigError("Qwen3 requires sentence-transformers encode_query and encode_document")
+            # Freeze the same sequence budget as the Colab retrieval experiment.
+            m.max_seq_length = 256
         _models[cache_key] = m
         return m
 
@@ -232,6 +265,8 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
     client = get_chroma_client()
 
     # Compute real content-based fingerprint for local checkpoints
+    if profile.query_document_encoder and not profile.local_path:
+        raise EmbeddingConfigError("Qwen3 requires a local, complete model checkpoint")
     if profile.local_path:
         cp_fp = cached_checkpoint_fingerprint(profile.local_path)
         if not cp_fp:
@@ -280,6 +315,13 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
             f"stamped '{stored_meta.get('servy_checkpoint_fp')}', expected '{cp_fp}'."
         )
 
+    # Qwen3 experimental indexes must have a full identity manifest, not
+    # merely a matching model string; reject partial legacy metadata.
+    if profile.query_document_encoder and any(stored_meta.get(k) != v for k, v in meta.items()):
+        raise EmbeddingConfigError(
+            f"Qwen3 collection '{profile.collection}' manifest mismatch/incomplete"
+        )
+
     # Validate Dimension
     stamped_dim = stored_meta.get("servy_dim")
     if stamped_dim and int(stamped_dim) != profile.dim:
@@ -313,13 +355,23 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
 
 
 def encode_queries(profile: EmbeddingProfile, model, queries):
-    return model.encode([profile.query_prefix + q for q in queries],
-                        normalize_embeddings=True, batch_size=getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8))
+    kwargs = {
+        "normalize_embeddings": True,
+        "batch_size": getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8),
+    }
+    if profile.query_document_encoder:
+        return model.encode_query(queries, **kwargs)
+    return model.encode([profile.query_prefix + q for q in queries], **kwargs)
 
 
 def encode_passages(profile: EmbeddingProfile, model, passages):
-    return model.encode(passages,
-                        normalize_embeddings=True, batch_size=getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8))
+    kwargs = {
+        "normalize_embeddings": True,
+        "batch_size": getattr(settings, "SERVY_EMBEDDING_BATCH_SIZE", 8),
+    }
+    if profile.query_document_encoder:
+        return model.encode_document(passages, **kwargs)
+    return model.encode(passages, **kwargs)
 
 
 def passage_text(profile: EmbeddingProfile, chunk) -> str:
