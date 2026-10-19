@@ -28,7 +28,8 @@ def _eligible_chunks(profile=None):
     from django.conf import settings
     from core.models import KnowledgeChunk
     qs = (KnowledgeChunk.objects
-            .filter(is_quarantined=False, document__is_rag_enabled=True, document__index_status="INDEXED")
+            .filter(is_quarantined=False, document__is_rag_enabled=True, document__index_status="INDEXED",
+                    document__revoked_at__isnull=True)
             .exclude(text="")
             .select_related("document", "document__domain", "document__category",
                             "document__product", "document__asset")
@@ -124,9 +125,10 @@ def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
     protected_stale = []
     if is_full_reconciliation:
         stale = [cid for cid in existing if cid not in wanted_ids]
-        if profile.key == "company-qwen3":
-            # Company source records and vectors have a zero-deletion contract.
-            # Preserve all stale records for a separate authorized investigation.
+        if profile.key.startswith("company-"):
+            # All company source records and vectors have a zero-deletion
+            # contract, regardless of whether the embedder is BGE or Qwen3.
+            # Preserve stale records for an authorized reconciliation review.
             protected_stale = stale
             stale = []
         elif stale:
@@ -177,6 +179,14 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
         h = hashlib.sha256(text.encode("utf-8")).hexdigest()
         todo.append((cid, c, text, _expected_vector_metadata(c, profile, h, checkpoint_fp)))
 
+    # Reject a forbidden cleanup BEFORE any upsert; otherwise the first
+    # pass could leave half-mutated company indexes behind after raising.
+    doc_stale = [cid for cid in existing_cids if cid not in wanted_cids]
+    if doc_stale and profile.key.startswith("company-"):
+        raise EmbeddingConfigError(
+            "Company dense stale cleanup is prohibited; use non-destructive reconciliation"
+        )
+
     if todo:
         emb = encode_passages(profile, model, [b[2] for b in todo])
         coll.upsert(
@@ -186,12 +196,8 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
             metadatas=[b[3] for b in todo],
         )
 
-    # Clean up stale chunks for THIS document only
-    doc_stale = [cid for cid in existing_cids if cid not in wanted_cids]
-    if doc_stale and profile.key == "company-qwen3":
-        raise EmbeddingConfigError(
-            "Company Qwen3 stale cleanup is prohibited; use non-destructive reconciliation"
-        )
+    # Clean up stale chunks for THIS document only; company indexes
+    # reached this point only if no deletion was required.
     if doc_stale:
         coll.delete(ids=doc_stale)
 
@@ -206,8 +212,8 @@ def remove_document_bge(document_id: int, profile_key: str = "bge-small") -> int
     coll = get_collection(profile, create=False)
     got = coll.get(where={"document_id": int(document_id)})
     if got and got["ids"]:
-        if profile.key == "company-qwen3":
-            raise EmbeddingConfigError("Company Qwen3 vector deletion is prohibited")
+        if profile.key.startswith("company-"):
+            raise EmbeddingConfigError("Company dense vector deletion is prohibited")
         coll.delete(ids=got["ids"])
         return len(got["ids"])
     return 0
