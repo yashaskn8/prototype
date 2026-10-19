@@ -24,7 +24,9 @@ from servy_v4_mentor_experiment import (
 from servy_v5_training_preflight import admit, read_jsonl, sha256
 from servy_checkpoint_audit import evaluate_one
 from servy_checkpoint_backup import backup_checkpoint
-from servy_accuracy_diagnostics import compare_frozen_pool, sha256_file, write_jsonl_exclusive
+from servy_accuracy_diagnostics import (
+    compare_frozen_pool, sha256_file, simulate_pool_sweep, write_jsonl_exclusive,
+)
 
 V5_WEIGHTS_SHA256 = "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda"
 
@@ -275,6 +277,16 @@ def train(args, plan, permission):
     write_jsonl_exclusive(out / "v5_v6_paired_per_query.jsonl", audit["per_query"])
     (out / "v5_v6_accuracy_diagnostics.json").write_text(
         json.dumps(audit["summary"], indent=2) + "\n", encoding="utf-8"
+    )
+    # Counterfactual analysis reuses logits already scored on frozen candidates.
+    # It does not change the serving pool, select checkpoints or promote a model.
+    pool_audit = {
+        "v5": simulate_pool_sweep(before, data["frozen"]),
+        "v6": simulate_pool_sweep(after, data["frozen"]),
+        "status": "REUSED_DEV_COUNTERFACTUAL_NOT_PRODUCTION_CONFIG",
+    }
+    (out / "v5_v6_pool_sweep.json").write_text(
+        json.dumps(pool_audit, indent=2) + "\n", encoding="utf-8"
     )
     summary.update({
         "status": "V6_EXPLORATORY_COMPLETED_NOT_PROMOTED",
