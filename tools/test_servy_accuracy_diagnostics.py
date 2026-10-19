@@ -82,6 +82,7 @@ class PairedAccuracyDiagnosticsTests(unittest.TestCase):
 
     def test_gold_cannot_change(self):
         self.after["queries"][0]["gold_chunk_ids"] = ["a"]
+        self.after["queries"][0]["original_gold_rank"] = 1
         self.after["queries"][0]["gold_rank"] = 2
         with self.assertRaisesRegex(ValueError, "Gold labels changed"):
             compare_frozen_pool(self.before, self.after, self.frozen, pool_size=2)
