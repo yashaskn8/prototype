@@ -1058,13 +1058,31 @@ def retrieve(
         dense_results = []
 
     # 2c: Fuse results using RRF
-    if dense_results and sparse_results:
+    qwen_dense_first = (
+        bool(dense_results)
+        and getattr(settings, "SERVY_QWEN3_DENSE_FIRST", False) is True
+        and all(r.model_version in ("qwen3", "company-qwen3") for r in dense_results)
+    )
+    if qwen_dense_first:
+        # Controlled accuracy experiment: Qwen3's raw dense ranking leads,
+        # instead of allowing unrelated lexical hits to displace it via RRF.
+        # Append only distinct sparse candidates after the dense hits, so
+        # authorized fallback passages remain available for the reranker.
+        dense_ids = {(r.source_kind, r.source_id) for r in dense_results}
+        results = list(dense_results) + [
+            r for r in sparse_results if (r.source_kind, r.source_id) not in dense_ids
+        ]
+        retrieval_backend = "qwen3_dense_first_experimental"
+    elif dense_results and sparse_results:
         results = _reciprocal_rank_fusion(dense_results, sparse_results)
         retrieval_backend = "hybrid"
     elif dense_results:
         for i, r in enumerate(dense_results, 1):
             r.dense_score = r.score
-            r.dense_similarity = r.score
+            # Keep the original cosine similarity, not the metadata-boosted
+            # display score. Evidence gates and diagnostics need both.
+            if r.dense_similarity is None:
+                r.dense_similarity = r.dense_score
             r.dense_rank = i
             r.fusion_score = r.score
             r.fusion_rank = i
