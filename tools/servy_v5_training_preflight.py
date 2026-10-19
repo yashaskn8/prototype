@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from servy_v4_mentor_experiment import audited_inputs, provisional_pairs
+from servy_v5_artifact_audit import validate_selected_subset
 
 
 def sha256(path):
@@ -42,17 +43,9 @@ def admit(*, split_dir, corpus, families, candidates, candidate_train, manifest)
         raise ValueError("Original train fingerprint mismatch")
     if raw_manifest.get("accepted_training_queries") != len(proposed_train):
         raise ValueError("Candidate count differs from manifest")
-    if not proposed_train or len(proposed_train) > len(source_train):
-        raise ValueError("Empty or oversized training subset")
-    # Use exact JSON equivalence: AI is not permitted to silently rewrite
-    # evidence passages, golds, or negatives during candidate filtering.
-    original = {
-        json.dumps(row, sort_keys=True, ensure_ascii=False)
-        for row in source_train
-    }
-    selected = [json.dumps(row, sort_keys=True, ensure_ascii=False) for row in proposed_train]
-    if len(set(selected)) != len(selected) or any(row not in original for row in selected):
-        raise ValueError("Candidate subset contains modified or duplicate original rows")
+    # Enforce identity-unique, verbatim subset membership and at least one
+    # active negative on EVERY selected query (aggregate counts are insufficient).
+    subset = validate_selected_subset(source_train, proposed_train)
 
     corpus_rows = read_jsonl(corpus)
     by_chunk = {str(c["chunk_id"]): c for c in corpus_rows}
@@ -61,8 +54,8 @@ def admit(*, split_dir, corpus, families, candidates, candidate_train, manifest)
     pairs = provisional_pairs(proposed_train, by_chunk)
     positive = sum(pair["label"] == 1.0 for pair in pairs)
     negative = sum(pair["label"] == 0.0 for pair in pairs)
-    if negative < len(proposed_train):
-        raise ValueError("At least one independently verified negative needed per query")
+    if positive != subset["positive_pairs"] or negative != subset["active_negative_pairs"]:
+        raise ValueError("Selected pair counts differ from verified reference ledger")
     if not integrity["source_isolation_verified_against_proposed_families"]:
         raise ValueError("Source family split requires verification")
     return {
@@ -71,6 +64,8 @@ def admit(*, split_dir, corpus, families, candidates, candidate_train, manifest)
         "independent_holdout_verified": False,
         "expert_labels_approved": False,
         "train_queries": len(proposed_train),
+        "exact_original_subset_verified": True,
+        "active_negative_per_query_verified": True,
         "positive_pairs": positive,
         "negative_pairs": negative,
         "dev_queries": integrity["dev_queries"],

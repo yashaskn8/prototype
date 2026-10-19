@@ -90,12 +90,20 @@ class ServyV5TrainingPreflightTests(unittest.TestCase):
         changed = [{**self.original[0], "query_text": "Unapproved rewrite"}]
         write_jsonl(self.train, changed)
         self.save_manifest()
-        with self.mock_integrity(), self.assertRaisesRegex(ValueError, "modified"):
+        with self.mock_integrity(), self.assertRaisesRegex(ValueError, "MODIFIED"):
             self.check()
 
     def test_candidate_checksum_change_rejected(self):
         write_jsonl(self.train, [{**self.original[0], "query_text": "Tampered"}])
         with self.mock_integrity(), self.assertRaisesRegex(ValueError, "hash mismatch"):
+            self.check()
+
+    def test_single_selected_query_without_negatives_is_rejected(self):
+        self.original[0]["negative_chunk_ids"] = []
+        write_jsonl(self.split / "train_unapproved_candidate.jsonl", self.original)
+        write_jsonl(self.train, self.original)
+        self.save_manifest()
+        with self.mock_integrity(), self.assertRaisesRegex(ValueError, "EACH_SELECTED_QUERY"):
             self.check()
 
     def test_fabricated_expert_approval_rejected(self):
