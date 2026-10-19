@@ -1,0 +1,128 @@
+"""V5 local-reranker opt-in, integrity, and authorization-boundary tests.
+
+No model download, weights, GPU, or database required.
+"""
+import hashlib
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from django.test import SimpleTestCase, override_settings
+
+from core.ml import reranker
+
+
+def chunk(name, kind="knowledge_document", score=0.3):
+    return SimpleNamespace(source_kind=kind, text=name, score=score)
+
+
+class V5RerankerTests(SimpleTestCase):
+    def setUp(self):
+        reranker._cross_encoder = None
+        reranker._loaded_config = None
+
+    def tearDown(self):
+        reranker._cross_encoder = None
+        reranker._loaded_config = None
+
+    @override_settings(SERVY_RERANKER_ENABLED=False)
+    def test_disabled_does_not_load_model(self):
+        original = [chunk("A"), chunk("B")]
+        with mock.patch.object(reranker, "get_reranker") as loader:
+            self.assertEqual(reranker.rerank_candidates("test", original), original)
+        loader.assert_not_called()
+
+    def _checkpoint(self, parent):
+        directory = Path(parent) / "best_model"
+        directory.mkdir()
+        (directory / "config.json").write_text('{"architectures":[]}', encoding="utf-8")
+        weights = directory / "model.safetensors"
+        weights.write_bytes(b"test-weights")
+        return directory, hashlib.sha256(weights.read_bytes()).hexdigest()
+
+    def test_local_weights_digest_and_offline_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, digest = self._checkpoint(tmp)
+            fake = mock.Mock()
+            cross_encoder = mock.Mock(return_value=fake)
+            with override_settings(
+                SERVY_RERANKER_MODEL_PATH=str(directory),
+                SERVY_RERANKER_EXPECTED_SHA256=digest,
+                SERVY_RERANKER_DEVICE="cpu",
+            ), mock.patch.dict(
+                "sys.modules", {"sentence_transformers": SimpleNamespace(CrossEncoder=cross_encoder)}
+            ):
+                self.assertIs(reranker.get_reranker(), fake)
+                self.assertIs(reranker.get_reranker(), fake)
+            cross_encoder.assert_called_once_with(
+                str(directory), device="cpu", max_length=256, local_files_only=True
+            )
+
+    def test_reject_modified_local_weights_without_loading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory, _ = self._checkpoint(tmp)
+            cross_encoder = mock.Mock()
+            with override_settings(
+                SERVY_RERANKER_MODEL_PATH=str(directory),
+                SERVY_RERANKER_EXPECTED_SHA256="0" * 64,
+            ), mock.patch.dict(
+                "sys.modules", {"sentence_transformers": SimpleNamespace(CrossEncoder=cross_encoder)}
+            ):
+                self.assertIsNone(reranker.get_reranker())
+            cross_encoder.assert_not_called()
+
+    def test_missing_local_checkpoint_does_not_fall_back_to_remote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cross_encoder = mock.Mock()
+            with override_settings(SERVY_RERANKER_MODEL_PATH=str(Path(tmp) / "absent")), mock.patch.dict(
+                "sys.modules", {"sentence_transformers": SimpleNamespace(CrossEncoder=cross_encoder)}
+            ):
+                self.assertIsNone(reranker.get_reranker())
+            cross_encoder.assert_not_called()
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=5)
+    def test_reranks_authorized_pool_without_scoring_history(self):
+        docs = [chunk("A"), chunk("B"), chunk("C")]
+        history = chunk("H", kind="service_resolution")
+        fake = mock.Mock()
+        fake.predict.return_value = [-2.0, 4.0, 0.0]
+        with mock.patch.object(reranker, "get_reranker", return_value=fake):
+            result = reranker.rerank_candidates("repair", docs + [history], top_k=4)
+        self.assertEqual([x.text for x in result], ["B", "C", "A", "H"])
+        fake.predict.assert_called_once_with([
+            ["repair", "A"], ["repair", "B"], ["repair", "C"]
+        ])
+        self.assertFalse(hasattr(history, "rerank_score"))
+        self.assertAlmostEqual(docs[1].rerank_score, reranker.calibrated_sigmoid_score(4.0))
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=5)
+    def test_pool_size_is_bounded(self):
+        docs = [chunk(str(i)) for i in range(7)]
+        fake = mock.Mock()
+        fake.predict.return_value = [0.0, 2.0, 1.0, 3.0, 4.0]
+        with mock.patch.object(reranker, "get_reranker", return_value=fake):
+            ranked = reranker.rerank_candidates("repair", docs, top_k=7)
+        self.assertEqual(len(fake.predict.call_args.args[0]), 5)
+        self.assertEqual(ranked[0].text, "4")
+        self.assertEqual([x.text for x in ranked[-2:]], ["5", "6"])
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=5)
+    def test_invalid_scores_restore_order_without_partial_mutation(self):
+        docs = [chunk("A"), chunk("B")]
+        fake = mock.Mock()
+        fake.predict.return_value = [3.0, float("nan")]
+        with mock.patch.object(reranker, "get_reranker", return_value=fake):
+            result = reranker.rerank_candidates("repair", docs, top_k=2)
+        self.assertEqual([x.text for x in result], ["A", "B"])
+        self.assertFalse(hasattr(docs[0], "rerank_score"))
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=99)
+    def test_invalid_pool_size_falls_back(self):
+        docs = [chunk("A")]
+        with mock.patch.object(reranker, "get_reranker", return_value=mock.Mock()):
+            self.assertEqual(reranker.rerank_candidates("test", docs), docs)
+
+    def test_sigmoid_is_finite_for_extreme_logits(self):
+        self.assertEqual(reranker.calibrated_sigmoid_score(-1000), 0)
+        self.assertEqual(reranker.calibrated_sigmoid_score(1000), 1)
