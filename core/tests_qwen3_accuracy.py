@@ -76,6 +76,34 @@ class Qwen3AccuracySafetyTests(SimpleTestCase):
         model.encode.assert_called_once()
         self.assertEqual(model.encode.call_args.args[0], ["question"])
 
+    def test_qwen3_retrieval_rejects_stale_checkpoint_vector(self):
+        from core.services.retriever import _matches_current_bge_vector
+        profile = SimpleNamespace(
+            query_document_encoder=True, content_first=True,
+            local_path="/mock/qwen", model_id="Qwen/Qwen3-Embedding-0.6B",
+            revision=None,
+        )
+        doc = SimpleNamespace(index_version=1)
+        passage = "Current eligible passage"
+        chunk = SimpleNamespace(
+            id=11, document_id=9, chunk_index=0, tenant_id=2,
+            text=passage, heading="", document=doc,
+        )
+        meta = {
+            "chunk_id": 11, "document_id": 9, "chunk_index": 0,
+            "tenant_id": 2, "document_version": 1,
+            "content_sha256": hashlib.sha256(passage.encode("utf-8")).hexdigest(),
+            "embedding_model": profile.model_id,
+            "embedding_revision": "",
+            "model_checkpoint_fingerprint": "different-weights",
+        }
+        with mock.patch("core.ml.embeddings.cached_checkpoint_fingerprint", return_value="correct-weights"):
+            self.assertFalse(_matches_current_bge_vector(meta, chunk, profile))
+            self.assertTrue(_matches_current_bge_vector(
+                {**meta, "model_checkpoint_fingerprint": "correct-weights"},
+                chunk, profile,
+            ))
+
     def test_qwen3_manifest_refuses_unstamped_collection(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
