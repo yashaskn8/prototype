@@ -17,7 +17,7 @@ import hashlib
 import time
 
 from .embeddings import (
-    get_profile, load_model, get_collection, passage_text, EmbeddingConfigError,
+    get_profile, load_model, get_collection, passage_text, encode_passages, EmbeddingConfigError,
     compute_checkpoint_fingerprint, PASSAGE_FORMAT_VERSION, INDEX_SCHEMA_VERSION,
 )
 
@@ -109,7 +109,7 @@ def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
     t0 = time.time()
     for i in range(0, len(todo), batch_size):
         batch = todo[i:i + batch_size]
-        emb = model.encode([b[2] for b in batch], normalize_embeddings=True, batch_size=batch_size)
+        emb = encode_passages(profile, model, [b[2] for b in batch])
         coll.upsert(
             ids=[b[0] for b in batch],
             embeddings=emb.tolist(),
@@ -121,9 +121,15 @@ def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
     # CRITICAL: Stale cleanup must ONLY execute during a validated full reconciliation.
     # Partial indexing runs (e.g. limit=10) must NEVER prune vectors outside their explicit scope.
     stale = []
+    protected_stale = []
     if is_full_reconciliation:
         stale = [cid for cid in existing if cid not in wanted_ids]
-        if stale:
+        if profile.key == "company-qwen3":
+            # Company source records and vectors have a zero-deletion contract.
+            # Preserve all stale records for a separate authorized investigation.
+            protected_stale = stale
+            stale = []
+        elif stale:
             coll.delete(ids=stale)
 
     return {
@@ -131,6 +137,7 @@ def build_index(profile_key: str, batch_size: int = 16, limit=None) -> dict:
         "eligible_chunks": len(wanted_ids), "embedded_now": len(todo),
         "skipped_unchanged": len(wanted_ids) - len(todo), "removed_stale": len(stale),
         "is_full_reconciliation": is_full_reconciliation,
+        "protected_stale_count": len(protected_stale),
         "collection_count": coll.count(), "embed_seconds": round(secs, 2),
         "chunks_per_sec": round(len(todo) / secs, 2) if secs > 0 and todo else None,
     }
@@ -171,7 +178,7 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
         todo.append((cid, c, text, _expected_vector_metadata(c, profile, h, checkpoint_fp)))
 
     if todo:
-        emb = model.encode([b[2] for b in todo], normalize_embeddings=True, batch_size=len(todo))
+        emb = encode_passages(profile, model, [b[2] for b in todo])
         coll.upsert(
             ids=[b[0] for b in todo],
             embeddings=emb.tolist(),
@@ -181,6 +188,10 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
 
     # Clean up stale chunks for THIS document only
     doc_stale = [cid for cid in existing_cids if cid not in wanted_cids]
+    if doc_stale and profile.key == "company-qwen3":
+        raise EmbeddingConfigError(
+            "Company Qwen3 stale cleanup is prohibited; use non-destructive reconciliation"
+        )
     if doc_stale:
         coll.delete(ids=doc_stale)
 
@@ -195,6 +206,8 @@ def remove_document_bge(document_id: int, profile_key: str = "bge-small") -> int
     coll = get_collection(profile, create=False)
     got = coll.get(where={"document_id": int(document_id)})
     if got and got["ids"]:
+        if profile.key == "company-qwen3":
+            raise EmbeddingConfigError("Company Qwen3 vector deletion is prohibited")
         coll.delete(ids=got["ids"])
         return len(got["ids"])
     return 0
