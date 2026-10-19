@@ -2,9 +2,10 @@
 
 This integrates the **V5 BGE cross-encoder reranker** into the already-authorized
 Django retrieval pipeline. It does NOT install Qwen3 as the serving embedding
-retriever; existing MiniLM/Chroma retrieval remains the default. The research
-**88.10% Hit@1** was measured with frozen Qwen3 candidates on 42 reused,
-provisional development questions and is **not a live-UI accuracy guarantee**.
+retriever; existing MiniLM/Chroma retrieval remains the default. A historical V5 diagnostic reported **88.10% Hit@1**, while the latest
+V5/V6 comparison reported **83.33% Hit@1 (35/42)** and **88.10% Hit@5 (37/42)**
+on the reused development set. The difference in evaluation configurations is
+not yet reconciled. Neither is an independent live-UI accuracy guarantee.
 
 ## Windows (no Docker)
 
@@ -24,6 +25,22 @@ provisional development questions and is **not a live-UI accuracy guarantee**.
    If it is under `SURVY-RAG/ml_models/` (a **sibling** of `prototype/`),
    use an explicit absolute path or `../ml_models/.../best_model`.
    Relative paths resolve from the Django repository root.
+
+   For a new install, use the offline verified installer instead of manually
+   copying a checkpoint into the active location. Once you have the complete
+   V5 `best_model` directory on your Windows machine, run from `prototype`:
+
+   ```powershell
+   python tools/install_servy_v5_checkpoint.py --source "C:\\path\\to\\verified\\best_model"
+   ```
+
+   The installer copies into `ml_models/checkpoints/servy_v5/best_model` by
+   default, verifies the **exact V5 weights SHA-256 before and after copying**,
+   rejects symlinks, and never overwrites an existing installation. It is
+   offline and does not upload checkpoints or labels to GitHub. If the V5 folder
+   is currently only in Colab, first transfer that same verified folder from
+   your approved Drive storage to the serving machine; the installer cannot
+   access your private Colab filesystem. **Do not install the V6 checkpoint.**
 
 3. In your local `prototype/.env` (not tracked in Git), configure:
 
@@ -88,6 +105,8 @@ provisional development questions and is **not a live-UI accuracy guarantee**.
 
 ```powershell
 python manage.py test core.tests_v5_reranker -v 2
+python manage.py test core.tests_v5_activation -v 2
+python -m unittest tools.test_install_servy_v5_checkpoint -v
 ```
 
 These tests mock the model and do not require the 2.27 GB weights. They are
