@@ -65,6 +65,15 @@ This script performs structural checks on a record; it cannot authenticate
 a signer's identity. The operator must verify permission with the
 organization and cannot use ChatGPT-generated text as approval.
 
+## Independent evaluation gate
+
+The 64-question `frozen_independent_holdout_benchmark.jsonl` has
+source-family/chunk overlap with training and a missing gold reference.
+**Do not claim independent accuracy from it.** Run the metadata-only
+`tools/servy_v6_holdout_audit.py` as documented in
+[`V6_HOLDOUT_LEAKAGE_GATE.md`](V6_HOLDOUT_LEAKAGE_GATE.md).
+No unseen source families remain in the current 18-family frozen corpus.
+
 ## Quality interpretation
 
 Earlier V5 Hit@1 = 37/42 (88.10%) is a *reused research development set*,

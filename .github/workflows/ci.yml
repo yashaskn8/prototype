@@ -56,6 +56,9 @@ jobs:
       - name: V6 Continuation and Permission Safety Tests
         run: python -m unittest discover -s tools -p "test_servy_v6_continuation.py" -v
 
+      - name: V6 Holdout Independence and Leakage Safety Tests
+        run: python -m unittest discover -s tools -p "test_servy_v6_holdout_audit.py" -v
+
       - name: Verify MySQL Readiness
         run: python manage.py check_mysql_ready
 
