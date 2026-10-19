@@ -24,6 +24,7 @@ from servy_v4_mentor_experiment import (
 from servy_v5_training_preflight import admit, read_jsonl, sha256
 from servy_checkpoint_audit import evaluate_one
 from servy_checkpoint_backup import backup_checkpoint
+from servy_accuracy_diagnostics import compare_frozen_pool, sha256_file, write_jsonl_exclusive
 
 V5_WEIGHTS_SHA256 = "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda"
 
@@ -158,8 +159,34 @@ def train(args, plan, permission):
     out = Path(args.out_dir).expanduser().resolve()
     check_storage(out)
     out.mkdir(mode=0o700)
+    input_hashes = {
+        "v5_weights": sha256_file(Path(args.v5_model) / "model.safetensors"),
+        "train_subset": sha256_file(args.candidate_train),
+        "frozen_candidates": sha256_file(args.candidates),
+        "corpus": sha256_file(args.corpus),
+        "dev_split": sha256_file(Path(args.split_dir) / "dev_unapproved_candidate.jsonl"),
+    }
+    if input_hashes["v5_weights"] != V5_WEIGHTS_SHA256:
+        raise ValueError("V5_WEIGHTS_CHANGED_BEFORE_TRAINING")
+    if input_hashes["train_subset"] != plan["selected_train_sha256"]:
+        raise ValueError("V6_TRAIN_SUBSET_CHANGED_AFTER_PREFLIGHT")
     summary = {
         **plan,
+        "input_sha256": input_hashes,
+        "evaluation_protocol": {
+            "candidate_source": "frozen_input",
+            "pool_size": 5,
+            "top_k": 10,
+            "checkpoint_selection": "minimum_development_bce_loss",
+            "no_independent_test": True,
+        },
+        "training_config": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "seed": 42,
+            "objective": "BinaryCrossEntropyLoss",
+        },
         "status": "V6_EXPLORATORY_IN_PROGRESS",
         "permission": permission,
         "data_status": "PROVISIONAL_TECHNICALLY_REVIEWED_NO_HUMAN_LABEL_SIGNOFF",
@@ -190,6 +217,9 @@ def train(args, plan, permission):
     (out / "v5_dev_metrics.json").write_text(
         json.dumps(before["metrics"], indent=2) + "\n", encoding="utf-8"
     )
+    # Per-query records remain in the approved private experiment directory.
+    # Without these records, identical aggregate metrics conceal regressions.
+    write_jsonl_exclusive(out / "v5_dev_per_query.jsonl", before["queries"])
     use_bf16 = bool(torch.cuda.is_bf16_supported())
     training_args = CrossEncoderTrainingArguments(
         output_dir=str(out / "trainer"),
@@ -231,6 +261,21 @@ def train(args, plan, permission):
         data["cases"], data["chunks"], data["frozen"],
         score(trained), pool_size=5,
     )
+    final_hashes = {
+        "v5_weights": sha256_file(Path(args.v5_model) / "model.safetensors"),
+        "train_subset": sha256_file(args.candidate_train),
+        "frozen_candidates": sha256_file(args.candidates),
+        "corpus": sha256_file(args.corpus),
+        "dev_split": sha256_file(Path(args.split_dir) / "dev_unapproved_candidate.jsonl"),
+    }
+    if final_hashes != input_hashes:
+        raise ValueError("V6_INPUT_DRIFT_DETECTED_NO_VALID_COMPARISON")
+    audit = compare_frozen_pool(before, after, data["frozen"], pool_size=5)
+    write_jsonl_exclusive(out / "v6_dev_per_query.jsonl", after["queries"])
+    write_jsonl_exclusive(out / "v5_v6_paired_per_query.jsonl", audit["per_query"])
+    (out / "v5_v6_accuracy_diagnostics.json").write_text(
+        json.dumps(audit["summary"], indent=2) + "\n", encoding="utf-8"
+    )
     summary.update({
         "status": "V6_EXPLORATORY_COMPLETED_NOT_PROMOTED",
         "training_performed": True,
@@ -238,6 +283,7 @@ def train(args, plan, permission):
         "v6_weights_sha256": sha256(out / "best_model" / "model.safetensors"),
         "v5_dev_metrics": before["metrics"],
         "v6_dev_metrics": after["metrics"],
+        "paired_diagnostics": audit["summary"],
         "dev_comparison_is_reused_diagnostic_only": True,
         "independent_holdout_verified": False,
         "production_promotion_allowed": False,
