@@ -252,6 +252,14 @@ SERVY_USE_EXPERIMENTAL_RAG = os.getenv("SERVY_USE_EXPERIMENTAL_RAG", "0") == "1"
 SERVY_BGE_SMALL_REVISION = os.getenv("SERVY_BGE_SMALL_REVISION", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
 SERVY_EMBEDDING_DEVICE = os.getenv("SERVY_EMBEDDING_DEVICE", "cpu")
 SERVY_EMBEDDING_BATCH_SIZE = int(os.getenv("SERVY_EMBEDDING_BATCH_SIZE", "8"))
+# Experimental Qwen3-Embedding-0.6B dense retrieval: off by default.
+# Requires the full local checkpoint, a fully verified separate 1024-D index,
+# and SERVY_USE_EXPERIMENTAL_RAG=1 before any request can opt in.
+SERVY_QWEN3_MODEL_PATH = os.getenv("SERVY_QWEN3_MODEL_PATH", "").strip()
+SERVY_QWEN3_ENABLED = os.getenv("SERVY_QWEN3_ENABLED", "0") == "1"
+SERVY_QWEN3_INDEX_VERIFIED = os.getenv("SERVY_QWEN3_INDEX_VERIFIED", "0") == "1"
+SERVY_QWEN3_DENSE_GATE = float(os.getenv("SERVY_QWEN3_DENSE_GATE", "0.35"))
+
 SERVY_RERANKER_ENABLED = os.getenv("SERVY_RERANKER_ENABLED", "0") == "1"
 # Optional V5 reranker: local checkpoint only, never the Qwen3 embedding model.
 SERVY_RERANKER_MODEL_PATH = os.getenv("SERVY_RERANKER_MODEL_PATH", "").strip()
