@@ -931,6 +931,29 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
     return fused
 
 
+def _qwen_dense_first_merge(dense_results, sparse_results):
+    """Preserve Qwen dense order, but keep matching sparse evidence metadata.
+
+    Authorized candidates must already have been filtered before invoking.
+    Sparse-only entries are appended as a backfill and never overtake Qwen's
+    top-ranked results. This is an opt-in *ablation*, not a quality claim.
+    """
+    by_key = {(r.source_kind, r.source_id): r for r in dense_results}
+    for sparse in sparse_results:
+        key = (sparse.source_kind, sparse.source_id)
+        dense = by_key.get(key)
+        if dense is not None:
+            dense.sparse_score = sparse.sparse_score if sparse.sparse_score is not None else sparse.score
+            dense.sparse_relevance = (
+                sparse.sparse_relevance if sparse.sparse_relevance is not None
+                else sparse.score
+            )
+            dense.sparse_rank = sparse.sparse_rank
+    return list(dense_results) + [
+        r for r in sparse_results if (r.source_kind, r.source_id) not in by_key
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Main retrieve function
 # ---------------------------------------------------------------------------
@@ -1071,10 +1094,7 @@ def retrieve(
         # instead of allowing unrelated lexical hits to displace it via RRF.
         # Append only distinct sparse candidates after the dense hits, so
         # authorized fallback passages remain available for the reranker.
-        dense_ids = {(r.source_kind, r.source_id) for r in dense_results}
-        results = list(dense_results) + [
-            r for r in sparse_results if (r.source_kind, r.source_id) not in dense_ids
-        ]
+        results = _qwen_dense_first_merge(dense_results, sparse_results)
         retrieval_backend = "qwen3_dense_first_experimental"
     elif dense_results and sparse_results:
         results = _reciprocal_rank_fusion(dense_results, sparse_results)
