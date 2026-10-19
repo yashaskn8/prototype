@@ -97,9 +97,33 @@ class HoldoutLeakageTests(unittest.TestCase):
         self.holdout[0]["positive_chunk_ids"] = ["unresolvable"]
         result = self.check()
         self.assertEqual(result["evidence_integrity"]["holdout_questions_with_missing_or_empty_gold"], 1)
+        self.assertEqual(result["evidence_integrity"]["holdout_questions_with_no_positive_references"], 0)
+        self.assertEqual(result["evidence_integrity"]["holdout_questions_with_unresolved_positive_references"], 1)
+        self.assertEqual(result["evidence_integrity"]["holdout_questions_with_resolvable_positive_references"], 0)
         self.assertEqual(result["evidence_integrity"]["reference_errors_by_split"]["holdout"]["missing_reference_count"], 1)
         self.assertEqual(result["status"], "BLOCKED_HOLDOUT_LEAKAGE_OR_INCOMPLETE_EVIDENCE")
         self.assertEqual(self.holdout[0]["positive_chunk_ids"], ["unresolvable"])
+
+    def test_empty_gold_is_separated_from_unresolved_gold(self):
+        self.holdout[0]["positive_chunk_ids"] = []
+        result = self.check()
+        evidence = result["evidence_integrity"]
+        self.assertEqual(evidence["holdout_questions_with_no_positive_references"], 1)
+        self.assertEqual(evidence["holdout_questions_with_unresolved_positive_references"], 0)
+        self.assertEqual(evidence["holdout_questions_with_resolvable_positive_references"], 0)
+        self.assertEqual(evidence["reference_errors_by_split"]["holdout"]["missing_reference_count"], 0)
+        self.assertEqual(evidence["empty_gold_semantic_interpretation"],
+                         "UNDETERMINED_POSSIBLE_ABSTENTION")
+        self.assertEqual(result["status"], "BLOCKED_HOLDOUT_LEAKAGE_OR_INCOMPLETE_EVIDENCE")
+
+    def test_mixed_empty_and_unresolved_gold_counts_are_separate(self):
+        self.holdout[0]["positive_chunk_ids"] = []
+        self.holdout.append(question("second", ["unknown-chunk"], ["f"]))
+        evidence = self.check()["evidence_integrity"]
+        self.assertEqual(evidence["holdout_questions_with_missing_or_empty_gold"], 2)
+        self.assertEqual(evidence["holdout_questions_with_no_positive_references"], 1)
+        self.assertEqual(evidence["holdout_questions_with_unresolved_positive_references"], 1)
+        self.assertEqual(evidence["holdout_questions_with_resolvable_positive_references"], 0)
 
     def test_wrong_tenant_positive_is_flagged(self):
         self.holdout[0]["positive_chunk_ids"] = ["a"]
