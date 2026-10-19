@@ -66,6 +66,9 @@ jobs:
       - name: Check Missing Migrations
         run: python manage.py makemigrations --check --dry-run
 
+      - name: RAG Accuracy Red-Team Unit Tests
+        run: python manage.py test core.tests_accuracy_redteam -v 2
+
       - name: Red Team Static Analysis (AST & Security Rules)
         run: python red_team_static.py
 
