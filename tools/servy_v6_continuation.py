@@ -285,6 +285,11 @@ def train(args, plan, permission):
         "v6": simulate_pool_sweep(after, data["frozen"]),
         "status": "REUSED_DEV_COUNTERFACTUAL_NOT_PRODUCTION_CONFIG",
     }
+    for checkpoint, report in (("v5", before), ("v6", after)):
+        pool_five = pool_audit[checkpoint][0]
+        for metric in ("hit_at_1", "hit_at_5", "hit_at_10", "mrr_at_10"):
+            if pool_five[metric] != report["metrics"][metric]:
+                raise ValueError("V6_POOL_SWEEP_METRIC_REPLAY_MISMATCH:" + checkpoint + ":" + metric)
     (out / "v5_v6_pool_sweep.json").write_text(
         json.dumps(pool_audit, indent=2) + "\n", encoding="utf-8"
     )
