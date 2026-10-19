@@ -50,6 +50,9 @@ jobs:
       - name: V5 Research Fine-Tuning Input Safety Tests
         run: python -m unittest discover -s tools -p "test_servy_v5_training_preflight.py" -v
 
+      - name: V5 Private Artifact Structural Audit Tests
+        run: python -m unittest discover -s tools -p "test_servy_v5_artifact_audit.py" -v
+
       - name: Verify MySQL Readiness
         run: python manage.py check_mysql_ready
 
