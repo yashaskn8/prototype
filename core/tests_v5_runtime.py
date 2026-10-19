@@ -116,6 +116,7 @@ class RealV5RequestPathTests(TestCase):
                 top_k=5, min_score=0.0,
             )
             self.assertTrue(retrieved.reranker_applied)
+            self.assertEqual(retrieved.reranker_model, "servy_v5_bge_verified")
             self.assertTrue(predict.called, "RAG did not execute real V5 inference")
             scored_pairs = [pair for call in predict.call_args_list for pair in call.args[0]]
             self.assertTrue(scored_pairs)
@@ -138,6 +139,7 @@ class RealV5RequestPathTests(TestCase):
             customer=self.customer, include_confidential=False, staff_mode=False,
         )
         self.assertTrue(result["reranker_applied"])
+        self.assertEqual(result["reranker_model"], "servy_v5_bge_verified")
         self.assertTrue(result["retrieval_backend"])
         self.assertTrue({ref["document_id"] for ref in result["references"]} <= self.allowed)
         self.assertTrue(all(ref["chunk_id"] for ref in result["references"]))
@@ -149,6 +151,7 @@ class RealV5RequestPathTests(TestCase):
                 top_k=5, min_score=0.0,
             )
         self.assertFalse(fallback.reranker_applied)
+        self.assertIsNone(fallback.reranker_model)
         self.assertTrue({item.document_id for item in fallback} <= self.allowed)
 
         self.client.force_login(self.customer_user)
@@ -157,6 +160,7 @@ class RealV5RequestPathTests(TestCase):
         }, content_type="application/json")
         self.assertEqual(customer_response.status_code, 200, customer_response.content)
         self.assertTrue(customer_response.json().get("reranker_applied"))
+        self.assertEqual(customer_response.json().get("reranker_model"), "servy_v5_bge_verified")
 
         self.client.force_login(self.engineer_user)
         engineer_response = self.client.post(reverse("api_engineer_copilot_query"), {
@@ -164,4 +168,5 @@ class RealV5RequestPathTests(TestCase):
         }, content_type="application/json")
         self.assertEqual(engineer_response.status_code, 200, engineer_response.content)
         self.assertTrue(engineer_response.json().get("reranker_applied"))
+        self.assertEqual(engineer_response.json().get("reranker_model"), "servy_v5_bge_verified")
         self.assertTrue({ref["document_id"] for ref in engineer_response.json()["references"]} <= self.allowed)
