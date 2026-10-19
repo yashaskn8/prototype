@@ -94,6 +94,19 @@ def get_reranker():
             return None
 
 
+# Exact digest of the exploratory V5 BGE reranker, verified on 2026-10-19.
+# This is public checkpoint identity metadata, not a secret or a promotion signal.
+SERVY_V5_WEIGHTS_SHA256 = "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda"
+
+
+def _applied_model_label() -> str:
+    """Report what actually scored candidates; do not confuse it with embeddings."""
+    if _local_checkpoint() is None:
+        return "legacy_ms_marco"
+    expected = str(getattr(settings, "SERVY_RERANKER_EXPECTED_SHA256", "") or "").lower().strip()
+    return "servy_v5_bge_verified" if expected == SERVY_V5_WEIGHTS_SHA256 else "local_cross_encoder"
+
+
 def calibrated_sigmoid_score(logit: float) -> float:
     """Stable monotone calibration for ranking metadata (not a probability guarantee)."""
     x = float(logit)
@@ -131,6 +144,7 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
                 raise ValueError("Invalid or non-finite CrossEncoder scores")
             for candidate, logit in zip(pool, scores):
                 candidate.reranker_score = calibrated_sigmoid_score(logit)
+                candidate.reranker_model = _applied_model_label()
                 candidate.rerank_logit = logit
                 candidate.retrieval_score = candidate.score
             pool.sort(key=lambda c: c.rerank_logit, reverse=True)
