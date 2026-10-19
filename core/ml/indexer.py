@@ -179,13 +179,19 @@ def index_single_document_bge(document, profile_key: str = "bge-small") -> int:
         h = hashlib.sha256(text.encode("utf-8")).hexdigest()
         todo.append((cid, c, text, _expected_vector_metadata(c, profile, h, checkpoint_fp)))
 
-    # Reject a forbidden cleanup BEFORE any upsert; otherwise the first
-    # pass could leave half-mutated company indexes behind after raising.
+    # Identify stale vectors before writing. For company collections, never
+    # delete historical vectors: update valid current passages, preserve stale
+    # rows for provenance review, and let verify_index flag incompleteness.
+    # This is non-destructive and allows legitimate new passages to be indexed.
     doc_stale = [cid for cid in existing_cids if cid not in wanted_cids]
-    if doc_stale and profile.key.startswith("company-"):
-        raise EmbeddingConfigError(
-            "Company dense stale cleanup is prohibited; use non-destructive reconciliation"
-        )
+    if profile.key.startswith("company-"):
+        if doc_stale:
+            import logging
+            logging.getLogger("servy.rag.indexer").warning(
+                "Preserving %d stale company vectors for document %s pending verification",
+                len(doc_stale), document.id,
+            )
+        doc_stale = []
 
     if todo:
         emb = encode_passages(profile, model, [b[2] for b in todo])
