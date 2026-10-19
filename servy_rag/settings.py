@@ -259,6 +259,9 @@ SERVY_QWEN3_MODEL_PATH = os.getenv("SERVY_QWEN3_MODEL_PATH", "").strip()
 SERVY_QWEN3_ENABLED = os.getenv("SERVY_QWEN3_ENABLED", "0") == "1"
 SERVY_QWEN3_INDEX_VERIFIED = os.getenv("SERVY_QWEN3_INDEX_VERIFIED", "0") == "1"
 SERVY_QWEN3_DENSE_GATE = float(os.getenv("SERVY_QWEN3_DENSE_GATE", "0.35"))
+# Separate, experimental dense-first ablation; OFF until measured on independent
+# questions. Preserves authorized sparse candidates as a backfill.
+SERVY_QWEN3_DENSE_FIRST = os.getenv("SERVY_QWEN3_DENSE_FIRST", "0") == "1"
 
 SERVY_RERANKER_ENABLED = os.getenv("SERVY_RERANKER_ENABLED", "0") == "1"
 # Optional V5 reranker: local checkpoint only, never the Qwen3 embedding model.
