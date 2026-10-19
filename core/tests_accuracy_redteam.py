@@ -48,6 +48,7 @@ class AccuracyRedTeamTests(SimpleTestCase):
         profile = SimpleNamespace(
             key="company-qwen3",
             collection="servy_company_qwen3_06b_v1",
+            content_first=True,
         )
         document = mock.Mock()
         document.id = 12
