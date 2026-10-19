@@ -639,7 +639,20 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 
         # Explicit serving model profile selection (Operation 13.0)
         serving_profile = getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
-        if serving_profile in ("company-bge-ft", "bge-small-ft"):
+        if serving_profile in ("qwen3", "company-qwen3"):
+            # Explicit experimental opt-in only. Never silently route a public
+            # or private customer request through a partially indexed Qwen3 space.
+            qwen_enabled = (
+                getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
+                and getattr(settings, "SERVY_QWEN3_ENABLED", False) is True
+                and getattr(settings, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
+            )
+            profile_key = (
+                ("company-qwen3" if is_real else "qwen3")
+                if qwen_enabled else
+                ("company-minilm" if is_real else "minilm")
+            )
+        elif serving_profile in ("company-bge-ft", "bge-small-ft"):
             profile_key = "company-bge-ft"
         elif serving_profile in ("company-bge-small", "bge-small"):
             profile_key = "company-bge-small" if is_real else "bge-small"
@@ -757,6 +770,13 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 # and no identifier matches, metadata bonus cannot rescue the document.
                 # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
                 _dense_gate = serving_config.dense_relevance_gate if serving_config else _get_dense_gate()
+                if getattr(profile, "query_document_encoder", False):
+                    # Qwen3's similarity scale differs from BGE/MiniLM. This
+                    # gate is a tunable hypothesis, not a calibrated threshold.
+                    # Relevance/answerability validation remains downstream.
+                    _dense_gate = float(getattr(settings, "SERVY_QWEN3_DENSE_GATE", 0.35))
+                    if not 0.0 <= _dense_gate <= 1.0:
+                        raise ValueError("SERVY_QWEN3_DENSE_GATE must be in [0,1]")
                 if not getattr(profile, "content_first", False):
                     # MiniLM vector similarities have a lower ceiling (~0.30-0.50) compared to BGE (~0.60-0.85).
                     # Avoid pruning genuine semantic matches when using non-content-first profiles.
