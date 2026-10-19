@@ -147,7 +147,14 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
         # Validate the full prediction BEFORE mutating any result objects.
         if pool:
             pairs = [[query, c.text] for c in pool]
-            raw = model.predict(pairs)
+            # Explicit identity activation matches the offline research scorer.
+            # For one-label CrossEncoders, predict() commonly defaults to
+            # sigmoid; applying calibrated_sigmoid_score again would distort
+            # the diagnostic score scale even though rank order is monotone.
+            import torch
+            raw = model.predict(
+                pairs, activation_fn=torch.nn.Identity(), show_progress_bar=False
+            )
             scores = [float(x) for x in raw]
             if len(scores) != len(pool) or not all(math.isfinite(x) for x in scores):
                 raise ValueError("Invalid or non-finite CrossEncoder scores")
