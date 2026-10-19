@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -133,9 +133,17 @@ def register_finetuned(
 
 def get_profile(key: str) -> EmbeddingProfile:
     try:
-        return PROFILES[key]
+        profile = PROFILES[key]
     except KeyError:
         raise EmbeddingConfigError(f"Unknown embedding profile '{key}'. Known: {sorted(PROFILES)}")
+    if profile.query_document_encoder:
+        # Respect Django override_settings in tests and keep serving/indexing
+        # bound to the same explicitly configured offline checkpoint.
+        return replace(
+            profile,
+            local_path=str(getattr(settings, "SERVY_QWEN3_MODEL_PATH", "") or ""),
+        )
+    return profile
 
 
 _models: Dict[tuple, object] = {}
