@@ -166,10 +166,16 @@ def audit(holdout, selected, original, dev, corpus, families):
     shared_refs = tr & (hp | hn)
     affected_rows = sum(bool((refs(row, "positive") | refs(row, "negative")) & tr)
                         for row in holdout)
-    missing_gold_rows = sum(
-        bool(refs(row, "positive") - set(chunk_map)) or not refs(row, "positive")
+    # Distinguish no gold label at all (possibly an intentional abstention
+    # case) from a broken gold reference. Neither is silently removed or
+    # assigned an answer by this structural audit.
+    empty_gold_rows = sum(not refs(row, "positive") for row in holdout)
+    unresolved_gold_rows = sum(
+        bool(refs(row, "positive") - set(chunk_map))
         for row in holdout
     )
+    missing_gold_rows = empty_gold_rows + unresolved_gold_rows
+    resolvable_gold_rows = len(holdout) - missing_gold_rows
     cross_tenant_gold_rows = sum(
         any(cid in chunk_map and
             str(chunk_map[cid]["tenant_id"]) != str(row["tenant_id"])
@@ -231,6 +237,10 @@ def audit(holdout, selected, original, dev, corpus, families):
         },
         "evidence_integrity": {
             "holdout_questions_with_missing_or_empty_gold": missing_gold_rows,
+            "holdout_questions_with_no_positive_references": empty_gold_rows,
+            "holdout_questions_with_unresolved_positive_references": unresolved_gold_rows,
+            "holdout_questions_with_resolvable_positive_references": resolvable_gold_rows,
+            "empty_gold_semantic_interpretation": "UNDETERMINED_POSSIBLE_ABSTENTION",
             "holdout_questions_with_cross_tenant_gold": cross_tenant_gold_rows,
             "reference_errors_by_split": unresolved,
         },
