@@ -42,6 +42,33 @@ class Qwen3AccuracySafetyTests(SimpleTestCase):
         model.encode_document.assert_called_once()
         model.encode.assert_not_called()
 
+    def test_experimental_qwen_requires_all_three_flags(self):
+        from core.services.retriever import _qwen3_profile_if_ready
+        for enabled in ("SERVY_USE_EXPERIMENTAL_RAG",
+                        "SERVY_QWEN3_ENABLED",
+                        "SERVY_QWEN3_INDEX_VERIFIED"):
+            flags = {
+                "SERVY_USE_EXPERIMENTAL_RAG": True,
+                "SERVY_QWEN3_ENABLED": True,
+                "SERVY_QWEN3_INDEX_VERIFIED": True,
+            }
+            flags[enabled] = False
+            self.assertEqual(
+                _qwen3_profile_if_ready(SimpleNamespace(**flags), False),
+                "minilm",
+            )
+            self.assertEqual(
+                _qwen3_profile_if_ready(SimpleNamespace(**flags), True),
+                "company-minilm",
+            )
+        allowed = SimpleNamespace(
+            SERVY_USE_EXPERIMENTAL_RAG=True,
+            SERVY_QWEN3_ENABLED=True,
+            SERVY_QWEN3_INDEX_VERIFIED=True,
+        )
+        self.assertEqual(_qwen3_profile_if_ready(allowed, False), "qwen3")
+        self.assertEqual(_qwen3_profile_if_ready(allowed, True), "company-qwen3")
+
     def test_legacy_encode_stays_unchanged(self):
         profile = embeddings.get_profile("minilm")
         model = mock.Mock()
