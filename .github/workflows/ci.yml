@@ -59,6 +59,9 @@ jobs:
       - name: V6 Continuation and Permission Safety Tests
         run: python -m unittest discover -s tools -p "test_servy_v6_continuation.py" -v
 
+      - name: Frozen-Candidate Accuracy Diagnostics Regression Tests
+        run: python -m unittest discover -s tools -p "test_servy_accuracy_diagnostics.py" -v
+
       - name: V6 Holdout Independence and Leakage Safety Tests
         run: python -m unittest discover -s tools -p "test_servy_v6_holdout_audit.py" -v
 
