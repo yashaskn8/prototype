@@ -14,6 +14,19 @@ from collections import Counter
 from pathlib import Path
 
 
+# Categories observed in the locally reviewed holdout. These names describe
+# possible test intent only; they are not authenticated labels or proof that
+# an abstention/refusal answer is correct.
+POTENTIAL_ABSTENTION_OR_SECURITY_CATEGORIES = frozenset({
+    "unsupported_question",
+    "doc_id_attack",
+    "revoked_doc_query",
+    "tenant_isolation_attack",
+    "out_of_domain",
+    "boundary_injection",
+})
+
+
 class HoldoutAuditError(ValueError):
     pass
 
@@ -169,7 +182,17 @@ def audit(holdout, selected, original, dev, corpus, families):
     # Distinguish no gold label at all (possibly an intentional abstention
     # case) from a broken gold reference. Neither is silently removed or
     # assigned an answer by this structural audit.
-    empty_gold_rows = sum(not refs(row, "positive") for row in holdout)
+    empty_gold_cases = [row for row in holdout if not refs(row, "positive")]
+    empty_gold_rows = len(empty_gold_cases)
+    empty_gold_category_counts = Counter(
+        str(row.get("category") or "").strip().casefold() or "UNSPECIFIED"
+        for row in empty_gold_cases
+    )
+    candidate_abstention_rows = sum(
+        count for category, count in empty_gold_category_counts.items()
+        if category in POTENTIAL_ABSTENTION_OR_SECURITY_CATEGORIES
+    )
+    category_unrecognized_rows = empty_gold_rows - candidate_abstention_rows
     unresolved_gold_rows = sum(
         bool(refs(row, "positive") - set(chunk_map))
         for row in holdout
@@ -240,7 +263,13 @@ def audit(holdout, selected, original, dev, corpus, families):
             "holdout_questions_with_no_positive_references": empty_gold_rows,
             "holdout_questions_with_unresolved_positive_references": unresolved_gold_rows,
             "holdout_questions_with_resolvable_positive_references": resolvable_gold_rows,
+            "empty_gold_category_counts": dict(sorted(empty_gold_category_counts.items())),
+            "empty_gold_in_potential_abstention_or_security_categories":
+                candidate_abstention_rows,
+            "empty_gold_with_unrecognized_or_missing_category": category_unrecognized_rows,
             "empty_gold_semantic_interpretation": "UNDETERMINED_POSSIBLE_ABSTENTION",
+            "negative_only_expected_behavior_verified": False,
+            "negative_only_test_results_scored": False,
             "holdout_questions_with_cross_tenant_gold": cross_tenant_gold_rows,
             "reference_errors_by_split": unresolved,
         },
