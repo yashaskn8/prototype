@@ -100,7 +100,7 @@ class Qwen3AccuracySafetyTests(SimpleTestCase):
                      mock.patch.object(indexer, "encode_passages", return_value=embedding) as encode:
                     report = indexer.build_index("qwen3", limit=1)
                 self.assertEqual(report["embedded_now"], 1)
-                encode.assert_called_once_with(profile, model, ["Power\\nCheck inlet pressure"])
+                encode.assert_called_once_with(profile, model, ["Power\nCheck inlet pressure"])
                 coll.upsert.assert_called_once()
                 coll.delete.assert_not_called()
 
