@@ -16,9 +16,13 @@ The owner reported the following read-only audit on locally held PRIVATE data:
   IDs that appeared as training-positive IDs and 9 holdout-negative chunk
   IDs that appeared as training-negative IDs. **These cross-question role
   overlaps are not by themselves proof of incorrect labels.**
-- 1 holdout question has a positive/gold chunk missing from the frozen
-  corpus. This makes the full 64-question population unsuitable for complete
-  scoring without further evidence reconciliation.
+- The first combined report flagged **22 questions with missing OR empty
+  gold**, but the separate unresolved-reference count was **1**. This
+  indicates 21 questions have no positive references, while 1 cites a
+  missing corpus chunk. Empty-gold questions **could be valid abstention
+  cases**; they cannot be declared broken or scorable until the task and
+  label intent are confirmed. The one unresolved gold reference requires
+  source reconciliation. These are not interchangeable error classes.
 - The file's `review_status=approved` metadata and filled `reviewer`
   fields do **not** independently authenticate the review provenance.
 - `op21_accuracy_audit/rerank_holdout.json` is an *already-scored*
@@ -52,6 +56,12 @@ the Internet, or change Git.
 An optional `--out "path/to/new_local_report.json"` writes metadata only
 and refuses to overwrite a report. If a missing corpus gold chunk is present,
 it is **flagged**, not dropped, invented, or injected into candidates.
+The `evidence_integrity` section separately reports
+`holdout_questions_with_no_positive_references`,
+`holdout_questions_with_unresolved_positive_references`, and
+`holdout_questions_with_resolvable_positive_references`. A no-positive
+question is marked `UNDETERMINED_POSSIBLE_ABSTENTION` until evidence
+establishes whether it intentionally tests refusal/no-answer behavior.
 
 ### Strict gate interpretation
 
