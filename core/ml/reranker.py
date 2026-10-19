@@ -130,11 +130,11 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
             if len(scores) != len(pool) or not all(math.isfinite(x) for x in scores):
                 raise ValueError("Invalid or non-finite CrossEncoder scores")
             for candidate, logit in zip(pool, scores):
-                candidate.rerank_score = calibrated_sigmoid_score(logit)
+                candidate.reranker_score = calibrated_sigmoid_score(logit)
                 candidate.rerank_logit = logit
                 candidate.retrieval_score = candidate.score
             pool.sort(key=lambda c: c.rerank_logit, reverse=True)
-        logger.debug(
+        logger.info(
             "CrossEncoder reranked %d authorized chunks in %.1f ms",
             len(pool), (time.perf_counter() - t0) * 1000,
         )

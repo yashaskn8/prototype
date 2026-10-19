@@ -55,6 +55,10 @@ provisional development questions and is **not a live-UI accuracy guarantee**.
    **Customer AI Support** or **Engineer Copilot**. Authorized retrieved
    technical chunks can now be reranked by V5. The UI does not automatically
    display a verified model badge or the research benchmark score.
+   Both API responses expose `reranker_applied`: it is `true` only when a
+   knowledge passage received a finite cross-encoder score in that request.
+   It is `false` when V5 is disabled, unavailable, or falls back after a
+   scoring error. `retrieval_backend` describes candidate retrieval, not V5.
 
 ## Safety and rollout
 
@@ -82,3 +86,15 @@ python manage.py test core.tests_v5_reranker -v 2
 
 These tests mock the model and do not require the 2.27 GB weights. They are
 additionally covered by the repository's normal CI suite.
+
+To exercise the actual checkpoint through authorization, retrieval, RAG, and
+both Django API endpoints using disposable synthetic records, run:
+
+```powershell
+$env:SERVY_DB_ENGINE = "sqlite3"
+$env:SERVY_TEST_REAL_V5 = "1"
+python manage.py test core.tests_v5_runtime -v 2
+```
+
+The real-weight test is skipped in CI when `SERVY_TEST_REAL_V5` is unset.
+It does not measure independent accuracy or verify the React browser UI.

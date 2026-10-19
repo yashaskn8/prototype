@@ -775,6 +775,7 @@ class EngineerCopilotQueryView(APIView):
             "past_resolutions": past_resolutions,
             "engine": rag_res["engine"],
             "retrieval_backend": retrieval_backend,
+            "reranker_applied": rag_res.get("reranker_applied", False),
             "recovery_passport": recovery_passport,
         })
 
