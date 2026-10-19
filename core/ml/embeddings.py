@@ -180,8 +180,11 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         actual = m.get_embedding_dimension() if hasattr(m, "get_embedding_dimension") else m.get_sentence_embedding_dimension()
         if actual != profile.dim:
             raise EmbeddingConfigError(f"{profile.model_id} dim {actual} != expected {profile.dim}")
-        if profile.query_document_encoder and not (callable(getattr(m, "encode_query", None)) and callable(getattr(m, "encode_document", None))):
-            raise EmbeddingConfigError("Qwen3 requires sentence-transformers encode_query and encode_document")
+        if profile.query_document_encoder:
+            if not (callable(getattr(m, "encode_query", None)) and callable(getattr(m, "encode_document", None))):
+                raise EmbeddingConfigError("Qwen3 requires sentence-transformers encode_query and encode_document")
+            # Freeze the same sequence budget as the Colab retrieval experiment.
+            m.max_seq_length = 256
         _models[cache_key] = m
         return m
 
