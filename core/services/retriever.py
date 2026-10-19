@@ -610,6 +610,23 @@ def _matches_current_minilm_vector(meta, chunk, profile) -> bool:
     )
 
 
+def _qwen3_profile_if_ready(settings_obj, is_real: bool) -> str:
+    """Default-safe selector: three independent flags before Qwen3 serving.
+
+    Returning the MiniLM profile is intentional when the experimental index
+    has not been independently checked. This selector does not grant access to
+    any document; authorization remains enforced in the retrieval query.
+    """
+    enabled = (
+        getattr(settings_obj, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
+        and getattr(settings_obj, "SERVY_QWEN3_ENABLED", False) is True
+        and getattr(settings_obj, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
+    )
+    if enabled:
+        return "company-qwen3" if is_real else "qwen3"
+    return "company-minilm" if is_real else "minilm"
+
+
 # ---------------------------------------------------------------------------
 # Dense retrieval scoring
 # ---------------------------------------------------------------------------
@@ -640,18 +657,7 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         # Explicit serving model profile selection (Operation 13.0)
         serving_profile = getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
         if serving_profile in ("qwen3", "company-qwen3"):
-            # Explicit experimental opt-in only. Never silently route a public
-            # or private customer request through a partially indexed Qwen3 space.
-            qwen_enabled = (
-                getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
-                and getattr(settings, "SERVY_QWEN3_ENABLED", False) is True
-                and getattr(settings, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
-            )
-            profile_key = (
-                ("company-qwen3" if is_real else "qwen3")
-                if qwen_enabled else
-                ("company-minilm" if is_real else "minilm")
-            )
+            profile_key = _qwen3_profile_if_ready(settings, is_real)
         elif serving_profile in ("company-bge-ft", "bge-small-ft"):
             profile_key = "company-bge-ft"
         elif serving_profile in ("company-bge-small", "bge-small"):
