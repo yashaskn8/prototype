@@ -154,6 +154,57 @@ def compare_frozen_pool(before, after, frozen, *, pool_size=5):
     return {"summary": summary, "per_query": rows}
 
 
+def simulate_pool_sweep(result, frozen, *, pool_sizes=(5, 8, 10)):
+    """Offline counterfactual, using ALREADY-SCORED logits, not another model run.
+
+    It does not modify the frozen candidate set. Unlike serving, an experimental
+    pool of 10 is permitted here to diagnose the candidate-head bottleneck.
+    Changing a development pool is NOT evidence for production improvement.
+    """
+    rows = _validate(result, frozen, "pool_sweep")
+    observations = []
+    for size in pool_sizes:
+        if not isinstance(size, int) or size < 1 or size > 10:
+            raise ValueError("Pool sweep size must be 1..10")
+        hit1 = hit5 = hit10 = 0
+        reciprocal_sum = 0.0
+        for qid, original in frozen.items():
+            row = rows[qid]
+            scores = row.get("reranker_scores")
+            if not isinstance(scores, dict) or set(scores) != set(original):
+                raise ValueError(f"Missing complete candidate scores for {qid}")
+            values = {}
+            import math
+            for cid in original:
+                value = float(scores[cid])
+                if not math.isfinite(value):
+                    raise ValueError(f"Non-finite candidate score for {qid}")
+                values[cid] = value
+            head = list(original[:size])
+            # Python stable sort preserves original tie order, just like rerank_fixed.
+            reranked = sorted(head, key=lambda cid: -values[cid]) + list(original[size:])
+            gold = set(row["gold_chunk_ids"])
+            rank = next((index for index, cid in enumerate(reranked, 1) if cid in gold), None)
+            if rank is not None:
+                hit1 += rank == 1
+                hit5 += rank <= 5
+                hit10 += rank <= 10
+                if rank <= 10:
+                    reciprocal_sum += 1 / rank
+        n = len(frozen)
+        observations.append({
+            "pool_size": size,
+            "queries": n,
+            "hit_at_1": round(hit1 * 100 / n, 2),
+            "hit_at_5": round(hit5 * 100 / n, 2),
+            "hit_at_10": round(hit10 * 100 / n, 2),
+            "mrr_at_10": round(reciprocal_sum / n, 4),
+            "research_counterfactual_only": True,
+            "production_change_approved": False,
+        })
+    return observations
+
+
 def write_jsonl_exclusive(path, records):
     """Never silently overwrite a previous private experiment output."""
     with Path(path).open("x", encoding="utf-8") as stream:
