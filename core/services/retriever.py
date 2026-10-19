@@ -58,10 +58,11 @@ class RetrievedChunk:
 
 
 class RetrievedResultList(list):
-    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False):
+    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False, reranker_model=None):
         super().__init__(items)
         self.retrieval_backend = retrieval_backend
         self.reranker_applied = reranker_applied
+        self.reranker_model = reranker_model if reranker_applied else None
 
 
 def is_authorized_candidate(
@@ -1174,5 +1175,12 @@ def retrieve(
         reranker_applied=any(
             item.source_kind == "knowledge_document" and item.reranker_score is not None
             for item in selected
+        ),
+        reranker_model=next(
+            (getattr(item, "reranker_model", None) for item in selected
+             if item.source_kind == "knowledge_document"
+             and item.reranker_score is not None
+             and getattr(item, "reranker_model", None)),
+            None,
         ),
     )
