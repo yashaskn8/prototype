@@ -580,11 +580,19 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
 def _matches_current_bge_vector(meta, chunk, profile) -> bool:
     """Match an indexed vector to the current authoritative BGE chunk."""
     import hashlib
-    from core.ml.embeddings import passage_text
+    from core.ml.embeddings import passage_text, cached_checkpoint_fingerprint
 
     content_hash = hashlib.sha256(passage_text(profile, chunk).encode("utf-8")).hexdigest()
+    # The collection header alone cannot establish which weights created a
+    # specific vector. Qwen3 rows must also match the selected local checkpoint.
+    qwen_fp = (
+        cached_checkpoint_fingerprint(profile.local_path)
+        if getattr(profile, "query_document_encoder", False) and profile.local_path
+        else None
+    )
     return bool(
-        meta.get("chunk_id") == chunk.id
+        (qwen_fp is None or meta.get("model_checkpoint_fingerprint") == qwen_fp)
+        and meta.get("chunk_id") == chunk.id
         and meta.get("document_id") == chunk.document_id
         and meta.get("chunk_index") == chunk.chunk_index
         and meta.get("tenant_id") == chunk.tenant_id
