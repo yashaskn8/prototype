@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from servy_accuracy_diagnostics import compare_frozen_pool, write_jsonl_exclusive
+from servy_accuracy_diagnostics import compare_frozen_pool, simulate_pool_sweep, write_jsonl_exclusive
 
 
 def case(qid, frozen, ordered, gold):
@@ -100,6 +100,30 @@ class PairedAccuracyDiagnosticsTests(unittest.TestCase):
     def test_negative_or_zero_pool_rejected(self):
         with self.assertRaises(ValueError):
             compare_frozen_pool(self.before, self.after, self.frozen, pool_size=0)
+
+    def test_pool_sweep_reuses_existing_logits_to_surface_head_bottleneck(self):
+        frozen = {"query": ["a", "b", "c"]}
+        result = {"queries": [{
+            **case("query", frozen["query"], ["a", "b", "c"], {"c"}),
+            "reranker_scores": {"a": 0.0, "b": 1.0, "c": 20.0},
+        }]}
+        sweep = simulate_pool_sweep(result, frozen, pool_sizes=(2, 3))
+        self.assertEqual(sweep[0]["hit_at_1"], 0.0)
+        self.assertEqual(sweep[1]["hit_at_1"], 100.0)
+        self.assertTrue(all(row["research_counterfactual_only"] for row in sweep))
+        self.assertFalse(any(row["production_change_approved"] for row in sweep))
+
+    def test_pool_sweep_rejects_missing_or_nonfinite_logits(self):
+        frozen = {"query": ["a", "b"]}
+        row = {
+            **case("query", frozen["query"], ["a", "b"], {"b"}),
+            "reranker_scores": {"a": 1.0},
+        }
+        with self.assertRaisesRegex(ValueError, "Missing complete"):
+            simulate_pool_sweep({"queries": [row]}, frozen)
+        row["reranker_scores"]["b"] = float("nan")
+        with self.assertRaisesRegex(ValueError, "Non-finite"):
+            simulate_pool_sweep({"queries": [row]}, frozen)
 
     def test_private_report_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as folder:
