@@ -542,6 +542,7 @@ def process_customer_diagnostic_turn(
             contract["past_resolutions"] = past_resolutions
             contract["retrieval_backend"] = rag_res.get("retrieval_backend", "dense_chroma")
             contract["reranker_applied"] = rag_res.get("reranker_applied", False)
+            contract["reranker_model"] = rag_res.get("reranker_model")
 
             asst_msg = CustomerMessage.objects.create(
                 tenant=tenant,
