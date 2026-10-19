@@ -125,6 +125,51 @@ class HoldoutLeakageTests(unittest.TestCase):
         self.assertEqual(evidence["holdout_questions_with_unresolved_positive_references"], 1)
         self.assertEqual(evidence["holdout_questions_with_resolvable_positive_references"], 0)
 
+    def test_all_negative_only_security_categories_are_counted_not_approved(self):
+        categories = [
+            "unsupported_question", "doc_id_attack", "revoked_doc_query",
+            "tenant_isolation_attack", "out_of_domain", "boundary_injection",
+        ]
+        self.holdout = [
+            question("negative-" + str(i), [], ["f"], category=category,
+                     review_status="approved", reviewer="unverified-name")
+            for i, category in enumerate(categories)
+        ]
+        result = self.check()
+        evidence = result["evidence_integrity"]
+        self.assertEqual(evidence["holdout_questions_with_no_positive_references"], 6)
+        self.assertEqual(evidence["empty_gold_in_potential_abstention_or_security_categories"], 6)
+        self.assertEqual(evidence["empty_gold_with_unrecognized_or_missing_category"], 0)
+        self.assertEqual(set(evidence["empty_gold_category_counts"]), set(categories))
+        self.assertFalse(evidence["negative_only_expected_behavior_verified"])
+        self.assertFalse(evidence["negative_only_test_results_scored"])
+        self.assertFalse(result["independent_holdout_verified"])
+        self.assertFalse(result["training_authorized"])
+        self.assertFalse(result["review_metadata_unverified"]["reviewer_identity_authenticated"])
+
+    def test_unknown_empty_gold_category_is_not_automatically_accepted(self):
+        self.holdout[0]["positive_chunk_ids"] = []
+        self.holdout[0]["category"] = "other_unverified_label"
+        evidence = self.check()["evidence_integrity"]
+        self.assertEqual(evidence["empty_gold_with_unrecognized_or_missing_category"], 1)
+        self.assertEqual(evidence["empty_gold_in_potential_abstention_or_security_categories"], 0)
+        self.assertFalse(evidence["negative_only_expected_behavior_verified"])
+
+    def test_positive_label_in_security_category_is_not_counted_as_negative_only(self):
+        self.holdout[0]["category"] = "doc_id_attack"
+        evidence = self.check()["evidence_integrity"]
+        self.assertEqual(evidence["holdout_questions_with_no_positive_references"], 0)
+        self.assertEqual(evidence["empty_gold_in_potential_abstention_or_security_categories"], 0)
+        self.assertEqual(evidence["holdout_questions_with_resolvable_positive_references"], 1)
+
+    def test_unresolved_positive_label_in_security_category_not_counted_as_negative_only(self):
+        self.holdout[0]["category"] = "doc_id_attack"
+        self.holdout[0]["positive_chunk_ids"] = ["missing-reference"]
+        evidence = self.check()["evidence_integrity"]
+        self.assertEqual(evidence["holdout_questions_with_unresolved_positive_references"], 1)
+        self.assertEqual(evidence["empty_gold_in_potential_abstention_or_security_categories"], 0)
+        self.assertFalse(evidence["negative_only_expected_behavior_verified"])
+
     def test_wrong_tenant_positive_is_flagged(self):
         self.holdout[0]["positive_chunk_ids"] = ["a"]
         self.holdout[0]["tenant_id"] = "other-tenant"
