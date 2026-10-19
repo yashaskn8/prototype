@@ -23,6 +23,19 @@ The owner reported the following read-only audit on locally held PRIVATE data:
   cases**; they cannot be declared broken or scorable until the task and
   label intent are confirmed. The one unresolved gold reference requires
   source reconciliation. These are not interchangeable error classes.
+- The owner subsequently inspected the **21 no-positive questions** by
+  category (aggregate only): `unsupported_question=7`,
+  `doc_id_attack=3`, `revoked_doc_query=2`,
+  `tenant_isolation_attack=4`, `out_of_domain=3`, and
+  `boundary_injection=2`. All 21 carry `review_status=approved`.
+  These category names are **consistent with deliberate security/abstention
+  probes**, not 21 automatically broken answer labels. They do not prove
+  the intended behavior or establish a model pass rate.
+- This implies **43 questions have at least one positive reference**;
+  1 of those has an unresolved gold reference in the frozen corpus, leaving
+  42 structurally resolvable positive-evidence questions, pending case-level
+  quality verification. These are *population descriptions*, not valid
+  independent benchmark denominators.
 - The file's `review_status=approved` metadata and filled `reviewer`
   fields do **not** independently authenticate the review provenance.
 - `op21_accuracy_audit/rerank_holdout.json` is an *already-scored*
@@ -62,6 +75,13 @@ The `evidence_integrity` section separately reports
 `holdout_questions_with_resolvable_positive_references`. A no-positive
 question is marked `UNDETERMINED_POSSIBLE_ABSTENTION` until evidence
 establishes whether it intentionally tests refusal/no-answer behavior.
+`empty_gold_category_counts` lists aggregate counts for all empty-gold
+categories; `empty_gold_in_potential_abstention_or_security_categories`
+counts the six known categories above; unrecognized/missing categories
+are counted separately. Neither an approved metadata field nor a matching
+category proves that a test's expected answer is correct. This metadata
+audit **does not evaluate model refusals, tenant isolation, prompt-injection
+resistance, or retrieval accuracy**.
 
 ### Strict gate interpretation
 
