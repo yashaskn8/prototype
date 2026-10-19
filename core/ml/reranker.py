@@ -77,7 +77,14 @@ def get_reranker():
                     local_files_only=True,
                 )
             else:
-                # Legacy opt-in mode is unchanged when no V5 checkpoint is configured.
+                # An expected local digest is a strict local-only intent.
+                # Do not silently use the legacy network model if the V5
+                # checkpoint path was omitted or misconfigured.
+                if expected_sha:
+                    raise ValueError(
+                        "SERVY_RERANKER_MODEL_PATH_REQUIRED_FOR_PINNED_CHECKPOINT"
+                    )
+                # Legacy opt-in mode remains available only with no pin.
                 model = CrossEncoder(RERANKER_MODEL_ID, device=device)
             _cross_encoder = model
             _loaded_config = key
@@ -132,13 +139,22 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
         docs = [c for c in candidates if c.source_kind == "knowledge_document"]
         others = [c for c in candidates if c.source_kind != "knowledge_document"]
         pool_size = int(getattr(settings, "SERVY_RERANKER_POOL_SIZE", 8))
-        if not 1 <= pool_size <= 8:
-            raise ValueError("SERVY_RERANKER_POOL_SIZE must be 1..8")
+        # The ten-candidate setting is an explicit accuracy/latency
+        # experiment, not an automatic production promotion. Default unchanged.
+        if not 1 <= pool_size <= 10:
+            raise ValueError("SERVY_RERANKER_POOL_SIZE must be 1..10")
         pool = docs[:pool_size]
         # Validate the full prediction BEFORE mutating any result objects.
         if pool:
             pairs = [[query, c.text] for c in pool]
-            raw = model.predict(pairs)
+            # Explicit identity activation matches the offline research scorer.
+            # For one-label CrossEncoders, predict() commonly defaults to
+            # sigmoid; applying calibrated_sigmoid_score again would distort
+            # the diagnostic score scale even though rank order is monotone.
+            import torch
+            raw = model.predict(
+                pairs, activation_fn=torch.nn.Identity(), show_progress_bar=False
+            )
             scores = [float(x) for x in raw]
             if len(scores) != len(pool) or not all(math.isfinite(x) for x in scores):
                 raise ValueError("Invalid or non-finite CrossEncoder scores")
