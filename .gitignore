@@ -55,6 +55,9 @@ scratch/
 # ML artifacts: model checkpoints, private relevance labels, eval outputs
 ml_artifacts/
 ml_models/checkpoints/
+# Prevent accidental upload when best_model is copied to prototype/ directly.
+best_model/
+*.safetensors
 private_training_data/
 
 .env.mysql*
