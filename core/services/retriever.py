@@ -58,9 +58,10 @@ class RetrievedChunk:
 
 
 class RetrievedResultList(list):
-    def __init__(self, items=(), retrieval_backend="semantic"):
+    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False):
         super().__init__(items)
         self.retrieval_backend = retrieval_backend
+        self.reranker_applied = reranker_applied
 
 
 def is_authorized_candidate(
@@ -593,6 +594,21 @@ def _matches_current_bge_vector(meta, chunk, profile) -> bool:
     )
 
 
+def _matches_current_minilm_vector(meta, chunk, profile) -> bool:
+    """Reject stale legacy vectors before pairing them with current chunk text."""
+    import hashlib
+
+    return bool(
+        meta.get("chunk_id") == chunk.id
+        and meta.get("document_id") == chunk.document_id
+        and meta.get("chunk_index") == chunk.chunk_index
+        and meta.get("tenant_id") == chunk.tenant_id
+        and str(meta.get("document_version")) == str(chunk.document.index_version or "1.0")
+        and meta.get("content_sha256") == hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
+        and meta.get("embedding_model") == profile.model_id
+    )
+
+
 # ---------------------------------------------------------------------------
 # Dense retrieval scoring
 # ---------------------------------------------------------------------------
@@ -701,12 +717,15 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                         # Vector in Chroma is stale or unassociated with authorized candidate
                         continue
                     current_chunk = candidates_by_doc_chunk[key]
-                    # BGE vectors have stable source identity. A vector from an earlier
-                    # chunk at the same document/index position must never be paired
-                    # with today's authoritative chunk text.
-                    if profile.content_first:
-                        if not _matches_current_bge_vector(meta, current_chunk, profile):
-                            continue
+                    # A vector from an earlier chunk at the same document/index
+                    # position must never be paired with today's source text.
+                    identity_matches = (
+                        _matches_current_bge_vector(meta, current_chunk, profile)
+                        if profile.content_first
+                        else _matches_current_minilm_vector(meta, current_chunk, profile)
+                    )
+                    if not identity_matches:
+                        continue
                     if key not in best_matches or dist < best_matches[key][1]:
                         best_matches[key] = (meta, dist)
 
@@ -1149,4 +1168,11 @@ def retrieve(
     for i, item in enumerate(selected, 1):
         item.final_rank = i
 
-    return RetrievedResultList(selected, retrieval_backend=retrieval_backend)
+    return RetrievedResultList(
+        selected,
+        retrieval_backend=retrieval_backend,
+        reranker_applied=any(
+            item.source_kind == "knowledge_document" and item.reranker_score is not None
+            for item in selected
+        ),
+    )

@@ -14,6 +14,7 @@ Proves the complete elimination of confirmed defects:
 - Phase 15: Citation integrity across diagnostic response modes.
 """
 
+import hashlib
 from unittest.mock import MagicMock, patch
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
@@ -44,6 +45,19 @@ from core.services.llm import (
     INSUFFICIENT_EVIDENCE_MESSAGE,
 )
 from core.services.customer_diagnostic import build_structured_diagnostic_contract
+
+
+def _current_minilm_metadata(chunk):
+    """Mirror the identity fields written by the legacy MiniLM indexer."""
+    return {
+        "document_id": chunk.document_id,
+        "chunk_id": chunk.id,
+        "chunk_index": chunk.chunk_index,
+        "tenant_id": chunk.tenant_id,
+        "document_version": str(chunk.document.index_version or "1.0"),
+        "content_sha256": hashlib.sha256(chunk.text.encode("utf-8")).hexdigest(),
+        "embedding_model": "all-MiniLM-L6-v2",
+    }
 
 
 @override_settings(
@@ -108,7 +122,7 @@ class Operation14TruthRecoveryTests(TestCase):
         # Mock Chroma collection returning multiple chunks
         mock_coll = MagicMock()
         # 80 items returned from Chroma
-        mock_metas = [[{"document_id": doc.id, "chunk_id": c.id, "chunk_index": c.chunk_index} for c in chunks]]
+        mock_metas = [[_current_minilm_metadata(c) for c in chunks]]
         # Chunk 1 (2nd passage) has similarity dist=0.10, Chunk 0 has dist=0.05
         mock_dists = [0.05 + (0.01 * i) for i in range(80)]
 
@@ -160,7 +174,7 @@ class Operation14TruthRecoveryTests(TestCase):
         # Chroma returns active chunk 0 AND stale chunk 99 (deleted from DB)
         mock_coll.query.return_value = {
             "metadatas": [[
-                {"document_id": doc.id, "chunk_id": c1.id, "chunk_index": 0},
+                _current_minilm_metadata(c1),
                 {"document_id": doc.id, "chunk_id": 99999, "chunk_index": 99},
             ]],
             "distances": [[0.05, 0.02]],
@@ -390,7 +404,7 @@ class Operation14TruthRecoveryTests(TestCase):
 
                 mock_coll = MagicMock()
                 mock_coll.query.return_value = {
-                    "metadatas": [[{"document_id": doc.id, "chunk_id": c.id, "chunk_index": 0}]],
+                    "metadatas": [[_current_minilm_metadata(c)]],
                     "distances": [[0.1]],
                 }
                 mock_get_coll.return_value = mock_coll

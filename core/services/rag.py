@@ -23,6 +23,8 @@ def ask_rag(
             "references": [],
             "engine": "policy-guard",
             "retrieved": [],
+            "retrieval_backend": "policy-guard",
+            "reranker_applied": False,
         }
 
     include_past_resolutions = bool(staff_mode and service_call)
@@ -91,6 +93,8 @@ def ask_rag(
         "references": refs,
         "engine": engine,
         "retrieved": results,
+        "retrieval_backend": getattr(results, "retrieval_backend", "fallback"),
+        "reranker_applied": getattr(results, "reranker_applied", False),
         "retrieved_candidates": all_retrieved_candidates,
         "context_passages": context_passages,
         "claim_supporting_passages": [] if is_abstention else claim_supporting_passages,

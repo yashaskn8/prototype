@@ -11,6 +11,7 @@ from unittest import mock
 from django.test import SimpleTestCase, override_settings
 
 from core.ml import reranker
+from core.services.retriever import _matches_current_minilm_vector
 
 
 def chunk(name, kind="knowledge_document", score=0.3):
@@ -94,7 +95,7 @@ class V5RerankerTests(SimpleTestCase):
             ["repair", "A"], ["repair", "B"], ["repair", "C"]
         ])
         self.assertFalse(hasattr(history, "rerank_score"))
-        self.assertAlmostEqual(docs[1].rerank_score, reranker.calibrated_sigmoid_score(4.0))
+        self.assertAlmostEqual(docs[1].reranker_score, reranker.calibrated_sigmoid_score(4.0))
 
     @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=5)
     def test_pool_size_is_bounded(self):
@@ -115,7 +116,7 @@ class V5RerankerTests(SimpleTestCase):
         with mock.patch.object(reranker, "get_reranker", return_value=fake):
             result = reranker.rerank_candidates("repair", docs, top_k=2)
         self.assertEqual([x.text for x in result], ["A", "B"])
-        self.assertFalse(hasattr(docs[0], "rerank_score"))
+        self.assertFalse(hasattr(docs[0], "reranker_score"))
 
     @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_POOL_SIZE=99)
     def test_invalid_pool_size_falls_back(self):
@@ -126,3 +127,25 @@ class V5RerankerTests(SimpleTestCase):
     def test_sigmoid_is_finite_for_extreme_logits(self):
         self.assertEqual(reranker.calibrated_sigmoid_score(-1000), 0)
         self.assertEqual(reranker.calibrated_sigmoid_score(1000), 1)
+
+    def test_stale_minilm_vector_cannot_supply_a_v5_candidate(self):
+        source = SimpleNamespace(
+            id=7, document_id=5, chunk_index=0, tenant_id=2,
+            text="Current authorized manual passage",
+            document=SimpleNamespace(index_version=3),
+        )
+        profile = SimpleNamespace(model_id="all-MiniLM-L6-v2")
+        metadata = {
+            "chunk_id": 7, "document_id": 5, "chunk_index": 0,
+            "tenant_id": 2, "document_version": "3",
+            "content_sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest(),
+            "embedding_model": profile.model_id,
+        }
+        self.assertTrue(_matches_current_minilm_vector(metadata, source, profile))
+        self.assertFalse(_matches_current_minilm_vector(
+            {**metadata, "content_sha256": hashlib.sha256(b"stale passage").hexdigest()},
+            source, profile,
+        ))
+        self.assertFalse(_matches_current_minilm_vector(
+            {**metadata, "chunk_id": 999}, source, profile,
+        ))
