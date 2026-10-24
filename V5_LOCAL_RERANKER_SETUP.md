@@ -65,8 +65,12 @@ not yet reconciled. Neither is an independent live-UI accuracy guarantee.
    python manage.py verify_v5_reranker
    ```
 
-   Expected: `SERVY V5 RERANKER VERIFIED: ...`. This tests only local model
-   loading and one inference; it does not certify the full RAG application.
+   Expected: `SERVY V5 RERANKER VERIFIED: ...`. This executes the actual
+   serving-time reranker on one **synthetic knowledge passage**, including the
+   SHA-256-pinned offline checkpoint load, raw-logit scoring, and verified V5
+   model provenance. Missing weights, fallback, or invalid scores make the
+   command fail rather than produce a false success. It does **not** certify
+   tenant authorization, HTTP requests, benchmark accuracy, or deployment.
 
 5. Start your normal Django/MySQL and React processes. Log in and use
    **Customer AI Support** or **Engineer Copilot**. Authorized retrieved
