@@ -126,7 +126,7 @@ class V5ActivationCommandTests(SimpleTestCase):
     def test_required_v5_blocks_unavailable_checkpoint_fallback(self):
         from core.ml.reranker import require_verified_v5_reranker
         with mock.patch("core.ml.reranker.get_reranker", return_value=None):
-            with self.assertRaisesRegex(RuntimeError, "refusing to start"):
+            with self.assertRaisesRegex(RuntimeError, "Required V5 reranker failed to load"):
                 require_verified_v5_reranker()
 
     @override_settings(
