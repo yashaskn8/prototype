@@ -1,0 +1,45 @@
+{
+  "meta": {
+    "title": "SERVY Independent Evaluation Manifest",
+    "date": "2026-10-29",
+    "commit": "0e1f187",
+    "purpose": "Document whether an independent evaluation exists"
+  },
+  "independent_benchmark_exists": false,
+  "explanation": "No genuinely independent evaluation benchmark has been created. All test populations (42-query dev benchmark, 40-case red-team) were designed by the same team that developed the retrieval system. The 42-query benchmark was repeatedly used during model development for hyperparameter tuning, embedding model selection, and reranker training. The 40-case red-team was designed with knowledge of the system's equipment product families and document corpus.",
+  "blocked_by": [
+    "No external evaluator available",
+    "No real company data authorization (MODE A only)",
+    "Ollama LLM offline — answer quality untestable",
+    "Same team designed both the system and the evaluation",
+    "42-query benchmark was used during development (training contamination risk)",
+    "No blind held-out evaluation set from unseen document families"
+  ],
+  "what_was_tested": {
+    "42_query_dev_benchmark": {
+      "status": "DEVELOPMENT_BENCHMARK_ONLY",
+      "independence": "NOT_INDEPENDENT",
+      "reason": "Used repeatedly during model development, embedding selection, and reranker training",
+      "configs_tested": [
+        "PROD_minilm_hybrid_v5",
+        "DEV_bge_hybrid_v5",
+        "SPARSE_only_v5",
+        "PROD_minilm_no_reranker"
+      ]
+    },
+    "40_case_redteam": {
+      "status": "DEVELOPMENT_REDTEAM",
+      "independence": "NOT_INDEPENDENT",
+      "reason": "Designed by the same evaluator with knowledge of the system's equipment families and document corpus"
+    }
+  },
+  "requirements_for_independence": [
+    "1. External evaluator who has not seen the system code or training data",
+    "2. Questions sourced from real customer/technician interactions (requires MODE B authorization)",
+    "3. Equipment and document families not used in previous development",
+    "4. Minimum 100 questions, preferably 300+",
+    "5. Blind evaluation with no feedback loop to developers during evaluation",
+    "6. Answer quality evaluation (requires Ollama or external LLM)",
+    "7. Multi-rater agreement scoring for subjective quality metrics"
+  ]
+}

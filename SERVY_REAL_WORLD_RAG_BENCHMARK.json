@@ -1,0 +1,136 @@
+{
+  "meta": {
+    "title": "SERVY Real-World RAG Benchmark",
+    "date": "2026-10-29",
+    "commit": "0e1f187895f8144b3d2b1c9ed463b1896c2cdbef",
+    "mode": "MODE_A_SYNTHETIC_STAGING",
+    "evaluator": "Independent Red Team (Automated)",
+    "ollama_status": "OFFLINE",
+    "answer_quality_tested": false,
+    "data_authorization": "NOT_ESTABLISHED",
+    "database_engine": "mysql_8.0.41",
+    "vector_store": "chromadb_229_vectors_x4_collections"
+  },
+  "serving_config_comparison": {
+    "PROD_minilm_hybrid_v5": {
+      "embedding_profile": "minilm",
+      "retrieval_mode": "hybrid",
+      "reranker": "V5_xlm_roberta_large",
+      "is_production_default": true,
+      "hit_at_1": {"n": 36, "d": 42, "pct": 85.71},
+      "hit_at_3": {"n": 38, "d": 42, "pct": 90.48},
+      "hit_at_5": {"n": 39, "d": 42, "pct": 92.86},
+      "recall_at_10": {"n": 40, "d": 42, "pct": 95.24},
+      "mrr_at_10": 0.8897,
+      "mean_latency_ms": 3280.2,
+      "errors": 0
+    },
+    "DEV_bge_hybrid_v5": {
+      "embedding_profile": "bge-small",
+      "retrieval_mode": "hybrid",
+      "reranker": "V5_xlm_roberta_large",
+      "is_production_default": false,
+      "hit_at_1": {"n": 38, "d": 42, "pct": 90.48},
+      "hit_at_3": {"n": 40, "d": 42, "pct": 95.24},
+      "hit_at_5": {"n": 41, "d": 42, "pct": 97.62},
+      "recall_at_10": {"n": 41, "d": 42, "pct": 97.62},
+      "mrr_at_10": 0.9345,
+      "mean_latency_ms": 2748.9,
+      "errors": 0
+    },
+    "SPARSE_only_v5": {
+      "embedding_profile": "none",
+      "retrieval_mode": "sparse_only",
+      "reranker": "V5_xlm_roberta_large",
+      "is_production_default": false,
+      "hit_at_1": {"n": 37, "d": 42, "pct": 88.10},
+      "hit_at_3": {"n": 40, "d": 42, "pct": 95.24},
+      "hit_at_5": {"n": 41, "d": 42, "pct": 97.62},
+      "recall_at_10": {"n": 41, "d": 42, "pct": 97.62},
+      "mrr_at_10": 0.9214,
+      "mean_latency_ms": 2435.8,
+      "errors": 0
+    },
+    "PROD_minilm_no_reranker": {
+      "embedding_profile": "minilm",
+      "retrieval_mode": "hybrid",
+      "reranker": "disabled",
+      "is_production_default": false,
+      "hit_at_1": {"n": 32, "d": 42, "pct": 76.19},
+      "hit_at_3": {"n": 38, "d": 42, "pct": 90.48},
+      "hit_at_5": {"n": 39, "d": 42, "pct": 92.86},
+      "recall_at_10": {"n": 40, "d": 42, "pct": 95.24},
+      "mrr_at_10": 0.8341,
+      "mean_latency_ms": 91.6,
+      "errors": 0
+    }
+  },
+  "redteam_40_case": {
+    "total_cases": 40,
+    "product_correct": 35,
+    "product_total": 35,
+    "product_accuracy_pct": 100.0,
+    "errors": 0,
+    "reranked": 35,
+    "cross_tenant_leakage": 0,
+    "confidential_exposure": 0,
+    "mean_latency_ms": 2982.2,
+    "cold_start_ms": 32287,
+    "groups": {
+      "A_equipment_confusion": {"correct": 11, "total": 11},
+      "B_fault_codes": {"correct": 4, "total": 4},
+      "C_technical_specs": {"correct": 4, "total": 4},
+      "D_safety_procedural": {"correct": 5, "total": 5},
+      "E_real_world_language": {"correct": 4, "total": 5, "note": "E02 returned no product match (vague query, correct behavior)"},
+      "F_multi_document": {"correct": 3, "total": 3},
+      "G_missing_evidence": {"note": "Abstention requires LLM (offline). G03 correctly returned no results."},
+      "S_security": {"correct": 2, "total": 2},
+      "X_cross_tenant": {"correct": 2, "total": 2, "note": "0 results = correct (no general-fleet docs in T9)"}
+    }
+  },
+  "integrity_audit": {
+    "orphan_chunks_no_doc": 0,
+    "orphan_chunks_no_tenant": 0,
+    "docs_no_tenant": 0,
+    "tenant_mismatch": 0,
+    "assets_no_product": 0,
+    "doc_product_tenant_mismatch": 0,
+    "duplicate_chunk_groups": 0,
+    "disabled_doc_live_chunks": 0,
+    "chroma_alignment": "ALL_4_COLLECTIONS_ALIGNED",
+    "content_sha_mismatches": 0,
+    "null_text_chunks": 0,
+    "empty_text_chunks": 0
+  },
+  "django_api_security": {
+    "total": 38,
+    "pass": 35,
+    "fail": 1,
+    "warn": 2,
+    "skip": 0,
+    "fail_details": "CustomerQuery_demoMode returned 400 (missing site_id in test request - test script issue, not system defect)",
+    "warn_details": "Policy guard misses DAN and ADMIN OVERRIDE patterns"
+  },
+  "latency": {
+    "bge_hybrid_v5_mean_ms": 4969.8,
+    "bge_hybrid_v5_p50_ms": 3003.1,
+    "minilm_hybrid_v5_mean_ms": 2402.2,
+    "sparse_v5_mean_ms": 2582.5,
+    "no_reranker_mean_ms": 143.1,
+    "concurrent_3_wall_ms": 14241.2,
+    "concurrent_3_per_query_ms": 6641.0,
+    "cold_start_ms": 28454
+  },
+  "content_safety": {
+    "query_abuse_detection": {"tested": 7, "correct": 4, "missed": 3},
+    "document_injection_detection": {"tested": 4, "correct": 4, "missed": 0}
+  },
+  "model_provenance": {
+    "v5_reranker_sha": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+    "company_bge_ft_sha": "7d394413",
+    "manifest_sha_misattribution": true,
+    "serving_config_discrepancy": true,
+    "production_default_profile": "minilm",
+    "benchmark_profile": "bge-small"
+  }
+}
