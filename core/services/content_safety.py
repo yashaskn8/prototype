@@ -96,7 +96,7 @@ QUERY_ABUSE_PATTERNS = [
     r"list\s+all\s+(tenants?|customers?|users?)",
     r"show\s+(me\s+)?data\s+from\s+(another|different|other)",
     r"override\s+(safety|security|access)",
-    r"admin\s+(access|mode|panel)",
+    r"(?:give\s+(?:me\s+)?|grant\s+(?:me\s+)?|enable\s+|switch\s+to\s+|enter\s+)admin\s+(access|mode|panel)",
     r"sql\s+inject",
     r"union\s+select",
     r";\s*(drop|delete|update|insert)\s+",
