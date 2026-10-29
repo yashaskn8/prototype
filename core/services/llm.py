@@ -69,12 +69,43 @@ def ollama_generate(prompt):
 
 
 _STOPWORDS = {
+    # Basic English function words
     "the", "and", "for", "with", "from", "that", "this", "are", "was", "were",
     "can", "could", "should", "would", "does", "did", "have", "has", "had",
     "about", "into", "some", "any", "not", "all", "what", "how", "why", "when",
     "where", "who", "which", "there", "their", "they", "them", "then", "than",
     "been", "being", "will", "shall", "our", "your", "its", "also", "very",
+    # Question-framework words: describe how the user asks, not the technical content.
+    # These inflate compound-question term counts without adding grounding signal.
+    # A manual chunk about "LOW-PRESSURE FAULT" should not be penalised because
+    # the question also contains "explain", "distinguish", or "uncertain".
+    "explain", "describe", "distinguish", "assume", "diagnosis",
+    "observations", "evidence", "statement", "uncertain", "remains",
+    "documented", "using", "selected", "each", "following", "followed",
+    "but", "myself", "physically", "safely", "cannot",
+    "please", "need", "know", "want", "help", "information",
+    "whether", "still", "only", "just", "already", "however",
+    "yet", "although", "though", "unless", "neither", "either",
 }
+
+# Instruction / discourse terms that describe *how* the answer should be
+# formatted rather than *what* technical content is being requested.  These
+# must not inflate the grounding denominator: "cite exact passages" never
+# appears in a service manual, so requiring it penalises every passage.
+# Loaded lazily to avoid circular imports at module init.
+_INSTRUCTION_TERMS = None
+_REQUIREMENT_TERMS = None
+
+
+def _grounding_terms(question, stopwords, normalize=None):
+    """Compute grounding terms by stripping instruction/requirement words."""
+    global _INSTRUCTION_TERMS, _REQUIREMENT_TERMS
+    if _INSTRUCTION_TERMS is None:
+        from .requirements import INSTRUCTION_TERMS, REQUIREMENT_TERMS, grounding_terms as _gt
+        _INSTRUCTION_TERMS = INSTRUCTION_TERMS
+        _REQUIREMENT_TERMS = REQUIREMENT_TERMS
+    from .requirements import grounding_terms as _gt
+    return _gt(question, stopwords, normalize=normalize)
 
 INSUFFICIENT_EVIDENCE_MESSAGE = "I couldn't find enough approved information in the Knowledge Base to safely answer this issue."
 
@@ -142,6 +173,8 @@ def extract_typed_quantities(text: str) -> list[TechnicalQuantity]:
     if not text:
         return []
     text_lower = text.lower()
+
+    text_lower = _without_reported_duration(text_lower)
     quantities = []
 
     # 1. Temperature: 4C, 4.0 C, 4 degrees celsius, 4 °C, 4 fahrenheit, etc.
@@ -178,6 +211,11 @@ def extract_typed_quantities(text: str) -> list[TechnicalQuantity]:
     for m in re.finditer(speed_pat, text_lower):
         val = float(m.group(1))
         quantities.append(TechnicalQuantity(val, "rpm", "speed", m.group(0)))
+
+    # Explicit time specifications retain their dimension. Symptom durations
+    # have already been removed; 20 minutes must never match 20 bar.
+    for m in re.finditer(r"(?<![a-z0-9_-])(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?)\b", text_lower):
+        quantities.append(TechnicalQuantity(float(m.group(1)), m.group(2).rstrip("s"), "time", m.group(0)))
 
     # 6. Standalone multi-digit numbers (415, 230, 1500), but strictly excluding
     # error codes (E-04, F-07, ALM-01) and model numbers (MC-500, KTM-33, 500-X)
@@ -216,6 +254,19 @@ def verify_quantity_support(q_qty: TechnicalQuantity, chunk_quantities: list[Tec
     return False
 
 
+def _without_reported_duration(text):
+    """Exclude elapsed symptom reports, preserving explicit timing requirements."""
+    observation = re.compile(r"\b(?:after|for|since)\s+(?:(?:about|roughly|approximately)\s+)?\d+(?:\.\d+)?\s*(?:seconds?|minutes?|hours?)\b")
+    constraint = re.compile(r"\b(?:must|shall|should|maximum|minimum|limit|timeout|within|rated|specified|how long|how many|safe|allowed|permitted|required|recommended|wait|delay|shutdown|can i|may i)\b")
+    def replace(match):
+        # Inspect this clause on both sides: "after 20 minutes is the maximum"
+        # is a requirement too. Do not borrow a constraint from another sentence.
+        before = re.split(r"[.!?;\n]", text[max(0, match.start()-70):match.start()])[-1]
+        after = re.split(r"[.!?;\n]", text[match.end():match.end()+70])[0]
+        return match.group(0) if constraint.search(before + match.group(0) + after) else " "
+    return observation.sub(replace, text)
+
+
 def extract_technical_numbers(text: str) -> set:
     """Extract numbers with technical units or multi-digit thresholds from text.
 
@@ -225,7 +276,7 @@ def extract_technical_numbers(text: str) -> set:
     """
     if not text:
         return set()
-    text_lower = text.lower()
+    text_lower = _without_reported_duration(text.lower())
 
     # Extract numbers with explicit technical units
     with_units = set(re.findall(
@@ -427,11 +478,25 @@ def evaluate_chunk_claim_support(
             return True, "TWO_TERM_MATCH"
         return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms}"
 
-    # For 3 or more terms, require >= 2 distinct matching terms AND >= 30% overlap
-    if overlap_count >= 2 and (overlap_count / n_terms) >= 0.30:
+    # For 3 or more terms, require >= 2 distinct matching terms AND sufficient overlap.
+    # Compound questions (e.g. "explain causes, which observations distinguish them,
+    # which checks require a technician, what remains uncertain") produce many content
+    # terms even after stopword filtering.  A focused manual section can realistically
+    # match a limited subset.  Use an adaptive threshold so that longer queries don't
+    # unfairly penalise otherwise substantive chunks.
+    min_abs = 3 if n_terms > 10 else 2
+    if n_terms <= 6:
+        min_pct = 0.30
+    elif n_terms <= 12:
+        min_pct = 0.25
+    else:
+        # Long compound queries: require at least 3 terms and 20% overlap.
+        # A 20-term query hitting 4+ technical terms is a strong signal.
+        min_pct = 0.20
+    if overlap_count >= min_abs and (overlap_count / n_terms) >= min_pct:
         return True, f"SUBSTANTIVE_OVERLAP: {overlap_count}/{n_terms}"
 
-    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >=2 terms and >=30%)"
+    return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >={min_abs} terms and >={min_pct:.0%})"
 
 
 def _extractive_answer(question, asset, retrieved, service_call=None):
@@ -465,11 +530,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
         unverified_missing_codes = sorted(missing_ids)
 
     from .retriever import normalize_domain_terms
-    norm_question = normalize_domain_terms(question or "")
-    raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", norm_question or "")}
-    terms = raw_terms - _STOPWORDS
-    if not terms:
-        terms = raw_terms
+    terms = _grounding_terms(question, _STOPWORDS, normalize=normalize_domain_terms)
 
     q_codes = extract_error_codes(question or "")
     q_numbers = extract_technical_numbers(question or "")
@@ -532,6 +593,12 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
             if heading_match:
                 # Section headings are navigational, not actionable sentences.
                 # Skip them to prevent cross-contamination from unrelated chunks.
+                continue
+            # Skip template/form placeholder lines — they are structural blanks
+            # (e.g. "Date/time: ______", "Site / asset ID: ____") that are NOT
+            # actionable troubleshooting content.  Including them in the
+            # extractive answer produces misleading "STEP" entries.
+            if line_str.count("_") >= 6:
                 continue
             num_match = re.match(r"^\d+[\.)\\]]\s*(.+)", line_str)
             if num_match:
@@ -773,12 +840,10 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
         )
 
     # 5. Content Grounding / Claim Support check
+    # Use grounding_terms() which strips instruction and requirement vocabulary
+    # from the denominator, keeping only equipment-relevant content words.
     from .retriever import normalize_domain_terms
-    norm_question = normalize_domain_terms(question or "")
-    raw_terms = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{3,}", norm_question or "")}
-    terms = raw_terms - _STOPWORDS
-    if not terms:
-        terms = raw_terms
+    terms = _grounding_terms(question, _STOPWORDS, normalize=normalize_domain_terms)
 
     q_numbers = extract_technical_numbers(question or "")
 
