@@ -163,10 +163,16 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
     No source discovery, authorization bypass, or changes to historical cases.
     Fail closed to the existing order if scoring fails.
     """
-    if not is_reranker_enabled() or not candidates:
+    if not candidates:
+        return candidates[:top_k]
+    if not is_reranker_enabled():
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise RuntimeError("Required V5 reranker is disabled")
         return candidates[:top_k]
     model = get_reranker()
     if model is None:
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise RuntimeError("Required V5 reranker failed to load")
         return candidates[:top_k]
     try:
         t0 = time.perf_counter()
@@ -204,5 +210,7 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
         )
         return (pool + docs[pool_size:] + others)[:top_k]
     except Exception as exc:
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise RuntimeError("Required V5 reranker inference failed") from exc
         logger.warning("CrossEncoder scoring failed; preserving original ranking: %s", exc)
         return candidates[:top_k]
