@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The Servy system uses two ML models: a fine-tuned BGE embedding model for dense retrieval and a V5 cross-encoder reranker for result re-ranking. **Neither model is ready for unsupervised production promotion.** Both require independent evaluation on held-out data before deployment decisions.
+Servy's evaluated retrieval configuration uses pretrained BGE-small embeddings with an optional V5 cross-encoder reranker. The experimental company fine-tuned BGE embedding checkpoint is separate and unpromoted. **Neither model is ready for unsupervised production promotion.** Both require independent evaluation on held-out data before deployment decisions.
 
 ---
 
@@ -21,8 +21,8 @@ The Servy system uses two ML models: a fine-tuned BGE embedding model for dense 
 | Base model | BGE (BAAI/bge-small-en-v1.5 or similar) |
 | Fine-tuning data | Company service manual chunks |
 | Training data provenance | ⚠️ **UNVERIFIED** — no audit trail for training data authorization |
-| Checkpoint location | `best_model/` directory |
-| Checkpoint SHA-256 | `b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda` |
+| Checkpoint location | `ml_models/checkpoints/servy_company_bge_v1/final/` |
+| Checkpoint SHA-256 | `7d394413398be69d2d1093538e5eec6cafa58cbfeae858cac4abf608b5db0d33` (embedding registry fingerprint) |
 | ChromaDB collections | 4 collections × 229 vectors = 916 total |
 | HNSW index status | ✅ Repaired (schema 2.0) |
 | `promotion_eligible` | **False** |

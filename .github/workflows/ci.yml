@@ -81,6 +81,12 @@ jobs:
       - name: Check Missing Migrations
         run: python manage.py makemigrations --check --dry-run
 
+      - name: RAG Serving Diagnostic (read only)
+        run: python manage.py check_rag_serving
+
+      - name: RAG Serving Gate Unit Tests
+        run: python manage.py test core.tests_rag_serving_gate core.tests_serving_truth -v 2
+
       - name: RAG Accuracy Red-Team Unit Tests
         run: python manage.py test core.tests_accuracy_redteam -v 2
 
