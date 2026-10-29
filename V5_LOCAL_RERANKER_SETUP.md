@@ -91,7 +91,7 @@ not yet reconciled. Neither is an independent live-UI accuracy guarantee.
 ## Safety and rollout
 
 - If `SERVY_RERANKER_ENABLED=0` (the default), existing behavior is unchanged.
-- For deployment, set `SERVY_RERANKER_REQUIRED=1` **in addition to** the enabled flag, full local path, and approved digest. Django startup then runs one synthetic passage through the actual SHA-pinned V5 scorer and refuses to start if the checkpoint is absent, incompatible, or returns invalid scores. This opt-in strict mode is off by default. It is a model smoke check, not an independent benchmark or a live user-query test.
+- For deployment, set `SERVY_RERANKER_REQUIRED=1` **in addition to** the enabled flag, full local path, and approved digest. Django startup then runs one synthetic passage through the actual SHA-pinned V5 scorer and refuses to start if the checkpoint is absent, incompatible, or returns invalid scores. Subsequent scoring failures also propagate as request errors rather than silently returning baseline-ranked results. This opt-in strict mode is off by default. It is a model smoke check, not an independent benchmark or a live user-query test.
 - With the feature enabled, a nonexistent checkpoint or wrong weights SHA-256
   makes the reranker fail closed to **the original, already-authorized ranking**.
   It must never silently download or switch to a different remote model in
