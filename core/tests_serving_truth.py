@@ -84,3 +84,34 @@ class OllamaEngineTransparencyTests(SimpleTestCase):
     def test_optional_inference_failure_is_not_mislabeled_ollama(self):
         self.assertEqual(self._run(online=True, error=RuntimeError("synthetic failure")),
                          ("Synthetic extractive answer", "extractive-local"))
+
+class DenseEmbeddingSnapshotTests(SimpleTestCase):
+    def test_dense_scorer_uses_request_snapshot_not_later_global_override(self):
+        """Model identity must stay fixed for a request, even if settings change."""
+        from core.services.retriever import _dense_score_candidates
+        with override_settings(SERVY_SERVING_EMBEDDING_PROFILE="bge-small"):
+            snapshot = get_serving_config()
+
+        # Simulate a concurrent configuration override after the retrieval
+        # request has already captured its immutable settings snapshot.
+        with (
+            override_settings(
+                SERVY_SERVING_EMBEDDING_PROFILE="minilm",
+                SERVY_CUSTOMER_DATA_MODE="test_isolated",
+            ),
+            mock.patch("core.services.customer_isolation.get_customer_data_mode", return_value="test_isolated"),
+            mock.patch("core.services.customer_isolation.is_real_tenant", return_value=False),
+            mock.patch("core.ml.embeddings.get_profile",
+                       return_value=SimpleNamespace(key="bge-small", promotion_eligible=True)) as profile_lookup,
+            mock.patch("core.ml.embeddings.load_model", return_value=None),
+        ):
+            results = _dense_score_candidates(
+                candidates=[], allowed_doc_ids={1}, allowed_chunks_by_id={},
+                evidence_text="synthetic equipment query",
+                query_identifiers=set(), asset=None, customer=None,
+                tenant=SimpleNamespace(id=1), top_k=5, min_score=0.0,
+                serving_config=snapshot,
+            )
+
+        self.assertEqual(results, [])
+        profile_lookup.assert_called_once_with("bge-small")

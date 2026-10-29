@@ -711,8 +711,14 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         if not staff_mode and is_real_customer_query and not is_real:
             return []
 
-        # Explicit serving model profile selection (Operation 13.0)
-        serving_profile = getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
+        # Use the immutable configuration captured at the start of this request.
+        # Reading the mutable global setting here could select a different model
+        # from the profile recorded for an evaluation or concurrent request.
+        serving_profile = (
+            serving_config.embedding_profile
+            if serving_config is not None
+            else getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
+        )
         if serving_profile in ("qwen3", "company-qwen3"):
             profile_key = _qwen3_profile_if_ready(settings, is_real)
         elif serving_profile in ("company-bge-ft", "bge-small-ft"):

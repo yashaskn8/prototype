@@ -178,9 +178,9 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
         t0 = time.perf_counter()
         docs = [c for c in candidates if c.source_kind == "knowledge_document"]
         others = [c for c in candidates if c.source_kind != "knowledge_document"]
-        pool_size = int(getattr(settings, "SERVY_RERANKER_POOL_SIZE", 8))
-        # The ten-candidate setting is an explicit accuracy/latency
-        # experiment, not an automatic production promotion. Default unchanged.
+        pool_size = int(getattr(settings, "SERVY_RERANKER_POOL_SIZE", 5))
+        # Pool 5 matches the measured BGE+V5 development configuration;
+        # larger pools are research-only until they pass paired evaluations.
         if not 1 <= pool_size <= 10:
             raise ValueError("SERVY_RERANKER_POOL_SIZE must be 1..10")
         pool = docs[:pool_size]
