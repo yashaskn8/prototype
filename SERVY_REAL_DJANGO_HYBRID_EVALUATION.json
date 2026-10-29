@@ -1,0 +1,123 @@
+{
+  "report": "SERVY_REAL_DJANGO_HYBRID_EVALUATION",
+  "generated": "2026-10-29T16:20:00+05:30",
+  "commit": "18d0277",
+  "database_engine": "django.db.backends.mysql",
+  "mysql_version": "8.0.41",
+  "embedding_model": "BAAI/bge-small-en-v1.5",
+  "embedding_dimensions": 384,
+  "reranker_model": "V5 BGE cross-encoder",
+  "reranker_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+  "reranker_pool_size": 5,
+  "retrieval_mode": "hybrid",
+  "rrf_weights": {"dense": 0.55, "sparse": 0.45},
+  "rrf_k": 60,
+  "evaluation_variant": "C2 (tenant-wide, no asset scoping, exclude confidential)",
+  "chroma_collections_used": [
+    "servy_dense_bge_small_v1 (229 vectors, schema 2.0)",
+    "servy_company_bge_small_v1 (229 vectors, schema 2.0)"
+  ],
+  "benchmark_42_query": {
+    "population": "42 historical queries (OP26 silver-label set)",
+    "config_sparse_only": {
+      "hit_at_1": 37,
+      "total": 42,
+      "hit_at_1_pct": 88.10,
+      "hit_at_3": 40,
+      "hit_at_5": 41,
+      "recall_at_10": 41,
+      "mrr_at_10": 0.9214,
+      "avg_latency_ms": 2891.9,
+      "backends": {"fallback": 42},
+      "improvements_over_baseline": ["OP26-SLV-75-2", "OP26-SLV-74-1", "OP26-SLV-142-2"],
+      "regressions_from_baseline": ["OP26-SLV-52-0 (confidential, correctly excluded)"]
+    },
+    "config_bge_hybrid_v5": {
+      "hit_at_1": 38,
+      "total": 42,
+      "hit_at_1_pct": 90.48,
+      "hit_at_3": 40,
+      "hit_at_5": 41,
+      "recall_at_10": 41,
+      "mrr_at_10": 0.9345,
+      "avg_latency_ms": 2691.4,
+      "backends": {"hybrid": 40, "fallback": 2},
+      "improvements_over_baseline": ["OP26-SLV-75-2", "OP26-SLV-74-1", "OP26-SLV-142-2", "OP26-SLV-145-2"],
+      "regressions_from_baseline": ["OP26-SLV-52-0 (confidential, correctly excluded)"],
+      "hybrid_contribution": "OP26-SLV-145-2 promoted from rank=2 (sparse) to HIT@1 (hybrid)"
+    }
+  },
+  "benchmark_41_authorized": {
+    "population": "41 queries (excluding OP26-SLV-52-0, gold=chunk 52, is_confidential=True)",
+    "config_sparse_only": {
+      "hit_at_1": 37,
+      "total": 41,
+      "hit_at_1_pct": 90.24
+    },
+    "config_bge_hybrid_v5": {
+      "hit_at_1": 38,
+      "total": 41,
+      "hit_at_1_pct": 92.68
+    }
+  },
+  "historical_comparison": {
+    "original_35_of_42": {
+      "hit_at_1": 35,
+      "total": 42,
+      "pct": 83.33,
+      "note": "Historical Python baseline"
+    },
+    "previous_django_37_of_41": {
+      "hit_at_1": 37,
+      "total": 41,
+      "pct": 90.24,
+      "note": "Previous Django sparse-only result"
+    },
+    "current_hybrid_38_of_41": {
+      "hit_at_1": 38,
+      "total": 41,
+      "pct": 92.68,
+      "note": "Current Django hybrid with V5 reranker, pool=5",
+      "improvement_over_historical": "+3 queries (+7.14pp)",
+      "improvement_over_previous_django": "+1 query (+2.44pp)"
+    }
+  },
+  "remaining_failures_41q": [
+    {
+      "query_id": "OP26-SLV-144-2",
+      "gold_chunk": 144,
+      "rank_achieved": 4,
+      "category": "semi-synthetic query + reranker demotion",
+      "gold_label_quality": "questionable"
+    },
+    {
+      "query_id": "OP26-SLV-143-0",
+      "gold_chunk": 143,
+      "rank_achieved": 2,
+      "category": "gold label ambiguity — chunk 142 is valid alternative",
+      "gold_label_quality": "ambiguous"
+    },
+    {
+      "query_id": "OP26-SLV-76-2",
+      "gold_chunk": 76,
+      "rank_achieved": 2,
+      "category": "gold label error — chunk 79 is better match for query",
+      "gold_label_quality": "incorrect"
+    }
+  ],
+  "pool_size_sweep": {
+    "pool_5": {"hit_at_1": 38, "pct": 90.48, "mrr": 0.9345, "recommendation": "OPTIMAL"},
+    "pool_8": {"hit_at_1": 37, "pct": 88.10, "mrr": 0.9167, "recommendation": "WORSE — loses OP26-SLV-145-2"},
+    "pool_10": {"hit_at_1": 36, "pct": 85.71, "mrr": 0.8982, "recommendation": "WORST — loses 74-1, 145-2"},
+    "no_reranker": {"hit_at_1": 33, "pct": 78.57, "mrr": 0.873, "recommendation": "BASELINE — reranker adds +5 Hit@1"}
+  },
+  "verified_hybrid_retrieval": {
+    "total_queries": 42,
+    "hybrid_backend_count": 40,
+    "fallback_backend_count": 2,
+    "fallback_queries": ["OP26-SLV-52-0 (no candidates)", "OP26-SLV-156-2 (sparse only)"],
+    "dense_retrieval_functional": true,
+    "sparse_retrieval_functional": true,
+    "rrf_fusion_functional": true
+  }
+}

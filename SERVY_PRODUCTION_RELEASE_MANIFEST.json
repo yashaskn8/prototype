@@ -1,0 +1,131 @@
+{
+  "manifest_version": "1.0",
+  "generated_at": "2026-10-29T17:09:00+05:30",
+  "system": "SERVY RAG Production Hardening",
+  "repository": "https://github.com/yashaskn8/prototype",
+  "branch": "main",
+
+  "database": {
+    "engine": "MySQL 8.0.41",
+    "host": "127.0.0.1",
+    "port": 3306,
+    "database_name": "servy",
+    "django_test_suite": "603/603 PASS"
+  },
+
+  "chromadb": {
+    "path": "chroma_db/chroma.sqlite3",
+    "collections": 4,
+    "vectors_per_collection": 229,
+    "total_vectors": 916,
+    "schema_version": "2.0",
+    "hnsw_indexes": "repaired"
+  },
+
+  "models": {
+    "embedding": {
+      "name": "company-bge-ft",
+      "checkpoint_dir": "best_model/",
+      "checkpoint_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+      "promotion_eligible": false,
+      "reason": "No independent evaluation; training data authorization unverified"
+    },
+    "reranker": {
+      "name": "V5 cross-encoder",
+      "optimal_pool_size": 5,
+      "promotion_eligible": false,
+      "reason": "No independent evaluation; train/eval separation unverified"
+    }
+  },
+
+  "accuracy": {
+    "evaluation_set": "42-query C2 tenant benchmark",
+    "evaluation_type": "DEVELOPMENT (not independent)",
+    "authorized_queries": 41,
+    "configurations": {
+      "sparse_only": {
+        "hit_at_1": "37/41",
+        "hit_at_1_pct": 90.24,
+        "mrr_at_10": 0.921
+      },
+      "hybrid_v5_pool5": {
+        "hit_at_1": "38/41",
+        "hit_at_1_pct": 92.68,
+        "mrr_at_10": 0.935
+      }
+    },
+    "remaining_failures": {
+      "count": 3,
+      "details": [
+        {
+          "query_id": "OP26-SLV-144-2",
+          "root_cause": "V5 reranker misordering (semi-synthetic query)",
+          "fixable": "Not without retraining V5"
+        },
+        {
+          "query_id": "OP26-SLV-143-0",
+          "root_cause": "Gold label ambiguity — chunk 142 is valid alternative",
+          "fixable": "Relabel gold as [142, 143]"
+        },
+        {
+          "query_id": "OP26-SLV-76-2",
+          "root_cause": "Gold label error — system returns correct answer (chunk 79)",
+          "fixable": "Relabel gold as 79"
+        }
+      ]
+    }
+  },
+
+  "latency": {
+    "benchmark_size": "10 queries × 4 configs",
+    "production_config": "hybrid+v5",
+    "mean_ms": 3289.3,
+    "median_ms": 3579.1,
+    "p95_ms": 3740.9,
+    "bottleneck": "V5 reranker (~97% of total time)"
+  },
+
+  "security": {
+    "test_file": "core/tests_security_redteam.py",
+    "total_tests": 14,
+    "passed": 13,
+    "failed": 0,
+    "skipped": 1,
+    "skip_reason": "BM25 empty index in test DB (expected)",
+    "invariants_verified": [
+      "tenant_isolation",
+      "confidential_filtering",
+      "quarantine_enforcement",
+      "rag_disabled_enforcement",
+      "sql_injection_resistance",
+      "unicode_robustness",
+      "edge_case_handling"
+    ]
+  },
+
+  "reports": [
+    "SERVY_41_QUERY_ACCURACY_REPORT.md",
+    "SERVY_V5_RERANKER_FAILURE_ANALYSIS.md",
+    "SERVY_MYSQL_PRODUCTION_PARITY_REPORT.md",
+    "SERVY_CHROMA_SCHEMA_REPAIR_REPORT.md",
+    "SERVY_EMBEDDING_MODEL_COMPARISON.md",
+    "SERVY_REAL_DJANGO_HYBRID_EVALUATION.json",
+    "SERVY_LATENCY_BENCHMARK.md",
+    "SERVY_PRODUCTION_SECURITY_REDTEAM.md",
+    "SERVY_COMPANY_MODEL_TRAINING_READINESS.md",
+    "SERVY_INDEPENDENT_ACCURACY_VALIDATION.md",
+    "SERVY_PRODUCTION_RELEASE_MANIFEST.json",
+    "SERVY_IMPLEMENTATION_CHANGELOG.md"
+  ],
+
+  "release_gate": {
+    "mysql_parity": "PASS",
+    "chromadb_indexes": "PASS",
+    "hybrid_retrieval": "PASS",
+    "security_redteam": "PASS",
+    "accuracy_target": "PARTIAL — 92.68% on dev set (target was 95%+)",
+    "independent_evaluation": "BLOCKED — does not exist",
+    "model_training_authorization": "BLOCKED — unverified",
+    "overall": "NOT READY FOR PRODUCTION — 2 blockers remain"
+  }
+}
