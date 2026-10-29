@@ -108,6 +108,11 @@ QUERY_ABUSE_PATTERNS = [
     r"invent\s+a\s+workaround",
     r"skip\s+verification",
     r"mark\s+this\s+fixed",
+    # Explicit role/privilege spoofing in the synthetic red-team report.
+    r"\byou\s+are\s+(?:now\s+)?(?:dan|admin|root|system)\b",
+    r"\b(?:admin|system|root)\s+override\s*:",
+    r"\bforget\s+(?:your|all)\s+(?:rules|instructions|constraints)\b",
+    r"\bpretend\s+you\s+(?:have\s+no|do\s+not\s+have|don.t\s+have)\s+(?:restrictions|rules)\b",
     r"internal\s+technician\s+notes",
     r"(use\s+)?another\s+customer('?s)?\s+service\s+history",
 ]

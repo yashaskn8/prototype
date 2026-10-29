@@ -4,7 +4,6 @@
   "system": "SERVY RAG Production Hardening",
   "repository": "https://github.com/yashaskn8/prototype",
   "branch": "main",
-
   "database": {
     "engine": "MySQL 8.0.41",
     "host": "127.0.0.1",
@@ -12,7 +11,6 @@
     "database_name": "servy",
     "django_test_suite": "603/603 PASS"
   },
-
   "chromadb": {
     "path": "chroma_db/chroma.sqlite3",
     "collections": 4,
@@ -21,23 +19,24 @@
     "schema_version": "2.0",
     "hnsw_indexes": "repaired"
   },
-
   "models": {
     "embedding": {
       "name": "company-bge-ft",
-      "checkpoint_dir": "best_model/",
-      "checkpoint_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+      "checkpoint_dir": "ml_models/checkpoints/servy_company_bge_v1/final/",
+      "checkpoint_sha256": "7d394413398be69d2d1093538e5eec6cafa58cbfeae858cac4abf608b5db0d33",
       "promotion_eligible": false,
-      "reason": "No independent evaluation; training data authorization unverified"
+      "reason": "No independent evaluation; training data authorization unverified",
+      "note": "Unpromoted experimental company embedding, not the serving default."
     },
     "reranker": {
       "name": "V5 cross-encoder",
       "optimal_pool_size": 5,
       "promotion_eligible": false,
-      "reason": "No independent evaluation; train/eval separation unverified"
+      "reason": "No independent evaluation; train/eval separation unverified",
+      "checkpoint_dir": "best_model/",
+      "checkpoint_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda"
     }
   },
-
   "accuracy": {
     "evaluation_set": "42-query C2 tenant benchmark",
     "evaluation_type": "DEVELOPMENT (not independent)",
@@ -75,7 +74,6 @@
       ]
     }
   },
-
   "latency": {
     "benchmark_size": "10 queries × 4 configs",
     "production_config": "hybrid+v5",
@@ -84,7 +82,6 @@
     "p95_ms": 3740.9,
     "bottleneck": "V5 reranker (~97% of total time)"
   },
-
   "security": {
     "test_file": "core/tests_security_redteam.py",
     "total_tests": 14,
@@ -102,7 +99,6 @@
       "edge_case_handling"
     ]
   },
-
   "reports": [
     "SERVY_41_QUERY_ACCURACY_REPORT.md",
     "SERVY_V5_RERANKER_FAILURE_ANALYSIS.md",
@@ -117,15 +113,25 @@
     "SERVY_PRODUCTION_RELEASE_MANIFEST.json",
     "SERVY_IMPLEMENTATION_CHANGELOG.md"
   ],
-
   "release_gate": {
     "mysql_parity": "PASS",
     "chromadb_indexes": "PASS",
     "hybrid_retrieval": "PASS",
     "security_redteam": "PASS",
-    "accuracy_target": "PARTIAL — 92.68% on dev set (target was 95%+)",
+    "accuracy_target": "HISTORICAL DEVELOPMENT ONLY — 38/41 BGE+V5 on reused authorized dev set; no new test performed",
     "independent_evaluation": "BLOCKED — does not exist",
     "model_training_authorization": "BLOCKED — unverified",
-    "overall": "NOT READY FOR PRODUCTION — 2 blockers remain"
+    "overall": "NOT READY FOR PRODUCTION — independent validation, company data authorization, deployment verification and answer-quality evaluation required",
+    "model_provenance": "METADATA CORRECTED — verify model identity on actual deployment host",
+    "serving_configuration": "CODE DEFAULT ALIGNED — check deployed .env, BGE index and actual V5 activation",
+    "answer_quality": "NOT MEASURED — local Ollama was offline in earlier tests"
+  },
+  "serving_configuration": {
+    "default_embedding_profile": "bge-small",
+    "real_tenant_embedding_profile": "company-bge-small",
+    "reranker_enabled_by_default": false,
+    "reranker_pool_size_default": 5,
+    "llm_provider_default": "extractive",
+    "note": "New code defaults, not verification of any existing private .env. BGE+V5 development results require approved V5 weights and explicit SERVY_RERANKER_ENABLED=1."
   }
 }

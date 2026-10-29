@@ -225,6 +225,8 @@ CHROMA_PERSIST_DIR = BASE_DIR / "chroma_db"
 
 # Local RAG / LLM settings. Docker is not required.
 SERVY_LLM_PROVIDER = os.getenv("SERVY_LLM_PROVIDER", "extractive")  # extractive|auto|ollama
+# Optional strict local generation: do not silently substitute extractive answers when Ollama is required.
+SERVY_LLM_REQUIRE_OLLAMA = os.getenv("SERVY_LLM_REQUIRE_OLLAMA", "0") == "1"
 SERVY_OLLAMA_URL = os.getenv("SERVY_OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 SERVY_OLLAMA_MODEL = os.getenv("SERVY_OLLAMA_MODEL", "qwen2.5:3b")
 SERVY_OLLAMA_TIMEOUT = int(os.getenv("SERVY_OLLAMA_TIMEOUT", "30"))
@@ -248,6 +250,9 @@ SERVY_ALLOW_REMOTE_LLM = os.getenv("SERVY_ALLOW_REMOTE_LLM", "0") == "1"
 SERVY_EMBEDDING_MODEL = os.getenv("SERVY_EMBEDDING_MODEL", "minilm")
 SERVY_EXPERIMENTAL_EMBEDDING_MODEL = os.getenv("SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
 SERVY_USE_EXPERIMENTAL_RAG = os.getenv("SERVY_USE_EXPERIMENTAL_RAG", "0") == "1"
+# Default to the evaluated BGE-small profile, using the separate company BGE
+# collection for real tenants. Verify the local model and index on each host.
+SERVY_SERVING_EMBEDDING_PROFILE = os.getenv("SERVY_SERVING_EMBEDDING_PROFILE", "bge-small").strip().lower()
 # Verified from Hugging Face API on 2026-10-14 (BAAI/bge-small-en-v1.5, MIT).
 SERVY_BGE_SMALL_REVISION = os.getenv("SERVY_BGE_SMALL_REVISION", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
 SERVY_EMBEDDING_DEVICE = os.getenv("SERVY_EMBEDDING_DEVICE", "cpu")
@@ -270,7 +275,8 @@ SERVY_RERANKER_REQUIRED = os.getenv("SERVY_RERANKER_REQUIRED", "0") == "1"
 SERVY_RERANKER_MODEL_PATH = os.getenv("SERVY_RERANKER_MODEL_PATH", "").strip()
 SERVY_RERANKER_EXPECTED_SHA256 = os.getenv("SERVY_RERANKER_EXPECTED_SHA256", "").strip()
 SERVY_RERANKER_DEVICE = os.getenv("SERVY_RERANKER_DEVICE", SERVY_EMBEDDING_DEVICE)
-SERVY_RERANKER_POOL_SIZE = int(os.getenv("SERVY_RERANKER_POOL_SIZE", "8"))
+# The evaluated BGE+V5 dev configuration used a head pool of five candidates.
+SERVY_RERANKER_POOL_SIZE = int(os.getenv("SERVY_RERANKER_POOL_SIZE", "5"))
 SERVY_ML_ARTIFACTS_DIR = BASE_DIR / "ml_artifacts"
 
 # Starlly API Integration

@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -5,6 +6,8 @@ from typing import List, Optional, Tuple, Set
 import requests
 from urllib.parse import urlparse
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 _ollama_last_checked = 0.0
 _ollama_is_available = None
@@ -889,7 +892,12 @@ RETRIEVED SOURCES:
 ANSWER:"""
 
     provider = settings.SERVY_LLM_PROVIDER.lower()
-    if provider in {"auto", "ollama"} and retrieved and is_ollama_service_online():
+    # The returned engine must identify the generator that actually ran.
+    ollama_online = (
+        is_ollama_service_online()
+        if provider in {"auto", "ollama"} and retrieved else False
+    )
+    if provider in {"auto", "ollama"} and ollama_online:
         try:
             raw_answer = ollama_generate(prompt)
             clean_answer = _clean_model_answer(raw_answer, grounded)
@@ -906,7 +914,13 @@ ANSWER:"""
                 return final_answer, "ollama-local"
             elif clean_answer == INSUFFICIENT_EVIDENCE_MESSAGE:
                 return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
-        except Exception:
-            pass
+        except Exception as exc:
+            # Log only the exception class: prompts, source text, URLs and secrets are sensitive.
+            logger.warning("Local Ollama generation unavailable (%s); using configured fallback", type(exc).__name__)
+    elif provider == "ollama" and not ollama_online:
+        logger.warning("Local Ollama generation unavailable (daemon offline); using configured fallback")
+
+    if getattr(settings, "SERVY_LLM_REQUIRE_OLLAMA", False) and provider in {"auto", "ollama"}:
+        return INSUFFICIENT_EVIDENCE_MESSAGE, "llm-unavailable"
     return _extractive_answer(question, asset, grounded, service_call=service_call), "extractive-local"
 

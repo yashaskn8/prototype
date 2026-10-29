@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-29  
 **Commit:** `0e1f187`  
-**Status:** RELEASE BLOCKER — Metadata errors in prior release manifest
+**Status:** Historical evidence of previously incorrect metadata. The manifest was corrected in source control; deployment configuration still requires independent verification.
 
 ---
 
