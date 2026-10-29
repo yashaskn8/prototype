@@ -4,15 +4,15 @@ This tool only checks and filters a **locally uploaded, synthetic question-only 
 
 ## Use
 
-Obtain \`servy_colab_1200_questions.json\` separately from the person who generated it. The JSON must contain a top-level \`questions\` list with \`id\`, \`asset_id\`, \`product\`, \`module\`, \`question\`, \`question_sha256\`, and \`coverage_status\` for each record.
+Obtain `servy_colab_1200_questions.json` separately from the person who generated it. The JSON must contain a top-level `questions` list with `id`, `asset_id`, `product`, `module`, `question`, `question_sha256`, and `coverage_status` for each record.
 
 Run (locally or in Google Colab after cloning this **public** GitHub repository and uploading only the question-only JSON):
 
-\`\`\`bash
+```bash
 python tools/colab_question_bank_review.py --input servy_colab_1200_questions.json
 python tools/colab_question_bank_review.py --input servy_colab_1200_questions.json --asset-id 60 --show 5
 python tools/colab_question_bank_review.py --input servy_colab_1200_questions.json --asset-id 60 --module troubleshooting --export vrf_troubleshooting_questions.json
-\`\`\`
+```
 
 Each question's full SHA-256 is verified to detect the previous 200-character question-truncation error.
 
