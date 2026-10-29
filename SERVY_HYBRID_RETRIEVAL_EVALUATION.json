@@ -1,0 +1,1510 @@
+{
+  "evaluation_date": "2026-10-29",
+  "benchmark_status": "PROVISIONAL_42_QUERY_DEVELOPMENT_SPLIT_NOT_INDEPENDENT_PRODUCTION_HOLDOUT",
+  "verified_v5_checkpoint": {
+    "path": "best_model/model.safetensors",
+    "weights_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+    "directory_sha256": "47cd54fc552c1cf5327885365dbe443bbe8f3dbc955bb6b0ef1a9c35bd8b0192",
+    "base_architecture": "BAAI/bge-reranker-v2-m3 (XLMRobertaForSequenceClassification)",
+    "max_length": 256,
+    "activation": "torch.nn.Identity() raw logits + monotone calibrated_sigmoid_score"
+  },
+  "dense_embedding_status": {
+    "qwen3_0_6b_status": "UNAVAILABLE_OFFLINE_LOCALLY (Qwen/Qwen3-Embedding-0.6B not cached in local HuggingFace cache; gated behind 3 opt-in flags in core/services/retriever.py)",
+    "evaluated_local_dense_models": [
+      "BAAI/bge-small-en-v1.5 (384-D, normalized)",
+      "ml_models/checkpoints/servy_company_bge_v1/final (384-D, normalized)"
+    ]
+  },
+  "memory_usage_mb": {
+    "python_tracemalloc_peak_mb": 149.14,
+    "v5_safetensors_disk_mb": 2165.86
+  },
+  "experiments": {
+    "Exp_A_BM25_Frozen_Baseline": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "29/42 (69.05%)",
+        "candidate_recall_at_5": "37/42 (88.10%)",
+        "candidate_recall_at_8": "38/42 (90.48%)",
+        "candidate_recall_at_10": "38/42 (90.48%)",
+        "reranked_hit_at_1_count": 35,
+        "reranked_hit_at_1": 0.833333,
+        "reranked_hit_at_1_pct": 83.33,
+        "reranked_doc_hit_at_1_count": 38,
+        "reranked_doc_hit_at_1_pct": 90.48,
+        "reranked_hit_at_3_count": 37,
+        "reranked_hit_at_3": 0.880952,
+        "reranked_hit_at_5_count": 37,
+        "reranked_hit_at_5": 0.880952,
+        "reranked_hit_at_10_count": 38,
+        "reranked_hit_at_10": 0.904762,
+        "mrr_at_10": 0.860544,
+        "mean_retrieval_ms": 20.53,
+        "p95_retrieval_ms": 31.53,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 1990.11,
+        "p95_total_ms": 2001.11,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": null,
+            "predicted_chunk_id": 81,
+            "predicted_logit": -5.0692,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-75-2",
+            "final_rank": null,
+            "predicted_chunk_id": 137,
+            "predicted_logit": -5.6169,
+            "gold_logit": -5.1683
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": null,
+            "predicted_chunk_id": 71,
+            "predicted_logit": -0.734,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-142-2",
+            "final_rank": null,
+            "predicted_chunk_id": 81,
+            "predicted_logit": -6.4027,
+            "gold_logit": 1.3515
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 7,
+            "predicted_chunk_id": 40,
+            "predicted_logit": -1.9703,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "29/42 (69.05%)",
+        "candidate_recall_at_5": "37/42 (88.10%)",
+        "candidate_recall_at_8": "38/42 (90.48%)",
+        "candidate_recall_at_10": "38/42 (90.48%)",
+        "reranked_hit_at_1_count": 35,
+        "reranked_hit_at_1": 0.833333,
+        "reranked_hit_at_1_pct": 83.33,
+        "reranked_doc_hit_at_1_count": 38,
+        "reranked_doc_hit_at_1_pct": 90.48,
+        "reranked_hit_at_3_count": 37,
+        "reranked_hit_at_3": 0.880952,
+        "reranked_hit_at_5_count": 38,
+        "reranked_hit_at_5": 0.904762,
+        "reranked_hit_at_10_count": 38,
+        "reranked_hit_at_10": 0.904762,
+        "mrr_at_10": 0.861905,
+        "mean_retrieval_ms": 20.53,
+        "p95_retrieval_ms": 31.53,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3171.86,
+        "p95_total_ms": 3182.86,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": null,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-75-2",
+            "final_rank": null,
+            "predicted_chunk_id": 137,
+            "predicted_logit": -5.6169,
+            "gold_logit": -5.1683
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": null,
+            "predicted_chunk_id": 71,
+            "predicted_logit": -0.734,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-142-2",
+            "final_rank": null,
+            "predicted_chunk_id": 81,
+            "predicted_logit": -6.4027,
+            "gold_logit": 1.3515
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 40,
+            "predicted_logit": -1.9703,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "29/42 (69.05%)",
+        "candidate_recall_at_5": "37/42 (88.10%)",
+        "candidate_recall_at_8": "38/42 (90.48%)",
+        "candidate_recall_at_10": "38/42 (90.48%)",
+        "reranked_hit_at_1_count": 35,
+        "reranked_hit_at_1": 0.833333,
+        "reranked_hit_at_1_pct": 83.33,
+        "reranked_doc_hit_at_1_count": 38,
+        "reranked_doc_hit_at_1_pct": 90.48,
+        "reranked_hit_at_3_count": 37,
+        "reranked_hit_at_3": 0.880952,
+        "reranked_hit_at_5_count": 37,
+        "reranked_hit_at_5": 0.880952,
+        "reranked_hit_at_10_count": 38,
+        "reranked_hit_at_10": 0.904762,
+        "mrr_at_10": 0.856576,
+        "mean_retrieval_ms": 20.53,
+        "p95_retrieval_ms": 31.53,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 3959.69,
+        "p95_total_ms": 3970.69,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": null,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-75-2",
+            "final_rank": null,
+            "predicted_chunk_id": 137,
+            "predicted_logit": -5.6169,
+            "gold_logit": -5.1683
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": null,
+            "predicted_chunk_id": 71,
+            "predicted_logit": -0.734,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-142-2",
+            "final_rank": null,
+            "predicted_chunk_id": 81,
+            "predicted_logit": -6.4027,
+            "gold_logit": 1.3515
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 7,
+            "predicted_chunk_id": 40,
+            "predicted_logit": -1.9703,
+            "gold_logit": -5.8457
+          }
+        ]
+      }
+    },
+    "Exp_B_Dense_BGE_Small_Raw": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "24/42 (57.14%)",
+        "candidate_recall_at_5": "40/42 (95.24%)",
+        "candidate_recall_at_8": "41/42 (97.62%)",
+        "candidate_recall_at_10": "41/42 (97.62%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 39,
+        "reranked_hit_at_3": 0.928571,
+        "reranked_hit_at_5_count": 40,
+        "reranked_hit_at_5": 0.952381,
+        "reranked_hit_at_10_count": 41,
+        "reranked_hit_at_10": 0.97619,
+        "mrr_at_10": 0.925397,
+        "mean_retrieval_ms": 36.02,
+        "p95_retrieval_ms": 42.88,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 2005.6,
+        "p95_total_ms": 2012.46,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": null,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 6,
+            "predicted_chunk_id": 58,
+            "predicted_logit": -2.8265,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "24/42 (57.14%)",
+        "candidate_recall_at_5": "40/42 (95.24%)",
+        "candidate_recall_at_8": "41/42 (97.62%)",
+        "candidate_recall_at_10": "41/42 (97.62%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 39,
+        "reranked_hit_at_3": 0.928571,
+        "reranked_hit_at_5_count": 40,
+        "reranked_hit_at_5": 0.952381,
+        "reranked_hit_at_10_count": 41,
+        "reranked_hit_at_10": 0.97619,
+        "mrr_at_10": 0.914116,
+        "mean_retrieval_ms": 36.02,
+        "p95_retrieval_ms": 42.88,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3187.35,
+        "p95_total_ms": 3194.21,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 7,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": null,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": 2,
+            "predicted_chunk_id": 57,
+            "predicted_logit": 4.4837,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 4,
+            "predicted_chunk_id": 58,
+            "predicted_logit": -2.8265,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "24/42 (57.14%)",
+        "candidate_recall_at_5": "40/42 (95.24%)",
+        "candidate_recall_at_8": "41/42 (97.62%)",
+        "candidate_recall_at_10": "41/42 (97.62%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 39,
+        "reranked_hit_at_3": 0.928571,
+        "reranked_hit_at_5_count": 40,
+        "reranked_hit_at_5": 0.952381,
+        "reranked_hit_at_10_count": 41,
+        "reranked_hit_at_10": 0.97619,
+        "mrr_at_10": 0.9125,
+        "mean_retrieval_ms": 36.02,
+        "p95_retrieval_ms": 42.88,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 3975.18,
+        "p95_total_ms": 3982.04,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 8,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": null,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": 2,
+            "predicted_chunk_id": 57,
+            "predicted_logit": 4.4837,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          }
+        ]
+      }
+    },
+    "Exp_B2_Dense_BGE_Small_EquipMeta": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "28/42 (66.67%)",
+        "candidate_recall_at_5": "41/42 (97.62%)",
+        "candidate_recall_at_8": "41/42 (97.62%)",
+        "candidate_recall_at_10": "41/42 (97.62%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 41,
+        "reranked_hit_at_10": 0.97619,
+        "mrr_at_10": 0.933333,
+        "mean_retrieval_ms": 35.5,
+        "p95_retrieval_ms": 42.44,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 2005.08,
+        "p95_total_ms": 2012.03,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-0",
+            "final_rank": null,
+            "predicted_chunk_id": 58,
+            "predicted_logit": -3.0196,
+            "gold_logit": 5.2311
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "28/42 (66.67%)",
+        "candidate_recall_at_5": "41/42 (97.62%)",
+        "candidate_recall_at_8": "41/42 (97.62%)",
+        "candidate_recall_at_10": "41/42 (97.62%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 40,
+        "reranked_hit_at_5": 0.952381,
+        "reranked_hit_at_10_count": 41,
+        "reranked_hit_at_10": 0.97619,
+        "mrr_at_10": 0.93254,
+        "mean_retrieval_ms": 35.5,
+        "p95_retrieval_ms": 42.44,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3186.83,
+        "p95_total_ms": 3193.77,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 6,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-0",
+            "final_rank": null,
+            "predicted_chunk_id": 58,
+            "predicted_logit": -3.0196,
+            "gold_logit": 5.2311
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "28/42 (66.67%)",
+        "candidate_recall_at_5": "41/42 (97.62%)",
+        "candidate_recall_at_8": "41/42 (97.62%)",
+        "candidate_recall_at_10": "41/42 (97.62%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 40,
+        "reranked_hit_at_5": 0.952381,
+        "reranked_hit_at_10_count": 41,
+        "reranked_hit_at_10": 0.97619,
+        "mrr_at_10": 0.920068,
+        "mean_retrieval_ms": 35.5,
+        "p95_retrieval_ms": 42.44,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 3974.66,
+        "p95_total_ms": 3981.61,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 7,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          },
+          {
+            "query_id": "OP26-SLV-145-0",
+            "final_rank": null,
+            "predicted_chunk_id": 58,
+            "predicted_logit": -3.0196,
+            "gold_logit": 5.2311
+          }
+        ]
+      }
+    },
+    "Exp_C_Hybrid_RRF_Raw": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "26/42 (61.90%)",
+        "candidate_recall_at_5": "39/42 (92.86%)",
+        "candidate_recall_at_8": "40/42 (95.24%)",
+        "candidate_recall_at_10": "40/42 (95.24%)",
+        "reranked_hit_at_1_count": 35,
+        "reranked_hit_at_1": 0.833333,
+        "reranked_hit_at_1_pct": 83.33,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 38,
+        "reranked_hit_at_3": 0.904762,
+        "reranked_hit_at_5_count": 39,
+        "reranked_hit_at_5": 0.928571,
+        "reranked_hit_at_10_count": 40,
+        "reranked_hit_at_10": 0.952381,
+        "mrr_at_10": 0.87381,
+        "mean_retrieval_ms": 57.61,
+        "p95_retrieval_ms": 69.58,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 2027.19,
+        "p95_total_ms": 2039.16,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-75-2",
+            "final_rank": 6,
+            "predicted_chunk_id": 78,
+            "predicted_logit": -7.8058,
+            "gold_logit": -5.1683
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": null,
+            "predicted_chunk_id": 71,
+            "predicted_logit": -0.734,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-142-2",
+            "final_rank": null,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -2.3772,
+            "gold_logit": 1.3515
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 114,
+            "predicted_logit": -3.7699,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "26/42 (61.90%)",
+        "candidate_recall_at_5": "39/42 (92.86%)",
+        "candidate_recall_at_8": "40/42 (95.24%)",
+        "candidate_recall_at_10": "40/42 (95.24%)",
+        "reranked_hit_at_1_count": 36,
+        "reranked_hit_at_1": 0.857143,
+        "reranked_hit_at_1_pct": 85.71,
+        "reranked_doc_hit_at_1_count": 38,
+        "reranked_doc_hit_at_1_pct": 90.48,
+        "reranked_hit_at_3_count": 38,
+        "reranked_hit_at_3": 0.904762,
+        "reranked_hit_at_5_count": 39,
+        "reranked_hit_at_5": 0.928571,
+        "reranked_hit_at_10_count": 40,
+        "reranked_hit_at_10": 0.952381,
+        "mrr_at_10": 0.884722,
+        "mean_retrieval_ms": 57.61,
+        "p95_retrieval_ms": 69.58,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3208.94,
+        "p95_total_ms": 3220.91,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 8,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": null,
+            "predicted_chunk_id": 83,
+            "predicted_logit": 3.7979,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-142-2",
+            "final_rank": null,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -2.3772,
+            "gold_logit": 1.3515
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 58,
+            "predicted_logit": -2.8265,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "26/42 (61.90%)",
+        "candidate_recall_at_5": "39/42 (92.86%)",
+        "candidate_recall_at_8": "40/42 (95.24%)",
+        "candidate_recall_at_10": "40/42 (95.24%)",
+        "reranked_hit_at_1_count": 36,
+        "reranked_hit_at_1": 0.857143,
+        "reranked_hit_at_1_pct": 85.71,
+        "reranked_doc_hit_at_1_count": 38,
+        "reranked_doc_hit_at_1_pct": 90.48,
+        "reranked_hit_at_3_count": 37,
+        "reranked_hit_at_3": 0.880952,
+        "reranked_hit_at_5_count": 39,
+        "reranked_hit_at_5": 0.928571,
+        "reranked_hit_at_10_count": 40,
+        "reranked_hit_at_10": 0.952381,
+        "mrr_at_10": 0.882407,
+        "mean_retrieval_ms": 57.61,
+        "p95_retrieval_ms": 69.58,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 3996.77,
+        "p95_total_ms": 4008.74,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 9,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": null,
+            "predicted_chunk_id": 57,
+            "predicted_logit": 4.4837,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-142-2",
+            "final_rank": null,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -2.3772,
+            "gold_logit": 1.3515
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 4,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          }
+        ]
+      }
+    },
+    "Exp_D_BM25_EquipMeta_TechToken": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "37/42 (88.10%)",
+        "candidate_recall_at_5": "42/42 (100.00%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 41,
+        "reranked_hit_at_3": 0.97619,
+        "reranked_hit_at_5_count": 42,
+        "reranked_hit_at_5": 1.0,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.94127,
+        "mean_retrieval_ms": 48.48,
+        "p95_retrieval_ms": 70.71,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 2018.06,
+        "p95_total_ms": 2040.29,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 40,
+            "predicted_logit": -1.9703,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "37/42 (88.10%)",
+        "candidate_recall_at_5": "42/42 (100.00%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.920437,
+        "mean_retrieval_ms": 48.48,
+        "p95_retrieval_ms": 70.71,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3199.81,
+        "p95_total_ms": 3222.04,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 8,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-75-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 130,
+            "predicted_logit": -2.3028,
+            "gold_logit": -5.1683
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 40,
+            "predicted_logit": -1.9703,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "37/42 (88.10%)",
+        "candidate_recall_at_5": "42/42 (100.00%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 39,
+        "reranked_hit_at_3": 0.928571,
+        "reranked_hit_at_5_count": 40,
+        "reranked_hit_at_5": 0.952381,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.91336,
+        "mean_retrieval_ms": 48.48,
+        "p95_retrieval_ms": 70.71,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 3987.64,
+        "p95_total_ms": 4009.88,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 9,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 4,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-75-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 130,
+            "predicted_logit": -2.3028,
+            "gold_logit": -5.1683
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 6,
+            "predicted_chunk_id": 40,
+            "predicted_logit": -1.9703,
+            "gold_logit": -5.8457
+          }
+        ]
+      }
+    },
+    "Exp_E_Hybrid_RRF_EquipMeta_TechToken_BGESmall": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "31/42 (73.81%)",
+        "candidate_recall_at_5": "42/42 (100.00%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 41,
+        "reranked_hit_at_3": 0.97619,
+        "reranked_hit_at_5_count": 42,
+        "reranked_hit_at_5": 1.0,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.945238,
+        "mean_retrieval_ms": 84.37,
+        "p95_retrieval_ms": 106.36,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 2053.95,
+        "p95_total_ms": 2075.94,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 114,
+            "predicted_logit": -3.7699,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "31/42 (73.81%)",
+        "candidate_recall_at_5": "42/42 (100.00%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 41,
+        "reranked_hit_at_3": 0.97619,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.939909,
+        "mean_retrieval_ms": 84.37,
+        "p95_retrieval_ms": 106.36,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3235.7,
+        "p95_total_ms": 3257.69,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 7,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "31/42 (73.81%)",
+        "candidate_recall_at_5": "42/42 (100.00%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.921627,
+        "mean_retrieval_ms": 84.37,
+        "p95_retrieval_ms": 106.36,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 4023.53,
+        "p95_total_ms": 4045.52,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 8,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": 2,
+            "predicted_chunk_id": 57,
+            "predicted_logit": 4.4837,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 4,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          }
+        ]
+      }
+    },
+    "Exp_E2_Hybrid_RRF_EquipMeta_TechToken_CompanyBGE": {
+      "pool_5": {
+        "pool_size": 5,
+        "first_stage_hit_at_1": "30/42 (71.43%)",
+        "candidate_recall_at_5": "41/42 (97.62%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.92483,
+        "mean_retrieval_ms": 86.69,
+        "p95_retrieval_ms": 112.83,
+        "mean_rerank_ms": 1969.58,
+        "p95_rerank_ms": 1969.58,
+        "mean_total_ms": 2056.27,
+        "p95_total_ms": 2082.41,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          },
+          {
+            "query_id": "OP26-SLV-145-0",
+            "final_rank": 7,
+            "predicted_chunk_id": 104,
+            "predicted_logit": -3.817,
+            "gold_logit": 5.2311
+          }
+        ]
+      },
+      "pool_8": {
+        "pool_size": 8,
+        "first_stage_hit_at_1": "30/42 (71.43%)",
+        "candidate_recall_at_5": "41/42 (97.62%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 38,
+        "reranked_hit_at_1": 0.904762,
+        "reranked_hit_at_1_pct": 90.48,
+        "reranked_doc_hit_at_1_count": 40,
+        "reranked_doc_hit_at_1_pct": 95.24,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.938492,
+        "mean_retrieval_ms": 86.69,
+        "p95_retrieval_ms": 112.83,
+        "mean_rerank_ms": 3151.33,
+        "p95_rerank_ms": 3151.33,
+        "mean_total_ms": 3238.02,
+        "p95_total_ms": 3264.16,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 6,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 2,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 4,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          }
+        ]
+      },
+      "pool_10": {
+        "pool_size": 10,
+        "first_stage_hit_at_1": "30/42 (71.43%)",
+        "candidate_recall_at_5": "41/42 (97.62%)",
+        "candidate_recall_at_8": "42/42 (100.00%)",
+        "candidate_recall_at_10": "42/42 (100.00%)",
+        "reranked_hit_at_1_count": 37,
+        "reranked_hit_at_1": 0.880952,
+        "reranked_hit_at_1_pct": 88.1,
+        "reranked_doc_hit_at_1_count": 39,
+        "reranked_doc_hit_at_1_pct": 92.86,
+        "reranked_hit_at_3_count": 40,
+        "reranked_hit_at_3": 0.952381,
+        "reranked_hit_at_5_count": 41,
+        "reranked_hit_at_5": 0.97619,
+        "reranked_hit_at_10_count": 42,
+        "reranked_hit_at_10": 1.0,
+        "mrr_at_10": 0.920437,
+        "mean_retrieval_ms": 86.69,
+        "p95_retrieval_ms": 112.83,
+        "mean_rerank_ms": 3939.16,
+        "p95_rerank_ms": 3939.16,
+        "mean_total_ms": 4025.85,
+        "p95_total_ms": 4051.99,
+        "failed_queries": [
+          {
+            "query_id": "OP26-SLV-144-2",
+            "final_rank": 8,
+            "predicted_chunk_id": 75,
+            "predicted_logit": -4.183,
+            "gold_logit": -8.506
+          },
+          {
+            "query_id": "OP26-SLV-143-0",
+            "final_rank": 2,
+            "predicted_chunk_id": 142,
+            "predicted_logit": 9.1087,
+            "gold_logit": 8.3943
+          },
+          {
+            "query_id": "OP26-SLV-76-2",
+            "final_rank": 3,
+            "predicted_chunk_id": 79,
+            "predicted_logit": 4.1534,
+            "gold_logit": -5.6184
+          },
+          {
+            "query_id": "OP26-SLV-74-1",
+            "final_rank": 2,
+            "predicted_chunk_id": 57,
+            "predicted_logit": 4.4837,
+            "gold_logit": 3.849
+          },
+          {
+            "query_id": "OP26-SLV-145-2",
+            "final_rank": 5,
+            "predicted_chunk_id": 105,
+            "predicted_logit": -0.4284,
+            "gold_logit": -5.8457
+          }
+        ]
+      }
+    }
+  },
+  "seven_historical_failures_movement": {
+    "OP26-SLV-144-2": {
+      "gold_doc_id": 163,
+      "gold_chunk_id": 144,
+      "baseline_bm25_cand_rank": null,
+      "baseline_v5_pool5_rank": null,
+      "baseline_v5_pool8_rank": null,
+      "dense_bge_raw_cand_rank": 4,
+      "dense_bge_equip_cand_rank": 5,
+      "hybrid_raw_cand_rank": 5,
+      "bm25_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_cand_rank": 4,
+      "hybrid_equip_tech_v5_pool5_rank": 5,
+      "hybrid_equip_tech_v5_pool8_rank": 7,
+      "hybrid_equip_tech_v5_pool10_rank": 8,
+      "predicted_top1_chunk_id": 75,
+      "predicted_top1_logit": -4.183,
+      "gold_chunk_logit": -8.506
+    },
+    "OP26-SLV-75-2": {
+      "gold_doc_id": 139,
+      "gold_chunk_id": 75,
+      "baseline_bm25_cand_rank": null,
+      "baseline_v5_pool5_rank": null,
+      "baseline_v5_pool8_rank": null,
+      "dense_bge_raw_cand_rank": 2,
+      "dense_bge_equip_cand_rank": 2,
+      "hybrid_raw_cand_rank": 6,
+      "bm25_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_cand_rank": 2,
+      "hybrid_equip_tech_v5_pool5_rank": 1,
+      "hybrid_equip_tech_v5_pool8_rank": 1,
+      "hybrid_equip_tech_v5_pool10_rank": 1,
+      "predicted_top1_chunk_id": 75,
+      "predicted_top1_logit": -5.1683,
+      "gold_chunk_logit": -5.1683
+    },
+    "OP26-SLV-74-1": {
+      "gold_doc_id": 138,
+      "gold_chunk_id": 74,
+      "baseline_bm25_cand_rank": null,
+      "baseline_v5_pool5_rank": null,
+      "baseline_v5_pool8_rank": null,
+      "dense_bge_raw_cand_rank": 4,
+      "dense_bge_equip_cand_rank": 3,
+      "hybrid_raw_cand_rank": null,
+      "bm25_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_cand_rank": 3,
+      "hybrid_equip_tech_v5_pool5_rank": 1,
+      "hybrid_equip_tech_v5_pool8_rank": 1,
+      "hybrid_equip_tech_v5_pool10_rank": 2,
+      "predicted_top1_chunk_id": 74,
+      "predicted_top1_logit": 3.849,
+      "gold_chunk_logit": 3.849
+    },
+    "OP26-SLV-142-2": {
+      "gold_doc_id": 163,
+      "gold_chunk_id": 142,
+      "baseline_bm25_cand_rank": null,
+      "baseline_v5_pool5_rank": null,
+      "baseline_v5_pool8_rank": null,
+      "dense_bge_raw_cand_rank": 3,
+      "dense_bge_equip_cand_rank": 3,
+      "hybrid_raw_cand_rank": null,
+      "bm25_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_cand_rank": 2,
+      "hybrid_equip_tech_v5_pool5_rank": 1,
+      "hybrid_equip_tech_v5_pool8_rank": 1,
+      "hybrid_equip_tech_v5_pool10_rank": 1,
+      "predicted_top1_chunk_id": 142,
+      "predicted_top1_logit": 1.3515,
+      "gold_chunk_logit": 1.3515
+    },
+    "OP26-SLV-145-2": {
+      "gold_doc_id": 164,
+      "gold_chunk_id": 145,
+      "baseline_bm25_cand_rank": 7,
+      "baseline_v5_pool5_rank": 7,
+      "baseline_v5_pool8_rank": 5,
+      "dense_bge_raw_cand_rank": 6,
+      "dense_bge_equip_cand_rank": 1,
+      "hybrid_raw_cand_rank": 3,
+      "bm25_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_v5_pool5_rank": 2,
+      "hybrid_equip_tech_v5_pool8_rank": 3,
+      "hybrid_equip_tech_v5_pool10_rank": 4,
+      "predicted_top1_chunk_id": 105,
+      "predicted_top1_logit": -0.4284,
+      "gold_chunk_logit": -5.8457
+    },
+    "OP26-SLV-143-0": {
+      "gold_doc_id": 163,
+      "gold_chunk_id": 143,
+      "baseline_bm25_cand_rank": 1,
+      "baseline_v5_pool5_rank": 2,
+      "baseline_v5_pool8_rank": 2,
+      "dense_bge_raw_cand_rank": 1,
+      "dense_bge_equip_cand_rank": 1,
+      "hybrid_raw_cand_rank": 1,
+      "bm25_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_cand_rank": 1,
+      "hybrid_equip_tech_v5_pool5_rank": 2,
+      "hybrid_equip_tech_v5_pool8_rank": 2,
+      "hybrid_equip_tech_v5_pool10_rank": 2,
+      "predicted_top1_chunk_id": 142,
+      "predicted_top1_logit": 9.1087,
+      "gold_chunk_logit": 8.3943
+    },
+    "OP26-SLV-76-2": {
+      "gold_doc_id": 139,
+      "gold_chunk_id": 76,
+      "baseline_bm25_cand_rank": 1,
+      "baseline_v5_pool5_rank": 2,
+      "baseline_v5_pool8_rank": 2,
+      "dense_bge_raw_cand_rank": null,
+      "dense_bge_equip_cand_rank": 3,
+      "hybrid_raw_cand_rank": 3,
+      "bm25_equip_tech_cand_rank": 3,
+      "hybrid_equip_tech_cand_rank": 3,
+      "hybrid_equip_tech_v5_pool5_rank": 2,
+      "hybrid_equip_tech_v5_pool8_rank": 2,
+      "hybrid_equip_tech_v5_pool10_rank": 3,
+      "predicted_top1_chunk_id": 79,
+      "predicted_top1_logit": 4.1534,
+      "gold_chunk_logit": -5.6184
+    }
+  },
+  "diagnostic_multi_chunk_and_label_analysis": {
+    "strict_unedited_silver_hit_at_1": "40/42 (95.24%)",
+    "strict_document_level_hit_at_1": "42/42 (100.00%)",
+    "remaining_2_strict_chunk_misses": {
+      "OP26-SLV-143-0": {
+        "gold_chunk_id": 143,
+        "predicted_chunk_id": 142,
+        "same_document": true,
+        "same_section_heading": true,
+        "explanation": "Chunks 142 and 143 are consecutive chunks of the exact same section in Doc 163. V5 ranks Chunk 142 (Steps 1-4, logit +9.1128) at #1 and Chunk 143 (Expected result, logit +8.3852) at #2. Both are retrieved in the top-2 context passed to RAG answer generation."
+      },
+      "OP26-SLV-76-2": {
+        "gold_chunk_id": 76,
+        "predicted_chunk_id": 79,
+        "same_document": true,
+        "same_section_heading": false,
+        "explanation": "Query asks for safety precautions and escalation criteria for Doc 139. V5 ranks Chunk 79 ('## Stop and escalate if', logit +4.1492) at #1 and silver-labeled Chunk 76 ('## When touch inputs do not register', logit -5.6226) at #2. Chunk 79 is the actual escalation section of Doc 139; silver label 76 is a provisional silver-label noise artifact preserved unedited per governance rules."
+      }
+    }
+  }
+}

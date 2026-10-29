@@ -323,6 +323,7 @@ class ServingConfig:
     rrf_k: int = 60
     rrf_weight_dense: float = 0.55
     rrf_weight_sparse: float = 0.45
+    retrieval_mode: str = "hybrid"
     top_k: int = 6
     reranker_enabled: bool = False
 
@@ -337,6 +338,10 @@ def get_serving_config() -> ServingConfig:
         dense_relevance_gate=float(getattr(settings, "SERVY_DENSE_RELEVANCE_GATE", 0.55)),
         sparse_relevance_gate=float(getattr(settings, "SERVY_SPARSE_RELEVANCE_GATE", 0.055)),
         embedding_profile=str(getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")),
+        rrf_k=max(1, int(getattr(settings, "SERVY_RRF_K", 60))),
+        rrf_weight_dense=float(getattr(settings, "SERVY_RRF_WEIGHT_DENSE", 0.55)),
+        rrf_weight_sparse=float(getattr(settings, "SERVY_RRF_WEIGHT_SPARSE", 0.45)),
+        retrieval_mode=str(getattr(settings, "SERVY_RETRIEVAL_MODE", "hybrid")).strip().lower(),
         top_k=int(getattr(settings, "SERVY_RAG_TOP_K", 6)),
         reranker_enabled=bool(getattr(settings, "SERVY_RERANKER_ENABLED", False)),
     )
@@ -419,13 +424,41 @@ def _format_chunk_text(chunk) -> str:
     return chunk.text or ""
 
 
+def _sparse_index_text(chunk) -> str:
+    """Construct equipment-aware lexical indexing text for BM25 and char n-gram scoring.
+    
+    Includes the document title, product name, asset name, and model number alongside
+    the section heading and body so generic subsection headings (e.g. 'Stop and escalate if',
+    'Monthly Preventive Maintenance') retain lexical association with their parent manual.
+    Does not alter RetrievedChunk.text returned to downstream answer generation.
+    """
+    d = getattr(chunk, "document", None)
+    meta_parts = []
+    if d is not None:
+        if getattr(d, "title", None):
+            meta_parts.append(str(d.title))
+        prod = getattr(d, "product", None)
+        if prod is not None and getattr(prod, "name", None):
+            meta_parts.append(str(prod.name))
+        ast = getattr(d, "asset", None)
+        if ast is not None:
+            if getattr(ast, "name", None):
+                meta_parts.append(str(ast.name))
+            if getattr(ast, "model_number", None):
+                meta_parts.append(str(ast.model_number))
+    base_text = _format_chunk_text(chunk)
+    if meta_parts:
+        return f"{' '.join(meta_parts)}\n{base_text}".strip()
+    return base_text
+
+
 
 
 # ---------------------------------------------------------------------------
 # Metadata bonus calculation
 # ---------------------------------------------------------------------------
 
-def _calculate_metadata_bonus(document, chunk, asset, customer) -> float:
+def _calculate_metadata_bonus(document, chunk, asset, customer, query_text: str | None = None) -> float:
     bonus = 0.0
     if asset:
         if document.asset_id == asset.id:
@@ -445,6 +478,22 @@ def _calculate_metadata_bonus(document, chunk, asset, customer) -> float:
                 or (chunk and model_lower in (chunk.heading or "").lower())
                 or (chunk and model_lower in (chunk.text or "").lower())
             ):
+                bonus += MODEL_BONUS
+    elif query_text:
+        # When no asset object is bound to the request, check if the query text
+        # explicitly names the authorized document's product, asset, or title.
+        q_lower = query_text.lower()
+        prod = getattr(document, "product", None)
+        ast = getattr(document, "asset", None)
+        if ast is not None and getattr(ast, "name", None) and len(ast.name.strip()) >= 4 and ast.name.lower().strip() in q_lower:
+            bonus += EXACT_PRODUCT_BONUS
+        elif prod is not None and getattr(prod, "name", None) and len(prod.name.strip()) >= 4 and prod.name.lower().strip() in q_lower:
+            bonus += EXACT_PRODUCT_BONUS
+        elif getattr(document, "title", None) and len(document.title.strip()) >= 6 and document.title.lower().strip() in q_lower:
+            bonus += MODEL_BONUS
+        if ast is not None and getattr(ast, "model_number", None):
+            m_lower = ast.model_number.lower().strip()
+            if len(m_lower) >= 3 and m_lower in q_lower:
                 bonus += MODEL_BONUS
 
     if customer and document.customer_id == customer.id:
@@ -484,7 +533,7 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
     Returns list of RetrievedChunk tuples sorted by score descending with explicit sparse_rank.
     """
     scored = []
-    chunk_texts = [_format_chunk_text(c) for c in candidates]
+    chunk_texts = [_sparse_index_text(c) for c in candidates]
     bm25_scores = compute_bm25_scores(evidence_text, chunk_texts) if evidence_text else [0.0] * len(candidates)
     char_scores = compute_char_ngram_scores(evidence_text, chunk_texts) if evidence_text else [0.0] * len(candidates)
 
@@ -525,7 +574,7 @@ def _sparse_score_candidates(candidates, evidence_vector, scope_vector,
         if content_score < 0.15 and id_boost <= 0.0:
             boost = 0.0
         else:
-            boost = _calculate_metadata_bonus(d, chunk, asset, customer)
+            boost = _calculate_metadata_bonus(d, chunk, asset, customer, query_text=evidence_text)
         final_score = float(base_score + boost + id_boost)
 
         if final_score < min_score:
@@ -801,11 +850,11 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 if getattr(profile, "content_first", False):
                     # In content-first mode, rely primarily on semantic content match.
                     # Bounded metadata bonus is strictly capped.
-                    boost = min(0.05, _calculate_metadata_bonus(d, matched_chunk, asset, customer) * 0.25)
+                    boost = min(0.05, _calculate_metadata_bonus(d, matched_chunk, asset, customer, query_text=evidence_text) * 0.25)
                 elif sim < _dense_gate and id_boost <= 0.0:
                     boost = 0.0
                 else:
-                    boost = _calculate_metadata_bonus(d, matched_chunk, asset, customer)
+                    boost = _calculate_metadata_bonus(d, matched_chunk, asset, customer, query_text=evidence_text)
                 final_score = float(sim + boost + id_boost)
 
                 if final_score < min_score:
@@ -869,13 +918,14 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
 # Reciprocal Rank Fusion (Phase 2)
 # ---------------------------------------------------------------------------
 
-def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_sparse=0.45):
+def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_sparse=0.45, rrf_k=RRF_K):
     """Fuse dense and sparse ranked lists using RRF.
 
     RRF(d) = sum(w_i / (K + rank_i(d))) for all lists i where d appears.
     Only lists in which the document appears may contribute to that document's fusion score.
     Missing-list entries must NOT receive phantom contributions.
     """
+    k_val = max(1, int(rrf_k if rrf_k is not None else RRF_K))
     dense_map = {}
     for i, r in enumerate(dense_results, 1):
         key = (r.source_kind, r.source_id)
@@ -912,9 +962,9 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
 
         rrf_score = 0.0
         if base_item.dense_rank is not None:
-            rrf_score += w_dense / (RRF_K + base_item.dense_rank)
+            rrf_score += w_dense / (k_val + base_item.dense_rank)
         if base_item.sparse_rank is not None:
-            rrf_score += w_sparse / (RRF_K + base_item.sparse_rank)
+            rrf_score += w_sparse / (k_val + base_item.sparse_rank)
 
         base_item.fusion_score = rrf_score
         # Preserve natural candidate relevance score on [0, 1+] scale so downstream evidence sufficiency
@@ -923,8 +973,15 @@ def _reciprocal_rank_fusion(dense_results, sparse_results, w_dense=0.55, w_spars
         base_item.score = max(cand_scores) if cand_scores else rrf_score
         fused.append(base_item)
 
-    # Sort strictly by fused rank value (descending fusion_score)
-    fused.sort(key=lambda x: (x.fusion_score or 0.0), reverse=True)
+    # Deterministic tie-breaking: (-fusion_score, -score, document_id, chunk_id)
+    fused.sort(
+        key=lambda x: (
+            -round(float(x.fusion_score or 0.0), 12),
+            -round(float(x.score or 0.0), 12),
+            int(x.document_id or 0),
+            int(x.chunk_id or x.source_id or 0),
+        )
+    )
     for i, item in enumerate(fused, 1):
         item.fusion_rank = i
         item.final_rank = i
@@ -1056,29 +1113,35 @@ def retrieve(
     # then fuse results using Reciprocal Rank Fusion (Phase 2).
     # This replaces the old "sparse only if dense returns nothing" approach.
 
-    # 2a: Sparse/local retrieval (always runs)
-    sparse_results = _sparse_score_candidates(
-        candidates, evidence_vector, scope_vector,
-        query_identifiers, asset, customer, min_score,
-        query_doc_ids=query_doc_ids,
-        evidence_text=evidence_text,
-        serving_config=serving_config,
-    )
-
-    # 2b: Dense retrieval (may fail gracefully)
-    try:
-        dense_results = _dense_score_candidates(
-            dense_candidates, dense_doc_ids, dense_chunks_by_id,
-            evidence_text, query_identifiers, asset, customer,
-            tenant, top_k, min_score,
+    # 2a: Sparse/local retrieval (runs in hybrid and sparse_only modes)
+    if serving_config.retrieval_mode == "dense_only":
+        sparse_results = []
+    else:
+        sparse_results = _sparse_score_candidates(
+            candidates, evidence_vector, scope_vector,
+            query_identifiers, asset, customer, min_score,
             query_doc_ids=query_doc_ids,
-            staff_mode=staff_mode,
-            include_confidential=include_confidential,
+            evidence_text=evidence_text,
             serving_config=serving_config,
         )
-    except Exception as exc:
-        logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+
+    # 2b: Dense retrieval (may fail gracefully; skipped in sparse_only mode)
+    if serving_config.retrieval_mode == "sparse_only":
         dense_results = []
+    else:
+        try:
+            dense_results = _dense_score_candidates(
+                dense_candidates, dense_doc_ids, dense_chunks_by_id,
+                evidence_text, query_identifiers, asset, customer,
+                tenant, top_k, min_score,
+                query_doc_ids=query_doc_ids,
+                staff_mode=staff_mode,
+                include_confidential=include_confidential,
+                serving_config=serving_config,
+            )
+        except Exception as exc:
+            logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+            dense_results = []
 
     # 2c: Fuse results using RRF
     qwen_dense_first = (
@@ -1097,7 +1160,13 @@ def retrieve(
         results = _qwen_dense_first_merge(dense_results, sparse_results)
         retrieval_backend = "qwen3_dense_first_experimental"
     elif dense_results and sparse_results:
-        results = _reciprocal_rank_fusion(dense_results, sparse_results)
+        results = _reciprocal_rank_fusion(
+            dense_results,
+            sparse_results,
+            w_dense=serving_config.rrf_weight_dense,
+            w_sparse=serving_config.rrf_weight_sparse,
+            rrf_k=serving_config.rrf_k,
+        )
         retrieval_backend = "hybrid"
     elif dense_results:
         for i, r in enumerate(dense_results, 1):

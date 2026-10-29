@@ -1,0 +1,100 @@
+{
+  "manifest_version": "1.0.0",
+  "release_date": "2026-10-29",
+  "project": "Servy RAG",
+  "repository": "https://github.com/yashaskn8/prototype",
+  "release_status": "MEASURED_DEV_90_48_PCT_NOT_INDEPENDENT_95_PCT_CLAIM",
+  "verified_reranker_checkpoint": {
+    "model_label": "servy_v5_bge_verified",
+    "base_model": "BAAI/bge-reranker-v2-m3",
+    "architecture": "XLMRobertaForSequenceClassification (CrossEncoder)",
+    "local_checkpoint_dir": "best_model",
+    "weights_file": "best_model/model.safetensors",
+    "weights_size_bytes": 2271071852,
+    "weights_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+    "directory_sha256": "47cd54fc552c1cf5327885365dbe443bbe8f3dbc955bb6b0ef1a9c35bd8b0192",
+    "max_seq_length": 256,
+    "scoring_activation": "torch.nn.Identity() raw logit + monotone calibrated_sigmoid_score",
+    "training_dataset_sha256": "4282d2166149e7f3979524e3919f58d23803ca0aa7266d9d2f597e971ea39012",
+    "training_queries": 111,
+    "positive_pairs": 111,
+    "active_negative_pairs": 161,
+    "loss_function": "BinaryCrossEntropyLoss"
+  },
+  "dense_embedding_profiles": {
+    "default_production_profile": {
+      "key": "minilm / company-minilm",
+      "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+      "dimension": 384,
+      "normalization": "L2 / cosine",
+      "collection": "servy_dense_kb / servy_company_dense_kb",
+      "promotion_eligible": true
+    },
+    "recommended_hybrid_bge_profile": {
+      "key": "bge-small / company-bge-small",
+      "model_id": "BAAI/bge-small-en-v1.5",
+      "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+      "dimension": 384,
+      "normalization": "L2 / cosine",
+      "query_prefix": "Represent this sentence for searching relevant passages: ",
+      "collection": "servy_dense_bge_small_v1 / servy_company_bge_small_v1",
+      "promotion_eligible": true
+    },
+    "experimental_company_finetuned_bge": {
+      "key": "company-bge-ft",
+      "local_path": "ml_models/checkpoints/servy_company_bge_v1/final",
+      "checkpoint_sha256": "7d394413398be69d2d1093538e5eec6cafa58cbfeae858cac4abf608b5db0d33",
+      "dimension": 384,
+      "collection": "servy_company_bge_ft_v1",
+      "promotion_eligible": false
+    },
+    "experimental_qwen3_profile": {
+      "key": "qwen3 / company-qwen3",
+      "model_id": "Qwen/Qwen3-Embedding-0.6B",
+      "dimension": 1024,
+      "max_seq_length": 256,
+      "collection": "servy_dense_qwen3_06b_v1 / servy_company_qge_06b_v1",
+      "status": "OPT_IN_LOCAL_CHECKPOINT_REQUIRED (SERVY_QWEN3_MODEL_PATH)"
+    }
+  },
+  "retrieval_and_serving_configuration": {
+    "SERVY_RETRIEVAL_MODE": "hybrid",
+    "SERVY_RRF_K": 60,
+    "SERVY_RRF_WEIGHT_DENSE": 0.55,
+    "SERVY_RRF_WEIGHT_SPARSE": 0.45,
+    "SERVY_DENSE_RELEVANCE_GATE": 0.38,
+    "SERVY_SPARSE_RELEVANCE_GATE": 0.055,
+    "SERVY_RERANKER_ENABLED": true,
+    "SERVY_RERANKER_REQUIRED": true,
+    "SERVY_RERANKER_MODEL_PATH": "best_model",
+    "SERVY_RERANKER_EXPECTED_SHA256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+    "SERVY_RERANKER_POOL_SIZE": 8,
+    "SERVY_RERANKER_DEVICE": "cpu",
+    "SERVY_RAG_TOP_K": 6
+  },
+  "verified_evaluation_summary": {
+    "provisional_42_query_dev_benchmark": {
+      "dataset_sha256": "c8f391b9591da9e3a7e4a97aedc117254a4c90169b382ffab550183620a4559c",
+      "baseline_bm25_v5_pool5_hit_at_1": "35/42 (83.33%)",
+      "baseline_bm25_recall_at_10": "38/42 (90.48%)",
+      "improved_hybrid_equip_tech_v5_pool8_hit_at_1": "38/42 (90.48%)",
+      "improved_hybrid_equip_tech_doc_hit_at_1": "40/42 (95.24%)",
+      "improved_hybrid_equip_tech_recall_at_5": "42/42 (100.00%) at pool 5; 41/42 reranked Hit@5 at pool 8",
+      "improved_hybrid_equip_tech_recall_at_10": "42/42 (100.00%)",
+      "improved_hybrid_equip_tech_mrr_at_10": 0.9399,
+      "historical_7_failures_recovered": 3,
+      "regressions_introduced": 0
+    },
+    "independent_holdout_status": {
+      "status": "BLOCKED_HOLDOUT_LEAKAGE_OR_INCOMPLETE_EVIDENCE",
+      "independent_holdout_verified": false,
+      "production_95_pct_claim_authorized": false
+    }
+  },
+  "verification_commands": [
+    "python manage.py verify_v5_reranker",
+    "python manage.py test core.tests_v5_activation core.tests_v5_runtime core.tests_production_rag_accuracy -v 2",
+    "python -m unittest discover -s tools -p \"test_*.py\" -v"
+  ]
+}
+

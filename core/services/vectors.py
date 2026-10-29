@@ -10,6 +10,31 @@ VECTOR_MODEL = "hashing-word12-v1"
 
 STOP_WORDS = set(ENGLISH_STOP_WORDS)
 
+TECH_SYNONYM_MAP = {
+    "escalation": ("escalate", "stop"),
+    "escalate": ("escalation", "stop"),
+    "precautions": ("precaution", "safety", "stop", "hazard"),
+    "precaution": ("precautions", "safety", "stop"),
+    "intervals": ("interval", "schedule", "monthly", "quarterly", "annual", "daily", "weekly", "preventive"),
+    "interval": ("intervals", "schedule", "monthly", "quarterly", "annual", "preventive"),
+    "schedule": ("intervals", "interval", "monthly", "quarterly", "annual", "preventive"),
+    "monthly": ("intervals", "schedule", "preventive"),
+    "quarterly": ("intervals", "schedule", "preventive"),
+    "annual": ("intervals", "schedule", "preventive"),
+    "preventive": ("intervals", "schedule", "maintenance"),
+}
+
+_UNIT_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*(v|vac|vdc|kv|mv|a|ma|hz|khz|w|kw|va|kva|ohm|psi|bar|kpa|mpa|c|f|nm|mm|cm|t|ton)\b"
+)
+_VOLTAGE_SPEC_PATTERN = re.compile(
+    r"\b(?:operating\s+v|voltage)\s+(?:specification\s+)?([0-9/\.\s]+)"
+)
+_ERROR_CODE_TOKEN_PATTERN = re.compile(
+    r"\b([ef]|err|alm)[\s\-]?(\d{1,4})\b"
+)
+
+
 
 @lru_cache(maxsize=1)
 def _vectorizer():
@@ -40,12 +65,51 @@ def cosine_sparse(a, b):
 
 
 def tokenize_words(text: str, filter_stopwords: bool = True) -> List[str]:
-    """Tokenize technical text into words, retaining error codes and identifiers,
-    and filtering English stop words."""
-    words = [w.lower() for w in re.findall(r"\b[A-Za-z0-9_\-]+\b", text or "")]
-    if filter_stopwords:
-        return [w for w in words if w not in STOP_WORDS and len(w) > 1]
-    return words
+    """Tokenize technical text into words, retaining error codes, numeric ratings,
+    voltage/unit tokens (e.g. 5V, 12V, 19V <-> 'operating V specification 5/12/19'),
+    and bounded morphological variants while filtering English stop words."""
+    raw_text = (text or "").lower()
+    expanded: List[str] = []
+
+    # 1. Fused or space-separated number + engineering unit patterns: 5v, 12v, 19v, 2t, 4c, etc.
+    for m in _UNIT_PATTERN.finditer(raw_text):
+        num, unit = m.group(1), m.group(2)
+        unit_norm = "v" if unit in ("v", "vac", "vdc") else unit
+        expanded.append(f"{num}{unit_norm}")
+        expanded.append(num)
+        if unit_norm == "v":
+            expanded.append("voltage")
+            expanded.append("volt")
+
+    # 2. Operating V / voltage specification patterns: "operating v specification 5/12/19"
+    for m in _VOLTAGE_SPEC_PATTERN.finditer(raw_text):
+        for n in re.findall(r"\d+(?:\.\d+)?", m.group(1)):
+            expanded.append(f"{n}v")
+            expanded.append(n)
+            expanded.append("voltage")
+
+    # 3. Error / fault code patterns: E-12 -> e12, e-12
+    for m in _ERROR_CODE_TOKEN_PATTERN.finditer(raw_text):
+        prefix, num = m.group(1), m.group(2)
+        expanded.append(f"{prefix}{num}")
+        expanded.append(f"{prefix}-{num}")
+
+    # 4. Standard word & numeric tokens (preserving single-digit numbers)
+    words = [w.lower() for w in re.findall(r"\b[A-Za-z0-9_\-]+\b", raw_text)]
+    base_tokens: List[str] = []
+    for w in words:
+        if filter_stopwords and w in STOP_WORDS:
+            continue
+        if len(w) > 1 or w.isdigit():
+            base_tokens.append(w)
+            if "-" in w:
+                for sub in w.split("-"):
+                    if sub and (len(sub) > 1 or sub.isdigit()) and (not filter_stopwords or sub not in STOP_WORDS):
+                        base_tokens.append(sub)
+            if w in TECH_SYNONYM_MAP:
+                base_tokens.extend(TECH_SYNONYM_MAP[w])
+
+    return base_tokens + expanded
 
 
 @lru_cache(maxsize=8192)
