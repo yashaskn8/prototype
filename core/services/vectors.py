@@ -25,10 +25,17 @@ TECH_SYNONYM_MAP = {
 }
 
 _UNIT_PATTERN = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*(v|vac|vdc|kv|mv|a|ma|hz|khz|w|kw|va|kva|ohm|psi|bar|kpa|mpa|c|f|nm|mm|cm|t|ton)\b"
+    # Unambiguous units may be separated from the number by whitespace.
+    r"\b(\d+(?:\.\d+)?)\s*(v|vac|vdc|volts?|kv|mv|hz|khz|ohm|psi|bar|kpa|mpa|kva|kw|mm|cm|nm)\b"
+    # Single-letter / ambiguous units (a, w, c, f, t, ton) must be attached to the number
+    # ("10A", "2T"); "step 3 a check" or "figure 5 c" must not become 3A / 5C.
+    r"|\b(\d+(?:\.\d+)?)(a|ma|w|va|c|f|t|ton)\b"
+    r"|\b(\d+(?:\.\d+)?)-(volts?)\b"
 )
+# Only slash/comma-joined lists directly after the phrase; never swallow unrelated trailing numbers.
 _VOLTAGE_SPEC_PATTERN = re.compile(
-    r"\b(?:operating\s+v|voltage)\s+(?:specification\s+)?([0-9/\.\s]+)"
+    r"\b(?:operating\s+v|voltage)\s+(?:specification\s+)?"
+    r"(\d+(?:\.\d+)?(?:\s*[/,]\s*\d+(?:\.\d+)?)*)"
 )
 _ERROR_CODE_TOKEN_PATTERN = re.compile(
     r"\b([ef]|err|alm)[\s\-]?(\d{1,4})\b"
@@ -73,8 +80,9 @@ def tokenize_words(text: str, filter_stopwords: bool = True) -> List[str]:
 
     # 1. Fused or space-separated number + engineering unit patterns: 5v, 12v, 19v, 2t, 4c, etc.
     for m in _UNIT_PATTERN.finditer(raw_text):
-        num, unit = m.group(1), m.group(2)
-        unit_norm = "v" if unit in ("v", "vac", "vdc") else unit
+        groups = [g for g in m.groups() if g is not None]
+        num, unit = groups[0], groups[1]
+        unit_norm = "v" if unit in ("v", "vac", "vdc", "volt", "volts") else unit
         expanded.append(f"{num}{unit_norm}")
         expanded.append(num)
         if unit_norm == "v":

@@ -75,6 +75,35 @@ class TechnicalTokenizationTests(SimpleTestCase):
         self.assertIn("alm04", tokens)
         self.assertIn("alm-04", tokens)
 
+    # --- Red-team regressions (false equivalences found by adversarial tokenization attack) ---
+    def test_5v_never_equals_50v_or_120v(self):
+        t5, t50, t12, t120 = (set(tokenize_words(x, filter_stopwords=False)) for x in ("5V", "50V", "12V", "120 V"))
+        self.assertNotIn("5v", t50)
+        self.assertNotIn("50v", t5)
+        self.assertNotIn("12v", t120)
+        self.assertNotIn("120v", t12)
+
+    def test_e012_is_not_e12(self):
+        self.assertNotIn("e12", set(tokenize_words("E012", filter_stopwords=False)))
+        self.assertNotIn("e012", set(tokenize_words("E12", filter_stopwords=False)))
+
+    def test_ambiguous_single_letter_units_do_not_fire_with_whitespace(self):
+        for text, bad in (("step 3 a check the fuse", "3a"), ("see figure 5 c below", "5c"),
+                          ("room 5 f", "5f"), ("section 2 t of manual", "2t")):
+            self.assertNotIn(bad, set(tokenize_words(text, filter_stopwords=False)), text)
+        # attached forms are real ratings
+        self.assertIn("10a", set(tokenize_words("fuse 10A", filter_stopwords=False)))
+        self.assertIn("2t", set(tokenize_words("Apex Split AC 2T", filter_stopwords=False)))
+
+    def test_voltage_spec_phrase_does_not_swallow_unrelated_numbers(self):
+        toks = set(tokenize_words("voltage 5 3 phase supply", filter_stopwords=False))
+        self.assertIn("5v", toks)
+        self.assertNotIn("3v", toks)
+
+    def test_spelled_volt_forms_map_to_v(self):
+        for text in ("5 volts", "5-Volt", "5 V", "5V"):
+            self.assertIn("5v", set(tokenize_words(text, filter_stopwords=False)), text)
+
 
 class ConfigurableRRFAndTieBreakingTests(SimpleTestCase):
     def _make_item(self, chunk_id: int, doc_id: int, score: float) -> RetrievedChunk:

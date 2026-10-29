@@ -1,0 +1,25 @@
+{
+  "generated": "2026-10-29",
+  "base_commit": "fc73c1a",
+  "production_promotion": "BLOCKED",
+  "gates": {
+    "repo_pushed_and_merged": {"status": "PASS", "evidence": "main == origin/main == fc73c1a; PR #16 MERGED"},
+    "ci_on_head": {"status": "UNKNOWN", "evidence": "run on fc73c1a was in_progress at last check"},
+    "full_django_suite": {"status": "NOT_COMPLETED", "evidence": "run started, did not finish in this session"},
+    "tokenizer_regression_tests": {"status": "PASS", "evidence": "9/9"},
+    "company_pipeline_unit_tests": {"status": "PASS", "evidence": "3/3"},
+    "model_fingerprints": {"status": "PASS", "evidence": "V5, corpus, dev set, frozen candidates match recorded SHA-256"},
+    "django_reproduces_reported_90_48": {"status": "FAIL", "evidence": "Django+V5 = 37/42 (88.10%); 37/41 (90.24%) on the authorized denominator"},
+    "hybrid_dense_leg_active_in_django": {"status": "FAIL", "evidence": "hybrid == sparse_only, backend fallback"},
+    "independent_hit_at_1_ge_95": {"status": "NOT_MEASURED", "evidence": "no independent benchmark exists (0 unused source families)"},
+    "candidate_recall_at_10_ge_98_independent": {"status": "NOT_MEASURED"},
+    "grounded_answer_correctness_ge_95": {"status": "NOT_MEASURED"},
+    "citation_validity_ge_99": {"status": "NOT_MEASURED"},
+    "abstention_ge_95": {"status": "NOT_MEASURED"},
+    "tenant_isolation_red_team": {"status": "NOT_RUN_THIS_PASS", "evidence": "existing suite covers some cases; no new attack suite executed"},
+    "prompt_injection_red_team": {"status": "NOT_RUN"},
+    "latency": {"status": "FAIL_ON_CPU", "evidence": "V5 pool 5: p50 3.4 s, pool 8: p50 5.6 s per query"},
+    "company_training_authorization": {"status": "MISSING", "evidence": "no organizational permission record; technical preflight READY_FOR_EXPLORATORY_FINE_TUNING is not authorization"},
+    "original_repo_integration": {"status": "NOT_PERFORMED", "evidence": "no original-repo remote available"}
+  }
+}
