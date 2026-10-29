@@ -1235,6 +1235,9 @@ def retrieve(
         from core.ml.reranker import rerank_candidates
         selected = rerank_candidates(evidence_text, selected, top_k=top_k)
     except Exception as exc:
+        # Required-model deployments must not silently serve baseline results.
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise
         logger.warning("Reranker step skipped due to error: %s", exc)
         selected = selected[:top_k]
 
