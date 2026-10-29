@@ -46,6 +46,7 @@ not yet reconciled. Neither is an independent live-UI accuracy guarantee.
 
    ```ini
    SERVY_RERANKER_ENABLED=1
+   SERVY_RERANKER_REQUIRED=1
    SERVY_RERANKER_MODEL_PATH=ml_models/checkpoints/servy_v5/best_model
    SERVY_RERANKER_EXPECTED_SHA256=b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda
    SERVY_RERANKER_DEVICE=cpu
@@ -65,8 +66,12 @@ not yet reconciled. Neither is an independent live-UI accuracy guarantee.
    python manage.py verify_v5_reranker
    ```
 
-   Expected: `SERVY V5 RERANKER VERIFIED: ...`. This tests only local model
-   loading and one inference; it does not certify the full RAG application.
+   Expected: `SERVY V5 RERANKER VERIFIED: ...`. This executes the actual
+   serving-time reranker on one **synthetic knowledge passage**, including the
+   SHA-256-pinned offline checkpoint load, raw-logit scoring, and verified V5
+   model provenance. Missing weights, fallback, or invalid scores make the
+   command fail rather than produce a false success. It does **not** certify
+   tenant authorization, HTTP requests, benchmark accuracy, or deployment.
 
 5. Start your normal Django/MySQL and React processes. Log in and use
    **Customer AI Support** or **Engineer Copilot**. Authorized retrieved
@@ -86,6 +91,7 @@ not yet reconciled. Neither is an independent live-UI accuracy guarantee.
 ## Safety and rollout
 
 - If `SERVY_RERANKER_ENABLED=0` (the default), existing behavior is unchanged.
+- For deployment, set `SERVY_RERANKER_REQUIRED=1` **in addition to** the enabled flag, full local path, and approved digest. Django startup then runs one synthetic passage through the actual SHA-pinned V5 scorer and refuses to start if the checkpoint is absent, incompatible, or returns invalid scores. Subsequent scoring failures also propagate as request errors rather than silently returning baseline-ranked results. This opt-in strict mode is off by default. It is a model smoke check, not an independent benchmark or a live user-query test.
 - With the feature enabled, a nonexistent checkpoint or wrong weights SHA-256
   makes the reranker fail closed to **the original, already-authorized ranking**.
   It must never silently download or switch to a different remote model in

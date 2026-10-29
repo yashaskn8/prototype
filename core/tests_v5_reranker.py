@@ -225,3 +225,25 @@ class V5RerankerTests(SimpleTestCase):
         self.assertFalse(_matches_current_minilm_vector(
             {**metadata, "chunk_id": 999}, source, profile,
         ))
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_REQUIRED=True)
+    def test_required_mode_propagates_missing_model(self):
+        docs = [chunk("approved service instruction")]
+        with mock.patch.object(reranker, "get_reranker", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "failed to load"):
+                reranker.rerank_candidates("service instruction", docs, top_k=1)
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_REQUIRED=True)
+    def test_required_mode_propagates_inference_failure(self):
+        docs = [chunk("approved service instruction")]
+        model = mock.Mock()
+        model.predict.side_effect = ValueError("synthetic scoring failure")
+        with mock.patch.object(reranker, "get_reranker", return_value=model):
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                reranker.rerank_candidates("service instruction", docs, top_k=1)
+
+    @override_settings(SERVY_RERANKER_ENABLED=True, SERVY_RERANKER_REQUIRED=True)
+    def test_required_mode_still_allows_empty_authorized_results(self):
+        with mock.patch.object(reranker, "get_reranker") as loader:
+            self.assertEqual(reranker.rerank_candidates("service instruction", [], top_k=1), [])
+        loader.assert_not_called()

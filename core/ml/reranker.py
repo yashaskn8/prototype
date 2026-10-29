@@ -101,6 +101,40 @@ def get_reranker():
             return None
 
 
+def require_verified_v5_reranker() -> None:
+    """Fail startup unless the configured, SHA-pinned V5 runs real scoring.
+
+    Called only for explicit SERVY_RERANKER_REQUIRED deployments. Optional
+    development deployments retain their existing observable fallback.
+    """
+    if not is_reranker_enabled():
+        raise RuntimeError("SERVY_RERANKER_REQUIRED needs SERVY_RERANKER_ENABLED=1")
+    if _local_checkpoint() is None:
+        raise RuntimeError("SERVY_RERANKER_REQUIRED needs a local model path")
+    expected = str(getattr(settings, "SERVY_RERANKER_EXPECTED_SHA256", "") or "").strip().lower()
+    if expected != SERVY_V5_WEIGHTS_SHA256:
+        raise RuntimeError("SERVY_RERANKER_REQUIRED needs the pinned V5 weights SHA-256")
+
+    # Use the serving scorer, not a different default-activation prediction.
+    # No database, tenant data, network API, or production corpus is needed.
+    from types import SimpleNamespace
+
+    probe = SimpleNamespace(
+        source_kind="knowledge_document",
+        text="Check the hydraulic pressure gauge before servicing the pump.",
+        score=0.5,
+    )
+    ranked = rerank_candidates("How can I inspect pump pressure?", [probe], top_k=1)
+    if (
+        len(ranked) != 1
+        or ranked[0] is not probe
+        or getattr(probe, "reranker_model", None) != "servy_v5_bge_verified"
+        or not math.isfinite(float(getattr(probe, "rerank_logit", float("nan"))))
+        or not math.isfinite(float(getattr(probe, "reranker_score", float("nan"))))
+    ):
+        raise RuntimeError("Required V5 failed to load or score; refusing to start")
+
+
 # Exact digest of the exploratory V5 BGE reranker, verified on 2026-10-19.
 # This is public checkpoint identity metadata, not a secret or a promotion signal.
 SERVY_V5_WEIGHTS_SHA256 = "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda"
@@ -129,10 +163,16 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
     No source discovery, authorization bypass, or changes to historical cases.
     Fail closed to the existing order if scoring fails.
     """
-    if not is_reranker_enabled() or not candidates:
+    if not candidates:
+        return candidates[:top_k]
+    if not is_reranker_enabled():
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise RuntimeError("Required V5 reranker is disabled")
         return candidates[:top_k]
     model = get_reranker()
     if model is None:
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise RuntimeError("Required V5 reranker failed to load")
         return candidates[:top_k]
     try:
         t0 = time.perf_counter()
@@ -170,5 +210,7 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
         )
         return (pool + docs[pool_size:] + others)[:top_k]
     except Exception as exc:
+        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+            raise RuntimeError("Required V5 reranker inference failed") from exc
         logger.warning("CrossEncoder scoring failed; preserving original ranking: %s", exc)
         return candidates[:top_k]
