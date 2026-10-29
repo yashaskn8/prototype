@@ -64,3 +64,4 @@ private_training_data/
 inventory_sqlite.json
 migration_summary.json
 performance_benchmark.json
+outputs/

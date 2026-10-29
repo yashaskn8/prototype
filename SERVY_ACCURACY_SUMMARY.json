@@ -1,0 +1,186 @@
+{
+  "protocol": "servy-frozen-pool-paired-v1",
+  "timestamp_utc": "2026-10-29T07:35:00Z",
+  "verified_model_identity": {
+    "model_label": "servy_v5_bge_verified",
+    "base_model": "BAAI/bge-reranker-v2-m3",
+    "architecture": "XLMRobertaForSequenceClassification / CrossEncoder",
+    "sentence_transformers_version": "5.1.0 (runtime 5.7.0 tested)",
+    "loss_function": "BinaryCrossEntropyLoss",
+    "max_seq_length": 256,
+    "weights_filename": "model.safetensors",
+    "weights_sha256": "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda",
+    "directory_sha256": "47cd54fc552c1cf5327885365dbe443bbe8f3dbc955bb6b0ef1a9c35bd8b0192",
+    "local_checkpoint_path": "prototype/best_model",
+    "size_bytes": 2271071852
+  },
+  "evaluation_dataset": {
+    "benchmark_role": "REUSED_PROVISIONAL_DEVELOPMENT_SET",
+    "cases_path": "prototype/private_training_data/recovery_v4/family_resplit_20261018_234238/dev_unapproved_candidate.jsonl",
+    "cases_sha256": "c8f391b9591da9e3a7e4a97aedc117254a4c90169b382ffab550183620a4559c",
+    "corpus_path": "prototype/private_training_data/recovery_v4/servy_corpus_recovered_20261018T150933Z.jsonl",
+    "corpus_sha256": "50792737f0b297d2deb63e6a4222fd75fa569fd1ea7d104395517d60b39bd2fe",
+    "candidates_path": "prototype/private_training_data/recovery_v4/research_artifacts_resplit_20261019/frozen_candidates.jsonl",
+    "candidates_sha256": "8b2b3f54a597655e432ee63bcec86d8607085cf72c56e818776e0de960910e8d",
+    "total_queries": 42,
+    "corpus_chunks": 182,
+    "candidate_retrieval_method": "BM25 (lexical retrieval baseline; tenant filtered)",
+    "pool_size": 5,
+    "top_k": 10
+  },
+  "reproduction_status": {
+    "status": "EXACT_REPRODUCTION_VERIFIED",
+    "historical_hit_at_1": "35/42 (83.33%)",
+    "reproduced_hit_at_1": "35/42 (83.33%)",
+    "difference": "0.00%",
+    "reproduction_environment": "Local Windows CPU runtime via tools/servy_checkpoint_audit.py"
+  },
+  "aggregate_metrics": {
+    "queries": 42,
+    "hit_at_1": 83.33,
+    "hit_at_1_fraction": "35/42",
+    "hit_at_3": 88.1,
+    "hit_at_3_fraction": "37/42",
+    "hit_at_5": 88.1,
+    "hit_at_5_fraction": "37/42",
+    "hit_at_10": 90.48,
+    "hit_at_10_fraction": "38/42",
+    "candidate_recall_at_5": 88.1,
+    "candidate_recall_at_5_fraction": "37/42",
+    "candidate_recall_at_10": 90.48,
+    "candidate_recall_at_10_fraction": "38/42",
+    "document_hit_at_1_unverified": 90.48,
+    "document_hit_at_1_fraction": "38/42",
+    "document_hit_at_5_unverified": 92.86,
+    "document_hit_at_5_fraction": "39/42",
+    "mrr_at_10": 0.8605,
+    "head_5_oracle_ceiling_hit_at_1": 88.1,
+    "head_5_oracle_ceiling_fraction": "37/42",
+    "top_10_candidate_ceiling_hit_at_1": 90.48,
+    "top_10_candidate_ceiling_fraction": "38/42"
+  },
+  "offline_pool_sweep_counterfactual": [
+    {
+      "pool_size": 5,
+      "hit_at_1": 83.33,
+      "hit_at_5": 88.1,
+      "hit_at_10": 90.48,
+      "mrr_at_10": 0.8605
+    },
+    {
+      "pool_size": 8,
+      "hit_at_1": 83.33,
+      "hit_at_5": 90.48,
+      "hit_at_10": 90.48,
+      "mrr_at_10": 0.8619
+    },
+    {
+      "pool_size": 10,
+      "hit_at_1": 83.33,
+      "hit_at_5": 88.1,
+      "hit_at_10": 90.48,
+      "mrr_at_10": 0.8566
+    }
+  ],
+  "failure_classification": {
+    "total_failures": 7,
+    "category_A_reranker_ranking_failure": 1,
+    "category_B_candidate_depth_limitation": 1,
+    "category_C_candidate_retrieval_failure": 4,
+    "category_D_evaluation_label_uncertainty": 1,
+    "category_breakdown": {
+      "Category A (Reranker failure / sub-section granularity)": {
+        "count": 1,
+        "query_ids": [
+          "OP26-SLV-143-0"
+        ],
+        "description": "V5 scored chunk 142 (9.11) higher than gold chunk 143 (8.39); both belong to same troubleshooting section in Doc 163."
+      },
+      "Category B (Candidate depth limitation / outside pool 5)": {
+        "count": 1,
+        "query_ids": [
+          "OP26-SLV-145-2"
+        ],
+        "description": "Gold chunk 145 retrieved at rank 7 in BM25; outside head pool of 5; diluted by wrong-equipment maintenance documents."
+      },
+      "Category C (Candidate retrieval failure / missing from top 10)": {
+        "count": 4,
+        "query_ids": [
+          "OP26-SLV-144-2",
+          "OP26-SLV-75-2",
+          "OP26-SLV-74-1",
+          "OP26-SLV-142-2"
+        ],
+        "description": "BM25 failed to retrieve gold chunk into top 10 candidates due to token mismatch ('operating v specification' vs '5V/12V/19V')."
+      },
+      "Category D (Label error / silver mismatch vs semantic truth)": {
+        "count": 1,
+        "query_ids": [
+          "OP26-SLV-76-2"
+        ],
+        "description": "Query explicitly asked for escalation criteria; V5 correctly ranked chunk 79 ('Stop and escalate if') at #1, but silver label erroneously marked chunk 76 ('touch calibration')."
+      }
+    }
+  },
+  "v5_vs_v6_paired_comparison": {
+    "v5_hit_at_1": "35/42 (83.33%)",
+    "v6_hit_at_1": "35/42 (83.33%)",
+    "v5_hit_at_5": "37/42 (88.10%)",
+    "v6_hit_at_5": "37/42 (88.10%)",
+    "net_accuracy_gain": "0.00%",
+    "decision": "RETAIN_V5_REJECT_V6_PROMOTION",
+    "reasons": [
+      "Zero net accuracy improvement over verified V5 on the development set",
+      "Head-5 candidate oracle ceiling is 88.10% (bounded by BM25 retrieval, not reranker capacity)",
+      "Absence of genuine independent holdout: 10/10 mapped holdout families overlap training data",
+      "V6 training lacked verified organizational sign-off on private employer data (PENDING_AUTHORIZED_SIGN_OFF)"
+    ]
+  },
+  "runtime_serving_verification": {
+    "smoke_command": "python manage.py verify_v5_reranker",
+    "smoke_status": "PASS (weights verified, finite score returned)",
+    "runtime_test": "python manage.py test core.tests_v5_runtime -v 2",
+    "runtime_status": "PASS (Ran 1 test in 33.722s, OK)",
+    "security_isolation_verified": [
+      "cross_tenant_data_leakage: ZERO",
+      "cross_customer_data_leakage: ZERO",
+      "confidential_procedure_leakage: ZERO",
+      "wrong_equipment_procedure_leakage: ZERO"
+    ],
+    "api_response_fields_verified": {
+      "reranker_applied": true,
+      "reranker_model": "servy_v5_bge_verified"
+    }
+  },
+  "blocking_dependencies": {
+    "pr_16_status": "DRAFT (contains serving verification hardening; CI failed on regex assertion in test_required_v5_blocks_unavailable_checkpoint_fallback)",
+    "independent_holdout_status": "BLOCKED (frozen_independent_holdout_benchmark.jsonl is contaminated by 10/10 source-family overlap)",
+    "human_label_review_status": "PENDING (57 sources, 762 verdicts pending human sign-off)"
+  },
+  "recommended_next_experiments": [
+    {
+      "priority": 1,
+      "experiment": "Dense / Hybrid Candidate Retrieval (Qwen3 + BM25 RRF)",
+      "rationale": "Resolves all 4 Category C retrieval misses (OP26-SLV-144-2, 75-2, 74-1, 142-2) by bridging token mismatches on specifications and voltage codes.",
+      "expected_gain": "+4 queries (+9.52% Hit@1, elevating candidate ceiling to 97.6%)",
+      "requires_retraining": false,
+      "requires_gpu": true
+    },
+    {
+      "priority": 2,
+      "experiment": "Metadata Pre-Filtering by Equipment / Product Asset Code",
+      "rationale": "Eliminates wrong-equipment candidates from polluting candidate pools, resolving Category B (OP26-SLV-145-2).",
+      "expected_gain": "+1 query (+2.38% Hit@1)",
+      "requires_retraining": false,
+      "requires_gpu": false
+    },
+    {
+      "priority": 3,
+      "experiment": "Silver Dataset Label Adjudication & Multi-Chunk Alignment",
+      "rationale": "Corrects erroneous gold label in OP26-SLV-76-2 (where V5 correctly chose escalation criteria) and reconciles consecutive chunk boundaries in OP26-SLV-143-0.",
+      "expected_gain": "+2 queries (+4.76% Hit@1 under adjudicated evaluation)",
+      "requires_retraining": false,
+      "requires_gpu": false
+    }
+  ]
+}
