@@ -88,6 +88,7 @@ class Operation14TruthRecoveryTests(TestCase):
     # Phase 1: Chroma Document-Count / Chunk-Count Recall Bug
     # ---------------------------------------------------------------------------
 
+    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="minilm")
     def test_phase1_chroma_candidate_recall_multi_chunk_not_truncated_by_doc_count(self):
         """
         Phase 1 Verification:
@@ -119,6 +120,8 @@ class Operation14TruthRecoveryTests(TestCase):
         allowed_doc_ids = {doc.id}
         allowed_chunks_by_id = {c.id: c for c in chunks}
 
+        # This regression tests legacy MiniLM vector identity, not the
+        # application-wide BGE-small default. The decorator pins that profile.
         # Mock Chroma collection returning multiple chunks
         mock_coll = MagicMock()
         # 80 items returned from Chroma
@@ -159,6 +162,7 @@ class Operation14TruthRecoveryTests(TestCase):
             self.assertIn(chunks[1].id, chunk_indices)
             self.assertGreaterEqual(len(results), 2, "Candidate pool must contain multiple chunks from the single document")
 
+    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="minilm")
     def test_phase1_stale_chroma_metadata_filtered_out(self):
         """Stale vectors in Chroma that do not exist in authorized candidate pool must be skipped."""
         doc = KnowledgeDocument.objects.create(
