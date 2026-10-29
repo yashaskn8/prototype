@@ -264,6 +264,8 @@ SERVY_QWEN3_DENSE_GATE = float(os.getenv("SERVY_QWEN3_DENSE_GATE", "0.35"))
 SERVY_QWEN3_DENSE_FIRST = os.getenv("SERVY_QWEN3_DENSE_FIRST", "0") == "1"
 
 SERVY_RERANKER_ENABLED = os.getenv("SERVY_RERANKER_ENABLED", "0") == "1"
+# Explicit strict deployment mode: block application startup if pinned V5 inference fails.
+SERVY_RERANKER_REQUIRED = os.getenv("SERVY_RERANKER_REQUIRED", "0") == "1"
 # Optional V5 reranker: local checkpoint only, never the Qwen3 embedding model.
 SERVY_RERANKER_MODEL_PATH = os.getenv("SERVY_RERANKER_MODEL_PATH", "").strip()
 SERVY_RERANKER_EXPECTED_SHA256 = os.getenv("SERVY_RERANKER_EXPECTED_SHA256", "").strip()
