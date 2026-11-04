@@ -475,6 +475,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             or evidence[0] not in citations_by_id):
             continue
         citation = citations_by_id[evidence[0]]
+        if (claim.get("kind") == "observation"
+                and _already_reported_code_absence(" ".join([*history[-6:], question]))
+                and re.search(r"\b(?:code|warning|alarm)\b",
+                              claim["source_text"], re.I)):
+            continue
         # An authorized citation alone does not establish relevance to
         # the CURRENT user question.
         source_context = (
