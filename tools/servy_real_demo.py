@@ -29,7 +29,7 @@ from tools.servy_real_demo_index_review import (
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_dialogue import (
-    TOPICS, conversational_turn, conversation_recap,
+    TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, focus_answer, is_contextual_followup,
     out_of_scope_response,
 )
@@ -263,6 +263,14 @@ def _answer(asset_id, question, continuation=None):
     original, history, earlier_hazard = _load_demo_context(continuation, asset_id, customer.id)
     last_topic, previous_facts = _load_demo_dialogue_state(continuation)
     context, retrieval_query = _demo_query_context(asset, question, original, history)
+    # A new, explicit equipment symptom starts a new evidence thread; retain
+    # the signed customer history, but don't hide relevant facts just because
+    # they were shown for an earlier and different problem.
+    if (history and not context.is_followup
+            and TECHNICAL_SYMPTOMS.search(question)
+            and not out_of_scope_response(question)):
+        previous_facts = []
+        last_topic = None
     current_hazard, hazard_warning = check_for_safety_hazard(question)
     small_talk = conversational_turn(question)
     ambiguous_reply = followup_clarification(question, history)
@@ -360,6 +368,7 @@ def _answer(asset_id, question, continuation=None):
             contract, dialogue = focus_answer(
                 contract, question, last_topic=last_topic,
                 previous_facts=previous_facts, plan=plan,
+                history=history,
             )
             last_topic = dialogue["topic"]
             previous_facts = dialogue["facts"]
