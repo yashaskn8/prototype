@@ -170,6 +170,21 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=()):
     uncertainty boilerplate as if it came from a manual.
     """
     if contract.get("response_type") != "DIAGNOSTIC_GUIDANCE":
+        # Rewrite ONLY the known generic no-evidence fallback. Preserve
+        # policy refusals, safety escalations, revoked-document explanations
+        # and exact-spec guards verbatim.
+        presentation = contract.get("presentation") or {}
+        if (contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
+            and not contract.get("reason_code")
+            and presentation.get("message") ==
+                "There is insufficient evidence to establish a safe answer for this equipment and question. Ask an authorized technician for help."):
+            topic = question_topic(question, last_topic)
+            message = NO_EVIDENCE[topic]
+            return {
+                **contract, "summary": message, "answer": message,
+                "presentation": {**presentation, "message": message},
+            }, {"topic": topic, "facts": list(previous_facts)[:24],
+                "suggestions": []}
         return contract, {"topic": last_topic, "facts": list(previous_facts)[:24],
                           "suggestions": []}
     original = contract.get("presentation") or {}
