@@ -47,6 +47,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Real-data Demo Signed Index Integrity and Chat Tests
+        run: python -m unittest tools.test_servy_real_demo -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: V5 Research Fine-Tuning Input Safety Tests
         run: python -m unittest discover -s tools -p "test_servy_v5_training_preflight.py" -v
 
@@ -104,11 +109,6 @@ jobs:
 
       - name: Customer RAG Mutation Tests
         run: python manage.py test core.tests_customer_mutations -v 2
-
-      - name: Read-only Real Demo Continuation Tests
-        run: python -m unittest tools.test_servy_real_demo -v
-        env:
-          LOCALAPPDATA: /tmp
 
       - name: Run All Core Tests on MySQL
         run: python manage.py test core -v 2
