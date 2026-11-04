@@ -105,8 +105,8 @@ class CustomerRagMutationTests(TestCase):
             # Independent source approval must still prevent dangerous customer actions.
             self.assertEqual(data_mut["customer_safe_actions"], [])
 
-    def test_endpoint_mutation_bypassing_clarification_hazard_leaks_dangerous_guidance(self):
-        """Mutation 2: Demonstrates that disabling clarification hazard check allows dangerous symptoms through."""
+    def test_independent_hazard_detection_survives_endpoint_guard_mutation(self):
+        """A second safety boundary must still catch hazards if one view guard is disabled."""
         self.client.force_login(self.user)
         url = reverse("api_customer_support_query")
         payload = {
@@ -130,8 +130,10 @@ class CustomerRagMutationTests(TestCase):
             res_mut = self.client.post(url, payload, content_type="application/json")
             self.assertEqual(res_mut.status_code, 200)
             data_mut = res_mut.json()
-            # Under mutation, sparks/burning smell would fail to trigger escalation
-            self.assertNotEqual(data_mut["response_type"], "ESCALATION_REQUIRED")
+            # Defense in depth: downstream hazard checks still require escalation.
+            self.assertEqual(data_mut["response_type"], "ESCALATION_REQUIRED")
+            self.assertFalse(data_mut["can_resolve"])
+            self.assertEqual(data_mut["customer_safe_actions"], [])
 
     def test_endpoint_mutation_bypassing_resolve_safety_guard_allows_hazard_closure(self):
         """Mutation 3: Proves that removing the resolution safety guard allows hazardous interaction closure."""

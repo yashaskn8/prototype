@@ -177,6 +177,23 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(result["presentation"]["citations"], [])
         self.assertEqual(state["suggestions"], [])
 
+    def test_generic_insufficient_evidence_uses_intent_but_safety_refusal_is_unchanged(self):
+        generic = ("There is insufficient evidence to establish a safe answer "
+                   "for this equipment and question. Ask an authorized technician for help.")
+        initial = {
+            "response_type": "INSUFFICIENT_EVIDENCE",
+            "presentation": {"schema_version": "customer-answer-v1",
+                             "response_type": "INSUFFICIENT_EVIDENCE",
+                             "message": generic, "sections": [], "citations": []},
+        }
+        refined, state = focus_answer(initial, "What causes weak cooling?")
+        self.assertIn("documented cause", refined["presentation"]["message"])
+        self.assertEqual(state["topic"], "causes")
+        guarded = copy.deepcopy(initial)
+        guarded["presentation"]["message"] = "I cannot approve that operation."
+        untouched, _ = focus_answer(guarded, "Can I repair this unit?")
+        self.assertIs(untouched, guarded)
+
     def test_fingerprint_is_independent_of_response_local_citation_ids(self):
         base = contract()
         claim = base["presentation"]["supporting_claims"][0]
