@@ -77,6 +77,32 @@ def conversation_recap(question, history):
     )
 
 
+
+def vague_problem_clarification(question, history):
+    """Ask one concrete symptom question when no specific problem is known.
+
+    Never infer a failure from a generic 'not working' report. If an earlier
+    customer turn already names a symptom or fault code, let the regular
+    evidence-backed follow-up resolver use that state instead.
+    """
+    q = _words(question)
+    if not re.fullmatch(
+        r"(?:it(?: is|'s)? |the (?:unit|machine|equipment|ac|system) (?:is )?)?"
+        r"(?:not working|doesn'?t work|won'?t work|is broken|isn'?t functioning)"
+        r"(?: properly| at all)?", q,
+    ):
+        return None
+    substantive = re.compile(
+        r"\b(?:e[- ]?\d{1,3}|f[- ]?\d{1,3}|"
+        r"cool(?:ing)?|heat(?:ing)?|noise|noisy|leak\w*|drip\w*|"
+        r"overheat\w*|compressor|fan|filter|display|airflow|"
+        r"starts? then stops?|trips?|shuts? down)\b", re.I,
+    )
+    if any(substantive.search(str(turn)) for turn in (history or [])):
+        return None
+    return "What happens when you try to use it—for example, does it fail to start, run without the expected result, or show a code?"
+
+
 def followup_clarification(question, history):
     """Never infer which earlier suggestion an ambiguous reply refers to."""
     if not history:
