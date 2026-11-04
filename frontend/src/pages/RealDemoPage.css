@@ -152,3 +152,5 @@
   .real-demo-chat-composer { padding: 14px !important; }
   .real-demo-chat-composer-footer { flex-wrap: wrap; }
 }
+
+.real-demo-dialogue-meta { margin-top: 14px !important; color: #64748b; font-size: .72rem; line-height: 1.5; }

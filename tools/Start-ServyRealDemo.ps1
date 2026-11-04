@@ -1,6 +1,6 @@
 # Reopen the existing localhost-only, read-only real-data demo.
 # No migrations, seeding, account creation, or company-data changes.
-param([switch]$Watch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs)
+param([switch]$Watch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
@@ -54,7 +54,13 @@ if (!(Test-LocalPort 3306)) {
 $env:LOCALAPPDATA = $privateLocal
 $env:SERVY_REAL_DEMO_MODE = '1'
 $env:DJANGO_DEBUG = '1'
+# Technical claims stay extractive; a local open-weight model may only
+# choose from already approved evidence IDs and vetted follow-up prompts.
 $env:SERVY_LLM_PROVIDER = 'extractive'
+$env:SERVY_REAL_DEMO_DIALOGUE_MODE = if ($NoLocalChat) { 'rules' } else { 'local' }
+if (-not $env:SERVY_REAL_DEMO_CHAT_MODEL) {
+    $env:SERVY_REAL_DEMO_CHAT_MODEL = 'qwen2.5:3b'
+}
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'

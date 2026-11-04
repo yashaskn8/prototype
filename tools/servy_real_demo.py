@@ -27,8 +27,10 @@ from tools.servy_real_demo_index_review import (
     activate_runtime_snapshot, review_request, verify_signed_approval,
 )
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
+from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_dialogue import (
-    TOPICS, conversational_turn, followup_clarification, focus_answer,
+    TOPICS, conversational_turn, conversation_recap,
+    followup_clarification, focus_answer,
 )
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
@@ -253,7 +255,9 @@ def _answer(asset_id, question, continuation=None):
     current_hazard, hazard_warning = check_for_safety_hazard(question)
     small_talk = conversational_turn(question)
     ambiguous_reply = followup_clarification(question, history)
+    recap = conversation_recap(question, history)
     suggestions = []
+    local_planner_used = False
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
         warning = hazard_warning or (
@@ -269,16 +273,17 @@ def _answer(asset_id, question, continuation=None):
         contract = {"response_type": "ESCALATION_REQUIRED", "presentation": presentation,
                     "reason_code": "SAFETY_HAZARD", "engine": "safety-boundary"}
         rag = {"retrieval_backend": "none", "reranker_applied": False, "reranker_model": None}
-    elif small_talk is not None or ambiguous_reply is not None:
+    elif small_talk is not None or ambiguous_reply is not None or recap is not None:
         presentation = exception_presentation({
             "response_type": "CLARIFICATION",
-            "clarification_question": small_talk or ambiguous_reply,
+            "clarification_question": small_talk or ambiguous_reply or recap,
             "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
             "can_escalate": True,
         })
         contract = {"response_type": "CLARIFICATION", "presentation": presentation,
                     "reason_code": "CONVERSATION_ACKNOWLEDGEMENT" if small_talk
-                                   else "AMBIGUOUS_CUSTOMER_REPORT",
+                                   else "AMBIGUOUS_CUSTOMER_REPORT" if ambiguous_reply
+                                   else "CUSTOMER_REPORT_RECAP",
                     "engine": "local-dialogue"}
         rag = {"retrieval_backend": "not-required", "reranker_applied": False,
                "reranker_model": None}
@@ -318,9 +323,15 @@ def _answer(asset_id, question, continuation=None):
                 citation["url"] = citation["url"].replace(
                     "/api/customer-support/source/", "/demo-api/source/", 1
                 )
+            # Local Ollama may plan intent/evidence order only; it cannot
+            # create, edit or authorize a technical claim or a citation.
+            plan = plan_turn(
+                question, history=history, last_topic=last_topic, contract=contract,
+            )
+            local_planner_used = plan is not None
             contract, dialogue = focus_answer(
                 contract, question, last_topic=last_topic,
-                previous_facts=previous_facts,
+                previous_facts=previous_facts, plan=plan,
             )
             last_topic = dialogue["topic"]
             previous_facts = dialogue["facts"]
@@ -367,6 +378,7 @@ def _answer(asset_id, question, continuation=None):
             last_topic=last_topic, shown_facts=previous_facts,
         ),
         "conversation_turn": len(history) + 1,
+        "dialogue_planner": "local-ollama-structured" if local_planner_used else "deterministic-grounded",
         "ticket_context": ticket_context,
         "citations": [
             {"document_id": c["document_id"], "chunk_id": c["chunk_id"]}

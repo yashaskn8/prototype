@@ -248,7 +248,13 @@ export function RealDemoPage() {
                               <strong>Servy</strong>
                               <span className={message.data?.response_type === 'DIAGNOSTIC_GUIDANCE'
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
-                                {(message.data?.response_type || 'RESPONSE').replaceAll('_', ' ')}
+                                {({
+                                  DIAGNOSTIC_GUIDANCE: 'From your manual',
+                                  CLARIFICATION: 'Quick question',
+                                  INSUFFICIENT_EVIDENCE: 'More evidence needed',
+                                  ESCALATION_REQUIRED: 'Safety notice',
+                                  POLICY_VIOLATION: 'Not permitted',
+                                })[message.data?.response_type] || 'Response'}
                               </span>
                             </div>
                             {message.data?.presentation ? <CustomerAnswer
@@ -256,6 +262,13 @@ export function RealDemoPage() {
                               presentation={message.data.presentation}
                               loadSource={url => call(url, token)}
                             /> : <p>{message.data?.message || 'No response is available.'}</p>}
+                            {message.data?.response_type === 'DIAGNOSTIC_GUIDANCE' && (
+                              <p className="real-demo-dialogue-meta">
+                                {message.data.dialogue_planner === 'local-ollama-structured'
+                                  ? 'Local open-source dialogue planning · source-verified facts'
+                                  : 'Source-verified facts · deterministic conversational fallback'}
+                              </p>
+                            )}
                             {Array.isArray(message.data?.clarification_options)
                               && message.data.clarification_options.length > 0
                               && index === messages.length - 1 && (
