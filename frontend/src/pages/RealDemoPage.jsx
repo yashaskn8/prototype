@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Bot, BookOpen, Building2, FileText, LockKeyhole, LogOut, Package, ShieldCheck, Ticket } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Bot, BookOpen, Building2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
 import './RealDemoPage.css';
 
@@ -20,6 +20,10 @@ export function RealDemoPage() {
   const [assets, setAssets] = useState(null);
   const [assetId, setAssetId] = useState('');
   const [question, setQuestion] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [continuation, setContinuation] = useState(null);
+  const chatEndRef = useRef(null);
+  const requestRevision = useRef(0);
   const [result, setResult] = useState(null);
   const [answeredQuestion, setAnsweredQuestion] = useState('');
   const [ticketDraft, setTicketDraft] = useState(null);
@@ -29,12 +33,34 @@ export function RealDemoPage() {
   const [error, setError] = useState('');
   const [view, setView] = useState('chat');
 
+
+  // Chat and its signed retrieval context are deliberately browser-memory only.
+  // No customer conversation is saved to the company's operational database.
+  function resetConversation() {
+    requestRevision.current += 1;
+    setMessages([]);
+    setContinuation(null);
+    setQuestion('');
+    setResult(null);
+    setAnsweredQuestion('');
+    setTicketDraft(null);
+    setTicketPreview(null);
+    setTicketConfirmation(null);
+    setBusy(false);
+    setError('');
+  }
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [messages]);
+
   async function enter(event) {
     event.preventDefault();
     setError('');
     try {
       const value = entry.trim();
       const data = await call('/demo-api/inventory/', value);
+      resetConversation();
       setToken(value);
       setEntry('');
       setAssets(data.assets);
@@ -46,27 +72,63 @@ export function RealDemoPage() {
     }
   }
 
-  async function ask(event) {
-    event.preventDefault();
+
+  async function ask(event, suggestedQuestion = null) {
+    event?.preventDefault?.();
+    const submittedQuestion = (suggestedQuestion ?? question).trim();
+    if (!submittedQuestion || busy || !token || !assetId) return;
+    const activeRevision = requestRevision.current;
+    const activeAsset = assetId;
+    const messageId = `user-${Date.now()}-${Math.random()}`;
+    const responseId = `assistant-${Date.now()}-${Math.random()}`;
     setError('');
-    setResult(null);
+    setBusy(true);
     setTicketDraft(null);
     setTicketPreview(null);
     setTicketConfirmation(null);
-    setBusy(true);
+    setMessages(previous => [...previous,
+      { id: messageId, role: 'user', text: submittedQuestion },
+      { id: responseId, role: 'assistant', pending: true },
+    ]);
+    setQuestion('');
     try {
-      const submittedQuestion = question.trim();
       const data = await call('/demo-api/query/', token, {
-        method: 'POST', body: JSON.stringify({ asset_id: Number(assetId), question: submittedQuestion }),
+        method: 'POST',
+        body: JSON.stringify({
+          asset_id: Number(activeAsset),
+          question: submittedQuestion,
+          continuation,
+        }),
       });
+      if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
+      setMessages(previous => previous.map(message => message.id === responseId
+        ? { id: responseId, role: 'assistant', data }
+        : message));
+      setContinuation(data.continuation || null);
       setResult(data);
       setAnsweredQuestion(submittedQuestion);
-    } catch (err) { setError(err.message); }
-    finally { setBusy(false); }
+    } catch (err) {
+      if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
+      setMessages(previous => previous.filter(message =>
+        message.id !== responseId && message.id !== messageId));
+      setQuestion(submittedQuestion);
+      setError(err.message);
+    } finally {
+      if (requestRevision.current === activeRevision && activeAsset === assetId) {
+        setBusy(false);
+      }
+    }
   }
 
   function startTicket() {
-    setTicketDraft({ complaint_type: answeredQuestion.slice(0, 180), complaint_text: answeredQuestion });
+    const customerTurns = messages.filter(message => message.role === 'user');
+    const originalComplaint = customerTurns[0]?.text || answeredQuestion;
+    const customerHistory = customerTurns.map((message, index) =>
+      `Turn ${index + 1}: ${message.text}`).join('\n');
+    setTicketDraft({
+      complaint_type: originalComplaint.slice(0, 180),
+      complaint_text: customerHistory.slice(0, 4000) || originalComplaint,
+    });
     setTicketPreview(null);
     setTicketConfirmation(null);
     setError('');
@@ -108,8 +170,7 @@ export function RealDemoPage() {
       <div className="sidebar-footer"><div className="user-profile-badge"><div className="avatar">RD</div>
         <div className="user-meta"><div className="user-name">Real-data demo</div><div className="user-role">Local · read-only</div></div></div>
         {assets && <button type="button" className="btn btn-secondary btn-sm real-demo-lock" onClick={() => {
-          setToken(''); setAssets(null); setResult(null); setQuestion(''); setTicketDraft(null);
-          setTicketPreview(null); setTicketConfirmation(null); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
+          resetConversation(); setToken(''); setAssets(null); setAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
     </aside>
     <main className="main-area">
       <header className="top-bar"><div className="top-bar-title"><h2>{view === 'assets' && assets ? 'Company Equipment' : 'Customer AI Self-Service'}</h2>
@@ -140,17 +201,15 @@ export function RealDemoPage() {
           <section className="card"><div className="card-header"><h2 className="card-title"><Package size={20} /> Company Equipment</h2>
             <span className="badge badge-indexed">Read-only inventory</span></div>
             <div className="real-demo-inventory">{assets.map(item => <button className="real-demo-inventory-item" type="button" key={item.id}
-              onClick={() => { setAssetId(String(item.id)); setResult(null); setTicketDraft(null);
-                setTicketPreview(null); setTicketConfirmation(null); setView('chat'); }}>
+              onClick={() => { resetConversation(); setAssetId(String(item.id)); setView('chat'); }}>
               <span className="real-demo-icon"><Package size={18} /></span><span><strong>{item.name}</strong><small>{item.code} · {item.model || 'Model not listed'}</small></span>
               <em>{item.documents.length ? `${item.documents.length} permitted manuals` : 'No demo document access'}</em></button>)}</div></section>
         </> : <>
-          <div className="real-demo-columns"><section className="card real-demo-equipment">
+          <div className="real-demo-columns real-demo-conversation-layout"><section className="card real-demo-equipment">
             <h2 className="card-title"><Building2 size={20} /> Equipment Selection</h2>
             <div className="form-group"><label className="form-label" htmlFor="demo-asset">Equipment / Asset</label>
               <select className="form-control" id="demo-asset" value={assetId}
-                onChange={event => { setAssetId(event.target.value); setResult(null); setTicketDraft(null);
-                  setTicketPreview(null); setTicketConfirmation(null); }}>
+                onChange={event => { resetConversation(); setAssetId(event.target.value); }}>
                 {assets.map(item => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}</select></div>
             {asset && <div className="real-demo-asset-detail"><h3>{asset.name}</h3>
               <dl><div><dt>Asset code</dt><dd>{asset.code}</dd></div>
@@ -158,28 +217,95 @@ export function RealDemoPage() {
                 {asset.site && <div><dt>Site</dt><dd>{asset.site}</dd></div>}</dl>
               {!asset.documents.length && <p className="real-demo-doc-status"><FileText size={17} />
                 Technical-document access unavailable in this demo</p>}</div>}</section>
-            <section className="card real-demo-assistant"><div className="real-demo-assistant-header"><Bot size={25} />
-              <div><h2>AI Troubleshooting Assistant</h2><p>Original company documents · Read-only Q&A</p></div></div>
-              <form onSubmit={ask}><label className="form-label" htmlFor="demo-question">Describe the problem or symptom you are observing</label>
-                <textarea className="form-control" id="demo-question" maxLength={4000} value={question}
-                  onChange={event => setQuestion(event.target.value)} rows={5} required
-                  placeholder="e.g. What does the manual say about a low-pressure fault?" />
-                <div className="real-demo-char-count"><span>Unsupported guidance will be refused.</span><span>{question.length}/4000</span></div>
-                <button className="btn btn-primary real-demo-full" type="submit" disabled={busy}>
-                  {busy ? 'Checking original manuals…' : 'Ask Servy'}</button></form></section></div>
-          {result && <section className="card real-demo-result"><div className="real-demo-result-header">
-            <h2><span className="real-demo-result-icon"><Bot size={20} /></span> Servy answer</h2>
-            <div className={`real-demo-result-status ${result.response_type === 'DIAGNOSTIC_GUIDANCE' ? 'is-guidance' : 'is-limited'}`}>
-              {result.response_type.replaceAll('_', ' ')}</div>
+
+            <section className="card real-demo-assistant real-demo-chat-panel" aria-label="Ask Servy conversation">
+              <div className="real-demo-assistant-header">
+                <Bot size={25} />
+                <div className="real-demo-chat-heading">
+                  <h2>Ask Servy</h2>
+                  <p>Continuous conversation · Approved original manuals · Cited answers</p>
+                </div>
+                <button type="button" className="real-demo-new-chat" onClick={resetConversation}>
+                  <Plus size={16} /> New chat
+                </button>
+              </div>
+              <div className="real-demo-chat-thread" role="log" aria-label="Conversation messages" aria-live="polite">
+                {messages.length === 0 && <div className="real-demo-chat-empty">
+                  <Bot size={28} />
+                  <h3>Ask about this equipment</h3>
+                  <p>Describe a symptom or fault code. Continue asking follow-up questions;
+                    Servy will use the earlier customer reports to retrieve relevant approved documentation.</p>
+                  <small>This is a read-only local demo. Conversations exist only in this browser tab and are not saved as company records.</small>
+                </div>}
+                {messages.map((message, index) => (
+                  <div key={message.id} className={`real-demo-chat-message ${message.role === 'user' ? 'is-user' : 'is-assistant'}`}>
+                    <div className="real-demo-chat-avatar">{message.role === 'user' ? 'You' : <Bot size={19} />}</div>
+                    <div className="real-demo-chat-bubble">
+                      {message.role === 'user' ? <div className="real-demo-chat-user-text">{message.text}</div>
+                        : message.pending ? <p role="status">Checking the approved manuals and earlier messages…</p>
+                          : <>
+                            <div className="real-demo-chat-answer-heading">
+                              <strong>Servy</strong>
+                              <span className={message.data?.response_type === 'DIAGNOSTIC_GUIDANCE'
+                                ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
+                                {(message.data?.response_type || 'RESPONSE').replaceAll('_', ' ')}
+                              </span>
+                            </div>
+                            {message.data?.presentation ? <CustomerAnswer
+                              assetId={Number(assetId)}
+                              presentation={message.data.presentation}
+                              loadSource={url => call(url, token)}
+                            /> : <p>{message.data?.message || 'No response is available.'}</p>}
+                            {Array.isArray(message.data?.clarification_options)
+                              && message.data.clarification_options.length > 0
+                              && index === messages.length - 1 && (
+                                <div className="real-demo-chat-options" aria-label="Clarification suggestions">
+                                  {message.data.clarification_options.map(option => (
+                                    <button key={option} type="button" disabled={busy}
+                                      onClick={() => ask(null, option)}>{option}</button>
+                                  ))}
+                                </div>
+                              )}
+                            {index === messages.length - 1 && message.data?.ticket_context && (
+                              <div className="real-demo-ticket-action">
+                                <p>Still need assistance? Prepare a service ticket draft for review only.</p>
+                                <button className="btn btn-secondary btn-sm" type="button" onClick={startTicket}>
+                                  <Ticket size={17} /> Review ticket draft
+                                </button>
+                              </div>
+                            )}
+                          </>}
+                    </div>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+              <form className="real-demo-chat-composer" onSubmit={ask}>
+                <label className="form-label" htmlFor="demo-question">
+                  {messages.length ? 'Continue this conversation' : 'Describe the equipment issue'}
+                </label>
+                <textarea className="form-control" id="demo-question" maxLength={4000}
+                  value={question} rows={3} required disabled={busy || !asset?.can_query}
+                  onChange={event => setQuestion(event.target.value)}
+                  placeholder={messages.length ? 'Ask a follow-up, share an observation, or report a code…'
+                    : 'e.g. My VRF module is not cooling. There is an error on the display…'}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      if (question.trim()) ask(null);
+                    }
+                  }}
+                />
+                <div className="real-demo-chat-composer-footer">
+                  <span>{question.length}/4000 · Answers must be supported by permitted documents</span>
+                  <button className="btn btn-primary" type="submit"
+                    disabled={busy || !question.trim() || !asset?.can_query}>
+                    <Send size={16} /> {busy ? 'Searching…' : 'Send'}
+                  </button>
+                </div>
+              </form>
+            </section>
           </div>
-            {result.presentation ? <CustomerAnswer assetId={Number(assetId)} presentation={result.presentation}
-              loadSource={url => call(url, token)} /> : <p>{result.message}</p>}
-            {result.ticket_context && <div className="real-demo-ticket-action">
-              <p>If this answer did not resolve the issue, prepare a service ticket for review.</p>
-              <button className="btn btn-secondary" type="button" onClick={startTicket}>
-                <Ticket size={17} /> Create Ticket</button>
-            </div>}
-          </section>}
           {ticketDraft && <section className="card real-demo-ticket" aria-label="Mock ticket form">
             <div className="real-demo-ticket-heading"><div><span className="real-demo-kicker">REVIEW ONLY</span>
               <h2>Review service ticket details</h2></div>
