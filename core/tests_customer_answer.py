@@ -217,6 +217,8 @@ class CustomerAnswerSecurityTests(TestCase):
         for view,kwargs in ((CustomerConversationTicketView,{'conversation_uuid':'00000000-0000-0000-0000-000000000000'}),
                             (DiagnosticEscalateView,{'session_id':'00000000-0000-0000-0000-000000000000'})):
             req=APIRequestFactory().post('/synthetic/',{},format='json')
+            # APIRequestFactory bypasses Django SessionMiddleware.
+            req.session={'tenant_id':self.tenant.id}
             force_authenticate(req,user=self.user)
             self.assertEqual(view.as_view()(req,**kwargs).status_code,400)
         self.assertEqual(before,ServiceCall.objects.count())

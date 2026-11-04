@@ -1,4 +1,5 @@
 import io
+import json
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
@@ -253,12 +254,18 @@ class ApiSecurityAndPermissionsTests(TestCase):
         self.client.login(username="cust1_user", password="CustPassword!2026")
 
         # First call creates ServiceCall
-        res1 = self.client.post(escalate_url, {"confirm_ticket_creation": True}, format="json")
+        # Django TestCase.client is a Django Client, not DRF APIClient:
+        # format="json" otherwise sends form strings instead of JSON booleans.
+        res1 = self.client.post(
+            escalate_url, data=json.dumps({"confirm_ticket_creation": True}),
+            content_type="application/json")
         self.assertEqual(res1.status_code, 200)
         call_id_1 = res1.data["call_id"]
 
         # Second call returns the existing ServiceCall
-        res2 = self.client.post(escalate_url, {"confirm_ticket_creation": True}, format="json")
+        res2 = self.client.post(
+            escalate_url, data=json.dumps({"confirm_ticket_creation": True}),
+            content_type="application/json")
         self.assertEqual(res2.status_code, 200)
         call_id_2 = res2.data["call_id"]
 
@@ -492,7 +499,9 @@ class ApiSecurityAndPermissionsTests(TestCase):
 
         # Step C: Customer escalates unresolved issue
         escalate_url = reverse("api_customer_support_escalate", kwargs={"pk": interaction_id})
-        esc_res = self.client.post(escalate_url, {"confirm_ticket_creation": True}, format="json")
+        esc_res = self.client.post(
+            escalate_url, data=json.dumps({"confirm_ticket_creation": True}),
+            content_type="application/json")
         self.assertEqual(esc_res.status_code, 200)
         call_id = esc_res.data["call_id"]
         servy_id = esc_res.data["servy_id"]

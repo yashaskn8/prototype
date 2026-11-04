@@ -408,6 +408,31 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertIn("not cooling", query)
 
 
+    def test_component_followup_uses_active_signed_issue_and_explicit_component(self):
+        from tools.servy_real_demo_dialogue import is_component_followup
+        asset = SimpleNamespace(
+            id=60, name="Synthetic Split AC", asset_code="TEST-60",
+            model_number="AC-60", product=SimpleNamespace(name="Synthetic AC"),
+        )
+        history = [
+            "The AC overheats.",
+            "The AC is running but is not cooling.",
+        ]
+        for short in ("What about the compressor?", "And the fan?",
+                      "Could it be the filter?"):
+            with self.subTest(short=short):
+                self.assertTrue(is_component_followup(short))
+                context, query = demo._demo_query_context(
+                    asset, short, history[0], history)
+                self.assertTrue(context.is_followup)
+                self.assertIn("not cooling", query)
+                self.assertNotIn("overheats", query)
+        for unrelated in ("Who is Yashas?", "What is the capital of France?"):
+            context, query = demo._demo_query_context(
+                asset, unrelated, history[0], history)
+            self.assertFalse(context.is_followup)
+            self.assertEqual(query, unrelated)
+
     def test_latest_new_symptom_replaces_stale_first_symptom_in_retrieval(self):
         asset = SimpleNamespace(
             id=60, name="Synthetic Split AC", asset_code="TEST-60",
