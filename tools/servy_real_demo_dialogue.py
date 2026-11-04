@@ -177,11 +177,13 @@ def is_contextual_followup(question):
         q,
     ):
         return True
+    # A mere pronoun ("that", "these", "it") cannot turn an unrelated
+    # question into another equipment retrieval. Require a known continuation
+    # phrase, not a short-word heuristic.
     if re.search(
-        r"\b(?:that|those|these|the same|still|already|what else|"
-        r"what other|another cause|other reason|what next)\b", q
-    ) and not re.search(
-        r"\b(?:who|whose|gender|personal|weather|capital|politic)\b", q
+        r"\b(?:what else|what other|another cause|other reason|what next|"
+        r"same issue|still not fixed|already checked|already tried|"
+        r"that did not help|that didn't help)\b", q
     ):
         return True
     return False
@@ -228,7 +230,7 @@ _FOCUSED_SUBJECTS = (
     (r"\bsensor\b", r"\bsensor\w*\b"),
     (r"\bdrain\w*\b", r"\bdrain\w*\b"),
     (r"\b(?:airflow|air flow)\b", r"\b(?:airflow|air flow)\b"),
-    (r"\b(?:outdoor|external)\s+unit\b", r"\b(?:outdoor|external)\s+unit\b"),
+    (r"\b(?:outdoor|external)\s+unit\b", r"\b(?:outdoor|external|condenser)\b"),
     (r"\b(?:remote|controller)\b", r"\b(?:remote|controller)\b"),
     (r"\b(?:settings?|setpoint)\b", r"\b(?:settings?|setpoint)\b"),
     (r"\b(?:not starting|doesn.t start|won.t start|no power)\b",
