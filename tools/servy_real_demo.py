@@ -218,9 +218,21 @@ def _demo_query_context(asset, question, first, history):
         asset_code=asset.asset_code or "",
         product_name=asset.product.name if asset.product else "",
     )
-    context.turn_count = len(history)
-    context.original_complaint = first or question
-    for utterance in [context.original_complaint, *history, question]:
+    from tools.servy_real_demo_dialogue import TECHNICAL_SYMPTOMS
+    # Preserve the signed chat for recap, but search the latest independently
+    # reported technical issue instead of mixing every past issue into it.
+    active_question = bool(TECHNICAL_SYMPTOMS.search(question)) and not is_contextual_followup(question)
+    active_index = 0
+    if not active_question:
+        for index in range(len(history) - 1, -1, -1):
+            if TECHNICAL_SYMPTOMS.search(history[index]) and not out_of_scope_response(history[index]):
+                active_index = index
+                break
+    active_history = [] if active_question else history[active_index:]
+    context.turn_count = len(active_history)
+    context.original_complaint = (question if active_question else
+                                  (active_history[0] if active_history else first or question))
+    for utterance in [context.original_complaint, *active_history, question]:
         for symptom in extract_symptoms_from_text(utterance):
             if symptom not in context.reported_symptoms:
                 context.reported_symptoms.append(symptom)
@@ -229,10 +241,10 @@ def _demo_query_context(asset, question, first, history):
         for completed in _confirmed_checks(utterance, []):
             if completed not in context.completed_checks:
                 context.completed_checks.append(completed)
-    context.history_turns = [{"role": "customer", "text": t} for t in history]
+    context.history_turns = [{"role": "customer", "text": t} for t in active_history]
     # Never append prior equipment symptoms to an unrelated question just
     # because it is short, or to a new self-contained symptom description.
-    context.is_followup = bool(history) and is_contextual_followup(question)
+    context.is_followup = bool(active_history) and is_contextual_followup(question)
     contextual_question = contextualize_customer_query(question, context, asset)
     return context, contextual_question or question
 
