@@ -289,7 +289,8 @@ def question_topic(question, last_topic=None):
     if re.search(
         r"\b(?:how (?:do|can|should) i\b|how to\b|"
         r"what settings? should i (?:use|select)|"
-        r"can i\b|may i\b|is it safe to\b)", q
+        r"(?:can i|may i)\s+(?!safely\s+(?:observe|check|report)\b|(?:observe|check|report)\b)"
+        r"|is it safe to\s+(?!(?:observe|check|report)\b))", q
     ):
         return "next"
     if re.search(r"\b(?:what (?:should|can) i do(?:\s+next)?|what next|next step|"
