@@ -31,7 +31,7 @@ from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
-    followup_clarification, focus_answer, is_component_followup,
+    followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup,
     out_of_scope_response,
 )
@@ -290,7 +290,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         last_topic = None
     current_hazard, hazard_warning = check_for_safety_hazard(question)
     small_talk = conversational_turn(question)
-    ambiguous_reply = followup_clarification(question, history)
+    ambiguous_reply = (followup_clarification(question, history)
+                       or vague_problem_clarification(question, history))
     recap = conversation_recap(question, history)
     off_topic = out_of_scope_response(question)
     suggestions = []
