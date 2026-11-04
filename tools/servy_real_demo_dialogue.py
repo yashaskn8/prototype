@@ -8,6 +8,8 @@ never asserts a new technical fact.
 import hashlib
 import re
 
+from core.services.content_safety import detect_document_prompt_injection
+
 TOPICS = frozenset({"causes", "observations", "next", "meaning", "documents", "general"})
 FACT_KINDS = frozenset({"possible_cause", "information", "document_fact", "observation", "customer_procedure"})
 HEADING = {
@@ -510,13 +512,48 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             continue
         if (not isinstance(claim.get("text"), str)
             or not claim["text"].strip()
-            or not isinstance(claim.get("source_text"), str)):
+            or not isinstance(claim.get("source_text"), str)
+            or not claim["source_text"].strip()):
+            continue
+        # A claim is a *view* of an original authorized source sentence, not
+        # free-form model output. Reject any altered technical wording.
+        if claim["kind"] == "possible_cause" and (
+            claim["text"] != "Possible documented cause: " + claim["source_text"]
+        ):
+            continue
+        if claim["kind"] in {"information", "observation", "customer_procedure"} and (
+            claim["text"] != claim["source_text"]
+        ):
+            continue
+        # Ingestion already scans sources; this is a second fail-closed
+        # barrier for a stale/corrupt contract or poisoned retrieved passage.
+        if detect_document_prompt_injection(claim["source_text"]):
             continue
         evidence = claim.get("evidence_ids")
         if (not isinstance(evidence, list) or len(evidence) != 1
             or evidence[0] not in citations_by_id):
             continue
         citation = citations_by_id[evidence[0]]
+        if claim["kind"] == "customer_procedure":
+            # Never promote a plausible-looking source sentence to a
+            # customer action without the underlying authorization record.
+            authorized_presentation = any(
+                isinstance(item, dict)
+                and item.get("id") == claim.get("id")
+                and item.get("source_text") == claim["source_text"]
+                and item.get("evidence_ids") == evidence
+                for item in original.get("customer_authorized_actions", [])
+            )
+            authorized_contract = any(
+                isinstance(item, dict)
+                and item.get("action_id") == claim.get("id")
+                and item.get("safety_classification") == "CUSTOMER_APPROVED"
+                and item.get("document_id") == citation.get("document_id")
+                and item.get("chunk_id") == citation.get("chunk_id")
+                for item in contract.get("customer_safe_actions", [])
+            )
+            if not (authorized_presentation and authorized_contract):
+                continue
         if (claim.get("kind") == "observation"
                 and _already_reported_code_absence(" ".join([*history[-6:], question]))
                 and re.search(r"\b(?:code|warning|alarm)\b",
