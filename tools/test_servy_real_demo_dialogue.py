@@ -20,6 +20,11 @@ class VagueProblemClarificationTests(unittest.TestCase):
                 self.assertIn("What happens", clarification)
                 self.assertEqual(clarification.count("?"), 1)
 
+    def test_recurring_problem_uses_selected_issue_context(self):
+        self.assertTrue(is_contextual_followup("Why does it keep happening?"))
+        self.assertTrue(is_contextual_followup("Why does this keep happening?"))
+        self.assertFalse(is_contextual_followup("The machine is overheating"))
+
     def test_known_prior_symptom_does_not_erase_context(self):
         self.assertIsNone(vague_problem_clarification(
             "It is not working", ["My Split AC runs but is not cooling"]))
