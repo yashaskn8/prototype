@@ -707,17 +707,26 @@ class CustomerSupportEscalateView(APIView):
         # Idempotent ticket creation with OneToOne constraint enforcement and customer observation preservation
         call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
 
-        if interaction.conversation:
-            interaction.conversation.status = "ESCALATED"
-            interaction.conversation.linked_service_call = call
-            interaction.conversation.save(update_fields=["status", "linked_service_call", "updated_at"])
-            CustomerMessage.objects.create(
-                tenant=tenant,
-                conversation=interaction.conversation,
-                sender_role="system",
-                message_text=f"Service Call #{call.servy_id} created successfully.",
-                structured_contract={"call_id": call.id, "servy_id": call.servy_id},
-            )
+        if interaction.conversation_id:
+            # Lock the incident before recording the system event: repeated
+            # submissions must not create duplicate ticket-announcement messages.
+            with transaction.atomic():
+                conv = CustomerConversation.objects.select_for_update().get(
+                    pk=interaction.conversation_id, tenant=tenant
+                )
+                if conv.linked_service_call_id and conv.linked_service_call_id != call.id:
+                    return Response({"detail": "Conversation is linked to another service call."}, status=409)
+                if not conv.linked_service_call_id:
+                    conv.status = "ESCALATED"
+                    conv.linked_service_call = call
+                    conv.save(update_fields=["status", "linked_service_call", "updated_at"])
+                    CustomerMessage.objects.create(
+                        tenant=tenant,
+                        conversation=conv,
+                        sender_role="system",
+                        message_text=f"Service Call #{call.servy_id} created successfully.",
+                        structured_contract={"call_id": call.id, "servy_id": call.servy_id},
+                    )
 
         return Response({
             "call_id": call.id,

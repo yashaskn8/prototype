@@ -129,6 +129,19 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
     if interaction.escalated_call_id:
         return interaction.escalated_call
 
+    # An incident already linked to a service call must not create another
+    # call simply because escalation came from a different interaction or
+    # the caller omitted the optional diagnostic session UUID.
+    if interaction.conversation_id:
+        conv = interaction.conversation
+        if conv.linked_service_call_id:
+            linked = conv.linked_service_call
+            if (not linked or linked.tenant_id != interaction.tenant_id
+                or linked.customer_id != interaction.customer_id
+                or linked.asset_id != interaction.asset_id):
+                raise ValueError("Conversation has an inconsistent service-call association.")
+            return linked
+
     tenant = interaction.tenant
     original_customer_complaint, conversation_evidence = _conversation_ticket_evidence(interaction)
 

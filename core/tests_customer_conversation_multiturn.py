@@ -568,3 +568,36 @@ class CustomerConversationMultiTurnTests(TestCase):
         self.assertEqual(second.status_code, 201)
         self.assertNotEqual(first.json()["conversation_uuid"], second.json()["conversation_uuid"])
         self.assertNotEqual(first.json()["session_id"], second.json()["session_id"])
+
+    def test_repeated_escalation_on_one_conversation_is_single_ticket_and_event(self):
+        """Different interaction URLs must not duplicate one incident's service call."""
+        from core.models import ServiceCall
+        self.client.force_login(self.user_a1)
+        conv = CustomerConversation.objects.create(
+            tenant=self.tenant_a, customer=self.customer_a1, site=self.site_a1,
+            asset=self.asset_split_ac, created_by=self.user_a1,
+        )
+        interactions = [
+            CustomerInteraction.objects.create(
+                tenant=self.tenant_a, customer=self.customer_a1,
+                site=self.site_a1, asset=self.asset_split_ac,
+                conversation=conv, created_by=self.user_a1,
+                question=f"Airflow is weak on turn {i}", answer="No diagnosis confirmed.",
+                source_refs=[],
+            )
+            for i in (1, 2)
+        ]
+        calls_before = ServiceCall.objects.count()
+        results = [
+            self.client.post(
+                reverse("api_customer_support_escalate", kwargs={"pk": interaction.id}),
+                {"confirm_ticket_creation": True},
+                content_type="application/json",
+            )
+            for interaction in interactions
+        ]
+        self.assertEqual([response.status_code for response in results], [200, 200])
+        self.assertEqual(results[0].json()["call_id"], results[1].json()["call_id"])
+        self.assertEqual(ServiceCall.objects.count(), calls_before + 1)
+        conv.refresh_from_db()
+        self.assertEqual(conv.messages.filter(sender_role="system").count(), 1)
