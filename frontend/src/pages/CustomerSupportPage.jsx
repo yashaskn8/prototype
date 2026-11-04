@@ -197,6 +197,7 @@ export function CustomerSupportPage() {
       const res = await api.get(`/api/customer-support/context/?asset_id=${assetId}`);
       if (activeAssetRef.current !== String(assetId) || chatRevision.current !== revision) return;
       if (res.active_conversation) {
+        setActiveSessionNotice(null);
         setConversationUuid(res.active_conversation.conversation_uuid);
         if (res.active_conversation.messages && res.active_conversation.messages.length > 0) {
           setMessages(res.active_conversation.messages);
@@ -247,13 +248,17 @@ export function CustomerSupportPage() {
   async function handleStartNewConversation() {
     if (!selectedSite || !selectedAsset || submitting || startingConversation) return;
     if (messages.length > 0 && !window.confirm('Start a new troubleshooting conversation for this equipment? Your current conversation will remain saved in History.')) return;
+    const revision = chatRevision.current;
+    const assetId = selectedAsset;
+    const siteId = selectedSite;
     setStartingConversation(true);
     setError(null);
     try {
       // Omitting a UUID in the query endpoint can reuse an existing incident.
       const created = await api.post('/api/customer-support/conversations/', {
-        site_id: selectedSite, asset_id: selectedAsset,
+        site_id: siteId, asset_id: assetId,
       });
+      if (chatRevision.current !== revision || activeAssetRef.current !== assetId) return;
       chatRevision.current += 1;
       setConversationUuid(created.conversation_uuid);
       setMessages([]);
@@ -346,6 +351,9 @@ export function CustomerSupportPage() {
     if (siteId) {
       await loadAssetsForSite(siteId);
     }
+    // Discard the automatic "last active" lookup started by loadAssetsForSite.
+    // The explicitly selected history conversation is authoritative.
+    chatRevision.current += 1;
     const assetId = String(conv.asset_id || (conv.asset ? conv.asset.id : ''));
     setSelectedAsset(assetId);
     activeAssetRef.current = assetId;
@@ -944,7 +952,7 @@ export function CustomerSupportPage() {
                         ) : (
                           <div>
                             {/* Render Structured Contract Presentation if available */}
-                            {msg.structured_contract?.presentation ? (
+                            {msg.structured_contract?.presentation && msg.structured_contract?.response_type !== 'CLARIFICATION' ? (
                               <CustomerAnswer
                                 presentation={msg.structured_contract.presentation}
                                 assetId={selectedAsset}

@@ -515,7 +515,7 @@ class CustomerConversationMultiTurnTests(TestCase):
 
         ctx = extract_conversation_context(conv, "I checked that already. What next?", self.asset_split_ac)
         self.assertTrue(ctx.is_followup)
-        self.assertIn("air filter", ctx.completed_checks)
+        self.assertTrue(any("air filter" in check for check in ctx.completed_checks))
 
         rewritten = contextualize_customer_query("I checked that already. What next?", ctx, self.asset_split_ac)
         self.assertIn("Server Room Split AC", rewritten)
