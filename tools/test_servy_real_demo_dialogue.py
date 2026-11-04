@@ -163,7 +163,7 @@ class IntentFocusTests(unittest.TestCase):
     def test_binary_and_unattributed_followups_request_details_without_guessing(self):
         history = ["My unit is not cooling", "What caused it?"]
         self.assertIn("Which specific check", followup_clarification("I checked that", history))
-        self.assertIn("What exact code", followup_clarification("Yes", history))
+        self.assertIn("What are you confirming", followup_clarification("Yes", history))
         self.assertIsNone(followup_clarification("I checked that", []))
         self.assertEqual(question_topic("No error code", "causes"), "next")
         self.assertEqual(question_topic("There is no warning on the display", "causes"), "next")
@@ -325,6 +325,70 @@ class IntentFocusTests(unittest.TestCase):
             self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
             self.assertEqual(result["presentation"]["citations"], [])
 
+
+    def test_no_warning_report_changes_next_question(self):
+        history = ["My AC has poor cooling", "There is no error code"]
+        answer, state = focus_answer(
+            contract(), "What causes are documented?",
+            last_topic="causes", history=history,
+        )
+        self.assertEqual(answer["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertEqual([c["id"] for c in answer["presentation"]["citations"]],
+                         ["s1", "s2"])
+        self.assertIn("constantly", answer["presentation"]["follow_up_question"])
+        self.assertNotIn("code", answer["presentation"]["follow_up_question"])
+        self.assertEqual(state["topic"], "causes")
+
+    def test_known_no_code_cannot_prompt_customer_to_inspect_same_code(self):
+        history = ["My AC is not cooling", "No error code"]
+        result, _ = focus_answer(
+            contract(), "What can I safely observe?", history=history,
+        )
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["presentation"]["citations"], [])
+        self.assertNotIn("Observe the external displayed error code", result["answer"])
+
+    def test_local_planner_cannot_repeat_a_question_already_answered(self):
+        history = ["AC not cooling", "The display shows no error code"]
+        plan = {
+            "intent": "causes", "claim_ids": ["c1", "c2"],
+            "follow_up": "Is there a code or warning on the display?",
+            "style": "direct",
+        }
+        response, _ = focus_answer(
+            contract(), "What possible causes are documented?",
+            plan=plan, history=history,
+        )
+        self.assertEqual(response["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertNotEqual(
+            response["presentation"]["follow_up_question"], plan["follow_up"]
+        )
+
+    def test_explicit_definitions_are_not_overridden_with_cause_lists(self):
+        for question in (
+            "What is a thermostat?",
+            "Explain the purpose of the compressor.",
+            "Define an inverter compressor.",
+        ):
+            result, _ = focus_answer(contract(), question, plan={
+                "intent": "causes", "claim_ids": ["c1", "c2"],
+                "follow_up": "", "style": "friendly",
+            })
+            self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+            self.assertEqual(result["citations"], [])
+
+    def test_genuine_followup_stays_source_grounded(self):
+        original, state = focus_answer(
+            contract(), "What possible causes are documented?"
+        )
+        self.assertEqual(original["response_type"], "DIAGNOSTIC_GUIDANCE")
+        for question in ("What other causes?", "Anything else?"):
+            result, _ = focus_answer(
+                contract(), question, last_topic=state["topic"],
+                previous_facts=state["facts"],
+            )
+            self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+            self.assertEqual(result["citations"], [])
 
     def test_fingerprint_is_independent_of_response_local_citation_ids(self):
         base = contract()
