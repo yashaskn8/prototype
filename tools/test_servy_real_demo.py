@@ -492,6 +492,9 @@ class RealDemoBoundaryTests(unittest.TestCase):
         answer_mod = ModuleType("core.services.customer_answer")
         answer_mod._question_guard = Mock(return_value=None)
         answer_mod.build_customer_answer = Mock(side_effect=[contract(), contract()])
+        answer_mod.exception_presentation = Mock(
+            side_effect=AssertionError("No exception contract expected")
+        )
         diagnostic_mod = ModuleType("core.services.customer_diagnostic")
         diagnostic_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
         diagnostic_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
