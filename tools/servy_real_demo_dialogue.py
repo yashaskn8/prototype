@@ -118,6 +118,14 @@ def wants_additional(question):
                           r"tell me more|give me more)\b", _words(question)))
 
 
+def _error_codes(text):
+    """Fault identifiers must agree across user question and cited source."""
+    return {
+        re.sub(r"[^A-Z0-9]", "", match.group(0).upper())
+        for match in re.finditer(r"\b(?:E|F|ERR)[- ]?\d{1,3}\b", text or "", re.I)
+    }
+
+
 def fact_fingerprint(claim, citation):
     """Stable across turns even when response-local citation IDs change."""
     value = "|".join([
@@ -187,6 +195,13 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=()):
             or evidence[0] not in citations_by_id):
             continue
         citation = citations_by_id[evidence[0]]
+        asked_codes = _error_codes(question)
+        if asked_codes and topic in {"causes", "meaning", "documents"}:
+            # A fact about E-05 cannot answer what E-04 means. For a
+            # code-specific question, require the same code in the exact
+            # approved source sentence, not merely the retrieved chunk.
+            if not asked_codes.issubset(_error_codes(claim["source_text"])):
+                continue
         if (not isinstance(citation.get("document_id"), int)
             or not isinstance(citation.get("chunk_id"), int)
             or not isinstance(citation.get("url"), str)
