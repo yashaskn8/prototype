@@ -9,6 +9,13 @@ export const focusedAnswerTitles = [
   'What the document says', 'What the manual supports',
 ];
 
+// URL shape is client-side defense in depth. The server still verifies the
+// signed citation, source hash, permissions, tenant and selected asset.
+export function isTrustedSourceUrl(url) {
+  return typeof url === 'string'
+    && /^\/(?:api\/customer-support|demo-api)\/source\/\?citation=[A-Za-z0-9._:-]{8,8192}$/.test(url);
+}
+
 export function validateCustomerPresentation(value) {
   if (!value || value.schema_version !== 'customer-answer-v1') return null;
   const hazard = value.hazard?.severity === 'immediate' && typeof value.hazard.message === 'string'
@@ -23,8 +30,7 @@ export function validateCustomerPresentation(value) {
       && warning.evidence_ids.length === 1 && Array.isArray(value.citations)
       ? value.citations.find(s => s?.id === warning.evidence_ids[0]) : null;
     const safeCitation = citation && typeof citation.url === 'string'
-      && (citation.url.startsWith('/api/customer-support/source/?citation=')
-        || citation.url.startsWith('/demo-api/source/?citation='))
+      && isTrustedSourceUrl(citation.url)
       && typeof citation.title === 'string' ? citation : null;
     return { sections: [], citations: safeCitation ? [safeCitation] : [], hazard, message };
   }
@@ -33,8 +39,7 @@ export function validateCustomerPresentation(value) {
     (focused ? value.sections.length !== 1 : value.sections.length !== 4) ||
     !Array.isArray(value.citations) || value.citations.length > 30) return invalid();
   const citations = value.citations.filter(s => s && typeof s.id === 'string' && typeof s.url === 'string'
-    && (s.url.startsWith('/api/customer-support/source/?citation=')
-      || s.url.startsWith('/demo-api/source/?citation=')) && typeof s.title === 'string');
+    && isTrustedSourceUrl(s.url) && typeof s.title === 'string');
   if (new Set(citations.map(s => s.id)).size !== citations.length) return invalid();
   const ids = new Set(citations.map(s => s.id));
   const kinds = new Set(['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure', 'uncertainty', 'next_step']);

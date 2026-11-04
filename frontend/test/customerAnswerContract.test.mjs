@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { answerTitles, validateCustomerPresentation } from '../src/components/customerAnswerContract.js';
+import { answerTitles, validateCustomerPresentation, isTrustedSourceUrl } from '../src/components/customerAnswerContract.js';
 
 export function fixture() {
   return { schema_version: 'customer-answer-v1', response_type: 'DIAGNOSTIC_GUIDANCE',
@@ -101,4 +101,27 @@ test('focused answer rejects unsourced claims, invented headings and arbitrary U
     mutation(changed);
     assert.equal(validateCustomerPresentation(changed), null);
   }
+});
+
+
+test('red-team client URL gate rejects arbitrary query parameters, fragments and redirects', () => {
+  for (const forged of [
+    '/demo-api/source/?citation=synthetic&next=https://outside.invalid',
+    '/demo-api/source/?citation=synthetic#other',
+    '/demo-api/source/?citation=%2e%2e%2fother',
+    '/demo-api/source/?citation=synthetic%0A',
+    '/demo-api/source/?citation=synthetic/../../assets',
+    '/api/customer-support/source/?citation=synthetic?redirect=other',
+    '/demo-api/source/?citation=',
+    'https://outside.invalid/demo-api/source/?citation=synthetic',
+  ]) {
+    assert.equal(isTrustedSourceUrl(forged), false, forged);
+    const p=fixture();
+    p.view_mode='focused';
+    p.sections=[{number:1,title:'Documented possible causes',claims:[p.sections[0].claims[0]]}];
+    p.citations[0].url=forged;
+    assert.equal(validateCustomerPresentation(p),null,forged);
+  }
+  assert.equal(isTrustedSourceUrl('/demo-api/source/?citation=synthetic'), true);
+  assert.equal(isTrustedSourceUrl('/api/customer-support/source/?citation=.compressed.token:signature'), true);
 });
