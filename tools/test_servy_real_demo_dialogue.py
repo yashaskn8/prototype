@@ -3,7 +3,8 @@ import copy
 import unittest
 
 from tools.servy_real_demo_dialogue import (
-    conversational_turn, fact_fingerprint, focus_answer, question_topic,
+    conversational_turn, fact_fingerprint, focus_answer,
+    followup_clarification, question_topic,
 )
 
 
@@ -157,6 +158,24 @@ class IntentFocusTests(unittest.TestCase):
         result, _ = focus_answer(mutated, "What possible causes are documented?")
         self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["presentation"]["citations"], [])
+
+    def test_binary_and_unattributed_followups_request_details_without_guessing(self):
+        history = ["My unit is not cooling", "What caused it?"]
+        self.assertIn("Which specific check", followup_clarification("I checked that", history))
+        self.assertIn("What exact code", followup_clarification("Yes", history))
+        self.assertIsNone(followup_clarification("I checked that", []))
+        self.assertEqual(question_topic("No error code", "causes"), "next")
+        self.assertEqual(question_topic("There is no warning on the display", "causes"), "next")
+
+    def test_wrong_error_code_cannot_supply_a_cited_definition(self):
+        base = contract()
+        wrong = base["presentation"]["supporting_claims"][-2]
+        wrong["source_text"] = "E-05 indicates a different fault."
+        wrong["text"] = wrong["source_text"]
+        result, state = focus_answer(base, "What does E-04 indicate?")
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["presentation"]["citations"], [])
+        self.assertEqual(state["suggestions"], [])
 
     def test_fingerprint_is_independent_of_response_local_citation_ids(self):
         base = contract()
