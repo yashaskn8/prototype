@@ -521,3 +521,49 @@ class CustomerConversationMultiTurnTests(TestCase):
         self.assertIn("Server Room Split AC", rewritten)
         self.assertIn("next troubleshooting steps", rewritten)
         self.assertIn("air filter", rewritten)
+
+    def test_negated_and_ambiguous_customer_check_reports_are_not_completion(self):
+        """Never mark a check completed when denied or ambiguously referenced."""
+        from core.services.conversation_context import completed_action_matches
+        conv = CustomerConversation.objects.create(
+            tenant=self.tenant_a, customer=self.customer_a1, site=self.site_a1,
+            asset=self.asset_split_ac, created_by=self.user_a1, status="ACTIVE",
+        )
+        CustomerMessage.objects.create(
+            tenant=self.tenant_a, conversation=conv, sender_role="customer",
+            message_text="The airflow is weak.",
+        )
+        CustomerMessage.objects.create(
+            tenant=self.tenant_a, conversation=conv, sender_role="assistant",
+            message_text="Observe the visible air filter.",
+            structured_contract={"customer_safe_actions": [
+                {"action": "Observe the visible air filter."}
+            ]},
+        )
+        negative = extract_conversation_context(conv, "I haven't checked that yet.", self.asset_split_ac)
+        self.assertEqual(negative.completed_checks, [])
+        completed = extract_conversation_context(conv, "I checked that already.", self.asset_split_ac)
+        self.assertTrue(completed.completed_checks)
+        self.assertTrue(completed_action_matches("Observe the visible air filter.", completed.completed_checks))
+        self.assertFalse(completed_action_matches("Observe the visible condenser fins.", completed.completed_checks))
+        CustomerMessage.objects.create(
+            tenant=self.tenant_a, conversation=conv, sender_role="assistant",
+            message_text="Please observe the filter and condenser separately.",
+            structured_contract={"customer_safe_actions": [
+                {"action": "Observe the visible air filter."},
+                {"action": "Observe the visible condenser fins."},
+            ]},
+        )
+        ambiguous = extract_conversation_context(conv, "I checked that already.", self.asset_split_ac)
+        self.assertEqual(ambiguous.completed_checks, [])
+
+    def test_explicit_new_conversation_keeps_incidents_separate_on_same_asset(self):
+        self.client.force_login(self.user_a1)
+        route = reverse("api_customer_conversations")
+        payload = {"site_id": self.site_a1.id, "asset_id": self.asset_split_ac.id}
+        first = self.client.post(route, payload, content_type="application/json")
+        second = self.client.post(route, payload, content_type="application/json")
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.json()["conversation_uuid"], second.json()["conversation_uuid"])
+        self.assertNotEqual(first.json()["session_id"], second.json()["session_id"])

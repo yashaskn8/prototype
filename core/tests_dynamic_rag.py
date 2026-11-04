@@ -245,12 +245,12 @@ class DynamicMultiSiteAndRAGTests(TestCase):
         interaction_id = q_resp.json()["interaction_id"]
 
         # 2. Escalate first time
-        esc_1 = self.client.post(f"/api/customer-support/interactions/{interaction_id}/escalate/")
+        esc_1 = self.client.post(f"/api/customer-support/interactions/{interaction_id}/escalate/", {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(esc_1.status_code, 200)
         call_id_1 = esc_1.json()["call_id"]
 
         # 3. Repeated escalation (double-click/retry)
-        esc_2 = self.client.post(f"/api/customer-support/interactions/{interaction_id}/escalate/")
+        esc_2 = self.client.post(f"/api/customer-support/interactions/{interaction_id}/escalate/", {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(esc_2.status_code, 200)
         call_id_2 = esc_2.json()["call_id"]
 

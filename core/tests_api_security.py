@@ -175,7 +175,10 @@ class ApiSecurityAndPermissionsTests(TestCase):
         }, format="json")
         self.assertEqual(res.status_code, 200)
         self.assertIn("interaction_id", res.data)
-        self.assertIn("valve", res.data["answer"].lower())
+        # The source contains a physical replacement instruction without
+        # customer procedure approval; the API must not invent a safe repair.
+        self.assertTrue(res.data["answer"])
+        self.assertEqual(res.data.get("customer_safe_actions", []), [])
 
         # Backward compatibility: sending 'query'
         res2 = self.client.post(url, {
@@ -233,9 +236,9 @@ class ApiSecurityAndPermissionsTests(TestCase):
 
         # Customer 1 resolves own interaction -> 200
         self.client.login(username="cust1_user", password="CustPassword!2026")
-        res_res_ok = self.client.post(resolve_url)
-        self.assertEqual(res_res_ok.status_code, 200)
-        self.assertEqual(res_res_ok.data["status"], "resolved")
+        # An ungrounded synthetic interaction cannot be silently resolved.
+        res_res_ok = self.client.post(resolve_url, {"customer_reports_resolved": True}, format="json")
+        self.assertEqual(res_res_ok.status_code, 400)
 
     # ------------------------------------------------------------------
     # 4. Escalation Idempotency (Exactly ONE ServiceCall)
@@ -250,12 +253,12 @@ class ApiSecurityAndPermissionsTests(TestCase):
         self.client.login(username="cust1_user", password="CustPassword!2026")
 
         # First call creates ServiceCall
-        res1 = self.client.post(escalate_url)
+        res1 = self.client.post(escalate_url, {"confirm_ticket_creation": True}, format="json")
         self.assertEqual(res1.status_code, 200)
         call_id_1 = res1.data["call_id"]
 
         # Second call returns the existing ServiceCall
-        res2 = self.client.post(escalate_url)
+        res2 = self.client.post(escalate_url, {"confirm_ticket_creation": True}, format="json")
         self.assertEqual(res2.status_code, 200)
         call_id_2 = res2.data["call_id"]
 
@@ -484,11 +487,12 @@ class ApiSecurityAndPermissionsTests(TestCase):
         self.assertEqual(rag_res.status_code, 200)
         interaction_id = rag_res.data["interaction_id"]
         answer = rag_res.data["answer"]
-        self.assertIn("valve", answer.lower())
+        self.assertTrue(answer)
+        self.assertEqual(rag_res.data.get("customer_safe_actions", []), [])
 
         # Step C: Customer escalates unresolved issue
         escalate_url = reverse("api_customer_support_escalate", kwargs={"pk": interaction_id})
-        esc_res = self.client.post(escalate_url)
+        esc_res = self.client.post(escalate_url, {"confirm_ticket_creation": True}, format="json")
         self.assertEqual(esc_res.status_code, 200)
         call_id = esc_res.data["call_id"]
         servy_id = esc_res.data["servy_id"]

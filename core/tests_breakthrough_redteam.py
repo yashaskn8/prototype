@@ -257,7 +257,7 @@ class BreakthroughRedTeamTests(TestCase):
         )
 
         url_esc = reverse("api_customer_conversation_ticket", args=[conv.conversation_uuid])
-        res1 = self.client.post(url_esc, {"user_observation": "Flushing water did not resolve blockage"}, content_type="application/json")
+        res1 = self.client.post(url_esc, {"user_observation": "Flushing water did not resolve blockage", "confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res1.status_code, 200)
         data1 = res1.json()
         ticket1 = data1["ticket"]
@@ -265,7 +265,7 @@ class BreakthroughRedTeamTests(TestCase):
         self.assertIn(ticket1["status"], ("open", "assigned"))
 
         # Repeat escalation on the same conversation
-        res2 = self.client.post(url_esc, {"user_observation": "Still not working"}, content_type="application/json")
+        res2 = self.client.post(url_esc, {"user_observation": "Still not working", "confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res2.status_code, 200)
         data2 = res2.json()
         # Must return the exact same ticket
@@ -428,7 +428,7 @@ class BreakthroughRedTeamTests(TestCase):
         self.assertEqual(CustomerInteraction.objects.filter(conversation=conv).count(), 0)
 
         url_esc = reverse("api_customer_conversation_ticket", args=[conv.conversation_uuid])
-        res = self.client.post(url_esc, {"customer_note": "Immediate line shutdown requested"}, content_type="application/json")
+        res = self.client.post(url_esc, {"customer_note": "Immediate line shutdown requested", "confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res.status_code, 200)
         data = res.json()
         ticket = data["ticket"]
@@ -581,7 +581,7 @@ class BreakthroughRedTeamTests(TestCase):
 
         # 5. Service ticket creation
         url_ticket = reverse("api_customer_conversation_ticket", args=[conv_uuid])
-        res3 = self.client.post(url_ticket, {"customer_note": "Immediate technician required"}, content_type="application/json")
+        res3 = self.client.post(url_ticket, {"customer_note": "Immediate technician required", "confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res3.status_code, 200)
         data3 = res3.json()
         ticket = data3["ticket"]
