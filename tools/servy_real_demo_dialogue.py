@@ -87,7 +87,7 @@ def followup_clarification(question, history):
     ):
         return "Which specific check did you complete, and what did you observe? I don't want to assume it is resolved."
     if q in {"yes", "yes it is", "yes there is", "yep", "yeah"}:
-        return "What exact code, warning, or message is visible on the display?"
+        return "What are you confirming? Please describe what you observed."
     return None
 
 
