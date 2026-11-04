@@ -158,6 +158,56 @@ class RealDemoBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             demo._load_demo_context(token + "tampered", 60, 13)
 
+    def test_signed_continuation_cannot_be_replayed_in_another_chat(self):
+        import uuid
+        first_chat = "thread-" + str(uuid.uuid4())
+        second_chat = "thread-" + str(uuid.uuid4())
+        token = demo._sign_demo_context(
+            60, 13, "The split AC is not cooling",
+            "", [], thread_id=first_chat, last_topic="causes",
+        )
+        original, history, hazard = demo._load_demo_context(
+            token, 60, 13, thread_id=first_chat)
+        self.assertEqual(original, "The split AC is not cooling")
+        self.assertEqual(history, ["The split AC is not cooling"])
+        self.assertFalse(hazard)
+        for wrong_thread in (second_chat, None, "thread-" + "0" * 36):
+            with self.subTest(wrong_thread=wrong_thread):
+                with self.assertRaises(ValueError):
+                    demo._load_demo_context(token, 60, 13, thread_id=wrong_thread)
+        with self.assertRaises(ValueError):
+            demo._load_demo_context(token, 59, 14, thread_id=first_chat)
+        # Legacy unbound tokens are not accepted by newly scoped chats.
+        legacy = demo._sign_demo_context(
+            60, 13, "Old unbound chat", "", [])
+        with self.assertRaises(ValueError):
+            demo._load_demo_context(legacy, 60, 13, thread_id=second_chat)
+
+    def test_real_demo_query_passes_thread_identity_to_backend(self):
+        handler = object.__new__(demo.Handler)
+        handler.path = "/demo-api/query/"
+        handler._authorized = lambda: True
+        handler._send = lambda status, body: (status, body)
+        thread_id = "thread-01234567-89ab-cdef-0123-456789abcdef"
+        payload = {
+            "asset_id": 60, "question": "What about the compressor?",
+            "continuation": None, "thread_id": thread_id,
+        }
+        encoded = json.dumps(payload).encode("utf-8")
+        handler.headers = {"Content-Length": str(len(encoded))}
+        handler.rfile = io.BytesIO(encoded)
+        with patch.object(demo, "read_only_database", return_value=nullcontext()), \
+             patch.object(demo, "_answer", return_value={
+                 "response_type": "INSUFFICIENT_EVIDENCE"
+             }) as mocked:
+            status, body = handler.do_POST()
+        self.assertEqual(status, 200)
+        self.assertEqual(body["response_type"], "INSUFFICIENT_EVIDENCE")
+        mocked.assert_called_once_with(
+            60, "What about the compressor?",
+            continuation=None, thread_id=thread_id,
+        )
+
     def test_follow_up_retrieval_uses_prior_customer_report_without_inventing_completion(self):
         asset = SimpleNamespace(
             id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
