@@ -27,7 +27,13 @@ PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
 ASSET_SCOPE = {59: 14, 60: 13, 61: 14}
 DEMO_USER_ID = -27360
-MAX_BODY = 5000
+MAX_BODY = 12000
+# A signed, bounded continuation contains only customer-reported text. It
+# lives in the browser; the real-data demo never writes conversation records.
+DEMO_CONTEXT_SALT = "servy-real-demo-conversation-v1"
+DEMO_CONTEXT_MAX_AGE = 7200
+DEMO_CONTEXT_MAX_TURNS = 6
+DEMO_CONTEXT_TEXT_LIMIT = 650
 LOGGED_ROUTES = frozenset({"/demo-api/inventory/", "/demo-api/source/",
     "/demo-api/query/", "/demo-api/tickets/preview/"})
 
@@ -130,36 +136,190 @@ def _inventory():
     return rows
 
 
-def _answer(asset_id, question):
+def _load_demo_context(token, asset_id, customer_id):
+    """Read only a server-signed continuation for this exact asset/customer."""
+    if token is None or token == "":
+        return "", [], False
+    if not isinstance(token, str) or len(token) > 10000:
+        raise ValueError("Invalid conversation continuation")
+    from django.core import signing
+    try:
+        state = signing.loads(token, salt=DEMO_CONTEXT_SALT, max_age=DEMO_CONTEXT_MAX_AGE)
+    except signing.BadSignature as exc:
+        raise ValueError("Invalid or expired conversation continuation") from exc
+    if not isinstance(state, dict) or state.get("asset") != asset_id or state.get("customer") != customer_id:
+        raise ValueError("Conversation continuation is outside the selected equipment scope")
+    first, recent = state.get("first"), state.get("recent")
+    if (not isinstance(first, str) or not first.strip()
+        or len(first) > DEMO_CONTEXT_TEXT_LIMIT or not isinstance(recent, list)
+        or not 1 <= len(recent) <= DEMO_CONTEXT_MAX_TURNS
+        or any(not isinstance(t, str) or not t.strip()
+               or len(t) > DEMO_CONTEXT_TEXT_LIMIT for t in recent)):
+        raise ValueError("Invalid conversation continuation")
+    return first, recent, state.get("hazard") is True
+
+
+def _sign_demo_context(asset_id, customer_id, question, first, history, hazard=False):
+    from django.core import signing
+    recent = (history + [question[:DEMO_CONTEXT_TEXT_LIMIT]])[-DEMO_CONTEXT_MAX_TURNS:]
+    return signing.dumps({
+        "asset": asset_id,
+        "customer": customer_id,
+        "first": (first or question)[:DEMO_CONTEXT_TEXT_LIMIT],
+        "recent": recent,
+        "hazard": bool(hazard),
+    }, salt=DEMO_CONTEXT_SALT, compress=True)
+
+
+def _demo_query_context(asset, question, first, history):
+    """Build retrieval context from customer reports, never from AI claims."""
+    from core.services.conversation_context import (
+        ConversationContext, NEXT_STEP_PATTERNS, _confirmed_checks,
+        contextualize_customer_query, extract_symptoms_from_text,
+    )
+    context = ConversationContext(
+        asset_id=asset.id,
+        asset_name=asset.name or "equipment",
+        asset_model=asset.model_number or "",
+        asset_code=asset.asset_code or "",
+        product_name=asset.product.name if asset.product else "",
+    )
+    context.turn_count = len(history)
+    context.original_complaint = first or question
+    for utterance in [context.original_complaint, *history, question]:
+        for symptom in extract_symptoms_from_text(utterance):
+            if symptom not in context.reported_symptoms:
+                context.reported_symptoms.append(symptom)
+        # The user must name a completed action explicitly. "I checked that"
+        # cannot identify which suggestion was performed in this read-only demo.
+        for completed in _confirmed_checks(utterance, []):
+            if completed not in context.completed_checks:
+                context.completed_checks.append(completed)
+    context.history_turns = [{"role": "customer", "text": t} for t in history]
+    context.is_followup = bool(history) and (
+        len(question.split()) <= 18
+        or any(pattern.search(question) for pattern in NEXT_STEP_PATTERNS)
+        or bool(re.search(r"\b(?:it|this|that|already|still|next|again)\b", question, re.I))
+    )
+    contextual_question = contextualize_customer_query(question, context, asset)
+    return context, contextual_question or question
+
+
+def _answer(asset_id, question, continuation=None):
     if ASSET_SCOPE.get(asset_id) is None:
         return {"response_type": "INSUFFICIENT_EVIDENCE", "message":
             "This equipment is visible in the inventory, but technical-document access is not approved for this demo identity.",
             "presentation": None, "citations": [], "reranker_applied": False}
-    from core.services.customer_answer import build_customer_answer
+    from core.services.customer_answer import _question_guard, build_customer_answer, exception_presentation
+    from core.services.customer_diagnostic import check_for_safety_hazard, check_for_vague_complaint
     from core.services.rag import ask_rag
     tenant, customer, asset = _asset(asset_id)
     if customer.id != ASSET_SCOPE[asset_id]:
         raise ValueError("Customer scope changed")
-    rag = ask_rag(tenant=tenant, customer=customer, asset=asset, question=question,
-                  staff_mode=False, include_confidential=False, service_call=None, top_k=5)
-    interaction = SimpleNamespace(id=None, created_by_id=DEMO_USER_ID, tenant=tenant,
-                                  customer=customer, asset=asset, question=question)
-    contract = build_customer_answer(interaction, None, rag.get("references", []))
-    presentation = contract["presentation"]
-    for citation in presentation.get("citations", []):
-        citation["url"] = citation["url"].replace("/api/customer-support/source/", "/demo-api/source/", 1)
+    original, history, earlier_hazard = _load_demo_context(continuation, asset_id, customer.id)
+    context, retrieval_query = _demo_query_context(asset, question, original, history)
+    current_hazard, hazard_warning = check_for_safety_hazard(question)
+    is_hazard = current_hazard or earlier_hazard
+    if is_hazard:
+        warning = hazard_warning or (
+            "A previously reported safety hazard requires authorized service. "
+            "Do not operate or open the equipment."
+        )
+        presentation = exception_presentation({
+            "response_mode": "IMMEDIATE_SAFETY_ESCALATION",
+            "response_type": "ESCALATION_REQUIRED",
+            "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
+            "summary": warning, "stop_conditions": [warning], "can_escalate": True,
+        })
+        contract = {"response_type": "ESCALATION_REQUIRED", "presentation": presentation,
+                    "reason_code": "SAFETY_HAZARD", "engine": "safety-boundary"}
+        rag = {"retrieval_backend": "none", "reranker_applied": False, "reranker_model": None}
+    else:
+        rag = ask_rag(
+            tenant=tenant, customer=customer, asset=asset, question=retrieval_query,
+            original_question=question, conversation_context=context if history else None,
+            staff_mode=False, include_confidential=False, service_call=None, top_k=5,
+        )
+        if rag.get("engine") == "policy-guard":
+            presentation = exception_presentation({
+                "response_type": "POLICY_VIOLATION",
+                "summary": rag.get("answer", "Request cannot be answered."),
+                "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
+                "can_escalate": False,
+            })
+            contract = {"response_type": "POLICY_VIOLATION", "presentation": presentation,
+                        "engine": "policy-guard", "reason_code": "POLICY_BLOCKED"}
+        else:
+            interaction = SimpleNamespace(
+                id=None, created_by_id=DEMO_USER_ID, tenant=tenant, customer=customer,
+                asset=asset, question=retrieval_query,
+            )
+            # A short continuation ("what next?") is clarified by the signed
+            # history; do not reject it as a standalone vague first question.
+            answer_question = (
+                retrieval_query if history and context.is_followup
+                and _question_guard(question) == "clarify" else question
+            )
+            contract = build_customer_answer(
+                interaction, None, rag.get("references", []),
+                conversation_context=context if history else None,
+                original_question=answer_question,
+            )
+            presentation = contract["presentation"]
+            for citation in presentation.get("citations", []):
+                citation["url"] = citation["url"].replace(
+                    "/api/customer-support/source/", "/demo-api/source/", 1
+                )
+
     from django.core import signing
-    ticket_context = signing.dumps({"asset": asset_id, "customer": customer.id,
-        "question_sha256": hashlib.sha256(question.encode("utf-8")).hexdigest()},
-        salt="servy-real-demo-ticket-preview-v1")
-    return {"response_type": contract["response_type"], "reason_code": contract.get("reason_code"),
-            "message": presentation.get("message", ""), "presentation": presentation,
-            "ticket_context": ticket_context,
-            "citations": [{"document_id": c["document_id"], "chunk_id": c["chunk_id"]}
-                          for c in presentation.get("citations", [])],
-            "retrieval_backend": rag.get("retrieval_backend"),
-            "reranker_applied": rag.get("reranker_applied"),
-            "reranker_model": rag.get("reranker_model"), "engine": contract.get("engine")}
+    ticket_context = signing.dumps({
+        "asset": asset_id, "customer": customer.id,
+        "question_sha256": hashlib.sha256(question.encode("utf-8")).hexdigest(),
+    }, salt="servy-real-demo-ticket-preview-v1")
+    presentation = contract["presentation"]
+    response_type = contract["response_type"]
+    message = presentation.get("message", "")
+    clarification_question = None
+    clarification_options = []
+    if response_type == "INSUFFICIENT_EVIDENCE" and not history:
+        vague, clarifying, options = check_for_vague_complaint(question, asset)
+        if vague or _question_guard(question) == "clarify":
+            clarification_question = clarifying or (
+                "Which specific symptom, warning, or displayed fault code are you observing?"
+            )
+            clarification_options = options or [
+                "The equipment does not power on",
+                "A fault code or warning is displayed",
+                "Performance is reduced",
+                "There is an unusual noise or vibration",
+            ]
+            response_type = "CLARIFICATION"
+            message = clarification_question
+            # No documentation is implied by these generic observation choices.
+            presentation = exception_presentation({
+                "response_type": "CLARIFICATION", "clarification_question": message,
+                "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
+                "can_escalate": True,
+            })
+    return {
+        "response_type": response_type, "reason_code": contract.get("reason_code"),
+        "message": message, "presentation": presentation,
+        "clarification_question": clarification_question,
+        "clarification_options": clarification_options,
+        "continuation": _sign_demo_context(
+            asset_id, customer.id, question, original, history, hazard=is_hazard
+        ),
+        "conversation_turn": len(history) + 1,
+        "ticket_context": ticket_context,
+        "citations": [
+            {"document_id": c["document_id"], "chunk_id": c["chunk_id"]}
+            for c in presentation.get("citations", [])
+        ],
+        "retrieval_backend": rag.get("retrieval_backend"),
+        "reranker_applied": rag.get("reranker_applied"),
+        "reranker_model": rag.get("reranker_model"),
+        "engine": contract.get("engine"),
+    }
 
 
 def _ticket_fields(body):
@@ -275,11 +435,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"mode": "PREVIEW_ONLY", "ticket": fields})
             asset_id = body.get("asset_id")
             question = body.get("question")
-            if not isinstance(asset_id, int) or not isinstance(question, str) or not question.strip() or len(question) > 4000:
+            continuation = body.get("continuation")
+            if (not isinstance(asset_id, int) or isinstance(asset_id, bool)
+                or not isinstance(question, str) or not question.strip()
+                or len(question) > 4000
+                or continuation is not None and not isinstance(continuation, str)):
                 return self._send(400, {"detail": "Select equipment and enter a question (maximum 4000 characters)"})
             with read_only_database():
-                result = _answer(asset_id, question.strip())
+                result = _answer(asset_id, question.strip(), continuation=continuation)
             return self._send(200, result)
+        except ValueError:
+            return self._send(400, {"detail": "Conversation context is invalid or equipment access changed. Start a new chat."})
         except Exception:
             return self._send(503, {"detail": "Read-only demo request failed"})
 
