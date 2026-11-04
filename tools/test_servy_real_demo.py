@@ -261,5 +261,56 @@ class RealDemoBoundaryTests(unittest.TestCase):
                              request["frozen_manifest_sha256"])
 
 
+    def test_verified_source_rebuild_refuses_unapproved_or_missing_passages(self):
+        from tools.servy_real_demo_source_rebuild import authoritative_chunks
+        tenant = SimpleNamespace(id=273)
+        customer = SimpleNamespace(id=13)
+        asset = SimpleNamespace(id=60, customer_id=13, tenant_id=273)
+        lookup = lambda unused: (tenant, customer, asset)
+        with patch("core.services.retriever._knowledge_candidates", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "required approved source"):
+                authoritative_chunks({60: 13}, lookup)
+        bad_lookup = lambda unused: (tenant, SimpleNamespace(id=14), asset)
+        with self.assertRaisesRegex(RuntimeError, "scope differs"):
+            authoritative_chunks({60: 13}, bad_lookup)
+
+    def test_verified_source_rebuild_uses_only_authorized_documents(self):
+        from tools.servy_real_demo_source_rebuild import authoritative_chunks
+        tenant = SimpleNamespace(id=273)
+        customer = SimpleNamespace(id=13)
+        asset = SimpleNamespace(id=60, customer_id=13, tenant_id=273)
+        doc = SimpleNamespace(disable_sharing=False, is_confidential=False,
+            is_rag_enabled=True, index_status="INDEXED")
+        chunk = SimpleNamespace(
+            id=9, tenant_id=273, document_id=8, document=doc,
+            is_quarantined=False, text="Approved original manual observation.",
+            heading="Observations",
+        )
+        lookup = lambda unused: (tenant, customer, asset)
+        with patch("core.services.retriever._knowledge_candidates", return_value=[chunk]), \
+                patch("core.services.customer_answer.source_chunk", return_value=chunk) as source, \
+                patch("core.services.customer_isolation.is_verified_real_document", return_value=True):
+            passages, scope = authoritative_chunks({60: 13}, lookup)
+        self.assertEqual(passages, [chunk])
+        self.assertEqual(scope, {60: 1})
+        source.assert_called_once_with(
+            tenant=tenant, customer=customer, asset=asset,
+            document_id=8, chunk_id=9,
+        )
+        doc.is_confidential = True
+        with patch("core.services.retriever._knowledge_candidates", return_value=[chunk]), \
+                patch("core.services.customer_answer.source_chunk", return_value=chunk), \
+                patch("core.services.customer_isolation.is_verified_real_document", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "Unverified or unauthorized"):
+                authoritative_chunks({60: 13}, lookup)
+
+    def test_verified_source_rebuild_fails_if_chroma_is_already_open(self):
+        from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
+        from core.services import chroma_store
+        with patch.object(chroma_store, "_chroma_client", object()):
+            with self.assertRaisesRegex(RuntimeError, "already open"):
+                rebuild_isolated_bge_index("/tmp", {}, {60: 13}, lambda unused: None)
+
+
 if __name__ == "__main__":
     unittest.main()

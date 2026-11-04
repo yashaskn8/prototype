@@ -1,6 +1,6 @@
 # Reopen the existing localhost-only, read-only real-data demo.
 # No migrations, seeding, account creation, or company-data changes.
-param([switch]$Watch, [switch]$Restart, [switch]$ReviewRequest)
+param([switch]$Watch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
@@ -58,6 +58,13 @@ $env:SERVY_LLM_PROVIDER = 'extractive'
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
+$env:SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES = if ($RebuildFromVerifiedDocs) { '1' } else { '0' }
+if ($ReviewRequest -and $RebuildFromVerifiedDocs) {
+    throw 'Run either the read-only review diagnostic or the verified-source rebuild, not both.'
+}
+if ($RebuildFromVerifiedDocs -and (Test-LocalPort 8002)) {
+    throw 'The previous demo backend is running. Use -Restart -RebuildFromVerifiedDocs.'
+}
 
 if ($ReviewRequest) {
     $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
@@ -76,7 +83,8 @@ if (!(Test-LocalPort 8002)) {
         -ArgumentList '-B','-u','tools\servy_real_demo.py' -WorkingDirectory $projectRoot `
         -WindowStyle Hidden -RedirectStandardOutput (Join-Path $demoFolder 'startup.out') `
         -RedirectStandardError (Join-Path $demoFolder 'startup.err') | Out-Null
-    for ($i = 0; $i -lt 30 -and !(Test-LocalPort 8002); $i++) { Start-Sleep -Seconds 1 }
+    $backendChecks = if ($RebuildFromVerifiedDocs) { 240 } else { 30 }
+    for ($i = 0; $i -lt $backendChecks -and !(Test-LocalPort 8002); $i++) { Start-Sleep -Seconds 1 }
     if (!(Test-LocalPort 8002)) { throw "Read-only demo backend failed; inspect private startup.err locally." }
 }
 
