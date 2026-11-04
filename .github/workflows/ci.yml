@@ -47,6 +47,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Real-data Demo Focused Conversation Tests
+        run: python -m unittest tools.test_servy_real_demo_dialogue -v
+
       - name: Real-data Demo Signed Index Integrity and Chat Tests
         run: python -m unittest tools.test_servy_real_demo -v
         env:
