@@ -1,6 +1,6 @@
 # Reopen the existing localhost-only, read-only real-data demo.
 # No migrations, seeding, account creation, or company-data changes.
-param([switch]$Watch, [switch]$Restart)
+param([switch]$Watch, [switch]$Restart, [switch]$ReviewRequest)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
@@ -58,6 +58,13 @@ $env:SERVY_LLM_PROVIDER = 'extractive'
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
+
+if ($ReviewRequest) {
+    $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
+    & $python '-B' 'tools\servy_real_demo.py' '--index-review-request'
+    if ($LASTEXITCODE -ne 0) { throw 'Read-only Chroma review request failed.' }
+    return
+}
 
 if (!(Test-LocalPort 8002)) {
     Start-Process -FilePath (Join-Path $projectRoot '.venv\Scripts\python.exe') `

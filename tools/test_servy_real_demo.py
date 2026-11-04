@@ -4,6 +4,9 @@ import hashlib
 import io
 import json
 import os
+import base64
+import tempfile
+from pathlib import Path
 from contextlib import redirect_stdout
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -12,6 +15,7 @@ from unittest.mock import patch
 # This standalone offline test must also import on Linux CI runners.
 os.environ.setdefault("LOCALAPPDATA", "/tmp")
 from tools import servy_real_demo as demo
+from tools import servy_real_demo_index_review as index_review
 from tools import servy_100_readonly_eval as evaluation
 
 from django.conf import settings
@@ -206,6 +210,54 @@ class RealDemoBoundaryTests(unittest.TestCase):
             self.assertEqual(stored_first, first)
             self.assertLessEqual(len(previous), demo.DEMO_CONTEXT_MAX_TURNS)
         self.assertEqual(previous[-1], "Message 14")
+
+
+    def test_index_drift_limits_and_signed_independent_review(self):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from tools.servy_500_benchmark import write_json
+        expected = {"chroma.sqlite3": "a" * 64, "segment/data_level0.bin": "b" * 64,
+                    "segment/length.bin": "c" * 64}
+        actual = {**expected, "chroma.sqlite3": "d" * 64}
+        self.assertEqual(index_review.changed_files(expected, actual), ["chroma.sqlite3"])
+        with self.assertRaises(RuntimeError):
+            index_review.changed_files(expected, {**actual, "added.bin": "e" * 64})
+        with self.assertRaises(RuntimeError):
+            index_review.changed_files(expected, {**actual, "segment/header.bin": "f" * 64})
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            write_json(root / "before.json", {"index": expected})
+            write_json(root / "production_index_manifest.json", expected)
+            request = index_review.review_request(
+                root, expected=expected, production=actual, private_copy=actual)
+            with patch.dict(os.environ, {"SERVY_REAL_DEMO_REVIEW_PUBLIC_KEY": ""}):
+                with self.assertRaises(RuntimeError):
+                    index_review.verify_signed_approval(root, request)
+            key = Ed25519PrivateKey.generate()
+            public = root / "reviewer.pem"
+            public.write_bytes(key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo))
+            signed = {
+                "request": request, "reviewer": "Independent reviewer",
+                "reason": "Verified against separate trusted company collection reference",
+                "approved_utc": "2026-11-04T15:00:00Z",
+                "attestation": index_review.ATTESTATION,
+            }
+            write_json(root / "approved_chroma_drift_v2.json", {
+                "review": signed,
+                "signature": base64.b64encode(
+                    key.sign(index_review.canonical_bytes(signed))).decode("ascii"),
+            })
+            with patch.dict(os.environ, {"SERVY_REAL_DEMO_REVIEW_PUBLIC_KEY": str(public)}):
+                self.assertTrue(index_review.verify_signed_approval(root, request))
+                with self.assertRaises(RuntimeError):
+                    index_review.verify_signed_approval(
+                        root, {**request, "current_production_manifest_sha256": "0" * 64})
+            self.assertEqual(index_review.sha256_file(root / "before.json"),
+                             request["frozen_before_sha256"])
+            self.assertEqual(index_review.sha256_file(root / "production_index_manifest.json"),
+                             request["frozen_manifest_sha256"])
 
 
 if __name__ == "__main__":
