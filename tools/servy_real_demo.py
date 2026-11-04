@@ -26,6 +26,7 @@ from tools.servy_500_benchmark import (
 from tools.servy_real_demo_index_review import (
     activate_runtime_snapshot, review_request, verify_signed_approval,
 )
+from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
@@ -510,23 +511,29 @@ def main():
     expected = frozen["index"]
     if load_json(manifest) != expected:
         raise RuntimeError("Frozen original Chroma manifests disagree.")
-    if original["index"] == expected:
-        # Original bytes still match; always clone the verified source, not an
-        # old private copy that Chroma might have rewritten during past reads.
-        run_from = source
-        run_manifest = expected
+    if original["index"] != expected and os.environ.get("SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES") == "1":
+        # Distinct explicit recovery mode: rebuild a NEW local vector index
+        # from unchanged, independently audited source documents. Never trust
+        # or query the three byte-drifted Chroma storage files.
+        with read_only_database():
+            rebuilt = rebuild_isolated_bge_index(
+                PRIVATE, original["index"], ASSET_SCOPE, _asset
+            )
+        review_mode = rebuilt["mode"]
+    elif original["index"] == expected:
+        # Frozen original image matches: run only from a verified throwaway copy.
+        activate_runtime_snapshot(source, expected, PRIVATE)
         review_mode = "original-frozen"
     else:
-        # No automatic acceptance of logically similar-but-byte-different
-        # indexes. Signed reviewer approval pins both complete 122-file states.
+        # Existing signed review pathway for a separately approved snapshot.
         private_manifest = file_manifest(copy)
-        request = review_request(PRIVATE, expected=expected,
-                                 production=original["index"], private_copy=private_manifest)
+        request = review_request(
+            PRIVATE, expected=expected, production=original["index"],
+            private_copy=private_manifest,
+        )
         verify_signed_approval(PRIVATE, request)
-        run_from = copy
-        run_manifest = private_manifest
+        activate_runtime_snapshot(copy, private_manifest, PRIVATE)
         review_mode = "independently-reviewed-versioned"
-    activate_runtime_snapshot(run_from, run_manifest, PRIVATE)
     Handler.token = token
     print(json.dumps({"ready": True, "database": identity["database"],
         "database_account": identity["account"], "asset_count": len(inventory),
