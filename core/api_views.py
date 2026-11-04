@@ -708,9 +708,9 @@ class CustomerSupportEscalateView(APIView):
         # Row-locking before creation closes the concurrent double-escalation race.
         if interaction.conversation_id:
             with transaction.atomic():
-                conv = CustomerConversation.objects.select_for_update().select_related(
-                    "linked_service_call"
-                ).get(pk=interaction.conversation_id, tenant=tenant)
+                conv = CustomerConversation.objects.select_for_update().get(
+                    pk=interaction.conversation_id, tenant=tenant
+                )
                 if conv.linked_service_call_id:
                     call = conv.linked_service_call
                     if (call.tenant_id != tenant.id or call.customer_id != interaction.customer_id
@@ -2492,9 +2492,9 @@ class CustomerConversationTicketView(APIView):
         # Take the same conversation lock as interaction escalation so both
         # endpoints serialize creation for one incident, even under concurrency.
         with transaction.atomic():
-            conv = CustomerConversation.objects.select_for_update().select_related(
-                "linked_service_call", "current_diagnostic_session"
-            ).get(pk=conv.pk, tenant=tenant)
+            conv = CustomerConversation.objects.select_for_update().get(
+                pk=conv.pk, tenant=tenant
+            )
             if conv.linked_service_call_id:
                 call = conv.linked_service_call
             else:
