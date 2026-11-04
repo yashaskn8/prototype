@@ -234,7 +234,8 @@ def is_contextual_followup(question):
         r"(?: (?:are )?documented)?|"
         r"what can i (?:safely )?(?:check|observe|report)|"
         r"what does (?:it|that|this) mean|"
-        r"why is that|how about that|"
+        r"why is that|why does it keep happening|why does this keep happening|"
+        r"why does it happen again|how about that|"
         r"i (?:already )?(?:checked|tried) (?:that|it)|"
         r"no(?:pe| error(?: code)?| warning)?|yes|yeah|"
         r"same issue|still not fixed)\??",
