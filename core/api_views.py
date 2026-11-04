@@ -2498,36 +2498,36 @@ class CustomerConversationTicketView(APIView):
             if conv.linked_service_call_id:
                 call = conv.linked_service_call
             else:
-            # Find latest interaction or create one for escalation
-            interaction = CustomerInteraction.objects.filter(conversation=conv).order_by("-id").first()
-            if not interaction:
-                interaction = CustomerInteraction.objects.create(
+                # Find latest interaction or create one for escalation
+                interaction = CustomerInteraction.objects.filter(conversation=conv).order_by("-id").first()
+                if not interaction:
+                    interaction = CustomerInteraction.objects.create(
+                        tenant=tenant,
+                        customer=conv.customer,
+                        site=conv.site,
+                        asset=conv.asset,
+                        conversation=conv,
+                        created_by=request.user,
+                        question=conv.title or "Customer requested service from conversation",
+                        answer="Service Call requested from conversation.",
+                        source_refs=[],
+                    )
+
+                note = _clean_input(request.data.get("user_observation") or request.data.get("note") or request.data.get("customer_note") or "")
+                session_id = str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None
+
+                call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
+                conv.status = "TICKETED"
+                conv.linked_service_call = call
+                conv.save(update_fields=["status", "linked_service_call", "updated_at"])
+
+                CustomerMessage.objects.create(
                     tenant=tenant,
-                    customer=conv.customer,
-                    site=conv.site,
-                    asset=conv.asset,
                     conversation=conv,
-                    created_by=request.user,
-                    question=conv.title or "Customer requested service from conversation",
-                    answer="Service Call requested from conversation.",
-                    source_refs=[],
+                    sender_role="system",
+                    message_text=f"Service Call #{call.servy_id} created successfully.",
+                    structured_contract={"call_id": call.id, "servy_id": call.servy_id},
                 )
-
-            note = _clean_input(request.data.get("user_observation") or request.data.get("note") or request.data.get("customer_note") or "")
-            session_id = str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None
-
-            call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
-            conv.status = "TICKETED"
-            conv.linked_service_call = call
-            conv.save(update_fields=["status", "linked_service_call", "updated_at"])
-
-            CustomerMessage.objects.create(
-                tenant=tenant,
-                conversation=conv,
-                sender_role="system",
-                message_text=f"Service Call #{call.servy_id} created successfully.",
-                structured_contract={"call_id": call.id, "servy_id": call.servy_id},
-            )
 
 
         return Response({
