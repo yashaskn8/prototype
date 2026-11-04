@@ -27,6 +27,7 @@ from tools.servy_real_demo_index_review import (
     activate_runtime_snapshot, review_request, verify_signed_approval,
 )
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
+from tools.servy_real_demo_dialogue import TOPICS, conversational_turn, focus_answer
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
@@ -164,7 +165,27 @@ def _load_demo_context(token, asset_id, customer_id):
     return first, recent, state.get("hazard") is True
 
 
-def _sign_demo_context(asset_id, customer_id, question, first, history, hazard=False):
+def _load_demo_dialogue_state(token):
+    """Restore only server-signed, bounded UI dialogue preferences."""
+    if not token:
+        return None, []
+    from django.core import signing
+    state = signing.loads(token, salt=DEMO_CONTEXT_SALT, max_age=DEMO_CONTEXT_MAX_AGE)
+    topic = state.get("last_topic")
+    facts = state.get("shown_facts", [])
+    if (topic not in TOPICS and topic is not None
+            or not isinstance(facts, list)
+            or len(facts) > 24
+            or any(not isinstance(item, str)
+                   or len(item) != 64
+                   or any(ch not in "0123456789abcdef" for ch in item)
+                   for item in facts)):
+        raise ValueError("Invalid signed dialogue state")
+    return topic, facts
+
+
+def _sign_demo_context(asset_id, customer_id, question, first, history,
+                       hazard=False, last_topic=None, shown_facts=None):
     from django.core import signing
     recent = (history + [question[:DEMO_CONTEXT_TEXT_LIMIT]])[-DEMO_CONTEXT_MAX_TURNS:]
     return signing.dumps({
@@ -173,6 +194,8 @@ def _sign_demo_context(asset_id, customer_id, question, first, history, hazard=F
         "first": (first or question)[:DEMO_CONTEXT_TEXT_LIMIT],
         "recent": recent,
         "hazard": bool(hazard),
+        "last_topic": last_topic if last_topic in TOPICS else None,
+        "shown_facts": list(shown_facts or [])[-24:],
     }, salt=DEMO_CONTEXT_SALT, compress=True)
 
 
@@ -223,8 +246,11 @@ def _answer(asset_id, question, continuation=None):
     if customer.id != ASSET_SCOPE[asset_id]:
         raise ValueError("Customer scope changed")
     original, history, earlier_hazard = _load_demo_context(continuation, asset_id, customer.id)
+    last_topic, previous_facts = _load_demo_dialogue_state(continuation)
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     current_hazard, hazard_warning = check_for_safety_hazard(question)
+    small_talk = conversational_turn(question)
+    suggestions = []
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
         warning = hazard_warning or (
@@ -240,6 +266,17 @@ def _answer(asset_id, question, continuation=None):
         contract = {"response_type": "ESCALATION_REQUIRED", "presentation": presentation,
                     "reason_code": "SAFETY_HAZARD", "engine": "safety-boundary"}
         rag = {"retrieval_backend": "none", "reranker_applied": False, "reranker_model": None}
+    elif small_talk is not None:
+        presentation = exception_presentation({
+            "response_type": "CLARIFICATION",
+            "clarification_question": small_talk,
+            "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
+            "can_escalate": True,
+        })
+        contract = {"response_type": "CLARIFICATION", "presentation": presentation,
+                    "reason_code": "CONVERSATION_ACKNOWLEDGEMENT", "engine": "local-dialogue"}
+        rag = {"retrieval_backend": "not-required", "reranker_applied": False,
+               "reranker_model": None}
     else:
         rag = ask_rag(
             tenant=tenant, customer=customer, asset=asset, question=retrieval_query,
@@ -276,6 +313,13 @@ def _answer(asset_id, question, continuation=None):
                 citation["url"] = citation["url"].replace(
                     "/api/customer-support/source/", "/demo-api/source/", 1
                 )
+            contract, dialogue = focus_answer(
+                contract, question, last_topic=last_topic,
+                previous_facts=previous_facts,
+            )
+            last_topic = dialogue["topic"]
+            previous_facts = dialogue["facts"]
+            suggestions = dialogue["suggestions"]
 
     from django.core import signing
     ticket_context = signing.dumps({
@@ -312,8 +356,10 @@ def _answer(asset_id, question, continuation=None):
         "message": message, "presentation": presentation,
         "clarification_question": clarification_question,
         "clarification_options": clarification_options,
+        "suggested_follow_ups": suggestions if response_type == "DIAGNOSTIC_GUIDANCE" else [],
         "continuation": _sign_demo_context(
-            asset_id, customer.id, question, original, history, hazard=is_hazard
+            asset_id, customer.id, question, original, history, hazard=is_hazard,
+            last_topic=last_topic, shown_facts=previous_facts,
         ),
         "conversation_turn": len(history) + 1,
         "ticket_context": ticket_context,
