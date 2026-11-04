@@ -559,16 +559,28 @@ def build_customer_answer(interaction, session, references, conversation_context
                     "The available passages do not provide further customer-safe observations "
                     "that confirm which documented possibility applies."
                 )
-            next_text = (
-                f"Since {clean_done} was checked, if the symptom continues, share those results "
-                "and the equipment model with an authorized technician. No ticket has been created."
-            )
+            if observation_topics:
+                next_text = (
+                    f"You reported completing {clean_done}. If the next documented observation "
+                    f"is safe and accessible, please report what you can see regarding "
+                    f"{observation_topics[0]}. If not, ask an authorized technician. "
+                    "No ticket has been created."
+                )
+            else:
+                next_text = (
+                    f"You reported completing {clean_done}. There is no further verified "
+                    "customer-safe observation in the available passages; request "
+                    "an authorized technician if the issue continues. No ticket has been created."
+                )
         elif observation_topics:
             unknown_text = ("A confirmed diagnosis still needs the observation results for "
                             + "; ".join(observation_topics)
                             + ". This chat has not verified those conditions.")
-            next_text = ("If the symptom continues, share those observation results and the equipment model "
-                         "with an authorized technician. No ticket has been created.")
+            next_text = (
+                f"If it can be done safely without opening or manipulating the equipment, "
+                f"what can you report about {observation_topics[0]}? "
+                "Otherwise request authorized technician assistance. No ticket has been created."
+            )
         else:
             unknown_text = ("The available passages do not provide a customer-safe observation "
                             "that confirms which documented possibility applies.")
