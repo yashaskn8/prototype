@@ -437,9 +437,13 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             if planned:
                 collected = sorted(planned, key=lambda row: rank[row[0]["id"]])
     if not collected:
-        message = (off_topic or ("I don't have another distinct, documented answer for that question. "
-                    "Please share a different symptom or displayed fault code.")
-                   if novelty else NO_EVIDENCE[topic]))
+        if off_topic:
+            message = off_topic
+        elif novelty:
+            message = ("I don't have another distinct, documented answer for that question. "
+                       "Please share a different symptom or displayed fault code.")
+        else:
+            message = NO_EVIDENCE[topic]
         revised = {**contract,
                    "response_type": "INSUFFICIENT_EVIDENCE",
                    "response_mode": "INSUFFICIENT_EVIDENCE",
