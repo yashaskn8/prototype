@@ -1,6 +1,6 @@
 # Reopen the existing localhost-only, read-only real-data demo.
 # No migrations, seeding, account creation, or company-data changes.
-param([switch]$Watch)
+param([switch]$Watch, [switch]$Restart)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
@@ -20,6 +20,24 @@ function Test-LocalPort([int]$port) {
         $client.EndConnect($attempt)
         return $true
     } catch { return $false } finally { $client.Dispose() }
+}
+
+# Only stop known real-data demo processes; never kill an unrelated listener.
+if ($Restart) {
+    foreach ($demoPort in @(8002, 5175)) {
+        $listeners = @(Get-NetTCPConnection -LocalPort $demoPort -State Listen -ErrorAction SilentlyContinue)
+        foreach ($ownedPid in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
+            $running = Get-CimInstance Win32_Process -Filter "ProcessId = $ownedPid" -ErrorAction SilentlyContinue
+            $command = [string]$running.CommandLine
+            $isDemo = (($demoPort -eq 8002 -and $command -match 'servy_real_demo\.py') -or
+                       ($demoPort -eq 5175 -and $command -match '(?:vite\.js|node_modules[\\/]+vite)'))
+            if (!$isDemo) {
+                throw "Cannot restart: port $demoPort belongs to a process that is not the Servy real-data demo."
+            }
+            Stop-Process -Id $ownedPid -Force -ErrorAction Stop
+        }
+    }
+    Start-Sleep -Seconds 1
 }
 
 if (!(Test-LocalPort 3306)) {
