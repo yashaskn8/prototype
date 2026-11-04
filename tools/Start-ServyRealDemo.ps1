@@ -61,8 +61,13 @@ $env:SERVY_ALLOW_REMOTE_LLM = '0'
 
 if ($ReviewRequest) {
     $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    & $python '-B' 'tools\servy_real_demo.py' '--index-review-request'
-    if ($LASTEXITCODE -ne 0) { throw 'Read-only Chroma review request failed.' }
+    Push-Location -LiteralPath $projectRoot
+    try {
+        & $python '-B' 'tools\servy_real_demo.py' '--index-review-request'
+        if ($LASTEXITCODE -ne 0) { throw 'Read-only Chroma review request failed.' }
+    } finally {
+        Pop-Location
+    }
     return
 }
 

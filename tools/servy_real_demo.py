@@ -481,6 +481,14 @@ def main():
     source = Path(settings.CHROMA_PERSIST_DIR).resolve()
     if before.is_file():
         frozen = load_json(before)
+        # Only the explicitly reviewed Chroma storage bytes may differ.
+        # Original company document records, database counts and V5 model
+        # weights must still match the earlier independent frozen baseline.
+        baseline_checks = audit()
+        required = ("original_database_counts", "original_company_documents",
+                    "original_v5_weights")
+        if any(baseline_checks.get(key) is not True for key in required):
+            raise RuntimeError("A non-Chroma company integrity control differs from the original frozen baseline.")
         # Keep both the frozen company data and original attachments immutable.
         if (frozen.get("operational_counts") != original["operational_counts"]
                 or frozen.get("documents") != original["documents"]):
