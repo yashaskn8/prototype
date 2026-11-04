@@ -51,6 +51,22 @@ def conversational_turn(text):
     return None
 
 
+def followup_clarification(question, history):
+    """Never infer which earlier suggestion an ambiguous reply refers to."""
+    if not history:
+        return None
+    q = _words(question)
+    if re.fullmatch(
+        r"(?:i (?:have |already |have already )?(?:checked|tried|did|done) "
+        r"(?:it|that|this)|(?:already )?done (?:that|it)|i checked)",
+        q,
+    ):
+        return "Which specific check did you complete, and what did you observe? I don't want to assume it is resolved."
+    if q in {"yes", "yes it is", "yes there is", "yep", "yeah"}:
+        return "What exact code, warning, or message is visible on the display?"
+    return None
+
+
 def question_topic(question, last_topic=None):
     """Deterministic routing; no extra intents are invented from documents."""
     q = _words(question)
@@ -58,6 +74,14 @@ def question_topic(question, last_topic=None):
         r"\b(?:showing|displays?|see|saw|code|alarm|fault)\b", q
     ) and not re.search(r"\b(?:cause|why|reason|fix|repair|check)\b", q):
         return "meaning"
+    if last_topic in TOPICS and (
+        q in {"no", "nope", "no error", "no error code", "no warning"}
+        or re.search(
+            r"\b(?:no (?:displayed )?(?:error|fault|alarm|code|warning)|"
+            r"nothing (?:is )?(?:shown|displayed)|not showing a code)\b", q,
+        )
+    ):
+        return "next"
     if re.search(r"\b(?:what does|what is|what's)\b.{0,90}\b(?:mean|indicate|signify)\b"
                  r"|\b(?:meaning|indicates?|denotes?|definition)\b"
                  r"|\b(?:explain|identify)\s+(?:the\s+)?(?:error|fault|alarm)\s+code\b", q):
