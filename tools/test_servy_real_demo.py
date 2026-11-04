@@ -433,6 +433,88 @@ class RealDemoBoundaryTests(unittest.TestCase):
             self.assertFalse(context.is_followup)
             self.assertEqual(query, unrelated)
 
+    def test_targeted_retry_reruns_verified_contract_once_for_a_specific_component(self):
+        from tools.test_servy_real_demo_dialogue import contract
+        import copy
+
+        asset = SimpleNamespace(
+            id=60, name="Synthetic Split AC", model_number="AC-60",
+            asset_code="SYN-60", product=SimpleNamespace(name="Synthetic AC"),
+        )
+        tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
+        question = "What causes involve the compressor?"
+        first, second = contract(), copy.deepcopy(contract())
+        cause = second["presentation"]["supporting_claims"][0]
+        cause["source_text"] = "A compressor-related issue may cause poor cooling."
+        cause["text"] = "Possible documented cause: " + cause["source_text"]
+        approved = [first, second]
+
+        answer_mod = ModuleType("core.services.customer_answer")
+        answer_mod._question_guard = Mock(return_value=None)
+        answer_mod.build_customer_answer = Mock(side_effect=approved)
+        answer_mod.exception_presentation = Mock(
+            side_effect=AssertionError("No exception contract expected")
+        )
+        diagnostic_mod = ModuleType("core.services.customer_diagnostic")
+        diagnostic_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
+        diagnostic_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
+        rag_mod = ModuleType("core.services.rag")
+        rag_mod.ask_rag = Mock(return_value={
+            "engine": "extractive", "references": [],
+            "retrieval_backend": "hybrid",
+            "reranker_applied": True, "reranker_model": "servy_v5_bge_verified",
+        })
+        fake_modules = {
+            "core.services.customer_answer": answer_mod,
+            "core.services.customer_diagnostic": diagnostic_mod,
+            "core.services.rag": rag_mod,
+        }
+        with patch.dict("sys.modules", fake_modules), \
+             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
+             patch.object(demo, "plan_turn", return_value=None):
+            result = demo._answer(60, question)
+        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertEqual([item["chunk_id"] for item in result["citations"]], [9])
+        self.assertEqual(result["retrieval_attempts"], 2)
+        self.assertEqual(rag_mod.ask_rag.call_count, 2)
+        self.assertEqual(rag_mod.ask_rag.call_args.kwargs["top_k"], 8)
+        self.assertEqual(answer_mod.build_customer_answer.call_count, 2)
+        self.assertIn("compressor", rag_mod.ask_rag.call_args.kwargs["question"])
+        self.assertFalse(result.get("customer_safe_actions"))
+
+    def test_targeted_retry_has_no_unbounded_loop_when_both_passes_fail(self):
+        from tools.test_servy_real_demo_dialogue import contract
+        asset = SimpleNamespace(
+            id=60, name="Synthetic Split AC", model_number="AC-60",
+            asset_code="SYN-60", product=SimpleNamespace(name="Synthetic AC"),
+        )
+        tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
+        answer_mod = ModuleType("core.services.customer_answer")
+        answer_mod._question_guard = Mock(return_value=None)
+        answer_mod.build_customer_answer = Mock(side_effect=[contract(), contract()])
+        diagnostic_mod = ModuleType("core.services.customer_diagnostic")
+        diagnostic_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
+        diagnostic_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
+        rag_mod = ModuleType("core.services.rag")
+        rag_mod.ask_rag = Mock(return_value={
+            "engine": "extractive", "references": [],
+            "retrieval_backend": "hybrid", "reranker_applied": True,
+        })
+        mods = {
+            "core.services.customer_answer": answer_mod,
+            "core.services.customer_diagnostic": diagnostic_mod,
+            "core.services.rag": rag_mod,
+        }
+        with patch.dict("sys.modules", mods), \
+             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
+             patch.object(demo, "plan_turn", return_value=None):
+            result = demo._answer(60, "What causes involve the compressor?")
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["citations"], [])
+        self.assertEqual(result["retrieval_attempts"], 2)
+        self.assertEqual(rag_mod.ask_rag.call_count, 2)
+        self.assertEqual(answer_mod.build_customer_answer.call_count, 2)
+
     def test_latest_new_symptom_replaces_stale_first_symptom_in_retrieval(self):
         asset = SimpleNamespace(
             id=60, name="Synthetic Split AC", asset_code="TEST-60",
