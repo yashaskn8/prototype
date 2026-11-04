@@ -56,7 +56,9 @@ export function CustomerSupportPage() {
   const [conversationUuid, setConversationUuid] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [startingConversation, setStartingConversation] = useState(false);
   const chatEndRef = useRef(null);
+  const chatRevision = useRef(0); // Ignore responses for an incident no longer selected.
   const [activeSessionNotice, setActiveSessionNotice] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [escalating, setEscalating] = useState(false);
@@ -186,13 +188,14 @@ export function CustomerSupportPage() {
   }
 
   async function checkActiveSessionForAsset(assetId, preloadedSession = null) {
+    const revision = chatRevision.current;
     if (preloadedSession && String(preloadedSession.asset_id) === String(assetId)) {
       setActiveSessionNotice(preloadedSession);
-      return;
     }
+    // Always hydrate the actual conversation, even when a diagnostic session exists.
     try {
       const res = await api.get(`/api/customer-support/context/?asset_id=${assetId}`);
-      if (activeAssetRef.current !== String(assetId)) return;
+      if (activeAssetRef.current !== String(assetId) || chatRevision.current !== revision) return;
       if (res.active_conversation) {
         setConversationUuid(res.active_conversation.conversation_uuid);
         if (res.active_conversation.messages && res.active_conversation.messages.length > 0) {
@@ -217,15 +220,17 @@ export function CustomerSupportPage() {
         setResult(null);
       }
     } catch {
-      if (activeAssetRef.current === String(assetId)) setActiveSessionNotice(null);
+      if (activeAssetRef.current === String(assetId) && chatRevision.current === revision) setActiveSessionNotice(null);
     }
   }
 
   async function loadConversationMessages(convUuid) {
     if (!convUuid) return;
+    const revision = chatRevision.current;
     setLoadingMessages(true);
     try {
       const res = await api.get(`/api/customer-support/conversations/${convUuid}/messages/`);
+      if (chatRevision.current !== revision) return;
       const msgList = normalizeArray(res, 'messages');
       setMessages(msgList);
       const lastAsst = [...msgList].reverse().find(m => m.sender_role === 'assistant');
@@ -239,17 +244,30 @@ export function CustomerSupportPage() {
     }
   }
 
-  function handleStartNewConversation() {
-    if (messages.length > 0 && !window.confirm('Start a new troubleshooting conversation for this equipment? Your current conversation will remain saved in History.')) {
-      return;
+  async function handleStartNewConversation() {
+    if (!selectedSite || !selectedAsset || submitting || startingConversation) return;
+    if (messages.length > 0 && !window.confirm('Start a new troubleshooting conversation for this equipment? Your current conversation will remain saved in History.')) return;
+    setStartingConversation(true);
+    setError(null);
+    try {
+      // Omitting a UUID in the query endpoint can reuse an existing incident.
+      const created = await api.post('/api/customer-support/conversations/', {
+        site_id: selectedSite, asset_id: selectedAsset,
+      });
+      chatRevision.current += 1;
+      setConversationUuid(created.conversation_uuid);
+      setMessages([]);
+      setResult(null);
+      setQuery('');
+      setResolutionNotice(null);
+      setEscalationResult(null);
+      setActiveSessionNotice(null);
+      loadConversations();
+    } catch (err) {
+      setError(err.detail || 'Could not start a new conversation.');
+    } finally {
+      setStartingConversation(false);
     }
-    setConversationUuid(null);
-    setMessages([]);
-    setResult(null);
-    setQuery('');
-    setResolutionNotice(null);
-    setEscalationResult(null);
-    setActiveSessionNotice(null);
   }
 
   useEffect(() => {
@@ -263,6 +281,7 @@ export function CustomerSupportPage() {
   }, []);
 
   function handleSiteChange(e) {
+    chatRevision.current += 1;
     assetLoadVersion.current += 1;
     setSubmitting(false);
     setResolutionNotice(null);
@@ -273,6 +292,7 @@ export function CustomerSupportPage() {
     setSelectedAsset('');
     activeAssetRef.current = '';
     setResult(null);
+    setMessages([]);
     setConversationUuid(null);
     setActiveSessionNotice(null);
     if (newSiteId) {
@@ -283,11 +303,13 @@ export function CustomerSupportPage() {
   }
 
   function handleAssetChange(e) {
+    chatRevision.current += 1;
     setSubmitting(false);
     const newAssetId = e.target.value;
     setSelectedAsset(newAssetId);
     activeAssetRef.current = newAssetId;
     setResult(null);
+    setMessages([]);
     setError(null);
     setConversationUuid(null);
     setResolutionNotice(null);
@@ -316,6 +338,8 @@ export function CustomerSupportPage() {
   }
 
   async function resumeConversationFromHistory(conv) {
+    chatRevision.current += 1;
+    setMessages([]);
     setActiveTab('diagnostics');
     const siteId = String(conv.site_id || (conv.site ? conv.site.id : ''));
     setSelectedSite(siteId);
@@ -382,14 +406,15 @@ export function CustomerSupportPage() {
 
   async function submitDiagnosticQuery(queryText, clarificationAnswer = '') {
     const currentAssetId = selectedAsset;
-    if (!queryText.trim() || !selectedSite || !currentAssetId) return;
+    const revision = chatRevision.current;
+    if (!queryText.trim() || !selectedSite || !currentAssetId || submitting || startingConversation) return;
 
     setSubmitting(true);
     setError(null);
     setResolutionNotice(null);
     setEscalationResult(null);
 
-    const fullTurnInput = clarificationAnswer ? `${queryText} (${clarificationAnswer})` : queryText;
+    const fullTurnInput = clarificationAnswer || queryText;
     const tempUserMsg = {
       id: 'temp-' + Date.now(),
       sender_role: 'customer',
@@ -410,7 +435,7 @@ export function CustomerSupportPage() {
           payload.clarification_response = clarificationAnswer.trim();
         }
         const res = await api.post(`/api/customer-support/conversations/${conversationUuid}/messages/`, payload);
-        if (activeAssetRef.current === currentAssetId) {
+        if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
           turnContract = res.contract;
           setMessages(prev => [
             ...prev.filter(m => m.id !== tempUserMsg.id),
@@ -430,7 +455,7 @@ export function CustomerSupportPage() {
           payload.clarification_response = clarificationAnswer.trim();
         }
         const res = await api.post('/api/customer-support/query/', payload);
-        if (activeAssetRef.current === currentAssetId) {
+        if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
           turnContract = res;
           if (res.conversation_uuid) {
             setConversationUuid(res.conversation_uuid);
@@ -451,18 +476,18 @@ export function CustomerSupportPage() {
         }
       }
 
-      if (activeAssetRef.current === currentAssetId && turnContract) {
+      if (activeAssetRef.current === currentAssetId && chatRevision.current === revision && turnContract) {
         setResult(turnContract);
         loadConversations();
       }
     } catch (err) {
-      if (activeAssetRef.current === currentAssetId) {
+      if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
         setError(err.detail || 'Error communicating with AI assistant.');
         setMessages(prev => prev.filter(m => m.id !== tempUserMsg.id));
         setQuery(queryText);
       }
     } finally {
-      if (activeAssetRef.current === currentAssetId) {
+      if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
         setSubmitting(false);
       }
     }
@@ -473,14 +498,20 @@ export function CustomerSupportPage() {
     submitDiagnosticQuery(query);
   }
 
+  function pendingClarificationQuestion() {
+    return [...messages].reverse().find(m => m.sender_role === 'customer')?.message_text || query;
+  }
+
   function handleClarificationOption(optionText) {
-    submitDiagnosticQuery(query, optionText);
+    const previousQuestion = pendingClarificationQuestion();
+    if (previousQuestion) submitDiagnosticQuery(previousQuestion, optionText);
   }
 
   function handleCustomClarificationSubmit(e) {
     e.preventDefault();
     if (customClarification.trim()) {
-      submitDiagnosticQuery(query, customClarification);
+      const previousQuestion = pendingClarificationQuestion();
+      if (previousQuestion) submitDiagnosticQuery(previousQuestion, customClarification);
     }
   }
 
@@ -803,6 +834,7 @@ export function CustomerSupportPage() {
                       type="button"
                       className="btn btn-sm btn-outline-secondary"
                       onClick={handleStartNewConversation}
+                      disabled={submitting || startingConversation}
                       style={{ fontSize: '0.75rem', padding: '4px 10px', background: '#fff' }}
                       title="Start a fresh conversation for this equipment"
                     >
@@ -939,7 +971,7 @@ export function CustomerSupportPage() {
                                         className="btn btn-sm btn-outline-primary"
                                         style={{ textAlign: 'left', background: '#fff', fontSize: '0.82rem' }}
                                         onClick={() => handleClarificationOption(opt)}
-                                        disabled={submitting}
+                                        disabled={submitting || index !== messages.length - 1}
                                       >
                                         <span>{opt}</span>
                                       </button>

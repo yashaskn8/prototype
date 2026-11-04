@@ -434,16 +434,14 @@ class CustomerSupportContextView(APIView):
                     "contract": contract_data,
                 }
 
-        # Check for active ongoing conversation for this customer/asset
+        # Hydrate only the explicitly selected asset; never pick another asset's chat.
         active_conv_data = None
-        conv_qs = CustomerConversation.objects.filter(
-            tenant=tenant,
-            customer=customer,
-            status__in=["ACTIVE", "WAITING_INPUT", "ESCALATED"],
-        ).order_by("-updated_at")
+        active_conv = None
         if asset_id_param:
-            conv_qs = conv_qs.filter(asset_id=asset_id_param)
-        active_conv = conv_qs.first()
+            active_conv = CustomerConversation.objects.filter(
+                tenant=tenant, customer=customer, asset_id=asset_id_param,
+                status__in=["ACTIVE", "WAITING_INPUT"],
+            ).order_by("-updated_at", "-id").first()
         if active_conv:
             messages = [
                 {
@@ -454,7 +452,7 @@ class CustomerSupportContextView(APIView):
                     "source_refs": m.source_refs,
                     "created_at": m.created_at,
                 }
-                for m in active_conv.messages.all().order_by("created_at")
+                for m in reversed(list(active_conv.messages.order_by("-created_at", "-id")[:40]))
             ]
             active_conv_data = {
                 "id": active_conv.id,

@@ -130,6 +130,10 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+      - name: Test Customer Answer Contract
+        working-directory: frontend
+        run: node --test test/customerAnswerContract.test.mjs
+
       - name: Build Frontend
         working-directory: frontend
         run: npm run build

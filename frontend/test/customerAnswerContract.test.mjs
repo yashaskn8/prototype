@@ -53,3 +53,12 @@ test('a refusal links only its matching signed safety warning', () => {
   p.citations[0].url='https://example.invalid/source';
   assert.equal(validateCustomerPresentation(p).citations.length,0);
 });
+
+test('source-backed document facts keep the backend heading and validated citation kind', () => {
+  const p = fixture();
+  p.sections[0].title = 'What the document says';
+  p.sections[0].claims[0].kind = 'document_fact';
+  assert.equal(validateCustomerPresentation(p)?.sections.length, 4);
+  p.sections[0].title = 'Arbitrary heading';
+  assert.equal(validateCustomerPresentation(p), null);
+});

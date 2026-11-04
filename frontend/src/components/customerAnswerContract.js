@@ -28,9 +28,10 @@ export function validateCustomerPresentation(value) {
       || s.url.startsWith('/demo-api/source/?citation=')) && typeof s.title === 'string');
   if (new Set(citations.map(s => s.id)).size !== citations.length) return invalid();
   const ids = new Set(citations.map(s => s.id));
-  const kinds = new Set(['possible_cause', 'information', 'observation', 'customer_procedure', 'uncertainty', 'next_step']);
+  const kinds = new Set(['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure', 'uncertainty', 'next_step']);
   for (const [i, section] of value.sections.entries()) {
-    if (!section || section.number !== i + 1 || section.title !== answerTitles[i] || !Array.isArray(section.claims)
+    const validTitle = section?.title === answerTitles[i] || (i === 0 && section?.title === 'What the document says');
+    if (!section || section.number !== i + 1 || !validTitle || !Array.isArray(section.claims)
       || !section.claims.length || section.claims.length > 4) return invalid();
     for (const claim of section.claims) {
       if (!claim || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
