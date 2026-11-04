@@ -120,6 +120,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
         with patch.object(evaluation, "SECRET", synthetic_file), \
                 patch.object(evaluation.shutil, "which", side_effect=[None, "powershell.exe"]), \
                 patch.object(evaluation.subprocess, "run", return_value=SimpleNamespace(stdout="synthetic-password")) as run, \
+                patch.object(evaluation.subprocess, "CREATE_NO_WINDOW", 0, create=True), \
                 patch("django.setup"), patch.dict(os.environ, {}, clear=False):
             evaluation.configure_process()
             self.assertEqual(os.environ["MYSQL_USER"], "servy_eval_ro")

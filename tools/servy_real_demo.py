@@ -182,6 +182,7 @@ def _demo_query_context(asset, question, first, history):
         contextualize_customer_query, extract_symptoms_from_text,
     )
     context = ConversationContext(
+        conversation_uuid="real-demo-ephemeral",
         asset_id=asset.id,
         asset_name=asset.name or "equipment",
         asset_model=asset.model_number or "",
