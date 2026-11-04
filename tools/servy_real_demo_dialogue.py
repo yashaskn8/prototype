@@ -233,6 +233,9 @@ _FOCUSED_SUBJECTS = (
     (r"\b(?:outdoor|external)\s+unit\b", r"\b(?:outdoor|external|condenser)\b"),
     (r"\b(?:remote|controller)\b", r"\b(?:remote|controller)\b"),
     (r"\b(?:settings?|setpoint)\b", r"\b(?:settings?|setpoint)\b"),
+    (r"\b(?:heating|doesn.t heat|not warm)\b", r"\b(?:heat\w*|warm\w*)\b"),
+    (r"\b(?:power supply|power failure|no power)\b",
+     r"\b(?:power|supply|electrical)\b"),
     (r"\b(?:not starting|doesn.t start|won.t start|no power)\b",
      r"\b(?:start\w*|power|supply)\b"),
 )
@@ -283,6 +286,12 @@ def question_topic(question, last_topic=None):
         return "meaning"
     if re.search(r"\b(?:causes?|reasons?|why|what (?:could|might) be wrong|diagnos\w*|root cause)\b", q):
         return "causes"
+    if re.search(
+        r"\b(?:how (?:do|can|should) i\b|how to\b|"
+        r"what settings? should i (?:use|select)|"
+        r"can i\b|may i\b|is it safe to\b)", q
+    ):
+        return "next"
     if re.search(r"\b(?:what (?:should|can) i do(?:\s+next)?|what next|next step|"
                  r"what now|how (?:can|do) i (?:fix|resolve)|how to (?:fix|resolve)|"
                  r"what else can i do)\b", q):
@@ -354,7 +363,9 @@ def _match_kinds(topic):
         return frozenset({"document_fact", "information", "possible_cause"})
     if topic in {"next", "observations"}:
         return frozenset({"observation", "customer_procedure"})
-    return FACT_KINDS
+    # A general fact question cannot be answered with a cause-list item
+    # or an unapproved action just because a word overlaps.
+    return frozenset({"information", "document_fact"})
 
 
 def _follow_up(topic, question):
@@ -438,6 +449,10 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         ):
             continue
         asked_codes = _error_codes(question)
+        claim_codes = _error_codes(claim["source_text"])
+        if (claim_codes and not asked_codes
+                and not re.search(r"\b(?:fault|error|alarm)\s+codes?\b", question, re.I)):
+            continue
         if asked_codes and topic in {"causes", "meaning", "documents"}:
             # A fact about E-05 cannot answer what E-04 means. For a
             # code-specific question, require the same code in the exact
