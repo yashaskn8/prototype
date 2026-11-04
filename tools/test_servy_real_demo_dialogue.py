@@ -4,9 +4,33 @@ import unittest
 
 from tools.servy_real_demo_dialogue import (
     conversational_turn, fact_fingerprint, focus_answer,
-    followup_clarification, question_topic, is_contextual_followup,
+    followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
     out_of_scope_response,
 )
+
+
+
+class VagueProblemClarificationTests(unittest.TestCase):
+    def test_first_turn_vague_failure_asks_one_symptom_question(self):
+        for utterance in ("It is not working", "Not working", "The unit is not working",
+                          "It doesn't work"):
+            with self.subTest(utterance=utterance):
+                clarification = vague_problem_clarification(utterance, [])
+                self.assertIsNotNone(clarification)
+                self.assertIn("What happens", clarification)
+                self.assertEqual(clarification.count("?"), 1)
+
+    def test_known_prior_symptom_does_not_erase_context(self):
+        self.assertIsNone(vague_problem_clarification(
+            "It is not working", ["My Split AC runs but is not cooling"]))
+        self.assertIsNone(vague_problem_clarification(
+            "Not working", ["The display shows E-04"]))
+
+    def test_specific_new_symptom_and_unrelated_question_not_rewritten(self):
+        self.assertIsNone(vague_problem_clarification("It is making noise", []))
+        self.assertIsNone(vague_problem_clarification("What does E-04 mean?", []))
+        self.assertIsNone(vague_problem_clarification("Who is the technician?", []))
+
 
 
 def contract():
