@@ -187,7 +187,7 @@ class CustomerConversationMultiTurnTests(TestCase):
         Executes the required 4-turn sequence:
           Turn 1: 'My split AC is not cooling.' -> initial guidance, returns conversation_uuid.
           Turn 2: 'The airflow is weak.' -> contextualized retrieval, air filter check recommended.
-          Turn 3: 'I checked that already. What next?' -> contextualized query, suppresses repeated air filter check, provides next steps (condenser fins / evaporator coil).
+          Turn 3: 'I checked the air filter already. What next?' -> contextualized query, suppresses only the confirmed air filter check, provides next steps (condenser fins / evaporator coil).
           Turn 4: 'How do I check the condenser fins?' -> grounded guidance for condenser fins without losing context.
         """
         self.client.force_login(self.user_a1)
@@ -230,10 +230,11 @@ class CustomerConversationMultiTurnTests(TestCase):
         found_filter = any("filter" in a for a in actions2 + obs2) or "filter" in str(contract2).lower()
         self.assertTrue(found_filter, f"Expected air filter check in Turn 2: {actions2} / {obs2}")
 
-        # Turn 3: "I checked that already. What next?"
+        # Turn 3: identify the completed check explicitly; ambiguous pronouns
+        # must not be interpreted as confirming all earlier suggestions.
         res3 = self.client.post(
             url_messages,
-            {"message": "I checked that already. What next?"},
+            {"message": "I checked the air filter already. What next?"},
             content_type="application/json",
         )
         self.assertEqual(res3.status_code, 200)
