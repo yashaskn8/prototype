@@ -30,7 +30,8 @@ from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
-    followup_clarification, focus_answer, is_contextual_followup,
+    followup_clarification, focus_answer, is_component_followup,
+    is_contextual_followup,
     out_of_scope_response,
 )
 
@@ -324,10 +325,14 @@ def _answer(asset_id, question, continuation=None):
         rag = {"retrieval_backend": "not-required", "reranker_applied": False,
                "reranker_model": None}
     else:
+        # Targeted component follow-ups benefit from a slightly wider
+        # authorized candidate set, without adding an unbounded agent loop.
+        retrieval_top_k = 8 if is_component_followup(question) and history else 5
         rag = ask_rag(
             tenant=tenant, customer=customer, asset=asset, question=retrieval_query,
             original_question=question, conversation_context=context if history else None,
-            staff_mode=False, include_confidential=False, service_call=None, top_k=5,
+            staff_mode=False, include_confidential=False, service_call=None,
+            top_k=retrieval_top_k,
         )
         if rag.get("engine") == "policy-guard":
             presentation = exception_presentation({

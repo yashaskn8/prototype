@@ -135,7 +135,14 @@ def out_of_scope_response(question):
     can abstain normally. A user's name is never inferred from cooling text.
     """
     q = _words(question)
-    if PERSON_TOPIC.search(q):
+    # Questions about the equipment's manufacturer or authorized service
+    # contact are still equipment questions. They must be sourced or refused
+    # for lack of evidence, not misclassified as personal biography.
+    equipment_contact = bool(re.search(
+        r"\bwho (?:is|was|are) (?:the |an? )?"
+        r"(?:manufacturer|maker|oem|installer|service provider|technician)\b", q
+    ))
+    if PERSON_TOPIC.search(q) and not equipment_contact:
         return (
             "This demo answers equipment questions from approved company manuals. "
             "I can't verify information about a person's identity or personal "
@@ -151,6 +158,33 @@ def out_of_scope_response(question):
     return None
 
 
+# Short component-level questions often refer to the active reported symptom.
+# They are not independent diagnoses or reasons to fetch any other asset.
+_COMPONENT_ELLIPSIS = re.compile(
+    r"^(?:what (?:about|if)|how about|and|"
+    r"could (?:it|that|this) be|is (?:it|that|this) (?:the|a)?|"
+    r"maybe (?:the|a)?|does (?:the|a))\s+", re.I
+)
+_COMPONENT_NOUN = re.compile(
+    r"\b(?:compressor|fan|coil|filter|refrigerant|thermostat|sensor|"
+    r"condenser|outdoor unit|drain|remote|airflow|vent|electrical supply)\b",
+    re.I
+)
+
+
+def is_component_followup(question):
+    """True only for bounded elliptical references to a named component.
+
+    A short unrelated question or an independent symptom does not inherit
+    the earlier equipment issue. This function makes no technical claims.
+    """
+    q = " ".join(str(question or "").strip().split())
+    if (not q or len(q) > 180 or out_of_scope_response(q)
+            or TECHNICAL_SYMPTOMS.search(q)):
+        return False
+    return bool(_COMPONENT_ELLIPSIS.match(q) and _COMPONENT_NOUN.search(q))
+
+
 def is_contextual_followup(question):
     """Reuse earlier symptoms only for genuine elliptical equipment questions.
 
@@ -162,6 +196,8 @@ def is_contextual_followup(question):
         return False
     if TECHNICAL_SYMPTOMS.search(q):
         return False
+    if is_component_followup(q):
+        return True
     if re.fullmatch(
         r"(?:what (?:next|now|else)|what should i do(?: next)?|"
         r"any(?:thing)? (?:else|more)|tell me more|"
@@ -310,6 +346,11 @@ def question_topic(question, last_topic=None):
         return "documents"
     # Preserve context only for genuine referential follow-ups.
     # "Who is Yashas?" must never inherit "causes" merely for being short.
+    if last_topic in TOPICS and is_component_followup(question):
+        # The component question inherits the current *type* of question,
+        # not arbitrary prior answer text. This helps "what about the fan?"
+        # remain about causes after a causes conversation.
+        return last_topic if last_topic in {"causes", "documents", "observations"} else "general"
     if last_topic in TOPICS and is_contextual_followup(question):
         return last_topic
     if re.search(r"\b(?:fault|alarm|error code|e-\d+|f-\d+|not cooling|"
