@@ -1,6 +1,7 @@
 .customer-answer { color: var(--text-main, #172033); line-height: 1.6; overflow-wrap: anywhere; }
 .customer-answer-points { margin: 0; max-width: 75ch; }
 .customer-answer-point { margin-bottom: 1.4rem; }
+.customer-answer-followup { margin-top: 12px !important; padding-top: 10px; border-top: 1px solid #e2e8f0; color: #495675; font-weight: 550; }
 .customer-answer h3 { font-size: 1.05rem; margin: 0 0 .4rem; }
 .customer-answer p { margin: .4rem 0 .8rem; }
 .customer-answer button { min-height: 44px; }

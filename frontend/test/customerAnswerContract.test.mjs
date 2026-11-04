@@ -62,3 +62,43 @@ test('source-backed document facts keep the backend heading and validated citati
   p.sections[0].title = 'Arbitrary heading';
   assert.equal(validateCustomerPresentation(p), null);
 });
+
+
+test('focused real-demo answer accepts one directly relevant cited section', () => {
+  const p = fixture();
+  p.view_mode = 'focused';
+  p.sections = [{
+    number: 1, title: 'Documented possible causes',
+    claims: [p.sections[0].claims[0]],
+  }];
+  p.message = 'The approved manual lists these possibilities; a diagnosis is not confirmed.';
+  p.follow_up_question = 'Is a displayed fault code visible?';
+  p.citations[0].url = '/demo-api/source/?citation=synthetic';
+  const result = validateCustomerPresentation(p);
+  assert.equal(result.sections.length, 1);
+  assert.equal(result.focused, true);
+  assert.equal(result.message, p.message);
+  assert.equal(result.followUpQuestion, p.follow_up_question);
+  assert.equal(result.citations.length, 1);
+});
+
+test('focused answer rejects unsourced claims, invented headings and arbitrary URLs', () => {
+  const p = fixture();
+  p.view_mode = 'focused';
+  p.sections = [{
+    number: 1, title: 'Documented possible causes',
+    claims: [{ ...p.sections[0].claims[0] }],
+  }];
+  for (const mutation of [
+    p => p.sections.push(p.sections[0]),
+    p => p.sections[0].title = 'I have diagnosed the compressor fault',
+    p => p.sections[0].claims[0].evidence_ids = [],
+    p => p.sections[0].claims[0].evidence_ids = ['unknown'],
+    p => p.sections[0].claims[0].kind = 'next_step',
+    p => p.citations[0].url = 'https://example.invalid',
+  ]) {
+    const changed = structuredClone(p);
+    mutation(changed);
+    assert.equal(validateCustomerPresentation(changed), null);
+  }
+});

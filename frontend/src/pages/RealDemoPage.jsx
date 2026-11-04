@@ -266,7 +266,19 @@ export function RealDemoPage() {
                                   ))}
                                 </div>
                               )}
-                            {index === messages.length - 1 && message.data?.ticket_context && (
+                            {index === messages.length - 1
+                              && Array.isArray(message.data?.suggested_follow_ups)
+                              && message.data.suggested_follow_ups.length > 0 && (
+                                <div className="real-demo-chat-options" aria-label="Suggested follow-up questions">
+                                  {message.data.suggested_follow_ups.map(option => (
+                                    <button key={option} type="button" disabled={busy}
+                                      onClick={() => ask(null, option)}>{option}</button>
+                                  ))}
+                                </div>
+                              )}
+                            {index === messages.length - 1 && message.data?.ticket_context
+                              && (message.data.response_type !== 'DIAGNOSTIC_GUIDANCE'
+                                || messages.filter(item => item.role === 'user').length >= 3) && (
                               <div className="real-demo-ticket-action">
                                 <p>Still need assistance? Prepare a service ticket draft for review only.</p>
                                 <button className="btn btn-secondary btn-sm" type="button" onClick={startTicket}>

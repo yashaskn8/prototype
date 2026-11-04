@@ -3,6 +3,12 @@ export const answerTitles = [
   'What is still unknown?', 'What should I do next?',
 ];
 
+export const focusedAnswerTitles = [
+  'Documented possible causes', 'Safe observations from the manual',
+  'Approved customer checks', 'What the manual says',
+  'What the document says', 'What the manual supports',
+];
+
 export function validateCustomerPresentation(value) {
   if (!value || value.schema_version !== 'customer-answer-v1') return null;
   const hazard = value.hazard?.severity === 'immediate' && typeof value.hazard.message === 'string'
@@ -22,7 +28,10 @@ export function validateCustomerPresentation(value) {
       && typeof citation.title === 'string' ? citation : null;
     return { sections: [], citations: safeCitation ? [safeCitation] : [], hazard, message };
   }
-  if (!Array.isArray(value.sections) || value.sections.length !== 4 || !Array.isArray(value.citations) || value.citations.length > 30) return invalid();
+  const focused = value.view_mode === 'focused';
+  if (!Array.isArray(value.sections) ||
+    (focused ? value.sections.length !== 1 : value.sections.length !== 4) ||
+    !Array.isArray(value.citations) || value.citations.length > 30) return invalid();
   const citations = value.citations.filter(s => s && typeof s.id === 'string' && typeof s.url === 'string'
     && (s.url.startsWith('/api/customer-support/source/?citation=')
       || s.url.startsWith('/demo-api/source/?citation=')) && typeof s.title === 'string');
@@ -30,15 +39,27 @@ export function validateCustomerPresentation(value) {
   const ids = new Set(citations.map(s => s.id));
   const kinds = new Set(['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure', 'uncertainty', 'next_step']);
   for (const [i, section] of value.sections.entries()) {
-    const validTitle = section?.title === answerTitles[i] || (i === 0 && section?.title === 'What the document says');
+    const validTitle = focused
+      ? focusedAnswerTitles.includes(section?.title)
+      : (section?.title === answerTitles[i] || (i === 0 && section?.title === 'What the document says'));
     if (!section || section.number !== i + 1 || !validTitle || !Array.isArray(section.claims)
       || !section.claims.length || section.claims.length > 4) return invalid();
     for (const claim of section.claims) {
       if (!claim || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
         || !Array.isArray(claim.evidence_ids) || claim.evidence_ids.some(id => !ids.has(id))
+        || (focused && (!['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure'].includes(claim.kind)
+          || claim.evidence_ids.length !== 1))
         || (!['uncertainty', 'next_step'].includes(claim.kind) && !claim.evidence_ids.length)) return invalid();
     }
   }
   const used = new Set(value.sections.flatMap(s => s.claims.flatMap(c => c.evidence_ids)));
-  return { sections: value.sections, citations: citations.filter(s => used.has(s.id)), hazard, message: '' };
+  return {
+    sections: value.sections,
+    citations: citations.filter(s => used.has(s.id)),
+    hazard,
+    focused,
+    message: focused && typeof value.message === 'string' ? value.message.slice(0, 450) : '',
+    followUpQuestion: focused && typeof value.follow_up_question === 'string'
+      ? value.follow_up_question.slice(0, 240) : null,
+  };
 }

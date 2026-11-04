@@ -56,14 +56,14 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
   }
   return <section className="customer-answer" aria-label="Equipment guidance">
     {data.hazard && <div className="customer-answer-hazard" role="alert"><strong>Immediate safety warning</strong><p>{data.hazard.message}</p></div>}
-    {data.message && <p role="status">{data.message}{data.citations.map((citation, index) =>
+    {data.message && <p role="status">{data.message}{!data.sections.length && data.citations.map((citation, index) =>
       <button type="button" className="customer-answer-citation" key={citation.id}
         title={`Open source ${index + 1}`}
         aria-label={`Source ${index + 1}: ${citation.title}${citation.heading ? `, ${citation.heading}` : ''}`}
         onClick={event => open(event, citation)}>[{index + 1}]</button>)}</p>}
     {!!data.sections.length && <div className="customer-answer-points">
       {data.sections.map(section => <section className="customer-answer-point" key={section.number}>
-        <h3><span aria-hidden="true">{section.number}</span>{section.title}</h3>
+        <h3>{!data.focused && <span aria-hidden="true">{section.number}</span>}{section.title}</h3>
         {section.claims.map((claim, index) => <p key={claim.id || index}>
           {claim.text}
           {[...new Set(claim.evidence_ids)].map(id => {
@@ -77,6 +77,7 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
         </p>)}
       </section>)}
     </div>}
+    {data.followUpQuestion && <p className="customer-answer-followup">{data.followUpQuestion}</p>}
     {!!data.sections.length && Array.isArray(presentation.customer_authorized_actions)
       && presentation.customer_authorized_actions.length > 0
       && <button type="button" className="btn btn-secondary" onClick={() => setUnable(true)}>I cannot perform a check</button>}
