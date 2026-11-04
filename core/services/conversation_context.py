@@ -44,6 +44,54 @@ COMPLETION_PATTERNS = [
 ]
 
 # Patterns indicating the user is asking what to do next
+# A negative statement must never imply that a customer has completed a check.
+_NEGATED_COMPLETION = re.compile(
+    r"\b(?:haven['’]?t|hasn['’]?t|hadn['’]?t|didn['’]?t|don['’]?t|"
+    r"have\s+not|has\s+not|did\s+not|do\s+not|not|never|"
+    r"cannot|can['’]?t)\b(?:\s+\w+){0,5}\s+"
+    r"(?:check(?:ed)?|inspect(?:ed)?|clean(?:ed)?|wash(?:ed)?|"
+    r"verify|verified|confirm(?:ed)?|do(?:ne)?|test(?:ed)?|replac(?:e|ed))\b",
+    re.I,
+)
+
+
+def _confirmed_checks(text: str, suggested_actions: List[str]) -> List[str]:
+    """Keep only affirmative and attributable customer-reported completions."""
+    if _NEGATED_COMPLETION.search(text):
+        return []
+    for pattern in COMPLETION_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        if match.lastindex and match.group(1):
+            component = _clean_phrase(match.group(1))
+            return [component] if component else []
+        # Pronouns cannot identify one action if several were offered.
+        return [suggested_actions[0]] if len(suggested_actions) == 1 else []
+    return []
+
+
+def completed_action_matches(claim_text: str, completed_checks: List[str]) -> bool:
+    """Require multiword component agreement; one shared word is not enough."""
+    ignored = {
+        "the", "and", "for", "with", "that", "this", "unit", "equipment",
+        "check", "checked", "inspect", "inspected", "verify", "verified",
+        "observe", "observed", "visible", "visually", "report", "reported",
+        "note", "record", "initial", "customer", "already", "dust",
+    }
+    def words(value):
+        return set(re.findall(r"[a-z0-9]{3,}", str(value).casefold())) - ignored
+    candidate = words(claim_text)
+    if len(candidate) < 2:
+        return False
+    for completed in completed_checks or []:
+        done = words(completed)
+        if len(done) >= 2 and len(done & candidate) >= 2:
+            if len(done & candidate) / min(len(done), len(candidate)) >= 0.8:
+                return True
+    return False
+
+
 NEXT_STEP_PATTERNS = [
     re.compile(r"\b(?:what\s+next|what\s+should\s+i\s+do(?:\s+next)?|what\s+now|what\s+else|what\s+to\s+do|what\s+is\s+next)\b", re.I),
     re.compile(r"\b(?:and\s+then|next\s+step|now\s+what|what's\s+next)\b", re.I),
@@ -202,26 +250,19 @@ def extract_conversation_context(
         ctx.reported_symptoms = extract_symptoms_from_text(clean_input)
         return ctx
 
-    # Fetch ordered messages
-    messages = list(conv.messages.all().order_by("created_at"))
-    ctx.turn_count = len([m for m in messages if m.sender_role == "customer"])
-
-    # If no prior messages exist, this is Turn 1
-    if not messages:
+    # Limit the database query rather than loading an unbounded transcript.
+    ctx.turn_count = conv.messages.filter(sender_role="customer").count()
+    first_customer_msg = conv.messages.filter(sender_role="customer").order_by("created_at", "id").first()
+    if not first_customer_msg:
         ctx.original_complaint = clean_input
         ctx.reported_symptoms = extract_symptoms_from_text(clean_input)
         return ctx
-
-    # Bounded window: preserve the very first customer message (original complaint)
-    # plus the most recent messages up to max_history_turns
-    first_customer_msg = next((m for m in messages if m.sender_role == "customer"), None)
-    if first_customer_msg:
-        ctx.original_complaint = first_customer_msg.message_text.strip()
-        for sym in extract_symptoms_from_text(ctx.original_complaint):
-            if sym not in ctx.reported_symptoms:
-                ctx.reported_symptoms.append(sym)
-
-    recent_messages = messages[-max_history_turns:] if len(messages) > max_history_turns else messages
+    ctx.original_complaint = first_customer_msg.message_text.strip()
+    for sym in extract_symptoms_from_text(ctx.original_complaint):
+        if sym not in ctx.reported_symptoms:
+            ctx.reported_symptoms.append(sym)
+    recent_messages = list(conv.messages.order_by("-created_at", "-id")[:max(1, max_history_turns)])
+    recent_messages.reverse()
     ctx.history_turns = [{"role": m.sender_role, "text": m.message_text} for m in recent_messages]
 
     # Track suggested actions by turn to associate customer confirmations
@@ -241,28 +282,9 @@ def extract_conversation_context(
                 if clean_obs and clean_obs not in ctx.customer_observations:
                     ctx.customer_observations.append(clean_obs)
 
-            # Check if customer confirmed completing a check
-            is_completed = False
-            for pat in COMPLETION_PATTERNS:
-                m = pat.search(text)
-                if m:
-                    is_completed = True
-                    # If specific component captured in regex group
-                    if m.lastindex and m.group(1):
-                        comp = m.group(1).strip()
-                        if comp and comp not in ctx.completed_checks:
-                            ctx.completed_checks.append(comp)
-                    break
-
-            if is_completed and last_assistant_suggested_actions:
-                # If customer said "I checked that already" without naming the part,
-                # bind to the first check the assistant had just suggested
-                top_suggested = last_assistant_suggested_actions[0]
-                if top_suggested not in ctx.completed_checks:
-                    ctx.completed_checks.append(top_suggested)
-                for comp_k in ("air filter", "filter", "fuse", "breaker", "sensor", "valve", "tubing", "pump", "condenser", "coil"):
-                    if comp_k in top_suggested.lower() and comp_k not in ctx.completed_checks:
-                        ctx.completed_checks.append(comp_k)
+            for completed in _confirmed_checks(text, last_assistant_suggested_actions):
+                if completed not in ctx.completed_checks:
+                    ctx.completed_checks.append(completed)
 
         elif msg.sender_role == "assistant":
             ctx.last_assistant_answer = text
@@ -286,22 +308,10 @@ def extract_conversation_context(
     # Now evaluate current_input in relation to conversation state
     current_lower = clean_input.lower()
 
-    # Did current_input confirm a completed check?
-    for pat in COMPLETION_PATTERNS:
-        m = pat.search(clean_input)
-        if m:
-            if m.lastindex and m.group(1):
-                comp = m.group(1).strip()
-                if comp and comp not in ctx.completed_checks:
-                    ctx.completed_checks.append(comp)
-            elif last_assistant_suggested_actions:
-                top_suggested = last_assistant_suggested_actions[0]
-                if top_suggested not in ctx.completed_checks:
-                    ctx.completed_checks.append(top_suggested)
-                for comp_k in ("air filter", "filter", "fuse", "breaker", "sensor", "valve", "tubing", "pump", "condenser", "coil"):
-                    if comp_k in top_suggested.lower() and comp_k not in ctx.completed_checks:
-                        ctx.completed_checks.append(comp_k)
-            break
+    # This message has not been persisted yet; classify it explicitly.
+    for completed in _confirmed_checks(clean_input, last_assistant_suggested_actions):
+        if completed not in ctx.completed_checks:
+            ctx.completed_checks.append(completed)
 
     # Did current_input add new symptoms?
     for sym in extract_symptoms_from_text(clean_input):

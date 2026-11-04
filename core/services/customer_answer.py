@@ -436,6 +436,7 @@ def build_customer_answer(interaction, session, references, conversation_context
     from .llm import check_evidence_sufficiency, extract_typed_quantities, verify_quantity_support, _STOPWORDS
     from .identifiers import extract_error_codes
     from .retriever import normalize_domain_terms
+    from .conversation_context import completed_action_matches
     asset, customer, tenant = interaction.asset, interaction.customer, interaction.tenant
     question = interaction.question or ""
     raw_user_q = original_question or question
@@ -488,14 +489,7 @@ def build_customer_answer(interaction, session, references, conversation_context
                 level, _ = classify_action_safety(text, asset)
                 completed_checks = getattr(conversation_context, "completed_checks", None) or []
                 def _is_completed_check(claim_text):
-                    if not completed_checks:
-                        return False
-                    c_words = set(re.findall(r"[a-z0-9]{3,}", claim_text.casefold())) - _STOPWORDS
-                    for done in completed_checks:
-                        done_words = set(re.findall(r"[a-z0-9]{3,}", str(done).casefold())) - _STOPWORDS
-                        if c_words and done_words and (c_words & done_words):
-                            return True
-                    return False
+                    return completed_action_matches(claim_text, completed_checks)
 
                 if kind == "possible_cause":
                     # A descriptive cause list is information, never an action.
@@ -515,7 +509,8 @@ def build_customer_answer(interaction, session, references, conversation_context
                     target = causes
                 else:
                     continue
-                if (len(target) >= 2 or (target is not causes and len(observations + procedures) >= 2)
+                # Preserve up to four separately grounded claims per answer section.
+                if (len(target) >= 4 or (target is not causes and len(observations + procedures) >= 4)
                     or any(c["source_text"] == text for c in causes + observations + procedures)):
                     continue
                 citation = _citation(result.chunk, start, end, asset=asset, customer=customer,

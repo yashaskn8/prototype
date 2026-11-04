@@ -656,14 +656,9 @@ def _extractive_answer(question, asset, retrieved, service_call=None, conversati
 
     # Conversation-aware step filtering: exclude checks customer confirmed completed
     if conversation_context and getattr(conversation_context, "completed_checks", None):
-        completed_lower = [str(c).lower() for c in conversation_context.completed_checks]
+        from .conversation_context import completed_action_matches
         def _matches_completed(candidate_text):
-            cand_words = set(re.findall(r"[a-z0-9]{3,}", candidate_text.lower())) - _STOPWORDS
-            for done in completed_lower:
-                done_words = set(re.findall(r"[a-z0-9]{3,}", done)) - _STOPWORDS
-                if cand_words and done_words and (cand_words & done_words):
-                    return True
-            return False
+            return completed_action_matches(candidate_text, conversation_context.completed_checks)
 
         checks = [c for c in checks if not _matches_completed(c)]
         troubleshooting_steps = [s for s in troubleshooting_steps if not _matches_completed(s)]

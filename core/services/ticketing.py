@@ -99,6 +99,28 @@ def create_service_call_record(
     raise RuntimeError("Could not allocate a unique service call ID after multiple attempts.")
 
 
+def _conversation_ticket_evidence(interaction):
+    """Use customer-authored messages rather than the synthesized search query."""
+    conv = getattr(interaction, "conversation", None)
+    if not conv or (conv.tenant_id != interaction.tenant_id
+                    or conv.customer_id != interaction.customer_id
+                    or conv.asset_id != interaction.asset_id):
+        return "", ""
+    first = conv.messages.filter(sender_role="customer").order_by("created_at", "id").first()
+    authentic = (first.message_text or "").strip()[:4000] if first else ""
+    messages = list(conv.messages.order_by("-created_at", "-id")[:24])
+    messages.reverse()
+    excerpts = []
+    for message in messages:
+        if message.sender_role not in ("customer", "assistant"):
+            continue
+        role = "Customer reported" if message.sender_role == "customer" else "Assistant guidance (not confirmed performed)"
+        sanitized = " ".join((message.message_text or "").split())[:450]
+        if sanitized:
+            excerpts.append(f"{role}: {sanitized}")
+    return authentic, "\n".join(excerpts)[:9000]
+
+
 def create_call_from_interaction(interaction, customer_note: str = "", session_id: str = None):
     from core.models import CustomerInteraction, DiagnosticEvent, DiagnosticSession
     from core.services.customer_diagnostic import check_for_safety_hazard
@@ -108,6 +130,7 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
         return interaction.escalated_call
 
     tenant = interaction.tenant
+    original_customer_complaint, conversation_evidence = _conversation_ticket_evidence(interaction)
 
     # Incident-level deduplication with strict multi-tenant and asset verification:
     # Incident identity is strictly server-authoritative via session UUID.
@@ -191,7 +214,7 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
                 ref_text = "\n".join(f"- {ref}" for ref in ref_list) if ref_list else "- None cited"
 
                 # Keep the customer's authentic original reported complaint clean as primary complaint
-                authentic_complaint = (interaction.question or "").strip()
+                authentic_complaint = (original_customer_complaint or interaction.question or "").strip()[:4000]
 
                 clean_note = (customer_note or "").strip()[:500]
 
@@ -201,7 +224,9 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
                     f"Customer Original Complaint:\n{authentic_complaint}\n\n"
                     f"Customer Escalation Observation / Note:\n{clean_note or 'None provided'}\n\n"
                     f"Sources Cited:\n{ref_text}\n\n"
-                    f"AI diagnostic guidance provided (completion not confirmed):\n{interaction.answer[:3000]}"
+                    f"AI diagnostic guidance provided (completion not confirmed):\n{interaction.answer[:3000]}\n\n"
+                    f"Conversation evidence (customer statements and assistant guidance; no checks independently verified):\n"
+                    f"{conversation_evidence or 'No linked conversation transcript.'}"
                 )
 
                 call = create_service_call_record(
