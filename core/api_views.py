@@ -704,19 +704,20 @@ class CustomerSupportEscalateView(APIView):
         note = _clean_input(request.data.get("note") or request.data.get("customer_note"))
         session_id = _clean_input(request.data.get("session_id"))
 
-        # Idempotent ticket creation with OneToOne constraint enforcement and customer observation preservation
-        call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
-
+        # Serialize ticket creation across all interactions in this conversation.
+        # Row-locking before creation closes the concurrent double-escalation race.
         if interaction.conversation_id:
-            # Lock the incident before recording the system event: repeated
-            # submissions must not create duplicate ticket-announcement messages.
             with transaction.atomic():
-                conv = CustomerConversation.objects.select_for_update().get(
-                    pk=interaction.conversation_id, tenant=tenant
-                )
-                if conv.linked_service_call_id and conv.linked_service_call_id != call.id:
-                    return Response({"detail": "Conversation is linked to another service call."}, status=409)
-                if not conv.linked_service_call_id:
+                conv = CustomerConversation.objects.select_for_update().select_related(
+                    "linked_service_call"
+                ).get(pk=interaction.conversation_id, tenant=tenant)
+                if conv.linked_service_call_id:
+                    call = conv.linked_service_call
+                    if (call.tenant_id != tenant.id or call.customer_id != interaction.customer_id
+                            or call.asset_id != interaction.asset_id):
+                        return Response({"detail": "Inconsistent conversation ticket ownership."}, status=409)
+                else:
+                    call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
                     conv.status = "ESCALATED"
                     conv.linked_service_call = call
                     conv.save(update_fields=["status", "linked_service_call", "updated_at"])
@@ -727,6 +728,8 @@ class CustomerSupportEscalateView(APIView):
                         message_text=f"Service Call #{call.servy_id} created successfully.",
                         structured_contract={"call_id": call.id, "servy_id": call.servy_id},
                     )
+        else:
+            call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
 
         return Response({
             "call_id": call.id,
@@ -2486,36 +2489,46 @@ class CustomerConversationTicketView(APIView):
                 "detail": f"Service Call #{sc.servy_id} already exists for this conversation."
             })
 
-        # Find latest interaction or create one for escalation
-        interaction = CustomerInteraction.objects.filter(conversation=conv).order_by("-id").first()
-        if not interaction:
-            interaction = CustomerInteraction.objects.create(
+        # Take the same conversation lock as interaction escalation so both
+        # endpoints serialize creation for one incident, even under concurrency.
+        with transaction.atomic():
+            conv = CustomerConversation.objects.select_for_update().select_related(
+                "linked_service_call", "current_diagnostic_session"
+            ).get(pk=conv.pk, tenant=tenant)
+            if conv.linked_service_call_id:
+                call = conv.linked_service_call
+            else:
+            # Find latest interaction or create one for escalation
+            interaction = CustomerInteraction.objects.filter(conversation=conv).order_by("-id").first()
+            if not interaction:
+                interaction = CustomerInteraction.objects.create(
+                    tenant=tenant,
+                    customer=conv.customer,
+                    site=conv.site,
+                    asset=conv.asset,
+                    conversation=conv,
+                    created_by=request.user,
+                    question=conv.title or "Customer requested service from conversation",
+                    answer="Service Call requested from conversation.",
+                    source_refs=[],
+                )
+
+            note = _clean_input(request.data.get("user_observation") or request.data.get("note") or request.data.get("customer_note") or "")
+            session_id = str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None
+
+            call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
+            conv.status = "TICKETED"
+            conv.linked_service_call = call
+            conv.save(update_fields=["status", "linked_service_call", "updated_at"])
+
+            CustomerMessage.objects.create(
                 tenant=tenant,
-                customer=conv.customer,
-                site=conv.site,
-                asset=conv.asset,
                 conversation=conv,
-                created_by=request.user,
-                question=conv.title or "Customer requested service from conversation",
-                answer="Service Call requested from conversation.",
-                source_refs=[],
+                sender_role="system",
+                message_text=f"Service Call #{call.servy_id} created successfully.",
+                structured_contract={"call_id": call.id, "servy_id": call.servy_id},
             )
 
-        note = _clean_input(request.data.get("user_observation") or request.data.get("note") or request.data.get("customer_note") or "")
-        session_id = str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None
-
-        call = create_call_from_interaction(interaction, customer_note=note, session_id=session_id)
-        conv.status = "TICKETED"
-        conv.linked_service_call = call
-        conv.save(update_fields=["status", "linked_service_call", "updated_at"])
-
-        CustomerMessage.objects.create(
-            tenant=tenant,
-            conversation=conv,
-            sender_role="system",
-            message_text=f"Service Call #{call.servy_id} created successfully.",
-            structured_contract={"call_id": call.id, "servy_id": call.servy_id},
-        )
 
         return Response({
             "ticket": {
