@@ -27,7 +27,9 @@ from tools.servy_real_demo_index_review import (
     activate_runtime_snapshot, review_request, verify_signed_approval,
 )
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
-from tools.servy_real_demo_dialogue import TOPICS, conversational_turn, focus_answer
+from tools.servy_real_demo_dialogue import (
+    TOPICS, conversational_turn, followup_clarification, focus_answer,
+)
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
@@ -250,6 +252,7 @@ def _answer(asset_id, question, continuation=None):
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     current_hazard, hazard_warning = check_for_safety_hazard(question)
     small_talk = conversational_turn(question)
+    ambiguous_reply = followup_clarification(question, history)
     suggestions = []
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
@@ -266,15 +269,17 @@ def _answer(asset_id, question, continuation=None):
         contract = {"response_type": "ESCALATION_REQUIRED", "presentation": presentation,
                     "reason_code": "SAFETY_HAZARD", "engine": "safety-boundary"}
         rag = {"retrieval_backend": "none", "reranker_applied": False, "reranker_model": None}
-    elif small_talk is not None:
+    elif small_talk is not None or ambiguous_reply is not None:
         presentation = exception_presentation({
             "response_type": "CLARIFICATION",
-            "clarification_question": small_talk,
+            "clarification_question": small_talk or ambiguous_reply,
             "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
             "can_escalate": True,
         })
         contract = {"response_type": "CLARIFICATION", "presentation": presentation,
-                    "reason_code": "CONVERSATION_ACKNOWLEDGEMENT", "engine": "local-dialogue"}
+                    "reason_code": "CONVERSATION_ACKNOWLEDGEMENT" if small_talk
+                                   else "AMBIGUOUS_CUSTOMER_REPORT",
+                    "engine": "local-dialogue"}
         rag = {"retrieval_backend": "not-required", "reranker_applied": False,
                "reranker_model": None}
     else:
