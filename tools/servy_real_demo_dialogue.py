@@ -91,6 +91,148 @@ def followup_clarification(question, history):
     return None
 
 
+
+
+# A narrow, domain-specific demo must not turn unrelated questions into
+# technical answers merely because retrieval still remembers an AC symptom.
+PERSON_TOPIC = re.compile(
+    r"\b(?:who(?:'s| is| was| are)|whose|whom|"
+    r"gender|sex of|pronouns? of|age of|birthday of|"
+    r"nationality of|religion of|ethnicity of|"
+    r"biography of|personal life of|"
+    r"tell me about (?:a person|someone|[a-z]+ (?:kn|patel|kumar)))\b",
+    re.I,
+)
+UNRELATED_TOPIC = re.compile(
+    r"\b(?:weather|stock price|sports score|"
+    r"capital of|president of|prime minister of|"
+    r"tell (?:me )?(?:a|another) joke|write (?:a|me a) poem|"
+    r"movie review|celebrity|horoscope|"
+    r"solve (?:this )?math|python programming)\b",
+    re.I,
+)
+TECHNICAL_SYMPTOMS = re.compile(
+    r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot|"
+    r"not cool(?:ing)?|poor cooling|weak cooling|no cooling|"
+    r"not heat(?:ing)?|no heating|"
+    r"leak(?:ing|age)?|dripping|"
+    r"noise|noisy|vibration|vibrating|"
+    r"not starting|not turning on|not working|"
+    r"low airflow|weak airflow|"
+    r"e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
+)
+SPECIFIC_EVIDENCE = {
+    "overheating": re.compile(r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot|excessive heat|high temperature)\b", re.I),
+    "noise": re.compile(r"\b(?:nois(?:e|y)|rattl\w*|vibrat\w*|buzz\w*|hum\w*)\b", re.I),
+    "leak": re.compile(r"\b(?:leak\w*|drip\w*|water escap\w*|water collect\w*)\b", re.I),
+}
+
+
+def out_of_scope_response(question):
+    """Only explicitly non-equipment domains are rejected before RAG.
+
+    Unknown *technical* questions must still go through evidence checks and
+    can abstain normally. A user's name is never inferred from cooling text.
+    """
+    q = _words(question)
+    if PERSON_TOPIC.search(q):
+        return (
+            "This demo answers equipment questions from approved company manuals. "
+            "I can't verify information about a person's identity or personal "
+            "attributes from those manuals, so I won't guess. "
+            "You can ask about this unit, its symptoms, or a documented fault code."
+        )
+    if UNRELATED_TOPIC.search(q):
+        return (
+            "This demo is limited to equipment support using approved company manuals. "
+            "I don't have verified source information for that unrelated question. "
+            "Ask about the selected equipment, symptoms, or manual."
+        )
+    return None
+
+
+def is_contextual_followup(question):
+    """Reuse earlier symptoms only for genuine elliptical equipment questions.
+
+    Short length alone is NEVER sufficient. An explicit new symptom is a new
+    search, even if the message contains words like 'it' or 'this'.
+    """
+    q = _words(question)
+    if not q or out_of_scope_response(q):
+        return False
+    if TECHNICAL_SYMPTOMS.search(q):
+        return False
+    if re.fullmatch(
+        r"(?:what (?:next|now|else)|what should i do(?: next)?|"
+        r"any(?:thing)? (?:else|more)|tell me more|"
+        r"other causes|more causes|"
+        r"what (?:are )?(?:the )?(?:possible|documented|other|more)? ?causes?"
+        r"(?: (?:are )?documented)?|"
+        r"what can i (?:safely )?(?:check|observe|report)|"
+        r"what does (?:it|that|this) mean|"
+        r"why is that|how about that|"
+        r"i (?:already )?(?:checked|tried) (?:that|it)|"
+        r"no(?:pe| error(?: code)?| warning)?|yes|yeah|"
+        r"same issue|still not fixed)\??",
+        q,
+    ):
+        return True
+    if re.search(
+        r"\b(?:that|those|these|the same|still|already|what else|"
+        r"what other|another cause|other reason|what next)\b", q
+    ) and not re.search(
+        r"\b(?:who|whose|gender|personal|weather|capital|politic)\b", q
+    ):
+        return True
+    return False
+
+
+def _specific_symptom_supported(question, source_context):
+    """Never repurpose generic cooling causes as evidence of overheating etc."""
+    q = _words(question)
+    for trigger, required in SPECIFIC_EVIDENCE.items():
+        if trigger == "overheating":
+            specified = re.search(
+                r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot)\b", q
+            )
+        elif trigger == "noise":
+            specified = re.search(r"\b(?:nois(?:e|y)|rattl\w*|vibrat\w*)\b", q)
+        else:
+            specified = re.search(r"\b(?:leak\w*|drip\w*)\b", q)
+        if specified and not required.search(source_context or ""):
+            return False
+    return True
+
+
+_GENERAL_WORDS = frozenset({
+    "what", "who", "where", "when", "why", "which", "how",
+    "this", "that", "these", "those", "they", "them",
+    "does", "did", "can", "could", "should", "would", "will",
+    "with", "from", "into", "about", "there", "have",
+    "the", "and", "are", "was", "were", "for", "its",
+    "our", "your", "you", "not", "some", "any", "all",
+    "unit", "system", "machine", "equipment", "manual",
+    "please", "tell", "explain", "information", "give",
+    "know", "mean", "means", "support", "answer",
+    "also", "more", "than", "say", "says",
+})
+
+
+def _direct_general_overlap(question, claim, citation):
+    """A general question requires its own content overlap, not old history."""
+    if is_contextual_followup(question):
+        return True
+    tokens = {w for w in re.findall(r"[a-z0-9]{3,}", _words(question))
+              if w not in _GENERAL_WORDS}
+    if not tokens:
+        return False
+    # The document title can name the equipment but is not evidence of what
+    # the manual says about a new topic. Match the actual cited source/heading.
+    source = f"{claim['source_text']} {citation.get('heading') or ''}".casefold()
+    words = set(re.findall(r"[a-z0-9]{3,}", source))
+    return bool(tokens & words)
+
+
 def question_topic(question, last_topic=None):
     """Deterministic routing; no extra intents are invented from documents."""
     q = _words(question)
@@ -127,8 +269,9 @@ def question_topic(question, last_topic=None):
     if re.search(r"\b(?:manual|document|documentation|checklist|"
                  r"source|according to|listed|template|log|record)\b", q):
         return "documents"
-    if (last_topic in TOPICS and
-        (len(q.split()) <= 5 or re.search(r"\b(?:more|another|other|still|that|then|it)\b", q))):
+    # Preserve context only for genuine referential follow-ups.
+    # "Who is Yashas?" must never inherit "causes" merely for being short.
+    if last_topic in TOPICS and is_contextual_followup(question):
         return last_topic
     if re.search(r"\b(?:fault|alarm|error code|e-\d+|f-\d+|not cooling|"
                  r"not working|weak airflow|leak|rattl|noise)\b", q):
@@ -224,6 +367,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         return contract, {"topic": last_topic, "facts": list(previous_facts)[:24],
                           "suggestions": []}
     original = contract.get("presentation") or {}
+    off_topic = out_of_scope_response(question)
     topic = question_topic(question, last_topic)
     # Only resolve ambiguous follow-ups with model assistance. Explicit
     # customer requests remain authoritative over an open-weight model.
@@ -231,7 +375,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             and isinstance(plan, dict)
             and plan.get("intent") in TOPICS):
         topic = plan["intent"]
-    allowed = _match_kinds(topic)
+    allowed = frozenset() if off_topic else _match_kinds(topic)
     citations_by_id = {
         c.get("id"): c for c in original.get("citations", [])
         if isinstance(c, dict) and isinstance(c.get("id"), str)
@@ -252,6 +396,17 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             or evidence[0] not in citations_by_id):
             continue
         citation = citations_by_id[evidence[0]]
+        # An authorized citation alone does not establish relevance to
+        # the CURRENT user question.
+        source_context = (
+            str(claim["source_text"]) + " " + str(citation.get("heading") or "")
+        )
+        if not _specific_symptom_supported(question, source_context):
+            continue
+        if topic == "general" and not _direct_general_overlap(
+            question, claim, citation
+        ):
+            continue
         asked_codes = _error_codes(question)
         if asked_codes and topic in {"causes", "meaning", "documents"}:
             # A fact about E-05 cannot answer what E-04 means. For a
@@ -282,9 +437,9 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             if planned:
                 collected = sorted(planned, key=lambda row: rank[row[0]["id"]])
     if not collected:
-        message = (("I don't have another distinct, documented answer for that question. "
+        message = (off_topic or ("I don't have another distinct, documented answer for that question. "
                     "Please share a different symptom or displayed fault code.")
-                   if novelty else NO_EVIDENCE[topic])
+                   if novelty else NO_EVIDENCE[topic]))
         revised = {**contract,
                    "response_type": "INSUFFICIENT_EVIDENCE",
                    "response_mode": "INSUFFICIENT_EVIDENCE",
@@ -299,9 +454,10 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                        "message": message, "follow_up_question": None,
                    },
                    "citations": [], "references": [], "customer_safe_actions": [],
-                   "can_resolve": False, "reason_code": "NO_RELEVANT_APPROVED_EVIDENCE"}
-        return revised, {"topic": topic, "facts": list(previous_facts)[:24],
-                         "suggestions": []}
+                   "can_resolve": False, "reason_code":
+                       "OUT_OF_SCOPE_QUERY" if off_topic else "NO_RELEVANT_APPROVED_EVIDENCE"}
+        return revised, {"topic": last_topic if off_topic else topic,
+                         "facts": list(previous_facts)[:24], "suggestions": []}
 
     follow_up = _follow_up(topic, question)
     style = "direct"

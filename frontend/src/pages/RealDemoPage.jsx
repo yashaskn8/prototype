@@ -251,7 +251,8 @@ export function RealDemoPage() {
                                 {({
                                   DIAGNOSTIC_GUIDANCE: 'From your manual',
                                   CLARIFICATION: 'Quick question',
-                                  INSUFFICIENT_EVIDENCE: 'More evidence needed',
+                                  INSUFFICIENT_EVIDENCE: message.data?.reason_code === 'OUT_OF_SCOPE_QUERY'
+                                    ? 'Outside manual scope' : 'More evidence needed',
                                   ESCALATION_REQUIRED: 'Safety notice',
                                   POLICY_VIOLATION: 'Not permitted',
                                 })[message.data?.response_type] || 'Response'}

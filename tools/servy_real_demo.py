@@ -30,7 +30,8 @@ from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_dialogue import (
     TOPICS, conversational_turn, conversation_recap,
-    followup_clarification, focus_answer,
+    followup_clarification, focus_answer, is_contextual_followup,
+    out_of_scope_response,
 )
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
@@ -206,7 +207,7 @@ def _sign_demo_context(asset_id, customer_id, question, first, history,
 def _demo_query_context(asset, question, first, history):
     """Build retrieval context from customer reports, never from AI claims."""
     from core.services.conversation_context import (
-        ConversationContext, NEXT_STEP_PATTERNS, _confirmed_checks,
+        ConversationContext, _confirmed_checks,
         contextualize_customer_query, extract_symptoms_from_text,
     )
     context = ConversationContext(
@@ -229,11 +230,9 @@ def _demo_query_context(asset, question, first, history):
             if completed not in context.completed_checks:
                 context.completed_checks.append(completed)
     context.history_turns = [{"role": "customer", "text": t} for t in history]
-    context.is_followup = bool(history) and (
-        len(question.split()) <= 18
-        or any(pattern.search(question) for pattern in NEXT_STEP_PATTERNS)
-        or bool(re.search(r"\b(?:it|this|that|already|still|next|again)\b", question, re.I))
-    )
+    # Never append prior equipment symptoms to an unrelated question just
+    # because it is short, or to a new self-contained symptom description.
+    context.is_followup = bool(history) and is_contextual_followup(question)
     contextual_question = contextualize_customer_query(question, context, asset)
     return context, contextual_question or question
 
@@ -256,6 +255,7 @@ def _answer(asset_id, question, continuation=None):
     small_talk = conversational_turn(question)
     ambiguous_reply = followup_clarification(question, history)
     recap = conversation_recap(question, history)
+    off_topic = out_of_scope_response(question)
     suggestions = []
     local_planner_used = False
     is_hazard = current_hazard or earlier_hazard
@@ -273,6 +273,22 @@ def _answer(asset_id, question, continuation=None):
         contract = {"response_type": "ESCALATION_REQUIRED", "presentation": presentation,
                     "reason_code": "SAFETY_HAZARD", "engine": "safety-boundary"}
         rag = {"retrieval_backend": "none", "reranker_applied": False, "reranker_model": None}
+    elif off_topic is not None:
+        # An out-of-scope question must not perform RAG, claim an AC citation,
+        # change active equipment context, or become a service-ticket draft.
+        presentation = exception_presentation({
+            "response_type": "INSUFFICIENT_EVIDENCE",
+            "summary": off_topic,
+            "asset": {"id": asset.id, "name": asset.name,
+                      "model_number": asset.model_number},
+            "can_escalate": False,
+        })
+        contract = {"response_type": "INSUFFICIENT_EVIDENCE",
+                    "presentation": presentation,
+                    "reason_code": "OUT_OF_SCOPE_QUERY",
+                    "engine": "dialogue-scope-guard"}
+        rag = {"retrieval_backend": "not-required",
+               "reranker_applied": False, "reranker_model": None}
     elif small_talk is not None or ambiguous_reply is not None or recap is not None:
         presentation = exception_presentation({
             "response_type": "CLARIFICATION",
@@ -373,13 +389,15 @@ def _answer(asset_id, question, continuation=None):
         "clarification_question": clarification_question,
         "clarification_options": clarification_options,
         "suggested_follow_ups": suggestions if response_type == "DIAGNOSTIC_GUIDANCE" else [],
-        "continuation": _sign_demo_context(
+        # Ignore unrelated turns in RAG memory. Keep the previous signed
+        # continuation exactly unchanged, including its customer/asset scope.
+        "continuation": continuation if off_topic is not None else _sign_demo_context(
             asset_id, customer.id, question, original, history, hazard=is_hazard,
             last_topic=last_topic, shown_facts=previous_facts,
         ),
         "conversation_turn": len(history) + 1,
         "dialogue_planner": "local-ollama-structured" if local_planner_used else "deterministic-grounded",
-        "ticket_context": ticket_context,
+        "ticket_context": None if off_topic is not None else ticket_context,
         "citations": [
             {"document_id": c["document_id"], "chunk_id": c["chunk_id"]}
             for c in presentation.get("citations", [])
