@@ -191,7 +191,21 @@ npm run build
 
 ## Local LLM (optional, zero API cost)
 
-The default setting is `SERVY_LLM_PROVIDER=auto`. The app tries a local Ollama endpoint and falls back to an extractive grounded answer if Ollama is not running.
+The current default is `SERVY_LLM_PROVIDER=extractive` (see `servy_rag/settings.py` and `.env.example`). This mode does not require a running LLM and assembles customer-facing responses from authorized, verified document passages, with signed citations.
+
+To optionally enable local model generation, explicitly configure `SERVY_LLM_PROVIDER=ollama` or `auto` and run a compatible local Ollama model. If model generation is unavailable, the application uses its configured extractive fallback unless `SERVY_LLM_REQUIRE_OLLAMA` is set. Customer-facing diagnostic claims still pass through the server's source-grounded answer contract; a generated free-form answer is not automatically shown as verified technician guidance.
+
+**Conversational RAG smoke tests** after updating `main`:
+
+```bash
+python manage.py test core.tests_customer_conversation_multiturn core.tests_customer_answer -v 2
+cd frontend
+node --test test/customerAnswerContract.test.mjs
+npm run lint
+npm run build
+```
+
+Use the approved Knowledge Base documents for the selected asset. Missing, unapproved, or unrelated documents must produce an insufficient-evidence response instead of an invented answer.
 
 Example:
 
