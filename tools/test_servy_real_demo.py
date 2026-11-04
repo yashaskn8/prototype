@@ -9,6 +9,8 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
+# This standalone offline test must also import on Linux CI runners.
+os.environ.setdefault("LOCALAPPDATA", "/tmp")
 from tools import servy_real_demo as demo
 from tools import servy_100_readonly_eval as evaluation
 
@@ -134,6 +136,76 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertIn("GET /demo-api/source/ 200", line)
         self.assertNotIn("private-sentinel", line)
         self.assertNotIn("private-answer-sentinel", line)
+
+
+    def test_continuation_is_signed_scoped_and_not_database_persisted(self):
+        token = demo._sign_demo_context(
+            60, 13, "Why is the VRF not cooling?", "", [], hazard=False
+        )
+        first, history, hazard = demo._load_demo_context(token, 60, 13)
+        self.assertEqual(first, "Why is the VRF not cooling?")
+        self.assertEqual(history, ["Why is the VRF not cooling?"])
+        self.assertFalse(hazard)
+        with self.assertRaises(ValueError):
+            demo._load_demo_context(token, 59, 14)
+        with self.assertRaises(ValueError):
+            demo._load_demo_context(token, 60, 14)
+        with self.assertRaises(ValueError):
+            demo._load_demo_context(token + "tampered", 60, 13)
+
+    def test_follow_up_retrieval_uses_prior_customer_report_without_inventing_completion(self):
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
+            model_number="VRF-1", product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        context, query = demo._demo_query_context(
+            asset, "What next?", "The VRF module is not cooling.",
+            ["The VRF module is not cooling.", "It has weak airflow."],
+        )
+        self.assertTrue(context.is_followup)
+        self.assertIn("weak airflow", context.reported_symptoms)
+        self.assertIn("next troubleshooting steps", query)
+        self.assertIn("VRF Outdoor Module", query)
+        denied, _ = demo._demo_query_context(
+            asset, "What next?", "The VRF module is not cooling.",
+            ["I haven't checked the air filter."],
+        )
+        self.assertEqual(denied.completed_checks, [])
+        confirmed, _ = demo._demo_query_context(
+            asset, "What next?", "The VRF module is not cooling.",
+            ["I checked the air filter."],
+        )
+        self.assertIn("air filter", confirmed.completed_checks)
+
+    def test_demo_query_route_passes_signed_continuation_in_read_only_context(self):
+        handler = object.__new__(demo.Handler)
+        handler.path = "/demo-api/query/"
+        handler._authorized = lambda: True
+        handler._send = lambda status, value: (status, value)
+        payload = {"asset_id": 60, "question": "What next?", "continuation": "opaque-state"}
+        data = json.dumps(payload).encode("utf-8")
+        handler.headers = {"Content-Length": str(len(data))}
+        handler.rfile = io.BytesIO(data)
+        with patch.object(demo, "read_only_database", return_value=nullcontext()) as readonly, \
+                patch.object(demo, "_answer", return_value={"response_type": "CLARIFICATION"}) as answer:
+            code, response = handler.do_POST()
+        self.assertEqual(code, 200)
+        self.assertEqual(response["response_type"], "CLARIFICATION")
+        answer.assert_called_once_with(60, "What next?", continuation="opaque-state")
+        readonly.assert_called_once_with()
+
+    def test_continuation_is_bounded_and_preserves_original_complaint(self):
+        first = "VRF is not cooling"
+        previous = []
+        for index in range(15):
+            token = demo._sign_demo_context(
+                60, 13, f"Message {index}", first, previous
+            )
+            stored_first, previous, hazard = demo._load_demo_context(token, 60, 13)
+            self.assertFalse(hazard)
+            self.assertEqual(stored_first, first)
+            self.assertLessEqual(len(previous), demo.DEMO_CONTEXT_MAX_TURNS)
+        self.assertEqual(previous[-1], "Message 14")
 
 
 if __name__ == "__main__":

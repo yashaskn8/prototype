@@ -105,6 +105,11 @@ jobs:
       - name: Customer RAG Mutation Tests
         run: python manage.py test core.tests_customer_mutations -v 2
 
+      - name: Read-only Real Demo Continuation Tests
+        run: python -m unittest tools.test_servy_real_demo -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Run All Core Tests on MySQL
         run: python manage.py test core -v 2
 
