@@ -54,6 +54,10 @@ def conversational_turn(text):
 def question_topic(question, last_topic=None):
     """Deterministic routing; no extra intents are invented from documents."""
     q = _words(question)
+    if re.search(r"\b(?:[A-Z]{1,3}[- ]?\d{1,3})\b", question, re.I) and re.search(
+        r"\b(?:showing|displays?|see|saw|code|alarm|fault)\b", q
+    ) and not re.search(r"\b(?:cause|why|reason|fix|repair|check)\b", q):
+        return "meaning"
     if re.search(r"\b(?:what does|what is|what's)\b.{0,90}\b(?:mean|indicate|signify)\b"
                  r"|\b(?:meaning|indicates?|denotes?|definition)\b"
                  r"|\b(?:explain|identify)\s+(?:the\s+)?(?:error|fault|alarm)\s+code\b", q):
@@ -63,6 +67,11 @@ def question_topic(question, last_topic=None):
     if re.search(r"\b(?:what (?:should|can) i do(?:\s+next)?|what next|next step|"
                  r"what now|how (?:can|do) i (?:fix|resolve)|how to (?:fix|resolve)|"
                  r"what else can i do)\b", q):
+        return "next"
+    if last_topic in TOPICS and re.search(
+        r"\b(?:already checked|i checked|i tried|did that|still not|"
+        r"didn't help|did not help|not resolved|not fixed|same issue)\b", q
+    ) and not re.search(r"\b(?:why|cause|reason)\b", q):
         return "next"
     if re.search(r"\b(?:safe(?:ly)?|check|inspect|observe|observation|look at|"
                  r"report|visible|display|indicator|notice|readout)\b", q):
@@ -214,7 +223,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=()):
                 "customer_safe_actions": [
                     a for a in contract.get("customer_safe_actions", [])
                     if a.get("action_id") in {c.get("id") for c in selected_claims}
-                ]}
+                ],
+                "can_resolve": bool(topic in {"next", "observations"}
+                                    and any(c.get("kind") in {"observation", "customer_procedure"}
+                                            for c in selected_claims)
+                                    and contract.get("can_resolve"))}
     suggestions = {
         "causes": ["What can I safely observe?", "What should I do next?"],
         "observations": ["What documented causes could explain this?", "What should I do next?"],
