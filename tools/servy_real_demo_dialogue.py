@@ -218,6 +218,33 @@ _GENERAL_WORDS = frozenset({
 })
 
 
+_FOCUSED_SUBJECTS = (
+    (r"\bfilter\w*\b", r"\bfilter\w*\b"),
+    (r"\bcoil\w*\b", r"\bcoil\w*\b"),
+    (r"\bfan\b", r"\bfan\w*\b"),
+    (r"\bcompressor\w*\b", r"\bcompressor\w*\b"),
+    (r"\brefrigerant\b", r"\brefrigerant\b"),
+    (r"\bthermostat\b", r"\bthermostat\b"),
+    (r"\bsensor\b", r"\bsensor\w*\b"),
+    (r"\bdrain\w*\b", r"\bdrain\w*\b"),
+    (r"\b(?:airflow|air flow)\b", r"\b(?:airflow|air flow)\b"),
+    (r"\b(?:outdoor|external)\s+unit\b", r"\b(?:outdoor|external)\s+unit\b"),
+    (r"\b(?:remote|controller)\b", r"\b(?:remote|controller)\b"),
+    (r"\b(?:settings?|setpoint)\b", r"\b(?:settings?|setpoint)\b"),
+    (r"\b(?:not starting|doesn.t start|won.t start|no power)\b",
+     r"\b(?:start\w*|power|supply)\b"),
+)
+
+
+def _direct_subject_match(question, claim, citation):
+    """An authorized citation must mention the subject asked about now."""
+    source = f"{claim.get('source_text', '')} {citation.get('heading') or ''}"
+    return all(
+        not re.search(asked, question, re.I) or re.search(supported, source, re.I)
+        for asked, supported in _FOCUSED_SUBJECTS
+    )
+
+
 def _direct_general_overlap(question, claim, citation):
     """A general question requires its own content overlap, not old history."""
     if is_contextual_followup(question):
@@ -401,7 +428,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         source_context = (
             str(claim["source_text"]) + " " + str(citation.get("heading") or "")
         )
-        if not _specific_symptom_supported(question, source_context):
+        if (not _specific_symptom_supported(question, source_context)
+                or not _direct_subject_match(question, claim, citation)):
             continue
         if topic == "general" and not _direct_general_overlap(
             question, claim, citation
