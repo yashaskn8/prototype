@@ -63,7 +63,7 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
         onClick={event => open(event, citation)}>[{index + 1}]</button>)}</p>}
     {!!data.sections.length && <div className="customer-answer-points">
       {data.sections.map(section => <section className="customer-answer-point" key={section.number}>
-        <h3>{!data.focused && <span aria-hidden="true">{section.number}</span>}{section.title}</h3>
+        {!data.focused && <h3><span aria-hidden="true">{section.number}</span>{section.title}</h3>}
         {section.claims.map((claim, index) => <p key={claim.id || index}>
           {claim.text}
           {[...new Set(claim.evidence_ids)].map(id => {

@@ -249,7 +249,7 @@ export function RealDemoPage() {
                               <span className={message.data?.response_type === 'DIAGNOSTIC_GUIDANCE'
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
                                 {({
-                                  DIAGNOSTIC_GUIDANCE: 'From your manual',
+                                  DIAGNOSTIC_GUIDANCE: 'Cited answer',
                                   CLARIFICATION: 'Quick question',
                                   INSUFFICIENT_EVIDENCE: message.data?.reason_code === 'OUT_OF_SCOPE_QUERY'
                                     ? 'Outside manual scope' : 'More evidence needed',
@@ -264,11 +264,14 @@ export function RealDemoPage() {
                               loadSource={url => call(url, token)}
                             /> : <p>{message.data?.message || 'No response is available.'}</p>}
                             {message.data?.response_type === 'DIAGNOSTIC_GUIDANCE' && (
-                              <p className="real-demo-dialogue-meta">
-                                {message.data.dialogue_planner === 'local-ollama-structured'
-                                  ? 'Local open-source dialogue planning · source-verified facts'
-                                  : 'Source-verified facts · deterministic conversational fallback'}
-                              </p>
+                              <details className="real-demo-dialogue-meta">
+                                <summary>How this answer was prepared</summary>
+                                <p>The technical statements are drawn from approved company sources.
+                                  {message.data.dialogue_planner === 'local-ollama-structured'
+                                    ? ' A local language model helped organize the conversation.'
+                                    : ' The response was organized without a generative language model.'}
+                                </p>
+                              </details>
                             )}
                             {Array.isArray(message.data?.clarification_options)
                               && message.data.clarification_options.length > 0

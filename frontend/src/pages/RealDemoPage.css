@@ -153,4 +153,6 @@
   .real-demo-chat-composer-footer { flex-wrap: wrap; }
 }
 
-.real-demo-dialogue-meta { margin-top: 14px !important; color: #64748b; font-size: .72rem; line-height: 1.5; }
+.real-demo-dialogue-meta { margin-top: 12px; color: #64748b; font-size: .76rem; line-height: 1.5; }
+.real-demo-dialogue-meta summary { width: fit-content; cursor: pointer; }
+.real-demo-dialogue-meta p { margin: 7px 0 0; max-width: 65ch; }
