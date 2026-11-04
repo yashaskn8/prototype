@@ -86,7 +86,7 @@ class LocalOllamaPlannerTests(TestCase):
         })
         self.assertEqual(reply["presentation"]["sections"][0]["title"], "Documented possible causes")
         self.assertEqual([x["id"] for x in reply["presentation"]["citations"]],
-                         ["s1", "s2", "s4"])
+                         ["s1", "s2"])
 
     def test_unknown_claim_or_unauthorized_followup_forces_safe_fallback(self):
         invalid = [

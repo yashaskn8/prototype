@@ -77,11 +77,11 @@ class IntentFocusTests(unittest.TestCase):
         self.assertTrue(p["view_mode"] == "focused")
         self.assertTrue(all(c["kind"] in {"possible_cause", "information"}
                             for c in p["sections"][0]["claims"]))
-        self.assertEqual([c["id"] for c in p["citations"]], ["s1", "s2", "s4"])
+        self.assertEqual([c["id"] for c in p["citations"]], ["s1", "s2"])
         self.assertEqual(result["customer_safe_actions"], [])
         self.assertFalse(result["can_resolve"])
         self.assertEqual(state["topic"], "causes")
-        self.assertEqual(len(state["facts"]), 3)
+        self.assertEqual(len(state["facts"]), 2)
         self.assertIn("What can I safely observe?", state["suggestions"])
 
     def test_observations_never_include_cause_or_uncited_hardware_procedure(self):
@@ -274,12 +274,57 @@ class IntentFocusTests(unittest.TestCase):
             )
             self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
             self.assertEqual(result["citations"], [])
-        # An exact supported term can produce a grounded general answer.
+        # A code-specific explanation is not a generic definition of airflow.
         result, _ = focus_answer(
             contract(), "Explain airflow", last_topic="causes"
         )
-        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
-        self.assertTrue(result["citations"])
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["citations"], [])
+
+
+    def test_real_equipment_questions_get_distinct_cited_claims_or_abstain(self):
+        from tools.servy_real_demo_dialogue import question_topic
+        baseline = contract()
+        claims = baseline["presentation"]["supporting_claims"]
+        claims[0]["source_text"] = "Dirty filter or coil."
+        claims[0]["text"] = "Possible documented cause: Dirty filter or coil."
+        self.assertEqual(question_topic("How do I clean the filter?"), "next")
+        cases = (
+            ("What are possible causes involving a dirty filter?", ["s1"]),
+            ("What are possible causes involving the outdoor unit?", ["s2"]),
+            ("What are possible causes involving the compressor?", []),
+            ("What does the manual say about poor cooling from a dirty filter?", ["s1"]),
+            ("What caused the unusual rattling noise?", []),
+            ("What temperature settings should I use?", []),
+            ("How do I clean the filter?", []),
+            ("What is a thermostat?", []),
+            ("What causes the unit to overheat?", []),
+            ("What possible causes are documented?", ["s1", "s2"]),
+        )
+        for question, expected in cases:
+            with self.subTest(question=question):
+                answer, state = focus_answer(
+                    copy.deepcopy(baseline), question, last_topic="causes",
+                )
+                citations = [c["id"] for c in answer["presentation"]["citations"]]
+                self.assertEqual(citations, expected)
+                self.assertEqual(
+                    answer["response_type"],
+                    "DIAGNOSTIC_GUIDANCE" if expected else "INSUFFICIENT_EVIDENCE",
+                )
+                self.assertFalse(answer["can_resolve"] if "can_resolve" in answer else False
+                                 if not expected else False)
+
+    def test_general_questions_do_not_inherit_causes_from_a_pronoun(self):
+        from tools.servy_real_demo_dialogue import is_contextual_followup
+        self.assertFalse(is_contextual_followup("What is that movie?"))
+        self.assertFalse(is_contextual_followup("Who is that author?"))
+        self.assertFalse(is_contextual_followup("What are those restaurants?"))
+        for question in ("What is that movie?", "Who is that author?"):
+            result, _ = focus_answer(contract(), question, last_topic="causes")
+            self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+            self.assertEqual(result["presentation"]["citations"], [])
+
 
     def test_fingerprint_is_independent_of_response_local_citation_ids(self):
         base = contract()

@@ -408,5 +408,32 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertIn("not cooling", query)
 
 
+    def test_latest_new_symptom_replaces_stale_first_symptom_in_retrieval(self):
+        asset = SimpleNamespace(
+            id=60, name="Synthetic Split AC", asset_code="TEST-60",
+            model_number="AC-60", product=SimpleNamespace(name="Synthetic AC"),
+        )
+        history = [
+            "The AC is overheating.",
+            "The AC runs but is not cooling.",
+        ]
+        ctx, query = demo._demo_query_context(
+            asset, "What possible causes are documented?",
+            history[0], history,
+        )
+        self.assertTrue(ctx.is_followup)
+        self.assertIn("not cooling", query)
+        self.assertNotIn("overheating", query)
+        self.assertEqual(ctx.original_complaint, history[-1])
+        current, standalone = demo._demo_query_context(
+            asset, "Now the AC is overheating.", history[0], history,
+        )
+        self.assertFalse(current.is_followup)
+        self.assertEqual(standalone, "Now the AC is overheating.")
+        self.assertEqual(current.original_complaint, "Now the AC is overheating.")
+        self.assertNotIn("not cooling", current.reported_symptoms)
+
+
+
 if __name__ == "__main__":
     unittest.main()
