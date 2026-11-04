@@ -4,7 +4,8 @@ import unittest
 
 from tools.servy_real_demo_dialogue import (
     conversational_turn, fact_fingerprint, focus_answer,
-    followup_clarification, question_topic,
+    followup_clarification, question_topic, is_contextual_followup,
+    out_of_scope_response,
 )
 
 
@@ -193,6 +194,92 @@ class IntentFocusTests(unittest.TestCase):
         guarded["presentation"]["message"] = "I cannot approve that operation."
         untouched, _ = focus_answer(guarded, "Can I repair this unit?")
         self.assertIs(untouched, guarded)
+
+
+    def test_exact_customer_transcript_cannot_repeat_cooling_causes_for_person(self):
+        from tools.servy_real_demo_dialogue import question_topic
+        initial, previous = focus_answer(
+            contract(), "What possible causes are documented?"
+        )
+        self.assertEqual(initial["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertTrue(previous["facts"])
+        for question in (
+            "who is yashas",
+            "what is the gender of yashas kn",
+            "Who is the developer of this program?",
+            "What is the gender of Yashas KN?",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNotNone(out_of_scope_response(question))
+                self.assertEqual(question_topic(question, previous["topic"]), "general")
+                response, state = focus_answer(
+                    contract(), question, last_topic=previous["topic"],
+                    previous_facts=previous["facts"],
+                )
+                self.assertEqual(response["response_type"], "INSUFFICIENT_EVIDENCE")
+                self.assertEqual(response["reason_code"], "OUT_OF_SCOPE_QUERY")
+                self.assertEqual(response["presentation"]["sections"], [])
+                self.assertEqual(response["citations"], [])
+                self.assertNotIn("Dirty filter", response["answer"])
+                self.assertEqual(state["topic"], previous["topic"])
+                self.assertEqual(state["facts"], previous["facts"])
+
+    def test_unrelated_knowledge_question_cannot_inherit_equipment_citations(self):
+        for question in (
+            "What is the capital of France?",
+            "Tell me a joke",
+            "What is the weather?",
+        ):
+            response, state = focus_answer(
+                contract(), question, last_topic="causes",
+            )
+            self.assertEqual(response["reason_code"], "OUT_OF_SCOPE_QUERY")
+            self.assertEqual(response["presentation"]["citations"], [])
+            self.assertEqual(state["topic"], "causes")
+
+    def test_distinguish_elliptical_followup_from_new_self_contained_question(self):
+        for question in (
+            "What possible causes are documented?",
+            "What next?",
+            "What else?",
+            "What can I safely observe?",
+            "I checked that",
+        ):
+            self.assertTrue(is_contextual_followup(question), question)
+        for question in (
+            "Who is Yashas?",
+            "What is the gender of Yashas KN?",
+            "It is overheating",
+            "Why is the split AC not cooling?",
+            "The unit has a new rattling noise",
+        ):
+            self.assertFalse(is_contextual_followup(question), question)
+
+    def test_overheating_question_requires_source_about_overheating(self):
+        # A citation to poor cooling is not evidence of overheating.
+        result, _ = focus_answer(
+            contract(),
+            "Split AC unit is not working; it is overheating. What causes this?",
+            last_topic="causes",
+        )
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["citations"], [])
+        self.assertNotIn("Reduced airflow", result["answer"])
+        self.assertEqual(result["reason_code"], "NO_RELEVANT_APPROVED_EVIDENCE")
+
+    def test_general_questions_need_direct_source_overlap(self):
+        for question in ("Who built this chatbot?", "What is an inverter compressor?"):
+            result, _ = focus_answer(
+                contract(), question, last_topic="causes"
+            )
+            self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+            self.assertEqual(result["citations"], [])
+        # An exact supported term can produce a grounded general answer.
+        result, _ = focus_answer(
+            contract(), "Explain airflow", last_topic="causes"
+        )
+        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertTrue(result["citations"])
 
     def test_fingerprint_is_independent_of_response_local_citation_ids(self):
         base = contract()

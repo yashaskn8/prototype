@@ -325,5 +325,88 @@ class RealDemoBoundaryTests(unittest.TestCase):
                 rebuild_isolated_bge_index("/tmp", {}, {60: 13}, lambda unused: None)
 
 
+    def test_off_topic_query_is_blocked_before_rag_and_keeps_signed_context(self):
+        from types import ModuleType
+        from unittest.mock import Mock
+        from tools.servy_real_demo_dialogue import out_of_scope_response
+        token = demo._sign_demo_context(
+            60, 13, "My split AC is not cooling", "",
+            ["My split AC is not cooling"],
+            last_topic="causes", shown_facts=["a" * 64],
+        )
+        asset = SimpleNamespace(
+            id=60, name="Synthetic split AC",
+            model_number="SPLIT-1", asset_code="SYNTH-1",
+            product=SimpleNamespace(name="Synthetic split AC"),
+        )
+        customer = SimpleNamespace(id=13)
+        tenant = SimpleNamespace(id=273)
+        answer_mod = ModuleType("core.services.customer_answer")
+        answer_mod._question_guard = Mock(return_value=None)
+        answer_mod.build_customer_answer = Mock(
+            side_effect=AssertionError("Technical evidence should not be searched")
+        )
+        answer_mod.exception_presentation = lambda request: {
+            "schema_version": "customer-answer-v1",
+            "response_type": request["response_type"],
+            "equipment": request["asset"],
+            "sections": [], "citations": [], "hazard": {
+                "severity": "none", "message": "",
+            },
+            "message": request.get("summary", ""),
+        }
+        hazard_mod = ModuleType("core.services.customer_diagnostic")
+        hazard_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
+        hazard_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
+        rag_mod = ModuleType("core.services.rag")
+        rag_mod.ask_rag = Mock(
+            side_effect=AssertionError("Off-topic query reached document retrieval")
+        )
+        modules = {
+            "core.services.customer_answer": answer_mod,
+            "core.services.customer_diagnostic": hazard_mod,
+            "core.services.rag": rag_mod,
+        }
+        for question in ("who is yashas", "what is the gender of yashas kn"):
+            with self.subTest(question=question), \
+                 patch.dict("sys.modules", modules), \
+                 patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
+                 patch.object(demo, "_demo_query_context",
+                              return_value=(SimpleNamespace(is_followup=False), question)):
+                response = demo._answer(60, question, continuation=token)
+            self.assertIsNotNone(out_of_scope_response(question))
+            self.assertEqual(response["response_type"], "INSUFFICIENT_EVIDENCE")
+            self.assertEqual(response["reason_code"], "OUT_OF_SCOPE_QUERY")
+            self.assertEqual(response["engine"], "dialogue-scope-guard")
+            self.assertEqual(response["citations"], [])
+            self.assertEqual(response["continuation"], token)
+            self.assertIsNone(response["ticket_context"])
+            first, recent, _ = demo._load_demo_context(token, 60, 13)
+            self.assertNotIn(question, recent)
+            self.assertEqual(demo._load_demo_dialogue_state(token)[0], "causes")
+
+    def test_new_subject_is_not_rewritten_with_past_cooling_reports(self):
+        asset = SimpleNamespace(
+            id=60, name="Synthetic split AC", asset_code="TEST-60",
+            model_number="AC-60", product=SimpleNamespace(name="Synthetic AC"),
+        )
+        history = ["The AC is not cooling", "What causes it?"]
+        for independent in (
+            "Who is Yashas?", "What is the gender of Yashas KN?",
+            "The AC is overheating", "What is the capital of France?",
+        ):
+            context, query = demo._demo_query_context(
+                asset, independent, "The AC is not cooling", history
+            )
+            self.assertFalse(context.is_followup)
+            self.assertEqual(query, independent)
+        context, query = demo._demo_query_context(
+            asset, "What possible causes are documented?",
+            "The AC is not cooling", history,
+        )
+        self.assertTrue(context.is_followup)
+        self.assertIn("not cooling", query)
+
+
 if __name__ == "__main__":
     unittest.main()
