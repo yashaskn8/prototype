@@ -77,9 +77,10 @@ export function RealDemoPage() {
   function initializeThreads(nextAssetId) {
     threadCache.current.clear();
     threadSequence.current = nextAssetId ? 1 : 0;
-    setActiveThreadId(nextAssetId ? 'thread-1' : '');
+    const initialId = nextAssetId ? 'thread-' + crypto.randomUUID() : '';
+    setActiveThreadId(initialId);
     setThreads(nextAssetId
-      ? [{ id: 'thread-1', assetId: String(nextAssetId), title: 'New chat' }]
+      ? [{ id: initialId, assetId: String(nextAssetId), title: 'New chat' }]
       : []);
     resetConversation();
   }
@@ -87,7 +88,7 @@ export function RealDemoPage() {
   function startNewChat() {
     if (busy || !assetId) return;
     if (activeThreadId) threadCache.current.set(activeThreadId, snapshotThread());
-    const id = 'thread-' + (++threadSequence.current);
+    const id = 'thread-' + crypto.randomUUID();
     const next = appendDemoThread(threads, {
       id, assetId: String(assetId), title: 'New chat',
     });
@@ -187,6 +188,7 @@ export function RealDemoPage() {
           asset_id: Number(activeAsset),
           question: submittedQuestion,
           continuation,
+          thread_id: activeThreadId,
         }),
       });
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;

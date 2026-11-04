@@ -149,7 +149,7 @@ def _inventory():
     return rows
 
 
-def _load_demo_context(token, asset_id, customer_id):
+def _load_demo_context(token, asset_id, customer_id, thread_id=None):
     """Read only a server-signed continuation for this exact asset/customer."""
     if token is None or token == "":
         return "", [], False
@@ -162,6 +162,14 @@ def _load_demo_context(token, asset_id, customer_id):
         raise ValueError("Invalid or expired conversation continuation") from exc
     if not isinstance(state, dict) or state.get("asset") != asset_id or state.get("customer") != customer_id:
         raise ValueError("Conversation continuation is outside the selected equipment scope")
+    # Thread binding is signed. The continuation of one tab conversation
+    # must not be accepted in another thread, even for the same asset.
+    bound_thread = state.get("thread_id")
+    if bound_thread is not None or thread_id is not None:
+        if (not isinstance(bound_thread, str)
+                or not isinstance(thread_id, str)
+                or bound_thread != thread_id):
+            raise ValueError("Conversation continuation belongs to another chat")
     first, recent = state.get("first"), state.get("recent")
     if (not isinstance(first, str) or not first.strip()
         or len(first) > DEMO_CONTEXT_TEXT_LIMIT or not isinstance(recent, list)
@@ -192,12 +200,14 @@ def _load_demo_dialogue_state(token):
 
 
 def _sign_demo_context(asset_id, customer_id, question, first, history,
-                       hazard=False, last_topic=None, shown_facts=None):
+                       hazard=False, last_topic=None, shown_facts=None,
+                       thread_id=None):
     from django.core import signing
     recent = (history + [question[:DEMO_CONTEXT_TEXT_LIMIT]])[-DEMO_CONTEXT_MAX_TURNS:]
     return signing.dumps({
         "asset": asset_id,
         "customer": customer_id,
+        **({"thread_id": thread_id} if thread_id is not None else {}),
         "first": (first or question)[:DEMO_CONTEXT_TEXT_LIMIT],
         "recent": recent,
         "hazard": bool(hazard),
@@ -251,7 +261,7 @@ def _demo_query_context(asset, question, first, history):
     return context, contextual_question or question
 
 
-def _answer(asset_id, question, continuation=None):
+def _answer(asset_id, question, continuation=None, thread_id=None):
     if ASSET_SCOPE.get(asset_id) is None:
         return {"response_type": "INSUFFICIENT_EVIDENCE", "message":
             "This equipment is visible in the inventory, but technical-document access is not approved for this demo identity.",
@@ -262,7 +272,12 @@ def _answer(asset_id, question, continuation=None):
     tenant, customer, asset = _asset(asset_id)
     if customer.id != ASSET_SCOPE[asset_id]:
         raise ValueError("Customer scope changed")
-    original, history, earlier_hazard = _load_demo_context(continuation, asset_id, customer.id)
+    if (thread_id is not None
+            and (not isinstance(thread_id, str)
+                 or not re.fullmatch(r"thread-[a-z0-9-]{8,90}", thread_id))):
+        raise ValueError("Invalid conversation thread identity")
+    original, history, earlier_hazard = _load_demo_context(
+        continuation, asset_id, customer.id, thread_id=thread_id)
     last_topic, previous_facts = _load_demo_dialogue_state(continuation)
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     # A new, explicit equipment symptom starts a new evidence thread; retain
@@ -473,7 +488,7 @@ def _answer(asset_id, question, continuation=None):
         # continuation exactly unchanged, including its customer/asset scope.
         "continuation": continuation if off_topic is not None else _sign_demo_context(
             asset_id, customer.id, question, original, history, hazard=is_hazard,
-            last_topic=last_topic, shown_facts=previous_facts,
+            last_topic=last_topic, shown_facts=previous_facts, thread_id=thread_id,
         ),
         "conversation_turn": len(history) + 1,
         "dialogue_planner": "local-ollama-structured" if local_planner_used else "deterministic-grounded",
@@ -604,13 +619,21 @@ class Handler(BaseHTTPRequestHandler):
             asset_id = body.get("asset_id")
             question = body.get("question")
             continuation = body.get("continuation")
+            thread_id = body.get("thread_id")
             if (not isinstance(asset_id, int) or isinstance(asset_id, bool)
                 or not isinstance(question, str) or not question.strip()
                 or len(question) > 4000
-                or continuation is not None and not isinstance(continuation, str)):
+                or continuation is not None and not isinstance(continuation, str)
+                or thread_id is not None and
+                   (not isinstance(thread_id, str)
+                    or not re.fullmatch(r"thread-[a-z0-9-]{8,90}", thread_id))):
                 return self._send(400, {"detail": "Select equipment and enter a question (maximum 4000 characters)"})
             with read_only_database():
-                result = _answer(asset_id, question.strip(), continuation=continuation)
+                if thread_id is None:
+                    result = _answer(asset_id, question.strip(), continuation=continuation)
+                else:
+                    result = _answer(asset_id, question.strip(), continuation=continuation,
+                                     thread_id=thread_id)
             return self._send(200, result)
         except ValueError:
             return self._send(400, {"detail": "Conversation context is invalid or equipment access changed. Start a new chat."})
