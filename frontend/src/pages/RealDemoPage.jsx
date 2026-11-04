@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Bot, BookOpen, Building2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket } from 'lucide-react';
+import { Bot, BookOpen, Building2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2 } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
+import { appendDemoThread, canOpenDemoThread, chatTitle } from './demoThreadState';
 import './RealDemoPage.css';
 
 async function call(path, token, options = {}) {
@@ -22,6 +23,10 @@ export function RealDemoPage() {
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState([]);
   const [continuation, setContinuation] = useState(null);
+  const [threads, setThreads] = useState([]);
+  const [activeThreadId, setActiveThreadId] = useState('');
+  const threadCache = useRef(new Map());
+  const threadSequence = useRef(0);
   const chatEndRef = useRef(null);
   const requestRevision = useRef(0);
   const [result, setResult] = useState(null);
@@ -50,9 +55,88 @@ export function RealDemoPage() {
     setError('');
   }
 
+  // Each thread has separate signed state. Browser memory only: no disk writes.
+  function snapshotThread() {
+    return { assetId, messages, continuation, question, result, answeredQuestion,
+      ticketDraft, ticketPreview, ticketConfirmation };
+  }
+
+  function hydrateThread(snapshot) {
+    requestRevision.current += 1;
+    setMessages(snapshot?.messages || []);
+    setContinuation(snapshot?.continuation || null);
+    setQuestion(snapshot?.question || '');
+    setResult(snapshot?.result || null);
+    setAnsweredQuestion(snapshot?.answeredQuestion || '');
+    setTicketDraft(snapshot?.ticketDraft || null);
+    setTicketPreview(snapshot?.ticketPreview || null);
+    setTicketConfirmation(snapshot?.ticketConfirmation || null);
+    setError('');
+  }
+
+  function initializeThreads(nextAssetId) {
+    threadCache.current.clear();
+    threadSequence.current = nextAssetId ? 1 : 0;
+    setActiveThreadId(nextAssetId ? 'thread-1' : '');
+    setThreads(nextAssetId
+      ? [{ id: 'thread-1', assetId: String(nextAssetId), title: 'New chat' }]
+      : []);
+    resetConversation();
+  }
+
+  function startNewChat() {
+    if (busy || !assetId) return;
+    if (activeThreadId) threadCache.current.set(activeThreadId, snapshotThread());
+    const id = 'thread-' + (++threadSequence.current);
+    const next = appendDemoThread(threads, {
+      id, assetId: String(assetId), title: 'New chat',
+    });
+    for (const saved of threads) {
+      if (!next.some(item => item.id === saved.id)) threadCache.current.delete(saved.id);
+    }
+    setThreads(next);
+    setActiveThreadId(id);
+    resetConversation();
+  }
+
+  function openThread(id) {
+    if (busy || id === activeThreadId) return;
+    const thread = threads.find(item => item.id === id);
+    if (!canOpenDemoThread(thread, assetId)) {
+      setError('That conversation is not available for the selected equipment.');
+      return;
+    }
+    const snapshot = threadCache.current.get(id);
+    if (!snapshot || String(snapshot.assetId) !== String(assetId)) {
+      setError('That conversation was cleared or its equipment scope changed.');
+      return;
+    }
+    if (activeThreadId) threadCache.current.set(activeThreadId, snapshotThread());
+    setActiveThreadId(id);
+    hydrateThread(snapshot);
+  }
+
+  function deleteThread(id) {
+    if (busy) return;
+    const remaining = threads.filter(item => item.id !== id);
+    threadCache.current.delete(id);
+    if (id !== activeThreadId) {
+      setThreads(remaining);
+      return;
+    }
+    if (!remaining.length) {
+      initializeThreads(assetId);
+      return;
+    }
+    const next = remaining.at(-1);
+    setThreads(remaining);
+    setActiveThreadId(next.id);
+    hydrateThread(threadCache.current.get(next.id));
+  }
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, [messages]);
+  }, [messages, activeThreadId]);
 
   async function enter(event) {
     event.preventDefault();
@@ -60,11 +144,12 @@ export function RealDemoPage() {
     try {
       const value = entry.trim();
       const data = await call('/demo-api/inventory/', value);
-      resetConversation();
+      const selected = String(data.assets.find(item => item.id === 60)?.id || data.assets[0]?.id || '');
+      initializeThreads(selected);
       setToken(value);
       setEntry('');
       setAssets(data.assets);
-      setAssetId(String(data.assets.find(item => item.id === 60)?.id || data.assets[0]?.id || ''));
+      setAssetId(selected);
     } catch (err) {
       setError(err.message === 'Demo identity required'
         ? 'Use the separate code in real_demo_access.txt. The servy_ui_tester password is only for the synthetic test site.'
@@ -90,6 +175,10 @@ export function RealDemoPage() {
       { id: messageId, role: 'user', text: submittedQuestion },
       { id: responseId, role: 'assistant', pending: true },
     ]);
+    setThreads(previous => previous.map(item =>
+      item.id === activeThreadId && item.title === 'New chat'
+        ? { ...item, title: chatTitle(submittedQuestion) } : item
+    ));
     setQuestion('');
     try {
       const data = await call('/demo-api/query/', token, {
@@ -170,7 +259,7 @@ export function RealDemoPage() {
       <div className="sidebar-footer"><div className="user-profile-badge"><div className="avatar">RD</div>
         <div className="user-meta"><div className="user-name">Real-data demo</div><div className="user-role">Local · read-only</div></div></div>
         {assets && <button type="button" className="btn btn-secondary btn-sm real-demo-lock" onClick={() => {
-          resetConversation(); setToken(''); setAssets(null); setAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
+          initializeThreads(''); setToken(''); setAssets(null); setAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
     </aside>
     <main className="main-area">
       <header className="top-bar"><div className="top-bar-title"><h2>{view === 'assets' && assets ? 'Company Equipment' : 'Customer AI Self-Service'}</h2>
@@ -201,7 +290,7 @@ export function RealDemoPage() {
           <section className="card"><div className="card-header"><h2 className="card-title"><Package size={20} /> Company Equipment</h2>
             <span className="badge badge-indexed">Read-only inventory</span></div>
             <div className="real-demo-inventory">{assets.map(item => <button className="real-demo-inventory-item" type="button" key={item.id}
-              onClick={() => { resetConversation(); setAssetId(String(item.id)); setView('chat'); }}>
+              onClick={() => { initializeThreads(String(item.id)); setAssetId(String(item.id)); setView('chat'); }}>
               <span className="real-demo-icon"><Package size={18} /></span><span><strong>{item.name}</strong><small>{item.code} · {item.model || 'Model not listed'}</small></span>
               <em>{item.documents.length ? `${item.documents.length} permitted manuals` : 'No demo document access'}</em></button>)}</div></section>
         </> : <>
@@ -209,7 +298,7 @@ export function RealDemoPage() {
             <h2 className="card-title"><Building2 size={20} /> Equipment Selection</h2>
             <div className="form-group"><label className="form-label" htmlFor="demo-asset">Equipment / Asset</label>
               <select className="form-control" id="demo-asset" value={assetId}
-                onChange={event => { resetConversation(); setAssetId(event.target.value); }}>
+                onChange={event => { initializeThreads(event.target.value); setAssetId(event.target.value); }}>
                 {assets.map(item => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}</select></div>
             {asset && <div className="real-demo-asset-detail"><h3>{asset.name}</h3>
               <dl><div><dt>Asset code</dt><dd>{asset.code}</dd></div>
@@ -225,9 +314,24 @@ export function RealDemoPage() {
                   <h2>Ask Servy</h2>
                   <p>Continuous conversation · Approved original manuals · Cited answers</p>
                 </div>
-                <button type="button" className="real-demo-new-chat" onClick={resetConversation}>
+                <button type="button" className="real-demo-new-chat" onClick={startNewChat} disabled={busy}>
                   <Plus size={16} /> New chat
                 </button>
+              </div>
+              <div className="real-demo-thread-index" aria-label="Conversations in this tab">
+                <span className="real-demo-thread-label">Chats · this tab only</span>
+                <div className="real-demo-thread-items">
+                  {threads.map(item => <div className={[
+                      'real-demo-thread-item', item.id === activeThreadId ? 'is-active' : ''
+                    ].join(' ')} key={item.id}>
+                    <button type="button" className="real-demo-thread-switch"
+                      title={item.title} aria-current={item.id === activeThreadId ? 'true' : undefined}
+                      disabled={busy} onClick={() => openThread(item.id)}>{item.title}</button>
+                    <button type="button" className="real-demo-thread-delete" disabled={busy}
+                      title={'Delete ' + item.title} aria-label={'Delete conversation: ' + item.title}
+                      onClick={() => deleteThread(item.id)}><Trash2 size={13} /></button>
+                  </div>)}
+                </div>
               </div>
               <div className="real-demo-chat-thread" role="log" aria-label="Conversation messages" aria-live="polite">
                 {messages.length === 0 && <div className="real-demo-chat-empty">
