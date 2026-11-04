@@ -220,7 +220,9 @@ class CustomerAnswerSecurityTests(TestCase):
             # APIRequestFactory bypasses Django SessionMiddleware.
             req.session={'tenant_id':self.tenant.id}
             force_authenticate(req,user=self.user)
-            self.assertEqual(view.as_view()(req,**kwargs).status_code,400)
+            # Unknown conversation/session IDs must be hidden as 404 before
+            # any confirmation or ticket side-effect is even considered.
+            self.assertEqual(view.as_view()(req,**kwargs).status_code,404)
         self.assertEqual(before,ServiceCall.objects.count())
 
     @override_settings(SERVY_CUSTOMER_DATA_MODE='verified_real_only')
