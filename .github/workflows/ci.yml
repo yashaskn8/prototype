@@ -146,7 +146,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/demoThreadState.test.mjs
 
       - name: Build Frontend
         working-directory: frontend

@@ -156,3 +156,30 @@
 .real-demo-dialogue-meta { margin-top: 12px; color: #64748b; font-size: .76rem; line-height: 1.5; }
 .real-demo-dialogue-meta summary { width: fit-content; cursor: pointer; }
 .real-demo-dialogue-meta p { margin: 7px 0 0; max-width: 65ch; }
+
+
+/* Multiple independent conversations, scoped to one unlocked asset.
+   This is a memory-only demo and is not persistent CRM chat history. */
+.real-demo-thread-index { padding: 10px 16px; border-bottom: 1px solid #e2e8f0;
+  background: #f8f9ff; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.real-demo-thread-label { font-size: .72rem; font-weight: 750; color: #4f46a5;
+  flex-shrink: 0; }
+.real-demo-thread-items { display: flex; flex-wrap: nowrap; overflow-x: auto;
+  min-width: 0; gap: 7px; padding: 2px; }
+.real-demo-thread-item { border-radius: 9px; border: 1px solid #d9dcf0;
+  display: inline-flex; align-items: stretch; background: #fff; flex: 0 0 auto; max-width: 230px; }
+.real-demo-thread-item.is-active { border-color: #6559e9; background: #efeeff; }
+.real-demo-thread-switch { padding: 7px 9px; max-width: 185px; min-width: 50px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: .74rem; color: #3d4380; font-weight: 650;
+  border: 0; background: transparent; text-align: left; cursor: pointer; }
+.real-demo-thread-switch[aria-current="true"] { color: #34249c; }
+.real-demo-thread-delete { display: grid; place-items: center; padding: 6px;
+  border: 0; background: transparent; color: #64748b; cursor: pointer; }
+.real-demo-thread-delete:hover { color: #b91c1c; }
+.real-demo-thread-switch:disabled,.real-demo-thread-delete:disabled,
+.real-demo-new-chat:disabled { opacity: .5; cursor: not-allowed; }
+@media(max-width: 760px) {
+  .real-demo-thread-index { display: block; padding: 10px 12px; }
+  .real-demo-thread-label { display: block; padding-bottom: 5px; }
+}
