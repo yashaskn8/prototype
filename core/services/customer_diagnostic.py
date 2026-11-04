@@ -658,6 +658,13 @@ def build_structured_diagnostic_contract(
 
     # Exception responses carry no sources. Ordinary citations are constructed
     # only from persisted, scoped chunks by customer_answer below.
+    # Reconstructing a contract must not erase a previously reported hazard
+    # merely because the caller did not supply the optional hazard flag.
+    if not is_hazard:
+        is_hazard, derived_warning = check_for_safety_hazard(interaction.question or "")
+        if is_hazard and not hazard_warning:
+            hazard_warning = derived_warning
+
     if is_hazard:
         if not hazard_warning:
             hazard_warning = "Immediate safety risk detected. Stop equipment operation and request an authorized service technician."

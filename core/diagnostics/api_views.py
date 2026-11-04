@@ -545,9 +545,6 @@ class DiagnosticEscalateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, session_id):
-        if request.data.get("confirm_ticket_creation") is not True:
-            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
-
         ctx = require_api_context(request)
         tenant = ctx["tenant"]
         customer = ctx["customer"]
@@ -562,6 +559,9 @@ class DiagnosticEscalateView(APIView):
 
         if is_customer and (not customer or session.customer_id != customer.id):
             return Response({"detail": "Diagnostic session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if request.data.get("confirm_ticket_creation") is not True:
+            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
 
         expected_version = request.data.get("expected_version")
         if expected_version is None:

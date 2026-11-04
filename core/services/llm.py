@@ -446,6 +446,14 @@ def evaluate_chunk_claim_support(
         elif require_code_if_present:
             return False, f"MISSING_IDENTIFIER: {', '.join(q_codes)}"
 
+    # Shared component terms do not substantiate a different, specific fault.
+    # Require matching qualifiers for detailed inverter/communications failures.
+    fault_qualifiers = {"inverter", "communication", "communications", "comms",
+                        "network", "drive", "protocol", "modbus"}
+    asked_qualifiers = set(re.findall(r"[a-z]{4,}", (q_text or "").casefold())) & fault_qualifiers
+    if len(asked_qualifiers) >= 2 and len(asked_qualifiers & chunk_words) < 2:
+        return False, "FAULT_QUALIFIER_MISMATCH"
+
     # 3. Content Terms Overlap Check:
     matched_terms = {t for t in terms if _stem_variants(t) & chunk_words}
     overlap_count = len(matched_terms)

@@ -675,9 +675,7 @@ class CustomerSupportEscalateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        if request.data.get("confirm_ticket_creation") is not True:
-            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
-
+        # Authorization must be enforced before any ticket confirmation check.
         ctx = require_api_context(request)
         if ctx["role"] in {"store_admin", "store_operator"}:
             return Response(
@@ -699,6 +697,9 @@ class CustomerSupportEscalateView(APIView):
             validate_customer_serving_policy(tenant=tenant, customer=interaction.customer, asset=interaction.asset)
         except PermissionDenied as pe:
             return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.data.get("confirm_ticket_creation") is not True:
+            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
 
         note = _clean_input(request.data.get("note") or request.data.get("customer_note"))
         session_id = _clean_input(request.data.get("session_id"))
@@ -2431,9 +2432,6 @@ class CustomerConversationTicketView(APIView):
         })
 
     def post(self, request, conversation_uuid):
-        if request.data.get("confirm_ticket_creation") is not True:
-            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
-
         ctx = require_api_context(request)
         tenant = ctx["tenant"]
         customer = ctx["customer"]
@@ -2457,6 +2455,9 @@ class CustomerConversationTicketView(APIView):
             validate_customer_serving_policy(tenant=tenant, customer=conv.customer, asset=conv.asset)
         except PermissionDenied as pe:
             return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+
+        if request.data.get("confirm_ticket_creation") is not True:
+            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
 
         # If already linked, return existing ticket idempotently
         if conv.linked_service_call:
