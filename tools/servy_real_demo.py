@@ -19,9 +19,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tools.servy_100_readonly_eval import configure_process, verify_readonly_identity
-from tools.servy_500_benchmark import (activate_index_copy, file_manifest,
-    load_json, operational_counts, prepare_index_copy, private_folder, read_only_database,
-    serving, write_json)
+from tools.servy_500_benchmark import (
+    file_manifest, load_json, operational_counts, prepare_index_copy,
+    private_folder, read_only_database, serving, write_json,
+)
+from tools.servy_real_demo_index_review import (
+    activate_runtime_snapshot, review_request, verify_signed_approval,
+)
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
@@ -472,30 +476,83 @@ def main():
     if not any(row["id"] == 60 and row["can_query"] and row["documents"] for row in inventory):
         raise RuntimeError("Approved Customer 13 / Asset 60 documents are not ready")
     before = PRIVATE / "before.json"
-    if before.exists():
-        if load_json(before) != original:
-            raise RuntimeError("Original data differs from the frozen demo baseline")
-    else:
-        write_json(before, original)
     copy = PRIVATE / "chroma_index_copy"
     manifest = PRIVATE / "production_index_manifest.json"
-    if copy.exists() or manifest.exists():
-        if not copy.is_dir() or not manifest.is_file():
-            raise RuntimeError("Private Chroma copy is incomplete")
+    source = Path(settings.CHROMA_PERSIST_DIR).resolve()
+    if before.is_file():
+        frozen = load_json(before)
+        # Keep both the frozen company data and original attachments immutable.
+        if (frozen.get("operational_counts") != original["operational_counts"]
+                or frozen.get("documents") != original["documents"]):
+            raise RuntimeError("Company data or original documents differ from the frozen baseline.")
     else:
+        # Initial bootstrap remains strict; never reconstruct a missing baseline
+        # when earlier private evidence already exists.
+        if copy.exists() or manifest.exists():
+            raise RuntimeError("Frozen demo baseline missing but private Chroma evidence exists.")
+        write_json(before, original)
+        frozen = original
+
+    if not manifest.is_file() and not copy.exists():
         prepare_index_copy(PRIVATE)
-    activate_index_copy(PRIVATE)
+    if not manifest.is_file() or not copy.is_dir():
+        raise RuntimeError("Frozen private Chroma snapshot or manifest is missing.")
+
+    expected = frozen["index"]
+    if load_json(manifest) != expected:
+        raise RuntimeError("Frozen original Chroma manifests disagree.")
+    if original["index"] == expected:
+        # Original bytes still match; always clone the verified source, not an
+        # old private copy that Chroma might have rewritten during past reads.
+        run_from = source
+        run_manifest = expected
+        review_mode = "original-frozen"
+    else:
+        # No automatic acceptance of logically similar-but-byte-different
+        # indexes. Signed reviewer approval pins both complete 122-file states.
+        private_manifest = file_manifest(copy)
+        request = review_request(PRIVATE, expected=expected,
+                                 production=original["index"], private_copy=private_manifest)
+        verify_signed_approval(PRIVATE, request)
+        run_from = copy
+        run_manifest = private_manifest
+        review_mode = "independently-reviewed-versioned"
+    activate_runtime_snapshot(run_from, run_manifest, PRIVATE)
     Handler.token = token
     print(json.dumps({"ready": True, "database": identity["database"],
         "database_account": identity["account"], "asset_count": len(inventory),
         "query_asset_scope": sorted(ASSET_SCOPE), "retrieval": configuration["retrieval"],
         "embedding": configuration["embedding"], "reranker_enabled": configuration["reranker_enabled"],
-        "index": "private-copy", "access_file": str(access_file), "url": "http://127.0.0.1:8002/"}))
+        "index": "ephemeral-private-runtime", "integrity_review": review_mode,
+        "access_file": str(access_file), "url": "http://127.0.0.1:8002/"}))
     HTTPServer(("127.0.0.1", 8002), Handler).serve_forever()
+
+
+def local_index_review_request():
+    """Read-only, scoped request for an independent technical reviewer."""
+    configure_process()
+    verify_readonly_identity()
+    from django.conf import settings
+    private_folder(PRIVATE)
+    with read_only_database():
+        observed = _original_state()
+    baseline = load_json(PRIVATE / "before.json")
+    if (baseline.get("operational_counts") != observed["operational_counts"]
+            or baseline.get("documents") != observed["documents"]):
+        raise RuntimeError("Frozen company data or original document binding differs.")
+    source = Path(settings.CHROMA_PERSIST_DIR).resolve()
+    if file_manifest(source) != observed["index"]:
+        raise RuntimeError("Production Chroma changed during read-only review.")
+    return review_request(
+        PRIVATE, expected=baseline["index"], production=observed["index"],
+        private_copy=file_manifest(PRIVATE / "chroma_index_copy"),
+    )
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--audit"]:
         print(json.dumps(audit()))
+    elif sys.argv[1:] == ["--index-review-request"]:
+        print(json.dumps(local_index_review_request(), indent=2))
     else:
         main()
