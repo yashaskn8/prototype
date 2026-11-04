@@ -28,6 +28,7 @@ from tools.servy_real_demo_index_review import (
 )
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
+from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, focus_answer, is_component_followup,
@@ -279,6 +280,7 @@ def _answer(asset_id, question, continuation=None):
     off_topic = out_of_scope_response(question)
     suggestions = []
     local_planner_used = False
+    retrieval_attempts = 0
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
         warning = hazard_warning or (
@@ -334,6 +336,7 @@ def _answer(asset_id, question, continuation=None):
             staff_mode=False, include_confidential=False, service_call=None,
             top_k=retrieval_top_k,
         )
+        retrieval_attempts = 1
         if rag.get("engine") == "policy-guard":
             presentation = exception_presentation({
                 "response_type": "POLICY_VIOLATION",
@@ -379,6 +382,57 @@ def _answer(asset_id, question, continuation=None):
             previous_facts = dialogue["facts"]
             suggestions = dialogue["suggestions"]
 
+            # Conditional agentic retrieval: at most ONE additional query.
+            # The first pass must be merely non-answerable, never a refusal,
+            # denied source, restricted procedure or safety escalation.
+            if (contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
+                    and contract.get("reason_code") == "NO_RELEVANT_APPROVED_EVIDENCE"):
+                second_query = targeted_retry_query(question, asset, context)
+                if second_query and second_query != retrieval_query:
+                    retried = ask_rag(
+                        tenant=tenant, customer=customer, asset=asset,
+                        question=second_query, original_question=question,
+                        conversation_context=context if history else None,
+                        staff_mode=False, include_confidential=False,
+                        service_call=None, top_k=8,
+                    )
+                    retrieval_attempts = 2
+                    if retried.get("engine") != "policy-guard":
+                        # Build the citation contract afresh. The second pass
+                        # does not trust or reuse a claim from the first pass.
+                        second_interaction = SimpleNamespace(
+                            id=None, created_by_id=DEMO_USER_ID, tenant=tenant,
+                            customer=customer, asset=asset, question=second_query,
+                        )
+                        next_contract = build_customer_answer(
+                            second_interaction, None,
+                            retried.get("references", []),
+                            conversation_context=context if history else None,
+                            original_question=question,
+                        )
+                        if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
+                            for citation in next_contract["presentation"].get("citations", []):
+                                citation["url"] = citation["url"].replace(
+                                    "/api/customer-support/source/",
+                                    "/demo-api/source/", 1,
+                                )
+                            next_plan = plan_turn(
+                                question, history=history,
+                                last_topic=last_topic, contract=next_contract,
+                            )
+                            next_contract, next_dialogue = focus_answer(
+                                next_contract, question, last_topic=last_topic,
+                                previous_facts=previous_facts,
+                                plan=next_plan, history=history,
+                            )
+                            if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
+                                contract = next_contract
+                                rag = retried
+                                local_planner_used = next_plan is not None
+                                last_topic = next_dialogue["topic"]
+                                previous_facts = next_dialogue["facts"]
+                                suggestions = next_dialogue["suggestions"]
+
     from django.core import signing
     ticket_context = signing.dumps({
         "asset": asset_id, "customer": customer.id,
@@ -423,6 +477,7 @@ def _answer(asset_id, question, continuation=None):
         ),
         "conversation_turn": len(history) + 1,
         "dialogue_planner": "local-ollama-structured" if local_planner_used else "deterministic-grounded",
+        "retrieval_attempts": retrieval_attempts,
         "ticket_context": None if off_topic is not None else ticket_context,
         "citations": [
             {"document_id": c["document_id"], "chunk_id": c["chunk_id"]}
