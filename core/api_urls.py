@@ -1,8 +1,10 @@
 from django.urls import path
 from . import api_views
 from .diagnostics import api_views as diag_views
+from .customer_sources import CustomerSourceView
 
 urlpatterns = [
+    path("customer-support/source/", CustomerSourceView.as_view(), name="api_customer_source"),
     # Auth & Session
     path("auth/csrf/", api_views.CSRFBootstrapView.as_view(), name="api_auth_csrf"),
     path("auth/login/", api_views.LoginView.as_view(), name="api_auth_login"),

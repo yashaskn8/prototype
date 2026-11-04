@@ -260,10 +260,16 @@ def process_customer_diagnostic_turn(
             idem_record = idem
 
     try:
+        # Extract Attributable Multi-turn Context
+        from core.services.conversation_context import extract_conversation_context, contextualize_customer_query
+        conv_context = extract_conversation_context(conv, turn_text, asset=asset)
+
         # 4. Safety Hazard Evaluation (P0-1)
         all_inputs = [clean_question, clean_clarification, clean_obs]
         if session and session.complaint:
             all_inputs.append(session.complaint)
+        if conv_context.reported_symptoms:
+            all_inputs.extend(conv_context.reported_symptoms)
         combined_text = " ".join(t for t in all_inputs if t)
 
         import sys
@@ -387,7 +393,10 @@ def process_customer_diagnostic_turn(
             }
 
         # 5. Ambiguity & Clarification Evaluation
-        is_vague, clarif_q, clarif_opts = check_for_vague_complaint(clean_question, asset=asset)
+        # Only evaluate vague complaint at start of issue when no symptoms/history are established
+        is_vague, clarif_q, clarif_opts = False, None, None
+        if not conv_context.is_followup and conv_context.turn_count == 0:
+            is_vague, clarif_q, clarif_opts = check_for_vague_complaint(clean_question, asset=asset)
         if is_vague and not clean_clarification:
             with transaction.atomic():
                 user_msg = CustomerMessage.objects.create(
@@ -456,10 +465,17 @@ def process_customer_diagnostic_turn(
 
         # 6. Grounded RAG Retrieval & Safe Response Construction
         from core.services.rag import ask_rag
-        combined_query = f"{clean_question} (User clarification: {clean_clarification})" if clean_clarification else clean_question
+
+        retrieval_query = contextualize_customer_query(turn_text, conv_context, asset=asset)
+        if not retrieval_query:
+            combined_query = f"{clean_question} (User clarification: {clean_clarification})" if clean_clarification else clean_question
+            retrieval_query = combined_query or turn_text
+
         rag_res = ask_rag(
             tenant=tenant,
-            question=combined_query or turn_text,
+            question=retrieval_query,
+            original_question=turn_text,
+            conversation_context=conv_context,
             asset=asset,
             customer=customer,
             include_confidential=False,
@@ -495,7 +511,7 @@ def process_customer_diagnostic_turn(
                 site=site,
                 asset=asset,
                 conversation=conv,
-                question=combined_query or turn_text,
+                question=retrieval_query,
                 answer=rag_res.get("answer", ""),
                 source_refs=rag_res.get("references", []),
             )
@@ -505,6 +521,8 @@ def process_customer_diagnostic_turn(
                 session=session,
                 raw_answer=rag_res.get("answer", ""),
                 retrieved_references=rag_res.get("references", []),
+                conversation_context=conv_context,
+                original_question=turn_text,
             )
             if session:
                 record_customer_action_presentation(session, contract.get("customer_safe_actions", []), tenant)
@@ -548,7 +566,7 @@ def process_customer_diagnostic_turn(
                 tenant=tenant,
                 conversation=conv,
                 sender_role="assistant",
-                message_text=rag_res.get("answer", ""),
+                message_text=contract["answer"],
                 structured_contract=contract,
                 source_refs=rag_res.get("references", []),
             )

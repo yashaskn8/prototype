@@ -57,7 +57,7 @@ def make_config(pool=10):
     }
 
 
-def build_bm25_baseline(cases, chunks, pool=10):
+def build_bm25_baseline(cases, chunks, pool=10, *, tokenizer=words):
     """Deterministic unsupervised tenant-filtered BM25, never uses gold labels.
 
     Gold IDs do not appear in this algorithm; never insert them into a pool.
@@ -72,7 +72,7 @@ def build_bm25_baseline(cases, chunks, pool=10):
     n_by_tenant = Counter()
     for cid, chunk in chunks.items():
         tenant = chunk["tenant_id"]
-        terms = words(chunk["passage"])
+        terms = tokenizer(chunk["passage"])
         if not terms:
             raise ValueError("Empty candidate passage: " + cid)
         docs[cid] = terms
@@ -88,7 +88,7 @@ def build_bm25_baseline(cases, chunks, pool=10):
             raise ValueError("No tenant-approved candidates for query " + qid)
         n = n_by_tenant[tenant]
         avgdl = tokens_by_tenant[tenant] / n
-        query_terms = Counter(words(case["query"]))
+        query_terms = Counter(tokenizer(case["query"]))
         scored = []
         for cid in eligible:
             tf = counts[cid]

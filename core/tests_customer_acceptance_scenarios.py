@@ -145,8 +145,11 @@ Stop and escalate if: Pulleys show visible wobble or belt exhibits deep cracks."
         self.assertTrue(len(data["citations"]) > 0)
         self.assertEqual(data["citations"][0]["document_id"], self.doc_split_manual.id)
         self.assertIn("Split AC", data["citations"][0]["title"])
-        self.assertTrue(len(data["customer_safe_actions"]) > 0)
-        self.assertTrue(any("filter" in a["action"].lower() or "coil" in a["action"].lower() for a in data["customer_safe_actions"]))
+        # Source authenticity is not procedure approval. The original fixture
+        # has no approved filter-cleaning or physical fan-inspection procedure.
+        self.assertEqual(data["customer_safe_actions"], [])
+        self.assertEqual(data["presentation"]["customer_authorized_actions"], [])
+        self.assertTrue(data["presentation"]["supporting_claims"])
 
     def test_scenario_b_misspelled_fault_retrieval_without_inventing_code(self):
         """Scenario B: Customer enters a misspelled fault description.
@@ -274,6 +277,7 @@ Stop and escalate if: Pulleys show visible wobble or belt exhibits deep cracks."
 
         escalate_url = reverse("api_customer_support_escalate", kwargs={"pk": interaction_id})
         post_data = {
+            "confirm_ticket_creation": True,
             "note": "Ice blocks forming on coil and filter cleaning did not resolve it.",
         }
 

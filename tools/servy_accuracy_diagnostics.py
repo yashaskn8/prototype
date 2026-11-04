@@ -210,3 +210,43 @@ def write_jsonl_exclusive(path, records):
     with Path(path).open("x", encoding="utf-8") as stream:
         for row in records:
             stream.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def compare_candidate_runs(before, after, original, proposed):
+    """Paired research comparison when retrieval membership changes.
+
+    Each run must match ITS OWN snapshot; query population and gold stay fixed.
+    This never reuses old scores for newly retrieved candidates.
+    """
+    old = _validate(before, original, "baseline")
+    new = _validate(after, proposed, "experiment")
+    if set(old) != set(new):
+        raise ValueError("Evaluation query population changed")
+    movements = []
+    for qid in old:
+        if old[qid]["gold_chunk_ids"] != new[qid]["gold_chunk_ids"]:
+            raise ValueError("Gold labels changed: " + qid)
+        a, b = old[qid]["gold_rank"], new[qid]["gold_rank"]
+        movements.append({"query_id": qid, "before_rank": a, "after_rank": b,
+                          "improved": b is not None and (a is None or b < a),
+                          "regressed": a is not None and (b is None or b > a),
+                          "top1_gained": a != 1 and b == 1,
+                          "top1_lost": a == 1 and b != 1})
+    def metrics(rows):
+        n = len(rows)
+        ranks = [r["gold_rank"] for r in rows.values()]
+        return {
+            **{f"hit_at_{k}": round(100 * sum(r is not None and r <= k for r in ranks) / n, 2)
+               for k in (1, 5, 10)},
+            "mrr_at_10": round(sum(1/r for r in ranks if r is not None and r <= 10)/n, 4),
+            "candidate_recall_at_10": round(100 * sum(r["original_gold_rank"] is not None
+                and r["original_gold_rank"] <= 10 for r in rows.values())/n, 2),
+        }
+    a, b = metrics(old), metrics(new)
+    rejected = any(b[k] < a[k] for k in a) or any(r["top1_lost"] for r in movements)
+    return {"before": a, "after": b, "per_query": movements,
+            "improved_query_ids": [r["query_id"] for r in movements if r["improved"]],
+            "regressed_query_ids": [r["query_id"] for r in movements if r["regressed"]],
+            "decision": "REJECT_REGRESSIONS" if rejected else
+                        "RESEARCH_GAIN_REQUIRES_REVIEW" if b["hit_at_1"] > a["hit_at_1"] else "NO_TOP1_GAIN",
+            "production_promotion_allowed": False}

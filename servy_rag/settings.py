@@ -156,7 +156,7 @@ STATIC_URL = "/static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = Path(os.getenv("SERVY_MEDIA_ROOT", str(BASE_DIR / "media"))).resolve()
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGIN_URL = "/accounts/login/"
@@ -221,7 +221,7 @@ REST_FRAMEWORK = {
     },
 }
 
-CHROMA_PERSIST_DIR = BASE_DIR / "chroma_db"
+CHROMA_PERSIST_DIR = Path(os.getenv("SERVY_CHROMA_PERSIST_DIR", str(BASE_DIR / "chroma_db"))).resolve()
 
 # Local RAG / LLM settings. Docker is not required.
 SERVY_LLM_PROVIDER = os.getenv("SERVY_LLM_PROVIDER", "extractive")  # extractive|auto|ollama

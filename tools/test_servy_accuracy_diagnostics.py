@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from servy_accuracy_diagnostics import compare_frozen_pool, simulate_pool_sweep, write_jsonl_exclusive
+from servy_accuracy_diagnostics import compare_frozen_pool, simulate_pool_sweep, write_jsonl_exclusive, compare_candidate_runs
 
 
 def case(qid, frozen, ordered, gold):
@@ -21,6 +21,23 @@ def case(qid, frozen, ordered, gold):
 
 
 class PairedAccuracyDiagnosticsTests(unittest.TestCase):
+    def test_candidate_recovery_rejects_offsetting_top1_regression(self):
+        original = {"a": ["x", "y"], "b": ["p", "q"]}
+        proposed = {"a": ["z", "x"], "b": ["r", "p"]}
+        before = {"queries": [case("a", original["a"], original["a"], ["z"]),
+                              case("b", original["b"], original["b"], ["p"])]}
+        after = {"queries": [case("a", proposed["a"], proposed["a"], ["z"]),
+                             case("b", proposed["b"], proposed["b"], ["p"])]}
+        result = compare_candidate_runs(before, after, original, proposed)
+        self.assertEqual(result["decision"], "REJECT_REGRESSIONS")
+        self.assertEqual(result["improved_query_ids"], ["a"])
+        self.assertEqual(result["regressed_query_ids"], ["b"])
+        after["queries"][0]["gold_chunk_ids"] = ["x"]
+        after["queries"][0]["gold_rank"] = 2
+        after["queries"][0]["original_gold_rank"] = 2
+        with self.assertRaisesRegex(ValueError, "Gold labels changed"):
+            compare_candidate_runs(before, after, original, proposed)
+
     def setUp(self):
         self.frozen = {
             "q1": ["a", "b", "c"],

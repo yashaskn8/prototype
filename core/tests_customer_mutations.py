@@ -81,8 +81,8 @@ class CustomerRagMutationTests(TestCase):
         )
         index_document(self.doc_danger)
 
-    def test_endpoint_mutation_removing_safety_classifier_leaks_dangerous_procedures(self):
-        """Mutation 1: Demonstrates that removing classify_action_safety causes endpoint to leak dangerous procedures."""
+    def test_source_approval_survives_removed_safety_classifier(self):
+        """Exact source approval remains required even if classification is corrupted."""
         self.client.force_login(self.user)
         url = reverse("api_customer_support_query")
         payload = {
@@ -102,8 +102,8 @@ class CustomerRagMutationTests(TestCase):
             res_mut = self.client.post(url, payload, content_type="application/json")
             self.assertEqual(res_mut.status_code, 200)
             data_mut = res_mut.json()
-            # Under mutation, the guard failure is caught because actions leak into customer_safe_actions
-            self.assertTrue(len(data_mut["customer_safe_actions"]) > 0)
+            # Independent source approval must still prevent dangerous customer actions.
+            self.assertEqual(data_mut["customer_safe_actions"], [])
 
     def test_endpoint_mutation_bypassing_clarification_hazard_leaks_dangerous_guidance(self):
         """Mutation 2: Demonstrates that disabling clarification hazard check allows dangerous symptoms through."""
@@ -183,8 +183,8 @@ class CustomerRagMutationTests(TestCase):
         esc_url2 = reverse("api_customer_support_escalate", args=[interaction2.id])
 
         # Baseline: Both requests escalate to the exact same ServiceCall via session_id
-        res1 = self.client.post(esc_url1, {"session_id": str(session.session_id)}, format="json")
-        res2 = self.client.post(esc_url2, {"session_id": str(session.session_id)}, format="json")
+        res1 = self.client.post(esc_url1, {"session_id": str(session.session_id), "confirm_ticket_creation": True}, content_type="application/json")
+        res2 = self.client.post(esc_url2, {"session_id": str(session.session_id), "confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res1.status_code, 200)
         self.assertEqual(res2.status_code, 200)
         self.assertEqual(res1.json()["call_id"], res2.json()["call_id"])

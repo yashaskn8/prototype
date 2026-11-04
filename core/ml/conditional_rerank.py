@@ -94,6 +94,16 @@ def _extract_symptom_keys(text: str) -> set:
             if re.search(r'\b' + re.escape(pat) + r'\b', text_lower):
                 found.add(key)
                 break
+    # Customer reports often describe the location of water without using
+    # "leak". Require both a water appearance and equipment/floor location;
+    # a water temperature or pressure value alone is not a leakage symptom.
+    if re.search(
+        r"\bwater\s+(?:(?:shows?\s+up|appears?|collects?|pools?|drips?)\s+)?"
+        r"(?:under|below|beneath|around|near)\s+(?:\w+\s+){0,4}"
+        r"(?:unit|equipment|machine|cabinet|floor|ceiling)\b",
+        text_lower,
+    ):
+        found.add("leak")
     return found
 
 

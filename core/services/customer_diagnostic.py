@@ -617,6 +617,9 @@ def sanitize_customer_payload(contract: Dict[str, Any]) -> Dict[str, Any]:
             })
         contract["technician_only_actions"] = clean_tech
 
+    if "presentation" not in contract:
+        from .customer_answer import exception_presentation
+        contract["presentation"] = exception_presentation(contract)
     return _walk_and_clean(contract)
 
 
@@ -634,6 +637,8 @@ def build_structured_diagnostic_contract(
     clarification_options: Optional[List[str]] = None,
     is_hazard: bool = False,
     hazard_warning: str = "",
+    conversation_context: Optional[Any] = None,
+    original_question: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Constructs an authoritative, validated structured customer diagnostic contract.
@@ -651,38 +656,9 @@ def build_structured_diagnostic_contract(
         "model_number": asset.model_number or "Not recorded",
     } if asset else {}
 
-    tenant_id = interaction.tenant_id
-
-    # Filter and validate citations
-    validated_citations = []
-    seen_citation_keys = set()
-    for ref in (retrieved_references or []):
-        doc_id = ref.get("document_id")
-        chunk_id = ref.get("chunk_id")
-        title = ref.get("title") or ref.get("reference") or "Approved Technical Reference"
-        heading = ref.get("heading") or ""
-        doc_type = ref.get("doc_type") or "Technical Document"
-
-        # Check doc validity
-        if doc_id:
-            doc = KnowledgeDocument.objects.filter(id=doc_id, tenant_id=tenant_id).first()
-            if not doc or not doc.is_rag_enabled or doc.is_confidential or getattr(doc, "revoked_at", None) is not None:
-                continue
-
-        key = (doc_id, chunk_id, title, heading)
-        if key not in seen_citation_keys:
-            seen_citation_keys.add(key)
-            validated_citations.append({
-                "document_id": doc_id,
-                "chunk_id": chunk_id,
-                "title": title,
-                "heading": heading,
-                "reference": ref.get("reference") or title,
-                "doc_type": doc_type,
-            })
-
-    raw_lower = (raw_answer or "").lower()
-    if is_hazard or "immediate safety risk" in raw_lower or "safety risk detected" in raw_lower:
+    # Exception responses carry no sources. Ordinary citations are constructed
+    # only from persisted, scoped chunks by customer_answer below.
+    if is_hazard:
         if not hazard_warning:
             hazard_warning = "Immediate safety risk detected. Stop equipment operation and request an authorized service technician."
         res = {
@@ -744,7 +720,7 @@ def build_structured_diagnostic_contract(
     # Check if raw_answer is a policy-guard response
     raw_lower = (raw_answer or "").lower()
     if "cannot reveal system instructions" in raw_lower or (raw_answer or "").startswith("I can help with product"):
-        return {
+        res = {
             "response_mode": "POLICY_BLOCKED",
             "response_type": "POLICY_VIOLATION",
             "interaction_id": interaction.id,
@@ -767,241 +743,18 @@ def build_structured_diagnostic_contract(
             "references": [],
             "engine": "policy-guard",
         }
+        return sanitize_customer_payload(res)
 
-    # Parse sections from raw answer text
-    summary = ""
-    check_first = []
-    customer_safe_actions = []
-    technician_only_actions = []
-    expected_result = ""
-    stop_conditions = []
-
-    lines = (raw_answer or "").split("\n")
-    current_sec = None
-    step_num = 1
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        header_match = re.match(
-            r"^(DIAGNOSTIC SUMMARY|CHECK FIRST|STEP-BY-STEP TROUBLESHOOTING|EXPECTED RESULT|STOP AND ESCALATE IF|VERIFIED REFERENCES)\s*$",
-            stripped,
-            re.IGNORECASE,
-        )
-        if header_match:
-            current_sec = header_match.group(1).upper()
-            continue
-
-        if current_sec == "DIAGNOSTIC SUMMARY":
-            if not summary:
-                summary = stripped
-            else:
-                summary += " " + stripped
-
-        elif current_sec == "CHECK FIRST":
-            clean_check = re.sub(r"^[-*•\d\.\)]\s*", "", stripped)
-            safety_level, reason = classify_action_safety(clean_check, asset=asset)
-            if safety_level in ("TECHNICIAN_ONLY", "PROHIBITED"):
-                technician_only_actions.append({
-                    "action_id": f"tech_check_{len(technician_only_actions) + 1}",
-                    "action": "Authorized service technician procedure required.",
-                    "warning": reason,
-                })
-            elif safety_level in ("CUSTOMER_APPROVED", "INFORMATIONAL_OBSERVATION"):
-                # Strict action-to-evidence grounding check: candidate check MUST be grounded in verified document
-                is_grounded, matched_ref, ground_reason = find_grounding_reference(
-                    clean_check,
-                    retrieved_references,
-                    tenant_id,
-                    asset,
-                    customer=interaction.customer,
-                )
-                if is_grounded and matched_ref:
-                    check_first.append(clean_check)
-                    citation_label = matched_ref.get("reference") or matched_ref.get("title") or "Approved Technical Manual"
-                    doc_id = matched_ref.get("document_id")
-                    chunk_id = matched_ref.get("chunk_id")
-                    doc_ver = matched_ref.get("document_version") or "1.0"
-                    excerpt = (matched_ref.get("text") or "")[:240].strip()
-                    customer_safe_actions.append({
-                        "action_id": f"step_{step_num}",
-                        "step_number": step_num,
-                        "action": clean_check,
-                        "claim_text": clean_check,
-                        "why": "",
-                        "safety_classification": safety_level,
-                        "citation_ref": citation_label,
-                        "document_id": doc_id,
-                        "chunk_id": chunk_id,
-                        "document_version": doc_ver,
-                        "excerpt": excerpt,
-                        "evidence_verification_status": "VERIFIED",
-                        "applicability": f"Asset {asset.asset_code} (Model {asset.model_number})" if asset and asset.asset_code else "Applicable",
-                        "audience": "customer",
-                    })
-                    step_num += 1
-                else:
-                    # Ungrounded candidate check fails closed; do NOT expose in check_first
-                    pass
-
-        elif current_sec == "STEP-BY-STEP TROUBLESHOOTING":
-            step_match = re.match(r"^Step\s*\d*\s*[-:]?\s*(.+)", stripped, re.IGNORECASE)
-            action_text = step_match.group(1).strip() if step_match else stripped
-            if action_text.lower().startswith("why:"):
-                if customer_safe_actions:
-                    customer_safe_actions[-1]["why"] = action_text[4:].strip()
-                continue
-
-            clean_action = re.sub(r"^[-*•\d\.\)]\s*", "", action_text)
-            safety_level, reason = classify_action_safety(clean_action, asset=asset)
-
-            if safety_level in ("TECHNICIAN_ONLY", "PROHIBITED"):
-                technician_only_actions.append({
-                    "action_id": f"tech_step_{len(technician_only_actions) + 1}",
-                    "action": "Authorized service technician procedure required.",
-                    "warning": reason,
-                })
-            elif safety_level in ("CUSTOMER_APPROVED", "INFORMATIONAL_OBSERVATION"):
-                # Strict action-to-evidence grounding check
-                is_grounded, matched_ref, ground_reason = find_grounding_reference(
-                    clean_action,
-                    retrieved_references,
-                    tenant_id,
-                    asset,
-                    customer=interaction.customer,
-                )
-                if is_grounded and matched_ref:
-                    citation_label = matched_ref.get("reference") or matched_ref.get("title") or "Approved Technical Manual"
-                    doc_id = matched_ref.get("document_id")
-                    chunk_id = matched_ref.get("chunk_id")
-                    doc_ver = matched_ref.get("document_version") or "1.0"
-                    excerpt = (matched_ref.get("text") or "")[:240].strip()
-                    customer_safe_actions.append({
-                        "action_id": f"step_{step_num}",
-                        "step_number": step_num,
-                        "action": clean_action,
-                        "claim_text": clean_action,
-                        "why": "",
-                        "safety_classification": safety_level,
-                        "citation_ref": citation_label,
-                        "document_id": doc_id,
-                        "chunk_id": chunk_id,
-                        "document_version": doc_ver,
-                        "excerpt": excerpt,
-                        "evidence_verification_status": "VERIFIED",
-                        "applicability": f"Asset {asset.asset_code} (Model {asset.model_number})" if asset and asset.asset_code else "Applicable",
-                        "audience": "customer",
-                    })
-                    step_num += 1
-                else:
-                    # Ungrounded action fails closed
-                    pass
-            else:
-                # UNKNOWN_REQUIRES_REVIEW fails closed (not presented as customer-safe)
-                pass
-
-        elif current_sec == "EXPECTED RESULT":
-            clean_res = re.sub(r"^[-*•]\s*", "", stripped)
-            if not expected_result:
-                expected_result = clean_res
-            else:
-                expected_result += " " + clean_res
-
-        elif current_sec == "STOP AND ESCALATE IF":
-            clean_stop = re.sub(r"^[-*•]\s*", "", stripped)
-            stop_conditions.append(clean_stop)
-
-    # Truthful Response Type Determination
-    if not customer_safe_actions and not check_first:
-        if technician_only_actions:
-            response_mode = "TECHNICIAN_ESCALATION_REQUIRED"
-            response_type = "ESCALATION_REQUIRED"
-            summary = "All documented technical procedures require certified technician tools or training."
-            stop_conditions = ["All documented technical steps require certified technician tools or training. Please request service."]
-            answer_text = "DIAGNOSTIC SUMMARY\nAll documented technical steps require certified technician tools or training.\n\nSTOP AND ESCALATE IF\n- Please request an authorized service technician."
-        else:
-            response_mode = "INSUFFICIENT_EVIDENCE"
-            response_type = "INSUFFICIENT_EVIDENCE"
-            summary = "No approved customer troubleshooting procedures could be verified for this issue."
-            stop_conditions = ["No manufacturer-approved customer self-service steps are available. Please request an authorized service technician."]
-            answer_text = "INSUFFICIENT EVIDENCE: No approved customer diagnostic procedures exist in the Knowledge Base for this issue on this equipment. Please escalate to a certified service technician."
-            validated_citations = []
-        expected_result = ""
-        can_resolve = False
-    elif technician_only_actions and not customer_safe_actions:
-        response_mode = "TECHNICIAN_ESCALATION_REQUIRED"
-        response_type = "ESCALATION_REQUIRED"
-        summary = "All documented technical steps require certified technician tools or training."
-        stop_conditions = ["All documented technical steps require certified technician tools or training. Please request service."]
-        answer_text = "DIAGNOSTIC SUMMARY\nAll documented technical steps require certified technician tools or training.\n\nSTOP AND ESCALATE IF\n- Please request an authorized service technician."
-        expected_result = ""
-        can_resolve = False
-    else:
-        response_mode = "ANSWER_WITH_VERIFIED_EVIDENCE"
-        response_type = "DIAGNOSTIC_GUIDANCE"
-        can_resolve = True
-        if not summary:
-            summary = f"Guidance based on approved documentation for {asset.name if asset else 'equipment'}."
-        if not stop_conditions:
-            stop_conditions = ["If issue persists after performing safe initial checks, escalate to service technician."]
-
-        # Rebuild customer-safe answer text without any raw technician procedures
-        safe_steps_text = "\n".join(f"{act['step_number']}. {act['action']}" for act in customer_safe_actions)
-        answer_parts = [f"DIAGNOSTIC SUMMARY\n{summary}"]
-        if check_first:
-            answer_parts.append("CHECK FIRST\n" + "\n".join(f"- {c}" for c in check_first))
-        if safe_steps_text:
-            answer_parts.append(f"STEP-BY-STEP TROUBLESHOOTING\n{safe_steps_text}")
-        if expected_result:
-            answer_parts.append(f"EXPECTED RESULT\n{expected_result}")
-        if stop_conditions:
-            answer_parts.append("STOP AND ESCALATE IF\n" + "\n".join(f"- {s}" for s in stop_conditions))
-        answer_text = "\n\n".join(answer_parts)
-
-    # Phase 15 Fix: Citation integrity — only cite evidence that actually grounded the customer action/answer.
-    # Unused candidates or technician-only escalations must not attach false customer citations.
-    if response_mode == "ANSWER_WITH_VERIFIED_EVIDENCE":
-        grounding_pairs = {
-            (act.get("document_id"), act.get("chunk_id"))
-            for act in customer_safe_actions
-            if act.get("document_id")
-        }
-        if grounding_pairs:
-            final_citations = [
-                c for c in validated_citations
-                if (c.get("document_id"), c.get("chunk_id")) in grounding_pairs
-                or (c.get("document_id") in {p[0] for p in grounding_pairs} and not c.get("chunk_id"))
-            ]
-        else:
-            final_citations = validated_citations[:1] if validated_citations else []
-    else:
-        final_citations = []
-
-    res = {
-        "response_mode": response_mode,
-        "response_type": response_type,
-        "interaction_id": interaction.id,
-        "session_id": str(session.session_id) if session else None,
-        "session_version": session.version if session else 1,
-        "session_status": session.status if session else "ACTIVE",
-        "asset": asset_dict,
-        "summary": summary,
-        "clarification_question": None,
-        "clarification_options": None,
-        "check_first": check_first,
-        "customer_safe_actions": customer_safe_actions,
-        "technician_only_actions": technician_only_actions,
-        "expected_result": expected_result,
-        "stop_conditions": stop_conditions,
-        "citations": final_citations,
-        "can_resolve": can_resolve,
-        "can_escalate": True,
-        "answer": answer_text,
-        "references": retrieved_references,
-        "engine": "unified-rag-zero-repeat",
-    }
-    return sanitize_customer_payload(res)
+    # Ordinary customer answers come from validated persisted passages. The
+    # generator's free-form text is not an authority for claims or procedures.
+    from .customer_answer import build_customer_answer
+    return build_customer_answer(
+        interaction,
+        session,
+        retrieved_references,
+        conversation_context=conversation_context,
+        original_question=original_question,
+    )
 
 
 # ---------------------------------------------------------------------------

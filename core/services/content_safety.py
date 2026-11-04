@@ -81,6 +81,12 @@ PROMPT_INJECTION_PATTERNS = [
     r"tell\s+the\s+customer\s+to\s+bypass",
 ]
 
+_BYPASS_PATTERNS = {
+    r"bypass\s+(the\s+)?(safety|content|security|filter)",
+    r"bypass\s+safety",
+}
+_NEGATED_BYPASS_WARNING = re.compile(r"\b(?:never|do\s+not|don't|must\s+not|should\s+not)\s+$")
+
 # ---------------------------------------------------------------------------
 # Query abuse detection patterns
 # ---------------------------------------------------------------------------
@@ -128,8 +134,15 @@ def detect_document_prompt_injection(text: str) -> list:
 
     # Check for prompt injection patterns
     for pattern in PROMPT_INJECTION_PATTERNS:
-        if re.search(pattern, normalized, flags=re.IGNORECASE):
+        for match in re.finditer(pattern, normalized, flags=re.IGNORECASE):
+            if pattern in _BYPASS_PATTERNS:
+                # Manuals commonly prohibit bypassing safety devices. A negated
+                # warning is evidence, not an instruction to the assistant.
+                preceding = re.split(r"[.!?;\n]", normalized[max(0, match.start() - 40):match.start()])[-1]
+                if _NEGATED_BYPASS_WARNING.search(preceding):
+                    continue
             flags.append(pattern)
+            break
 
     # Check for structural delimiter spoofing
     if _STRUCTURAL_RE.search(_normalize_text(text)):

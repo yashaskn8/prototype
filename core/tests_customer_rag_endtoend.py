@@ -223,6 +223,11 @@ class CustomerRagEndToEndTests(TestCase):
 
     def test_clarified_symptom_returns_grounded_guidance(self):
         """Customer providing clarified symptom receives exact grounded troubleshooting steps."""
+        # Explicit non-invasive reporting is source-backed. Internal roller
+        # inspection in the older fixture has no customer procedure approval.
+        self.doc_random_fn.content_text += "\nRecord the displayed sample error code and report sample tube symptoms."
+        self.doc_random_fn.save(update_fields=["content_text"])
+        index_document(self.doc_random_fn)
         self.client.force_login(self.user_a1)
         url = reverse("api_customer_support_query")
         res = self.client.post(url, {
@@ -235,7 +240,8 @@ class CustomerRagEndToEndTests(TestCase):
         data = res.json()
         self.assertEqual(data["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertTrue(len(data["customer_safe_actions"]) > 0)
-        self.assertTrue(any("peristaltic" in act["action"].lower() or "tube" in act["action"].lower() for act in data["customer_safe_actions"]))
+        self.assertTrue(any("tube" in act["action"].lower() for act in data["customer_safe_actions"]))
+        self.assertFalse(any("roller carriage" in act["action"].lower() for act in data["customer_safe_actions"]))
         self.assertTrue(len(data["citations"]) > 0)
         self.assertEqual(data["citations"][0]["document_id"], self.doc_random_fn.id)
 
@@ -315,17 +321,21 @@ class CustomerRagEndToEndTests(TestCase):
     def test_customer_reported_resolution_semantics(self):
         """Customer clicking resolved records customer-reported resolution without falsifying verified repair facts."""
         self.client.force_login(self.user_a1)
+        self.doc_random_fn.content_text = "Read and report the displayed sample error code."
+        self.doc_random_fn.save(update_fields=["content_text"])
+        index_document(self.doc_random_fn)
         url_query = reverse("api_customer_support_query")
         res_query = self.client.post(url_query, {
             "site_id": self.site_a1.id,
             "asset_id": self.asset_a1.id,
-            "question": "Sample tube cleaned successfully",
+            "question": "What displayed sample error code should I report?",
         }, content_type="application/json")
         interaction_id = res_query.json()["interaction_id"]
         session_id = res_query.json()["session_id"]
 
         url_resolve = reverse("api_customer_support_resolve", kwargs={"pk": interaction_id})
-        res_resolve = self.client.post(url_resolve)
+        self.assertTrue(res_query.json()["can_resolve"])
+        res_resolve = self.client.post(url_resolve, {"customer_reports_resolved": True}, content_type="application/json")
         self.assertEqual(res_resolve.status_code, 200)
         res_data = res_resolve.json()
         self.assertEqual(res_data["resolution_type"], "customer_reported")
@@ -369,7 +379,7 @@ class CustomerRagEndToEndTests(TestCase):
         interaction_id = res_query.json()["interaction_id"]
 
         url_escalate = reverse("api_customer_support_escalate", kwargs={"pk": interaction_id})
-        res_escalate = self.client.post(url_escalate)
+        res_escalate = self.client.post(url_escalate, {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res_escalate.status_code, 200)
         call_id = res_escalate.json()["call_id"]
 
@@ -389,12 +399,12 @@ class CustomerRagEndToEndTests(TestCase):
         self.client.force_login(self.user_a1)
         url_escalate = reverse("api_customer_support_escalate", kwargs={"pk": interaction.id})
 
-        res1 = self.client.post(url_escalate)
+        res1 = self.client.post(url_escalate, {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res1.status_code, 200)
         call_id1 = res1.json()["call_id"]
 
         # Second request (simulate double-click or network retry)
-        res2 = self.client.post(url_escalate)
+        res2 = self.client.post(url_escalate, {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res2.status_code, 200)
         call_id2 = res2.json()["call_id"]
 
@@ -409,7 +419,7 @@ class CustomerRagEndToEndTests(TestCase):
         )
         self.client.force_login(self.user_a2)
         url_escalate = reverse("api_customer_support_escalate", kwargs={"pk": interaction.id})
-        res = self.client.post(url_escalate)
+        res = self.client.post(url_escalate, {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res.status_code, 404)
 
     # -----------------------------------------------------------------------
@@ -680,8 +690,8 @@ class CustomerRagEndToEndTests(TestCase):
         esc_url1 = reverse("api_customer_support_escalate", args=[interaction1.id])
         esc_url2 = reverse("api_customer_support_escalate", args=[interaction2.id])
 
-        res1 = self.client.post(esc_url1, {"session_id": str(session.session_id)}, format="json")
-        res2 = self.client.post(esc_url2, {"session_id": str(session.session_id)}, format="json")
+        res1 = self.client.post(esc_url1, {"session_id": str(session.session_id), "confirm_ticket_creation": True}, content_type="application/json")
+        res2 = self.client.post(esc_url2, {"session_id": str(session.session_id), "confirm_ticket_creation": True}, content_type="application/json")
 
         self.assertEqual(res1.status_code, 200)
         self.assertEqual(res2.status_code, 200)
@@ -764,7 +774,7 @@ class CustomerRagEndToEndTests(TestCase):
         escalate_url = reverse("api_customer_support_escalate", args=[interaction.id])
         res = self.client.post(
             escalate_url,
-            {"note": "Customer reported unable to perform diagnostic step: 'Check peristaltic rollers'"},
+            {"note": "Customer reported unable to perform diagnostic step: 'Check peristaltic rollers'", "confirm_ticket_creation": True},
             content_type="application/json",
         )
         self.assertEqual(res.status_code, 200)

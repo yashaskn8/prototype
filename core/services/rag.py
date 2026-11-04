@@ -1,8 +1,54 @@
 from django.conf import settings
+from pathlib import Path
+import hashlib
+
+from rest_framework.exceptions import PermissionDenied
 
 from .content_safety import query_is_control_abuse
 from .retriever import retrieve
 from .llm import generate_answer
+
+
+NO_AUTHORIZED_ORIGINAL_DOCUMENTATION = "NO_AUTHORIZED_ORIGINAL_DOCUMENTATION"
+
+
+def has_authorized_original_documentation(*, tenant, customer, asset):
+    """Require an intact company attachment with a customer-visible source chunk."""
+    from .customer_isolation import (is_verified_real_asset, is_verified_real_customer,
+                                     is_verified_real_document, validate_customer_serving_policy)
+    from .retriever import _knowledge_candidates
+    from .customer_answer import source_chunk
+
+    if (not tenant or not customer or not asset or asset.tenant_id != tenant.id
+        or customer.tenant_id != tenant.id or asset.customer_id != customer.id
+        or not is_verified_real_asset(asset) or not is_verified_real_customer(customer)):
+        raise PermissionDenied("Customer and asset scope is not verified.")
+    validate_customer_serving_policy(tenant, customer, asset)
+    media_root = Path(settings.MEDIA_ROOT).resolve()
+    verified_files = {}
+    for chunk in _knowledge_candidates(tenant, asset, customer, False, backend="all"):
+        document = chunk.document
+        if document.id not in verified_files:
+            valid = False
+            if (document.source_type == "file" and document.file and document.checksum_sha256
+                and not document.is_confidential and not document.disable_sharing
+                and is_verified_real_document(document)):
+                try:
+                    file_path = Path(document.file.path).resolve()
+                    if file_path.is_relative_to(media_root) and file_path.is_file():
+                        valid = hashlib.sha256(file_path.read_bytes()).hexdigest().lower() == document.checksum_sha256.lower()
+                except OSError:
+                    pass
+            verified_files[document.id] = valid
+        if not verified_files[document.id]:
+            continue
+        try:
+            source_chunk(tenant=tenant, customer=customer, asset=asset,
+                         document_id=document.id, chunk_id=chunk.id)
+        except Exception:
+            continue
+        return True
+    return False
 
 
 def ask_rag(
@@ -15,9 +61,12 @@ def ask_rag(
     service_call=None,
     staff_mode=False,
     top_k: int | None = None,
+    conversation_context=None,
+    original_question=None,
 ):
     question = (question or "").strip()[:4000]
-    if query_is_control_abuse(question):
+    display_question = (original_question or question).strip()[:4000]
+    if query_is_control_abuse(display_question) or query_is_control_abuse(question):
         return {
             "answer": "I can help with product, asset, installation, maintenance, troubleshooting, and service questions. I cannot reveal system instructions, confidential data, or information from other customers or tenants.",
             "references": [],
@@ -26,6 +75,19 @@ def ask_rag(
             "retrieval_backend": "policy-guard",
             "reranker_applied": False,
             "reranker_model": None,
+        }
+
+    from .customer_isolation import get_customer_data_mode, is_real_tenant
+    if (not staff_mode and is_real_tenant(tenant)
+        and get_customer_data_mode() == "verified_real_only"
+        and not has_authorized_original_documentation(tenant=tenant, customer=customer, asset=asset)):
+        return {
+            "answer": "No authorized original company documentation is available for this equipment. I cannot provide technical troubleshooting, maintenance steps, specifications, or citations.",
+            "references": [], "engine": "insufficient-evidence",
+            "reason_code": NO_AUTHORIZED_ORIGINAL_DOCUMENTATION,
+            "retrieved": [], "retrieved_candidates": [], "context_passages": [],
+            "claim_supporting_passages": [], "cited_passages": [],
+            "retrieval_backend": "none", "reranker_applied": False, "reranker_model": None,
         }
 
     include_past_resolutions = bool(staff_mode and service_call)
@@ -44,7 +106,14 @@ def ask_rag(
     )
     from .llm import INSUFFICIENT_EVIDENCE_MESSAGE
 
-    answer, engine = generate_answer(question, asset, results, service_call=service_call)
+    answer, engine = generate_answer(
+        question,
+        asset,
+        results,
+        service_call=service_call,
+        conversation_context=conversation_context,
+        original_question=display_question,
+    )
 
     # Helper to serialize chunk metadata
     def _chunk_to_dict(r):

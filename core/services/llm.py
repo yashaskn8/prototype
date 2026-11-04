@@ -499,7 +499,7 @@ def evaluate_chunk_claim_support(
     return False, f"INSUFFICIENT_OVERLAP: {overlap_count}/{n_terms} (requires >={min_abs} terms and >={min_pct:.0%})"
 
 
-def _extractive_answer(question, asset, retrieved, service_call=None):
+def _extractive_answer(question, asset, retrieved, service_call=None, conversation_context=None, original_question=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE
 
@@ -654,8 +654,26 @@ def _extractive_answer(question, asset, retrieved, service_call=None):
         troubleshooting_steps = checks[:]
         checks = [troubleshooting_steps.pop(0)]
 
+    # Conversation-aware step filtering: exclude checks customer confirmed completed
+    if conversation_context and getattr(conversation_context, "completed_checks", None):
+        completed_lower = [str(c).lower() for c in conversation_context.completed_checks]
+        def _matches_completed(candidate_text):
+            cand_words = set(re.findall(r"[a-z0-9]{3,}", candidate_text.lower())) - _STOPWORDS
+            for done in completed_lower:
+                done_words = set(re.findall(r"[a-z0-9]{3,}", done)) - _STOPWORDS
+                if cand_words and done_words and (cand_words & done_words):
+                    return True
+            return False
+
+        checks = [c for c in checks if not _matches_completed(c)]
+        troubleshooting_steps = [s for s in troubleshooting_steps if not _matches_completed(s)]
+
     if not troubleshooting_steps and not checks:
         return INSUFFICIENT_EVIDENCE_MESSAGE
+
+    if conversation_context and getattr(conversation_context, "completed_checks", None):
+        clean_completed = ", ".join(conversation_context.completed_checks[:2])
+        summary_line += f" Customer reported completing: {clean_completed}."
 
     output = []
     output.append("DIAGNOSTIC SUMMARY")
@@ -882,7 +900,7 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     )
 
 
-def generate_answer(question, asset, retrieved, service_call=None):
+def generate_answer(question, asset, retrieved, service_call=None, conversation_context=None, original_question=None):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "fallback"
 
@@ -918,16 +936,32 @@ def generate_answer(question, asset, retrieved, service_call=None):
             f"complaint={service_call.complaint_text}; technician_notes={service_call.technician_notes}"
         )
 
+    conv_history_block = ""
+    if conversation_context and getattr(conversation_context, "turn_count", 0) > 0:
+        conv_parts = []
+        if getattr(conversation_context, "original_complaint", ""):
+            conv_parts.append(f"Original Complaint: {conversation_context.original_complaint}")
+        if getattr(conversation_context, "reported_symptoms", None):
+            conv_parts.append(f"Reported Symptoms: {', '.join(conversation_context.reported_symptoms)}")
+        if getattr(conversation_context, "completed_checks", None):
+            conv_parts.append(f"Completed Checks: {', '.join(conversation_context.completed_checks)}")
+        if getattr(conversation_context, "customer_observations", None):
+            conv_parts.append(f"Customer Observations: {', '.join(conversation_context.customer_observations)}")
+        if conv_parts:
+            conv_history_block = "CONVERSATION HISTORY:\n" + "\n".join(f"- {p}" for p in conv_parts) + "\n\n"
+
+    user_q = original_question or question
     prompt = f"""You are the Servy Technical Knowledge Copilot.
 Your job is to answer customer/technician troubleshooting questions using ONLY the factual information inside RETRIEVED SOURCES.
 Never fabricate diagnostic steps, part numbers, or safety procedures.
+Do not recommend checks that the customer has already confirmed completing.
 
 If sufficient approved evidence exists in RETRIEVED SOURCES, format your answer strictly using these 6 sections:
 DIAGNOSTIC SUMMARY
-Briefly explain the most likely documented issue based on the selected asset and reported symptom.
+Briefly explain the most likely documented issue based on the selected asset, reported symptoms, and conversation history.
 
 CHECK FIRST
-List the initial documented checks.
+List the initial documented checks (excluding any the customer has already completed).
 
 STEP-BY-STEP TROUBLESHOOTING
 Step 1 - [action]
@@ -949,7 +983,7 @@ I couldn't find enough approved information in the Knowledge Base to safely answ
 
 ASSET: {asset_context}
 CALL CONTEXT: {call_context}
-QUESTION: {question}
+{conv_history_block}QUESTION: {user_q}
 
 RETRIEVED SOURCES:
 {context}
@@ -987,5 +1021,12 @@ ANSWER:"""
 
     if getattr(settings, "SERVY_LLM_REQUIRE_OLLAMA", False) and provider in {"auto", "ollama"}:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "llm-unavailable"
-    return _extractive_answer(question, asset, grounded, service_call=service_call), "extractive-local"
+    return _extractive_answer(
+        question,
+        asset,
+        grounded,
+        service_call=service_call,
+        conversation_context=conversation_context,
+        original_question=original_question,
+    ), "extractive-local"
 

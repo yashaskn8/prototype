@@ -3,6 +3,7 @@ import { useAuth } from '../AuthContext';
 import { Shield, User, Lock, AlertCircle, ArrowRight } from 'lucide-react';
 
 export function LoginPage() {
+  const isolatedUiTest = import.meta.env.VITE_SERVY_UI_TEST === '1';
   const { login, error: authError } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -61,7 +62,9 @@ export function LoginPage() {
           </div>
         )}
 
-        <div style={{ marginBottom: '20px' }}>
+        {isolatedUiTest ? <div style={{ marginBottom: '20px', fontSize: '0.85rem' }}>
+          Isolated test account: <strong>servy_ui_tester</strong>. Use the password stored in the private local test file.
+        </div> : <div style={{ marginBottom: '20px' }}>
           <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
             Quick Demo Personas (1-Click Login)
           </label>
@@ -84,7 +87,7 @@ export function LoginPage() {
           <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '6px' }}>
             Click any demo persona to automatically fill verified login credentials.
           </div>
-        </div>
+        </div>}
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">

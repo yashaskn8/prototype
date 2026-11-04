@@ -68,6 +68,11 @@ def normalize_inputs(cases, corpus):
             "document_id": _id(_field(row, "document_id", "source_document_id")),
             "passage": str(_field(row, "passage", "text", "positive_text")),
         }
+        # Only retain context present on the corpus record. Never derive titles
+        # from evaluation questions or their positive-document labels.
+        for key in ("document_title", "title", "heading", "section"):
+            if isinstance(row.get(key), str) and row[key].strip():
+                chunks[cid][key] = row[key].strip()
     queries = {}
     for row in cases:
         qid = _id(_field(row, "query_id"))
@@ -218,8 +223,19 @@ def validate_candidates(cases, chunks, rows, top_k=10):
         )
     return result
 
+def contextual_passage(chunk):
+    """Optional source context; raw passage and identity remain unchanged."""
+    passage = chunk["passage"]
+    parts = []
+    for value in (chunk.get("document_title") or chunk.get("title"),
+                  chunk.get("section"), chunk.get("heading")):
+        if value and value not in passage and value not in parts:
+            parts.append(value)
+    return "\n".join(parts + [passage])
+
+
 def build_qwen_candidates(cases, chunks, top_k=10,
-                          model_id="Qwen/Qwen3-Embedding-0.6B"):
+                          model_id="Qwen/Qwen3-Embedding-0.6B", *, contextual=False):
     """One research candidate set; filter by tenant before scoring/ranking."""
     import numpy as np
     from sentence_transformers import SentenceTransformer
@@ -228,7 +244,7 @@ def build_qwen_candidates(cases, chunks, top_k=10,
     model.max_seq_length = 256
     ids = list(chunks)
     passage_vectors = model.encode_document(
-        [chunks[cid]["passage"] for cid in ids],
+        [contextual_passage(chunks[cid]) if contextual else chunks[cid]["passage"] for cid in ids],
         normalize_embeddings=True, show_progress_bar=True,
     )
     case_ids = list(cases)
@@ -247,13 +263,14 @@ def build_qwen_candidates(cases, chunks, top_k=10,
     return result
 
 
-def rerank_fixed(query, candidate_ids, chunks, predict, pool_size=5):
+def rerank_fixed(query, candidate_ids, chunks, predict, pool_size=5, *, contextual=False):
     """Score every candidate, reorder only the head and leave the tail intact.
 
     All raw logits are diagnostic observations, including tail items that MUST
     NOT be promoted by the bounded serving-style top-N rerank.
     """
-    pairs = [[query, chunks[cid]["passage"]] for cid in candidate_ids]
+    pairs = [[query, contextual_passage(chunks[cid]) if contextual else chunks[cid]["passage"]]
+             for cid in candidate_ids]
     raw_scores = list(predict(pairs)) if pairs else []
     if len(raw_scores) != len(candidate_ids):
         raise ValueError("Reranker returned wrong score count")
@@ -290,11 +307,11 @@ def _metrics(cases, rows):
         ) / n, 4),
     }
 
-def evaluate_one(cases, chunks, candidates, predict, pool_size=5):
+def evaluate_one(cases, chunks, candidates, predict, pool_size=5, *, contextual=False):
     rows = []
     for qid, case in cases.items():
         ordered, scores = rerank_fixed(
-            case["query"], candidates[qid], chunks, predict, pool_size
+            case["query"], candidates[qid], chunks, predict, pool_size, contextual=contextual
         )
         gold = set(case["gold_chunk_ids"])
         documents = set(case["gold_document_ids"])

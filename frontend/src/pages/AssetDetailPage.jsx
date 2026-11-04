@@ -1,15 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import { CustomerAnswer } from '../components/CustomerAnswer';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useAuth } from '../AuthContext';
 import { 
   ArrowLeft, Package, FileText, Bot, History, Ticket, ShieldCheck, 
-  Upload, Download, AlertCircle, CheckCircle2, Clock, Calendar, 
-  Send, RefreshCw, AlertTriangle, ChevronRight, Check, Activity, Shield, CheckSquare
+  Upload, Download, AlertCircle, CheckCircle2,
+  Send, RefreshCw, AlertTriangle, Check, Activity, Shield, CheckSquare
 } from 'lucide-react';
 
 export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const { user } = useAuth();
   const isCustomer = user?.role === 'customer';
+  const currentAssetId = useRef(assetId);
+  currentAssetId.current = assetId;
 
   const [asset, setAsset] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -203,7 +206,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
       });
       setDiagSession(res);
       persistSessionId(res.session_id);
-      setDiagNotice({ type: 'success', text: 'Diagnostic session marked resolved after customer verification.' });
+      setDiagNotice({ type: 'success', text: 'Diagnostic session recorded as customer-reported resolved.' });
     } catch (err) {
       if (isTerminalError(err)) {
         setDiagNotice({ type: 'info', text: 'Session already finalized. Refreshing...' });
@@ -217,11 +220,13 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   }
 
   async function handleEscalateSession(customReason) {
+    if (!window.confirm("Create a service ticket for this equipment?")) return;
     if (!diagSession) return;
     setDiagSubmitting(true);
     setDiagNotice(null);
     try {
       const res = await api.post(`/api/diagnostics/${diagSession.session_id}/escalate/`, {
+        confirm_ticket_creation: true,
         reason: customReason || 'Escalated by customer during diagnostic procedure.',
         expected_version: diagSession.version,
         idempotency_key: makeIdempotencyKey('diag-esc'),
@@ -249,13 +254,17 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   async function loadAssetDetail() {
     setLoading(true);
     setError(null);
+    setAiResult(null);
+    setResolutionNotice(null);
+    setEscalationResult(null);
+    setSubmittingQuery(false);
     try {
       const res = await api.get(`/api/assets/${assetId}/`);
-      setAsset(res.asset);
+      if (String(currentAssetId.current) === String(assetId)) setAsset(res.asset);
     } catch (err) {
-      setError(err.detail || 'Failed to load asset details.');
+      if (String(currentAssetId.current) === String(assetId)) setError(err.detail || 'Failed to load asset details.');
     } finally {
-      setLoading(false);
+      if (String(currentAssetId.current) === String(assetId)) setLoading(false);
     }
   }
 
@@ -362,7 +371,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
 
   async function handleAiQuery(e) {
     e.preventDefault();
-    if (!query.trim() || !asset) return;
+    if (!query.trim() || !asset || String(asset.id) !== String(assetId)) return;
 
     setSubmittingQuery(true);
     setAiError(null);
@@ -376,19 +385,19 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
         question: query.trim(),
         customer_id: asset.customer?.id,
       });
-      setAiResult(res);
+      if (String(currentAssetId.current) === String(assetId)) setAiResult(res);
     } catch (err) {
-      setAiError(err.detail || 'Error communicating with AI assistant.');
+      if (String(currentAssetId.current) === String(assetId)) setAiError(err.detail || 'Error communicating with AI assistant.');
     } finally {
-      setSubmittingQuery(false);
+      if (String(currentAssetId.current) === String(assetId)) setSubmittingQuery(false);
     }
   }
 
   async function handleResolveInteraction() {
-    if (!aiResult?.interaction_id) return;
+    if (!aiResult?.interaction_id || !aiResult.can_resolve || String(aiResult.asset?.id) !== String(assetId)) return;
     setResolving(true);
     try {
-      const res = await api.post(`/api/customer-support/interactions/${aiResult.interaction_id}/resolve/`);
+      const res = await api.post(`/api/customer-support/interactions/${aiResult.interaction_id}/resolve/`, { customer_reports_resolved: true });
       setResolutionNotice(res.detail || 'Diagnostic marked as resolved. Thank you!');
     } catch (err) {
       setAiError(err.detail || 'Could not update interaction.');
@@ -398,10 +407,11 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   }
 
   async function handleEscalateInteraction() {
-    if (!aiResult?.interaction_id) return;
+    if (!aiResult?.interaction_id || !aiResult.can_escalate || String(aiResult.asset?.id) !== String(assetId)) return;
+    if (!window.confirm('Create a service ticket for this equipment? This saves a service request.')) return;
     setEscalating(true);
     try {
-      const res = await api.post(`/api/customer-support/interactions/${aiResult.interaction_id}/escalate/`);
+      const res = await api.post(`/api/customer-support/interactions/${aiResult.interaction_id}/escalate/`, { confirm_ticket_creation: true });
       setEscalationResult(res);
       loadCalls();
     } catch (err) {
@@ -725,7 +735,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                     Diagnostic Session Resolved
                   </h3>
                   <p style={{ maxWidth: '520px', margin: '0 auto 24px auto', color: '#166534', fontSize: '0.9rem' }}>
-                    Diagnostic session marked resolved after customer verification. All diagnostic observations and confirmations have been recorded.
+                    Diagnostic session recorded as customer-reported resolved. All diagnostic observations and confirmations have been recorded.
                   </p>
                   <button 
                     className="btn btn-secondary"
@@ -734,16 +744,25 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                     Start New Recovery Session
                   </button>
                 </div>
+              ) : diagSession.status === 'ESCALATED' && !diagSession.escalated_call ? (
+                <div className="card" role="status">
+                  <h3>Technician assistance recommended</h3>
+                  <p>The diagnostic checks could not establish a resolution. No service ticket has been created.</p>
+                  <button type="button" className="btn btn-primary" disabled={diagSubmitting}
+                    onClick={() => handleEscalateSession('Customer confirmed request after diagnostic checks.')}>
+                    Request a service ticket
+                  </button>
+                </div>
               ) : diagSession.status === 'ESCALATED' ? (
                 <div className="card" style={{ border: '1px solid #cbd5e1' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px', background: '#f8fafc', borderRadius: '8px', borderBottom: '1px solid var(--border)', marginBottom: '20px' }}>
                     <Ticket size={24} color="#d97706" />
                     <div>
                       <h4 style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--text-main)' }}>
-                        Service Call Dispatched: #{diagSession.escalated_call?.servy_id || 'SER-ESCALATED'}
+                        Service Ticket: #{diagSession.escalated_call?.servy_id || 'SER-ESCALATED'}
                       </h4>
                       <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                        Field engineering has been notified. The deterministic Recovery Passport has been attached so the technician will NOT repeat what you already verified.
+                        Your request includes the recorded diagnostic history. Technician assignment is confirmed separately.
                       </p>
                     </div>
                   </div>
@@ -1188,7 +1207,7 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                 <Ticket size={18} /> Ticket Dispatched: #{escalationResult.servy_id}
               </div>
               <p style={{ fontSize: '0.85rem' }}>
-                Service call dispatched to engineering team with query context carry-forward. Track progress in the Open Tickets tab.
+                Your service ticket includes the query context. Track its status and technician assignment in the Open Tickets tab.
               </p>
             </div>
           )}
@@ -1250,38 +1269,16 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
               </div>
             </form>
 
-            {aiResult && (
+            {aiResult && String(aiResult.asset?.id) === String(assetId) && (
               <div className="rag-answer-panel">
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                   <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <CheckCircle2 size={16} color="var(--primary)" /> Recommended Resolution
+                    <CheckCircle2 size={16} color="var(--primary)" /> Equipment Guidance
                   </span>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Backend: {aiResult.retrieval_backend || 'RAG'}
-                  </span>
+                  {!isCustomer && <span>Backend: {aiResult.retrieval_backend || 'RAG'}</span>}
                 </div>
 
-                <div className="rag-answer-body" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-                  {aiResult.answer}
-                </div>
-
-                {aiResult.references && aiResult.references.length > 0 && (
-                  <div className="rag-citation-box">
-                    <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '8px' }}>
-                      TECHNICAL CITATIONS ({aiResult.references.length})
-                    </div>
-                    <div>
-                      {aiResult.references.map((ref, idx) => (
-                        <span key={idx} className="citation-chip">
-                          <FileText size={14} color="var(--primary)" />
-                          <strong>{ref.title || ref.reference}</strong>
-                          {ref.heading && <span style={{ opacity: 0.85 }}>({ref.heading})</span>}
-                          {ref.doc_type && <span className="badge" style={{ fontSize: '0.65rem' }}>{ref.doc_type}</span>}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {isCustomer ? <CustomerAnswer presentation={aiResult.presentation} assetId={assetId} /> : <div className="rag-answer-body" style={{whiteSpace: 'pre-wrap'}}>{aiResult.answer}</div>}
 
                 {/* Resolve vs Escalate Buttons */}
                 <div style={{ 
@@ -1296,27 +1293,27 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                 }}>
                   <div>
                     <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                      Did this guidance solve the issue?
+                      {aiResult.can_resolve ? 'Did this guidance solve the issue?' : 'Need technician assistance?'}
                     </span>
                     <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      If not resolved, escalate directly into a dispatched service ticket for this machine.
+                      You may request a service ticket. Technician assignment is confirmed separately by the service team.
                     </p>
                   </div>
 
                   <div style={{ display: 'flex', gap: '10px' }}>
-                    <button
+                    {aiResult.can_resolve && <button
                       type="button"
                       className="btn btn-success"
                       onClick={handleResolveInteraction}
-                      disabled={resolving || resolutionNotice}
+                      disabled={!aiResult.can_resolve || resolving || resolutionNotice}
                     >
-                      <CheckCircle2 size={16} /> Mark Solved
-                    </button>
+                      <CheckCircle2 size={16} /> I report the issue resolved
+                    </button>}
                     <button
                       type="button"
                       className="btn btn-warning"
                       onClick={handleEscalateInteraction}
-                      disabled={escalating || escalationResult}
+                      disabled={!aiResult.can_escalate || escalating || escalationResult}
                     >
                       <Ticket size={16} /> Escalate to Service Ticket
                     </button>

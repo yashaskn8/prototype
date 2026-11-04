@@ -8,7 +8,8 @@ Hard Invariants:
   - Optimistic concurrency control (expected_version must match locked DB record).
   - Current-node enforcement (client cannot skip ahead, replay old nodes, or execute out-of-order).
   - Presentation requirement (SAFE_ACTION confirmation strictly requires prior SAFE_ACTION_PRESENTED in sequence).
-  - Atomic escalation inside the same transaction that sets ESCALATED status.
+  - Diagnostic escalation recommendations never create a ServiceCall.
+  - Explicit ticket requests create calls and passports atomically.
   - Exactly ONE ServiceCall per DiagnosticSession, repeated escalations are idempotent.
   - Immutable DiagnosticEvent append-only ledger.
   - Customer can NEVER mutate a terminal session (RESOLVED, ESCALATED, ABANDONED).
@@ -593,13 +594,8 @@ def submit_diagnostic_answer(
         locked_session.status = state.status
         locked_session.version += 1
 
-        # Atomic escalation check
-        if locked_session.status == "ESCALATED":
-            call, passport = _execute_escalation_atomically(
-                locked_session,
-                reason=state.escalation_reason or "Escalated by diagnostic workflow.",
-                customer=customer
-            )
+        # ESCALATED is a diagnostic recommendation. Only the explicit,
+        # confirmed escalation endpoint may create the operational ticket.
 
         # Emit SAFE_ACTION_PRESENTED with presentation token if new current node is SAFE_ACTION
         new_node = nodes.get(state.current_node_id, {})
@@ -694,12 +690,7 @@ def confirm_safe_action(
         locked_session.evidence_completeness = state.evidence_completeness
         locked_session.version += 1
 
-        if locked_session.status == "ESCALATED":
-            _execute_escalation_atomically(
-                locked_session,
-                reason=state.escalation_reason or "Escalated after action confirmation.",
-                customer=customer
-            )
+        # Confirming a check is not consent to create a service ticket.
 
         new_node = nodes.get(state.current_node_id, {})
         if new_node.get("node_type") == NODE_SAFE_ACTION and locked_session.status not in ("RESOLVED", "ESCALATED"):

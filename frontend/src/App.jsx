@@ -12,6 +12,7 @@ import { ProjectsPage } from './pages/ProjectsPage';
 import { InventoryPage } from './pages/InventoryPage';
 import { StaffPage } from './pages/StaffPage';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
+import { RealDemoPage } from './pages/RealDemoPage';
 
 function MainLayout() {
   const { user, loading } = useAuth();
@@ -99,6 +100,7 @@ function MainLayout() {
 }
 
 export default function App() {
+  if (import.meta.env.VITE_SERVY_REAL_DEMO === '1') return <RealDemoPage />;
   return (
     <AuthProvider>
       <MainLayout />

@@ -305,7 +305,7 @@ class RealCompanyDataIsolationTests(TestCase):
         )
         self.client.login(username="rajesh_k", password="TestPassword123")
         esc_url = reverse("api_customer_support_escalate", kwargs={"pk": interaction.id})
-        res = self.client.post(esc_url, {"note": "Customer confirms fan still inactive."})
+        res = self.client.post(esc_url, {"note": "Customer confirms fan still inactive.", "confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(res.status_code, 200)
         call = ServiceCall.objects.get(id=res.data["call_id"])
         self.assertEqual(call.tenant, self.real_tenant)
@@ -374,8 +374,8 @@ class RealCompanyDataIsolationTests(TestCase):
         )
         # All dangerous procedures must be excluded from customer_safe_actions
         self.assertEqual(len(contract["customer_safe_actions"]), 0)
-        self.assertTrue(len(contract["technician_only_actions"]) > 0)
-        self.assertEqual(contract["response_type"], "ESCALATION_REQUIRED")
+        self.assertFalse(contract["can_resolve"])
+        self.assertEqual(contract["response_type"], "INSUFFICIENT_EVIDENCE")
 
     # -----------------------------------------------------------------------
     # 10. Existing dummy/test records remain unchanged
@@ -574,8 +574,12 @@ class RealCompanyDataIsolationTests(TestCase):
                 "text": self.real_chunk.text,
             }],
         )
-        # Grounded check is included
-        self.assertTrue(any("air filter" in c.lower() for c in contract["check_first"]))
+        # Raw generator instructions are not evidence or procedure approval.
+        self.assertEqual(contract["check_first"], [])
+        for action in contract["customer_safe_actions"]:
+            self.assertIn(action["action"], self.real_chunk.text)
+            self.assertNotIn("potentiometer", action["action"].lower())
+            self.assertNotIn("capacitor", action["action"].lower())
         # Fabricated ungrounded check must be rejected
         self.assertFalse(any("potentiometer" in c.lower() for c in contract["check_first"]))
         self.assertFalse(any("capacitor" in c.lower() for c in contract["check_first"]))
@@ -609,7 +613,7 @@ class RealCompanyDataIsolationTests(TestCase):
         self.assertEqual(res.data["can_escalate"], True)
         self.assertEqual(len(res.data["customer_safe_actions"]), 0)
         # Must not fabricate customer steps
-        self.assertIn("INSUFFICIENT EVIDENCE", res.data["answer"])
+        self.assertIn("insufficient evidence", res.data["answer"].lower())
 
     # -----------------------------------------------------------------------
     # 20. Hazard detected in follow-up observation escalates session

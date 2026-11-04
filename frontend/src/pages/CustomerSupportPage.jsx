@@ -1,3 +1,4 @@
+import { CustomerAnswer } from '../components/CustomerAnswer';
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useAuth } from '../AuthContext';
@@ -12,16 +13,9 @@ import {
   Building,
   Ticket,
   HelpCircle,
-  Wrench,
-  AlertOctagon,
   ChevronRight,
-  UserCheck,
   MessageSquare,
-  Clock,
-  ExternalLink,
-  ChevronDown,
   ArrowRight,
-  Info,
   History,
 } from 'lucide-react';
 
@@ -60,6 +54,9 @@ export function CustomerSupportPage() {
 
   // Durable Session & Conversation Context
   const [conversationUuid, setConversationUuid] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const chatEndRef = useRef(null);
   const [activeSessionNotice, setActiveSessionNotice] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [escalating, setEscalating] = useState(false);
@@ -88,6 +85,7 @@ export function CustomerSupportPage() {
 
   // Request race condition tracking: ensure late responses for previous assets are discarded
   const activeAssetRef = useRef('');
+  const assetLoadVersion = useRef(0);
 
   // Load authorized customer sites & initial context
   async function loadContext() {
@@ -153,6 +151,7 @@ export function CustomerSupportPage() {
 
   // Dynamically load assets belonging to the selected site
   async function loadAssetsForSite(siteId, initialActiveSession = null) {
+    const requestVersion = ++assetLoadVersion.current;
     if (!siteId) {
       setSiteAssets([]);
       setSelectedAsset('');
@@ -162,6 +161,7 @@ export function CustomerSupportPage() {
     setLoadingAssets(true);
     try {
       const res = await api.get(`/api/sites/${siteId}/assets/`);
+      if (requestVersion !== assetLoadVersion.current) return;
       const assets = normalizeArray(res, 'assets');
       setSiteAssets(assets);
       if (assets.length > 0) {
@@ -175,12 +175,13 @@ export function CustomerSupportPage() {
         setActiveSessionNotice(null);
       }
     } catch (err) {
+      if (requestVersion !== assetLoadVersion.current) return;
       console.error('Failed to load site assets', err);
       setSiteAssets([]);
       setSelectedAsset('');
       activeAssetRef.current = '';
     } finally {
-      setLoadingAssets(false);
+      if (requestVersion === assetLoadVersion.current) setLoadingAssets(false);
     }
   }
 
@@ -191,15 +192,69 @@ export function CustomerSupportPage() {
     }
     try {
       const res = await api.get(`/api/customer-support/context/?asset_id=${assetId}`);
-      if (res.active_session) {
+      if (activeAssetRef.current !== String(assetId)) return;
+      if (res.active_conversation) {
+        setConversationUuid(res.active_conversation.conversation_uuid);
+        if (res.active_conversation.messages && res.active_conversation.messages.length > 0) {
+          setMessages(res.active_conversation.messages);
+          const lastAsst = [...res.active_conversation.messages].reverse().find(m => m.sender_role === 'assistant');
+          if (lastAsst && lastAsst.structured_contract) {
+            setResult(lastAsst.structured_contract);
+          }
+        } else {
+          setMessages([]);
+          setResult(null);
+        }
+      } else if (res.active_session) {
         setActiveSessionNotice(res.active_session);
+        setConversationUuid(null);
+        setMessages([]);
+        setResult(null);
       } else {
         setActiveSessionNotice(null);
+        setConversationUuid(null);
+        setMessages([]);
+        setResult(null);
       }
     } catch {
-      setActiveSessionNotice(null);
+      if (activeAssetRef.current === String(assetId)) setActiveSessionNotice(null);
     }
   }
+
+  async function loadConversationMessages(convUuid) {
+    if (!convUuid) return;
+    setLoadingMessages(true);
+    try {
+      const res = await api.get(`/api/customer-support/conversations/${convUuid}/messages/`);
+      const msgList = normalizeArray(res, 'messages');
+      setMessages(msgList);
+      const lastAsst = [...msgList].reverse().find(m => m.sender_role === 'assistant');
+      if (lastAsst && lastAsst.structured_contract) {
+        setResult(lastAsst.structured_contract);
+      }
+    } catch (e) {
+      console.warn('Could not load messages', e);
+    } finally {
+      setLoadingMessages(false);
+    }
+  }
+
+  function handleStartNewConversation() {
+    if (messages.length > 0 && !window.confirm('Start a new troubleshooting conversation for this equipment? Your current conversation will remain saved in History.')) {
+      return;
+    }
+    setConversationUuid(null);
+    setMessages([]);
+    setResult(null);
+    setQuery('');
+    setResolutionNotice(null);
+    setEscalationResult(null);
+    setActiveSessionNotice(null);
+  }
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   useEffect(() => {
     loadContext();
@@ -208,6 +263,11 @@ export function CustomerSupportPage() {
   }, []);
 
   function handleSiteChange(e) {
+    assetLoadVersion.current += 1;
+    setSubmitting(false);
+    setResolutionNotice(null);
+    setEscalationResult(null);
+    setError(null);
     const newSiteId = e.target.value;
     setSelectedSite(newSiteId);
     setSelectedAsset('');
@@ -223,6 +283,7 @@ export function CustomerSupportPage() {
   }
 
   function handleAssetChange(e) {
+    setSubmitting(false);
     const newAssetId = e.target.value;
     setSelectedAsset(newAssetId);
     activeAssetRef.current = newAssetId;
@@ -256,20 +317,25 @@ export function CustomerSupportPage() {
 
   async function resumeConversationFromHistory(conv) {
     setActiveTab('diagnostics');
-    setSelectedSite(String(conv.site_id));
-    await loadAssetsForSite(String(conv.site_id));
-    setSelectedAsset(String(conv.asset_id));
-    activeAssetRef.current = String(conv.asset_id);
-    setConversationUuid(conv.conversation_uuid);
-    setQuery(conv.title || '');
+    const siteId = String(conv.site_id || (conv.site ? conv.site.id : ''));
+    setSelectedSite(siteId);
+    if (siteId) {
+      await loadAssetsForSite(siteId);
+    }
+    const assetId = String(conv.asset_id || (conv.asset ? conv.asset.id : ''));
+    setSelectedAsset(assetId);
+    activeAssetRef.current = assetId;
+    const convUuid = String(conv.conversation_uuid || conv.id);
+    setConversationUuid(convUuid);
+    setQuery('');
     setResult(null);
     setResolutionNotice(null);
     setEscalationResult(null);
+    await loadConversationMessages(convUuid);
 
     // If conversation is already escalated or has a linked service call, load the ticket
     if (conv.linked_service_call_id || conv.linked_service_call) {
       try {
-        const convUuid = conv.conversation_uuid || conv.id;
         const ticketRes = await api.get(`/api/customer-support/conversations/${convUuid}/ticket/`);
         setEscalationResult(ticketRes);
       } catch (e) {
@@ -323,34 +389,77 @@ export function CustomerSupportPage() {
     setResolutionNotice(null);
     setEscalationResult(null);
 
+    const fullTurnInput = clarificationAnswer ? `${queryText} (${clarificationAnswer})` : queryText;
+    const tempUserMsg = {
+      id: 'temp-' + Date.now(),
+      sender_role: 'customer',
+      message_text: fullTurnInput,
+      created_at: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, tempUserMsg]);
+    setQuery('');
+    setCustomClarification('');
+
     try {
-      const activeSessionId = result?.session_id || activeSessionNotice?.session_id || null;
-      const payload = {
-        site_id: selectedSite,
-        asset_id: currentAssetId,
-        question: queryText.trim(),
-        customer_id: contextData?.customer?.id,
-        session_id: activeSessionId,
-        conversation_uuid: conversationUuid,
-      };
-      if (clarificationAnswer) {
-        payload.clarification_response = clarificationAnswer.trim();
+      let turnContract = null;
+      if (conversationUuid) {
+        const payload = {
+          message: queryText.trim(),
+        };
+        if (clarificationAnswer) {
+          payload.clarification_response = clarificationAnswer.trim();
+        }
+        const res = await api.post(`/api/customer-support/conversations/${conversationUuid}/messages/`, payload);
+        if (activeAssetRef.current === currentAssetId) {
+          turnContract = res.contract;
+          setMessages(prev => [
+            ...prev.filter(m => m.id !== tempUserMsg.id),
+            res.user_message || tempUserMsg,
+            res.assistant_message,
+          ]);
+        }
+      } else {
+        const payload = {
+          site_id: selectedSite,
+          asset_id: currentAssetId,
+          question: queryText.trim(),
+          customer_id: contextData?.customer?.id,
+          session_id: activeSessionNotice?.session_id || null,
+        };
+        if (clarificationAnswer) {
+          payload.clarification_response = clarificationAnswer.trim();
+        }
+        const res = await api.post('/api/customer-support/query/', payload);
+        if (activeAssetRef.current === currentAssetId) {
+          turnContract = res;
+          if (res.conversation_uuid) {
+            setConversationUuid(res.conversation_uuid);
+          }
+          const asstMsg = {
+            id: 'asst-' + Date.now(),
+            sender_role: 'assistant',
+            message_text: res.answer || res.summary || '',
+            structured_contract: res,
+            source_refs: res.citations || res.references || [],
+            created_at: new Date().toISOString(),
+          };
+          setMessages(prev => [
+            ...prev.filter(m => m.id !== tempUserMsg.id),
+            tempUserMsg,
+            asstMsg,
+          ]);
+        }
       }
 
-      const res = await api.post('/api/customer-support/query/', payload);
-
-      // Verify that the user did not switch equipment while the request was in flight
-      if (activeAssetRef.current === currentAssetId) {
-        setResult(res);
-        if (res.conversation_uuid) {
-          setConversationUuid(res.conversation_uuid);
-        }
-        setCustomClarification('');
+      if (activeAssetRef.current === currentAssetId && turnContract) {
+        setResult(turnContract);
         loadConversations();
       }
     } catch (err) {
       if (activeAssetRef.current === currentAssetId) {
         setError(err.detail || 'Error communicating with AI assistant.');
+        setMessages(prev => prev.filter(m => m.id !== tempUserMsg.id));
+        setQuery(queryText);
       }
     } finally {
       if (activeAssetRef.current === currentAssetId) {
@@ -376,10 +485,10 @@ export function CustomerSupportPage() {
   }
 
   async function handleResolve() {
-    if (!result?.interaction_id) return;
+    if (!result?.interaction_id || !result.can_resolve) return;
     setResolving(true);
     try {
-      const res = await api.post(`/api/customer-support/interactions/${result.interaction_id}/resolve/`);
+      const res = await api.post(`/api/customer-support/interactions/${result.interaction_id}/resolve/`, { customer_reports_resolved: true });
       setResolutionNotice(res.detail || 'Marked as resolved. Thank you!');
       setActiveSessionNotice(null);
       loadConversations();
@@ -392,11 +501,13 @@ export function CustomerSupportPage() {
 
   async function handleEscalate(escalationNote = '') {
     if (!result?.interaction_id) return;
+    if (!window.confirm('Create a service ticket for this equipment? This saves a service request.')) return;
     setEscalating(true);
     try {
       const activeSessionId = result?.session_id || activeSessionNotice?.session_id || null;
       const payload = {
         note: escalationNote,
+        confirm_ticket_creation: true,
         session_id: activeSessionId,
       };
       const res = await api.post(`/api/customer-support/interactions/${result.interaction_id}/escalate/`, payload);
@@ -411,9 +522,6 @@ export function CustomerSupportPage() {
     }
   }
 
-  function handleCannotPerformCheck(stepAction) {
-    handleEscalate(`Customer reported unable to perform diagnostic step: "${stepAction}"`);
-  }
 
   const selectedAssetObj = siteAssets.find(a => String(a.id) === String(selectedAsset));
 
@@ -671,9 +779,9 @@ export function CustomerSupportPage() {
               </div>
             </div>
 
-            {/* Query Input & Guided Diagnostic View */}
-            <div className="rag-box">
-              <div className="rag-header">
+            {/* Unified Conversation Stream & Guided Diagnostic View */}
+            <div className="rag-box" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '620px' }}>
+              <div className="rag-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div className="rag-header-left">
                   <div className="rag-icon-badge">
                     <Bot size={20} />
@@ -683,387 +791,262 @@ export function CustomerSupportPage() {
                     <span style={{ fontSize: '0.75rem', opacity: 0.85 }}>Source-Grounded Pre-Ticket Diagnostics</span>
                   </div>
                 </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {conversationUuid && (
+                    <span className="badge" style={{ background: '#dcfce7', color: '#166534', fontSize: '0.72rem', fontWeight: 600 }}>
+                      Active Conversation
+                    </span>
+                  )}
+                  {conversationUuid && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-secondary"
+                      onClick={handleStartNewConversation}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px', background: '#fff' }}
+                      title="Start a fresh conversation for this equipment"
+                    >
+                      <RefreshCw size={12} style={{ marginRight: '4px' }} /> New Conversation
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* Issue Intake Form */}
-              <form onSubmit={handleQuery} style={{ padding: '24px' }}>
-                <div className="form-group">
-                  <label className="form-label" htmlFor="userQuery">
-                    Describe the problem or symptom you are observing:
-                  </label>
-                  <textarea
-                    id="userQuery"
-                    className="form-control"
-                    rows={3}
-                    placeholder="e.g. The analyzer switches on, but fails to draw a sample. What should I check?"
-                    value={query}
-                    onChange={e => setQuery(e.target.value)}
-                    required
-                  />
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Enter your issue in plain language. If the symptom is ambiguous, Servy will ask for clarification.
+              {/* Chat Messages Container */}
+              <div style={{
+                flex: 1,
+                overflowY: 'auto',
+                maxHeight: '520px',
+                padding: '20px 24px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                background: '#fafafa',
+              }}>
+                {loadingMessages && (
+                  <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    <RefreshCw size={20} className="spin" style={{ margin: '0 auto 8px auto', display: 'block' }} />
+                    <span style={{ fontSize: '0.85rem' }}>Loading conversation history...</span>
                   </div>
-                  <button
-                    type="submit"
-                    className="btn btn-primary"
-                    disabled={submitting || !query.trim() || !selectedSite || !selectedAsset}
-                  >
-                    {submitting ? (
-                      <>
-                        <RefreshCw size={16} className="spin" style={{ animation: 'spin 1s linear infinite' }} />
-                        Analyzing Guidance...
-                      </>
-                    ) : (
-                      <>
-                        <Send size={16} /> Run Diagnostics
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
+                )}
 
-              {/* Results Display */}
-              {result && (
-                <div className="rag-answer-panel" style={{ padding: '0 24px 24px 24px' }}>
-                  {result.reranker_applied && result.reranker_model === 'servy_v5_bge_verified' && (
-                    <div role="status" style={{ marginBottom: '12px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                      V5 BGE reranker applied to retrieved technical passages
+                {!loadingMessages && messages.length === 0 && (
+                  <div style={{
+                    padding: '36px 20px',
+                    textAlign: 'center',
+                    background: '#fff',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px dashed var(--border)',
+                  }}>
+                    <Bot size={36} color="var(--primary)" style={{ margin: '0 auto 12px auto', display: 'block', opacity: 0.8 }} />
+                    <h4 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                      Start Troubleshooting {selectedAssetObj ? selectedAssetObj.name : 'Equipment'}
+                    </h4>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', maxWidth: '460px', margin: '0 auto 16px auto' }}>
+                      Describe the symptoms or error you are observing. Ask Servy provides source-grounded diagnostic guidance and remembers your reported observations across multiple turns.
+                    </p>
+
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      {['Equipment is not cooling properly', 'Weak or restricted airflow', 'Water leaking from the unit', 'Unusual noise during operation'].map((prompt, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          className="btn btn-sm btn-outline-secondary"
+                          style={{ fontSize: '0.78rem', borderRadius: '16px', background: '#fff' }}
+                          onClick={() => { setQuery(prompt); }}
+                          disabled={!selectedAsset || submitting}
+                        >
+                          {prompt}
+                        </button>
+                      ))}
                     </div>
-                  )}
+                  </div>
+                )}
 
-                  {/* Case 1: Clarification Needed */}
-                  {result.response_type === 'CLARIFICATION' && (
-                    <div style={{
-                      background: '#fefce8',
-                      border: '1px solid #fde68a',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '20px',
-                      marginBottom: '20px',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#a16207', fontWeight: 700, fontSize: '0.95rem', marginBottom: '8px' }}>
-                        <HelpCircle size={18} /> Clarification Needed
-                      </div>
-                      <p style={{ fontSize: '0.9rem', color: '#854d0e', marginBottom: '14px' }}>
-                        {result.clarification_question || result.summary}
-                      </p>
-
-                      {result.clarification_options && result.clarification_options.length > 0 && (
-                        <div style={{ marginBottom: '14px' }}>
-                          <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#a16207', marginBottom: '8px' }}>
-                            SELECT AN OBSERVATION:
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {result.clarification_options.map((opt, idx) => (
-                              <button
-                                key={idx}
-                                type="button"
-                                className="btn btn-sm btn-outline-primary"
-                                style={{ textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fff' }}
-                                onClick={() => handleClarificationOption(opt)}
-                                disabled={submitting}
-                              >
-                                <span>{opt}</span>
-                                <ChevronRight size={14} />
-                              </button>
-                            ))}
-                          </div>
+                {messages.map((msg, index) => {
+                  const isUser = msg.sender_role === 'customer';
+                  return (
+                    <div
+                      key={msg.id || index}
+                      style={{
+                        display: 'flex',
+                        justifyContent: isUser ? 'flex-end' : 'flex-start',
+                        gap: '10px',
+                        alignItems: 'flex-start',
+                      }}
+                    >
+                      {!isUser && (
+                        <div style={{
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '50%',
+                          background: '#e0e7ff',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                          marginTop: '2px',
+                        }}>
+                          <Bot size={18} color="#4338ca" />
                         </div>
                       )}
 
-                      <form onSubmit={handleCustomClarificationSubmit} style={{ marginTop: '12px' }}>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                          <input
-                            type="text"
-                            className="form-control"
-                            placeholder="Or type specific detail (e.g. Error 04 displayed)"
-                            value={customClarification}
-                            onChange={e => setCustomClarification(e.target.value)}
-                            disabled={submitting}
-                          />
-                          <button
-                            type="submit"
-                            className="btn btn-primary"
-                            disabled={submitting || !customClarification.trim()}
-                          >
-                            Submit
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  )}
-
-                  {/* Case 2: Severe Safety Hazard Alert */}
-                  {result.response_type === 'ESCALATION_REQUIRED' && result.stop_conditions && result.stop_conditions.length > 0 && (
-                    <div style={{
-                      background: '#fef2f2',
-                      border: '1px solid #fecaca',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '20px',
-                      marginBottom: '20px',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#b91c1c', fontWeight: 800, fontSize: '1rem', marginBottom: '8px' }}>
-                        <AlertOctagon size={20} /> Severe Safety Warning — Immediate Action Required
-                      </div>
-                      <p style={{ fontSize: '0.9rem', color: '#991b1b', lineHeight: 1.6, marginBottom: '14px' }}>
-                        {result.stop_conditions[0]}
-                      </p>
-                      <button
-                        type="button"
-                        className="btn btn-danger"
-                        style={{ background: '#dc2626', color: '#fff' }}
-                        onClick={() => handleEscalate('Safety hazard escalation')}
-                        disabled={escalating || escalationResult}
-                      >
-                        <Ticket size={16} /> {escalating ? 'Dispatching...' : 'Request Immediate Service Technician'}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Diagnostic Summary */}
-                  {result.summary && result.response_type !== 'CLARIFICATION' && (
-                    <div style={{
-                      background: '#eff6ff',
-                      border: '1px solid #bfdbfe',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '16px',
-                      marginBottom: '16px',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#1e40af', letterSpacing: '0.03em', marginBottom: '6px' }}>
-                        🔍 DIAGNOSTIC SUMMARY
-                      </div>
-                      <div style={{ fontSize: '0.9rem', color: '#1e3a8a', lineHeight: 1.6 }}>
-                        {result.summary}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Initial Safe Checks */}
-                  {result.check_first && result.check_first.length > 0 && (
-                    <div style={{
-                      background: '#fefce8',
-                      border: '1px solid #fde68a',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '16px',
-                      marginBottom: '16px',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#a16207', letterSpacing: '0.03em', marginBottom: '8px' }}>
-                        ⚡ CHECK FIRST (INITIAL SAFE OBSERVATIONS)
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.88rem', color: '#713f12' }}>
-                        {result.check_first.map((chk, idx) => (
-                          <li key={idx} style={{ marginBottom: '6px' }}>{chk}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Customer Safe Troubleshooting Steps */}
-                  {result.customer_safe_actions && result.customer_safe_actions.length > 0 && (
-                    <div style={{
-                      background: '#f0fdf4',
-                      border: '1px solid #bbf7d0',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '16px',
-                      marginBottom: '16px',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#166534', letterSpacing: '0.03em', marginBottom: '12px' }}>
-                        🔧 APPROVED CUSTOMER TROUBLESHOOTING STEPS
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        {result.customer_safe_actions.map((act, idx) => (
-                          <div key={idx} style={{
-                            background: '#ffffff',
-                            border: '1px solid #dcfce7',
-                            borderRadius: 'var(--radius-sm)',
-                            padding: '12px 14px',
-                          }}>
-                            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
-                              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                                <span style={{
-                                  background: '#16a34a',
-                                  color: '#fff',
-                                  borderRadius: '50%',
-                                  width: '24px',
-                                  height: '24px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  fontSize: '0.75rem',
-                                  fontWeight: 700,
-                                  flexShrink: 0,
-                                }}>{act.step_number || idx + 1}</span>
-                                <div>
-                                  <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#14532d' }}>
-                                    {act.action}
+                      <div style={{
+                        maxWidth: isUser ? '75%' : '90%',
+                        background: isUser ? 'var(--primary)' : '#fff',
+                        color: isUser ? '#fff' : 'var(--text-main)',
+                        borderRadius: isUser ? '16px 16px 4px 16px' : '4px 16px 16px 16px',
+                        padding: isUser ? '12px 16px' : '16px',
+                        border: isUser ? 'none' : '1px solid var(--border)',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.04)',
+                        fontSize: '0.88rem',
+                        lineHeight: 1.45,
+                      }}>
+                        {isUser ? (
+                          <>
+                            <div style={{ fontWeight: 600, fontSize: '0.74rem', opacity: 0.85, marginBottom: '4px' }}>
+                              You
+                            </div>
+                            <div style={{ whiteSpace: 'pre-wrap' }}>{msg.message_text}</div>
+                          </>
+                        ) : (
+                          <div>
+                            {/* Render Structured Contract Presentation if available */}
+                            {msg.structured_contract?.presentation ? (
+                              <CustomerAnswer
+                                presentation={msg.structured_contract.presentation}
+                                assetId={selectedAsset}
+                              />
+                            ) : msg.structured_contract?.response_type === 'CLARIFICATION' ? (
+                              <div style={{
+                                background: '#fefce8',
+                                border: '1px solid #fde68a',
+                                borderRadius: 'var(--radius-md)',
+                                padding: '14px',
+                              }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#a16207', fontWeight: 700, fontSize: '0.9rem', marginBottom: '6px' }}>
+                                  <HelpCircle size={16} /> Clarification Needed
+                                </div>
+                                <p style={{ fontSize: '0.86rem', color: '#854d0e', marginBottom: '10px' }}>
+                                  {msg.structured_contract.clarification_question || msg.structured_contract.summary || msg.message_text}
+                                </p>
+                                {msg.structured_contract.clarification_options && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {msg.structured_contract.clarification_options.map((opt, oIdx) => (
+                                      <button
+                                        key={oIdx}
+                                        type="button"
+                                        className="btn btn-sm btn-outline-primary"
+                                        style={{ textAlign: 'left', background: '#fff', fontSize: '0.82rem' }}
+                                        onClick={() => handleClarificationOption(opt)}
+                                        disabled={submitting}
+                                      >
+                                        <span>{opt}</span>
+                                      </button>
+                                    ))}
                                   </div>
-                                  {act.why && (
-                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>
-                                      Reason: {act.why}
-                                    </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div style={{ whiteSpace: 'pre-wrap' }}>{msg.message_text}</div>
+                            )}
+
+                            {/* Actions on Latest Assistant Response */}
+                            {index === messages.length - 1 && result && (
+                              <div style={{
+                                marginTop: '16px',
+                                paddingTop: '12px',
+                                borderTop: '1px solid var(--border)',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '8px',
+                              }}>
+                                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                  {result.can_resolve ? 'Observed issue resolved?' : 'Need technician dispatch?'}
+                                </span>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  {result.can_resolve && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-sm btn-success"
+                                      onClick={handleResolve}
+                                      disabled={resolving || resolutionNotice}
+                                    >
+                                      <CheckCircle2 size={14} /> {resolving ? 'Recording...' : 'Report Resolved'}
+                                    </button>
                                   )}
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-primary"
+                                    style={{ background: 'linear-gradient(135deg, #e11d48 0%, #be123c 100%)' }}
+                                    onClick={() => handleEscalate('Customer requested technician escalation')}
+                                    disabled={escalating || escalationResult}
+                                  >
+                                    <Ticket size={14} /> {escalating ? 'Creating...' : 'Request Service'}
+                                  </button>
                                 </div>
                               </div>
-                              <span className="badge" style={{ background: '#dcfce7', color: '#166534', fontSize: '0.68rem', flexShrink: 0 }}>
-                                Customer Safe
-                              </span>
-                            </div>
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-link"
-                                style={{ fontSize: '0.75rem', color: '#b91c1c', padding: 0 }}
-                                onClick={() => handleCannotPerformCheck(act.action)}
-                                disabled={escalating}
-                              >
-                                I cannot perform this check →
-                              </button>
-                            </div>
+                            )}
                           </div>
-                        ))}
+                        )}
+                        <div style={{ fontSize: '0.68rem', color: isUser ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)', textAlign: isUser ? 'right' : 'left', marginTop: '6px' }}>
+                          {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                        </div>
                       </div>
                     </div>
+                  );
+                })}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Message Input Bar */}
+              <form onSubmit={handleQuery} style={{
+                padding: '16px 20px',
+                borderTop: '1px solid var(--border)',
+                background: '#fff',
+                borderRadius: '0 0 var(--radius-lg) var(--radius-lg)',
+                display: 'flex',
+                gap: '10px',
+                alignItems: 'center',
+              }}>
+                <input
+                  type="text"
+                  id="userQuery"
+                  className="form-control"
+                  placeholder={
+                    !selectedSite || !selectedAsset
+                      ? "Select facility and equipment on the left to start..."
+                      : messages.length === 0
+                      ? "Describe the issue (e.g. 'Split AC is not cooling')..."
+                      : "Reply or describe next observation (e.g. 'Airflow is weak', 'I checked that already')..."
+                  }
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  maxLength={4000}
+                  disabled={submitting || !selectedSite || !selectedAsset}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={submitting || !query.trim() || !selectedSite || !selectedAsset}
+                  style={{ minWidth: '100px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                >
+                  {submitting ? (
+                    <>
+                      <RefreshCw size={14} className="spin" />
+                      <span>Thinking...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send size={14} />
+                      <span>{messages.length === 0 ? 'Start' : 'Send'}</span>
+                    </>
                   )}
-
-                  {/* Technician-Only Warnings Banner */}
-                  {result.technician_only_actions && result.technician_only_actions.length > 0 && (
-                    <div style={{
-                      background: '#fef2f2',
-                      border: '1px solid #fecaca',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '16px',
-                      marginBottom: '16px',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#b91c1c', letterSpacing: '0.03em', marginBottom: '8px' }}>
-                        🚨 TECHNICIAN-ONLY WORK REQUIRED (DO NOT ATTEMPT)
-                      </div>
-                      <p style={{ fontSize: '0.82rem', color: '#7f1d1d', marginBottom: '10px' }}>
-                        The following procedures require certified service technician tools, calibration equipment, or internal cabinet access:
-                      </p>
-                      <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#991b1b' }}>
-                        {result.technician_only_actions.map((tech, idx) => (
-                          <li key={idx} style={{ marginBottom: '6px' }}>
-                            <strong>{tech.action || 'Certified technician service required.'}</strong>
-                            {tech.warning && <span style={{ fontSize: '0.78rem', opacity: 0.9 }}> — {tech.warning}</span>}
-                          </li>
-                        ))}
-                      </ul>
-                      <div style={{ marginTop: '12px' }}>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-danger"
-                          onClick={() => handleEscalate('Technician-only procedure required')}
-                          disabled={escalating || escalationResult}
-                        >
-                          <Ticket size={14} style={{ marginRight: '4px' }} /> Request Technician Dispatch
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Expected Result */}
-                  {result.expected_result && (
-                    <div style={{
-                      background: '#f0f9ff',
-                      border: '1px solid #bae6fd',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '14px 16px',
-                      marginBottom: '16px',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#0369a1', letterSpacing: '0.03em', marginBottom: '4px' }}>
-                        ✅ EXPECTED RESULT
-                      </div>
-                      <div style={{ fontSize: '0.88rem', color: '#0c4a6e' }}>
-                        {result.expected_result}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Stop & Escalate Conditions */}
-                  {result.stop_conditions && result.stop_conditions.length > 0 && (
-                    <div style={{
-                      background: '#faf5ff',
-                      border: '1px solid #e9d5ff',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '14px 16px',
-                      marginBottom: '16px',
-                    }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: '#7e22ce', letterSpacing: '0.03em', marginBottom: '6px' }}>
-                        🛑 STOP AND ESCALATE IF
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: '#581c87' }}>
-                        {result.stop_conditions.map((stop, idx) => (
-                          <li key={idx} style={{ marginBottom: '4px' }}>{stop}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {/* Authorized Citations */}
-                  {result.citations && result.citations.length > 0 && (
-                    <div className="rag-citation-box" style={{ marginTop: '16px' }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '8px' }}>
-                        AUTHORIZED TECHNICAL REFERENCES ({result.citations.length})
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                        {result.citations.map((ref, idx) => (
-                          <span key={idx} className="citation-chip">
-                            <FileText size={14} color="var(--primary)" />
-                            <strong>{ref.title || ref.reference}</strong>
-                            {ref.heading && <span style={{ opacity: 0.85 }}>({ref.heading})</span>}
-                            {ref.doc_type && <span className="badge" style={{ fontSize: '0.65rem' }}>{ref.doc_type}</span>}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Action Buttons: Resolve vs Escalate */}
-                  <div style={{
-                    marginTop: '24px',
-                    paddingTop: '20px',
-                    borderTop: '1px solid var(--border)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: '12px'
-                  }}>
-                    <div>
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                        Did this guidance resolve your issue?
-                      </span>
-                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        Confirming resolution safely closes this diagnostic inquiry.
-                      </p>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <button
-                        type="button"
-                        className="btn btn-success"
-                        onClick={handleResolve}
-                        disabled={resolving || resolutionNotice}
-                      >
-                        <CheckCircle2 size={16} /> {resolving ? 'Recording...' : 'Mark Issue Resolved'}
-                      </button>
-
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        style={{ background: 'linear-gradient(135deg, #e11d48 0%, #be123c 100%)' }}
-                        onClick={() => handleEscalate('Customer requested technician escalation')}
-                        disabled={escalating || escalationResult}
-                      >
-                        <Ticket size={16} /> {escalating ? 'Creating Ticket...' : 'Escalate to Service Ticket'}
-                      </button>
-                    </div>
-                  </div>
-
-                </div>
-              )}
+                </button>
+              </form>
             </div>
 
           </div>
@@ -1239,7 +1222,7 @@ export function CustomerSupportPage() {
                         {(m.sender_role || 'assistant').toUpperCase()} — {m.created_at ? new Date(m.created_at).toLocaleTimeString() : ''}
                       </div>
                       <div style={{ fontSize: '0.88rem', whiteSpace: 'pre-wrap' }}>
-                        {m.message_text || m.content || (typeof m.structured_contract === 'object' ? JSON.stringify(m.structured_contract) : '')}
+                        {m.sender_role === 'assistant' ? <CustomerAnswer presentation={m.structured_contract?.presentation} assetId={activeTranscript?.asset_id || m.structured_contract?.asset?.id} /> : (m.message_text || m.content || '')}
                       </div>
                     </div>
                   ))}

@@ -434,11 +434,43 @@ class CustomerSupportContextView(APIView):
                     "contract": contract_data,
                 }
 
+        # Check for active ongoing conversation for this customer/asset
+        active_conv_data = None
+        conv_qs = CustomerConversation.objects.filter(
+            tenant=tenant,
+            customer=customer,
+            status__in=["ACTIVE", "WAITING_INPUT", "ESCALATED"],
+        ).order_by("-updated_at")
+        if asset_id_param:
+            conv_qs = conv_qs.filter(asset_id=asset_id_param)
+        active_conv = conv_qs.first()
+        if active_conv:
+            messages = [
+                {
+                    "id": m.id,
+                    "sender_role": m.sender_role,
+                    "message_text": m.message_text,
+                    "structured_contract": m.structured_contract,
+                    "source_refs": m.source_refs,
+                    "created_at": m.created_at,
+                }
+                for m in active_conv.messages.all().order_by("created_at")
+            ]
+            active_conv_data = {
+                "id": active_conv.id,
+                "conversation_uuid": str(active_conv.conversation_uuid),
+                "title": active_conv.title,
+                "status": active_conv.status,
+                "asset_id": active_conv.asset_id,
+                "messages": messages,
+            }
+
         return Response({
             "customer": {"id": customer.id, "name": customer.name},
             "sites": sites,
             "assets": assets,
             "active_session": active_session_data,
+            "active_conversation": active_conv_data,
         })
 
 
@@ -488,7 +520,7 @@ class CustomerSupportQueryView(APIView):
 
         site_id = request.data.get("site_id")
         asset_id = request.data.get("asset_id")
-        question = _clean_input(request.data.get("question") or request.data.get("query"))
+        question = _clean_input(request.data.get("question") or request.data.get("query"), max_len=4000)
         clarification_response = _clean_input(request.data.get("clarification_response"))
         user_observation = _clean_input(request.data.get("observation"))
 
@@ -604,6 +636,14 @@ class CustomerSupportResolveView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
+        from core.services.customer_diagnostic import build_structured_diagnostic_contract
+        current_contract = build_structured_diagnostic_contract(
+            interaction=interaction, session=session, raw_answer=interaction.answer,
+            retrieved_references=interaction.source_refs or [],
+        )
+        if not current_contract.get("can_resolve") or request.data.get("customer_reports_resolved") is not True:
+            return Response({"detail": "Resolution requires eligible guidance and an explicit customer report that the issue is resolved."}, status=400)
+
         resolve_customer_session(
             tenant=tenant,
             customer=interaction.customer,
@@ -637,6 +677,9 @@ class CustomerSupportEscalateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
+        if request.data.get("confirm_ticket_creation") is not True:
+            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
+
         ctx = require_api_context(request)
         if ctx["role"] in {"store_admin", "store_operator"}:
             return Response(
@@ -2310,7 +2353,7 @@ class CustomerConversationMessagesView(APIView):
         if conv.status in ("RESOLVED", "CLOSED"):
             return Response({"detail": "This conversation is closed. Start a new conversation for new issues."}, status=status.HTTP_400_BAD_REQUEST)
 
-        message_text = _clean_input(request.data.get("message") or request.data.get("text") or request.data.get("question"))
+        message_text = _clean_input(request.data.get("message") or request.data.get("text") or request.data.get("question"), max_len=4000)
         clarification_response = _clean_input(request.data.get("clarification_response"))
         observation = _clean_input(request.data.get("observation"))
 
@@ -2390,6 +2433,9 @@ class CustomerConversationTicketView(APIView):
         })
 
     def post(self, request, conversation_uuid):
+        if request.data.get("confirm_ticket_creation") is not True:
+            return Response({"detail": "Explicit confirmation is required to create a service ticket."}, status=400)
+
         ctx = require_api_context(request)
         tenant = ctx["tenant"]
         customer = ctx["customer"]

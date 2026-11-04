@@ -1,0 +1,14 @@
+.customer-answer { color: var(--text-main, #172033); line-height: 1.6; overflow-wrap: anywhere; }
+.customer-answer-points { margin: 0; max-width: 75ch; }
+.customer-answer-point { margin-bottom: 1.4rem; }
+.customer-answer h3 { font-size: 1.05rem; margin: 0 0 .4rem; }
+.customer-answer p { margin: .4rem 0 .8rem; }
+.customer-answer button { min-height: 44px; }
+.customer-answer .customer-answer-citation { display: inline; min-width: 0; min-height: 0; margin-inline-start: .25em; padding: 0; color: #4338ca; font: inherit; font-size: .85em; font-weight: 750; line-height: inherit; text-decoration: underline; text-underline-offset: 2px; border: 0; border-radius: 0; background: transparent; cursor: pointer; vertical-align: baseline; white-space: nowrap; }
+.customer-answer .customer-answer-citation:hover { color: #312e81; background: transparent; }
+.customer-answer :focus-visible { outline: 3px solid #4338ca; outline-offset: 3px; }
+.customer-answer-source { width: min(42rem, calc(100% - 2rem)); max-height: 85dvh; overflow: auto; padding: 1.5rem; border: 1px solid #64748b; border-radius: .8rem; color: #172033; background: #fff; }
+.customer-answer-source::backdrop { background: #0008; }
+.customer-answer-source blockquote { margin: 1rem 0; white-space: pre-wrap; border-inline-start: 3px solid #4338ca; padding-inline-start: 1rem; }
+.customer-answer-hazard { background: #fff1f2; color: #881337; padding: 1rem; border: 2px solid #be123c; margin-bottom: 1rem; }
+@media(max-width: 480px) { .customer-answer-source { padding: 1rem; } }

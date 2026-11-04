@@ -505,6 +505,10 @@ class DiagnosticRecoveryTests(TestCase):
         # Session should now be escalated
         diag_session.refresh_from_db()
         self.assertEqual(diag_session.status, "ESCALATED")
+        self.assertIsNone(diag_session.escalated_call)
+        self.assertFalse(RecoveryPassport.objects.filter(session=diag_session).exists())
+        diag_session, _, _ = escalate_diagnostic_session(
+            diag_session, "Customer explicitly requests service", diag_session.version, customer=self.c1)
 
         passport = RecoveryPassport.objects.get(session=diag_session)
         self.assertIn("Clean thermostat cup", str(passport.do_not_repeat_items))
@@ -522,6 +526,9 @@ class DiagnosticRecoveryTests(TestCase):
         diag_session, _ = confirm_safe_action(diag_session, "action_clean_rinse", diag_session.version, customer=self.c1)
         diag_session, _ = submit_diagnostic_answer(diag_session, "verify_reading", False, diag_session.version, customer=self.c1)
         diag_session.refresh_from_db()
+        self.assertIsNone(diag_session.escalated_call)
+        diag_session, _, _ = escalate_diagnostic_session(
+            diag_session, "Customer explicitly requests service", diag_session.version, customer=self.c1)
         call = diag_session.escalated_call
 
         self.client.force_login(self.staff_user)
