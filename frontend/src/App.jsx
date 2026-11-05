@@ -13,11 +13,13 @@ import { InventoryPage } from './pages/InventoryPage';
 import { StaffPage } from './pages/StaffPage';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { RealDemoPage } from './pages/RealDemoPage';
+import { TicketWorkspacePage } from './pages/TicketWorkspacePage';
 
 function MainLayout() {
   const { user, loading } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [copilotCallId, setCopilotCallId] = useState(null);
+  const [ticketPrefill, setTicketPrefill] = useState(null);
 
   if (loading) {
     return (
@@ -40,11 +42,17 @@ function MainLayout() {
     setActiveTab('engineer-copilot');
   }
 
+  function handleOpenTicketWorkspace(prefill) {
+    setTicketPrefill(prefill || null);
+    setActiveTab('ticket-workspace');
+  }
+
   const titles = {
     'dashboard': 'Operational Dashboard',
     'customer-support': 'Workflow 1: Customer AI Self-Service',
     'engineer-copilot': 'Workflow 2: Engineer Field Copilot',
     'calls': 'Service Call Register',
+    'ticket-workspace': user.role === 'customer' ? 'Create Service Ticket' : 'Technician Ticket Inbox',
     'knowledge': 'Knowledge Base & Schematics',
     'assets': 'Equipment & Assets',
     'projects': 'Service Contracts & Projects',
@@ -85,7 +93,8 @@ function MainLayout() {
 
         <div>
           {activeTab === 'dashboard' && <DashboardPage onNavigate={setActiveTab} />}
-          {activeTab === 'customer-support' && <CustomerSupportPage onNavigate={setActiveTab} />}
+          {activeTab === 'customer-support' && <CustomerSupportPage onNavigate={setActiveTab} onCreateTicket={handleOpenTicketWorkspace} />}
+          {activeTab === 'ticket-workspace' && <TicketWorkspacePage prefill={ticketPrefill} onClearPrefill={() => setTicketPrefill(null)} />}
           {activeTab === 'engineer-copilot' && <EngineerCopilotPage initialCallId={copilotCallId} />}
           {activeTab === 'calls' && <CallRegisterPage onOpenCopilot={handleOpenCopilotForCall} />}
           {activeTab === 'knowledge' && <KnowledgeBasePage />}

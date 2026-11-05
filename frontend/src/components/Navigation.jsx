@@ -12,7 +12,8 @@ import {
   Users, 
   LogOut, 
   ShieldCheck,
-  Building2
+  Building2,
+  Ticket,
 } from 'lucide-react';
 
 export function Navigation({ activeTab, setActiveTab }) {
@@ -29,6 +30,7 @@ export function Navigation({ activeTab, setActiveTab }) {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, show: true },
     { id: 'customer-support', label: 'AI Self-Service', icon: Bot, show: true, badge: 'Pre-Ticket' },
+    { id: 'ticket-workspace', label: isCustomer ? 'Create Ticket' : 'Technician Tickets', icon: Ticket, show: isCustomer || isTechnician },
     { id: 'engineer-copilot', label: 'Engineer Copilot', icon: Wrench, show: isTechnician, badge: 'Staff' },
     { id: 'calls', label: 'Service Calls', icon: PhoneCall, show: true },
     { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen, show: isTechnician },

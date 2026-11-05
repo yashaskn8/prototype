@@ -2,6 +2,7 @@ import { CustomerAnswer } from '../components/CustomerAnswer';
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useAuth } from '../AuthContext';
+import { makeConversationDescription } from './conversationTranscript';
 import {
   Bot,
   Send,
@@ -33,7 +34,7 @@ export function normalizeArray(data, primaryKey) {
 }
 
 
-export function CustomerSupportPage() {
+export function CustomerSupportPage({ onCreateTicket }) {
   const { user } = useAuth();
   const [contextData, setContextData] = useState(null);
   const [loadingContext, setLoadingContext] = useState(true);
@@ -61,7 +62,6 @@ export function CustomerSupportPage() {
   const chatRevision = useRef(0); // Ignore responses for an incident no longer selected.
   const [activeSessionNotice, setActiveSessionNotice] = useState(null);
   const [resolving, setResolving] = useState(false);
-  const [escalating, setEscalating] = useState(false);
   const [resolutionNotice, setResolutionNotice] = useState(null);
   const [escalationResult, setEscalationResult] = useState(null);
 
@@ -538,27 +538,30 @@ export function CustomerSupportPage() {
     }
   }
 
-  async function handleEscalate(escalationNote = '') {
-    if (!result?.interaction_id) return;
-    if (!window.confirm('Create a service ticket for this equipment? This saves a service request.')) return;
-    setEscalating(true);
-    try {
-      const activeSessionId = result?.session_id || activeSessionNotice?.session_id || null;
-      const payload = {
-        note: escalationNote,
-        confirm_ticket_creation: true,
-        session_id: activeSessionId,
-      };
-      const res = await api.post(`/api/customer-support/interactions/${result.interaction_id}/escalate/`, payload);
-      setEscalationResult(res);
-      setActiveSessionNotice(null);
-      loadConversations();
-      loadTickets();
-    } catch (err) {
-      setError(err.detail || 'Could not escalate service ticket.');
-    } finally {
-      setEscalating(false);
+  async function handleCreateTicketFromConversation() {
+    if (!onCreateTicket) {
+      setError('The ticket workspace is not available.');
+      return;
     }
+    let conversationMessages = messages.filter((message) => ['customer', 'assistant'].includes(message.sender_role));
+    if (conversationUuid) {
+      try {
+        const completeConversation = await api.get(`/api/customer-support/conversations/${conversationUuid}/messages/`);
+        if (Array.isArray(completeConversation.messages)) conversationMessages = completeConversation.messages;
+      } catch (loadError) {
+        setError(loadError.detail || 'Could not load the complete conversation for the ticket. Please retry.');
+        return;
+      }
+    }
+    const description = makeConversationDescription(conversationMessages);
+    const selectedSiteObj = contextData?.sites?.find((site) => String(site.id) === String(selectedSite));
+    onCreateTicket({
+      description,
+      customer: contextData?.customer,
+      site: selectedSiteObj,
+      asset: selectedAssetObj,
+      conversationUuid,
+    });
   }
 
 
@@ -1020,11 +1023,10 @@ export function CustomerSupportPage() {
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-primary"
-                                    style={{ background: 'linear-gradient(135deg, #e11d48 0%, #be123c 100%)' }}
-                                    onClick={() => handleEscalate('Customer requested technician escalation')}
-                                    disabled={escalating || escalationResult}
+                                    onClick={handleCreateTicketFromConversation}
+                                    disabled={!messages.some(message => ['customer', 'assistant'].includes(message.sender_role))}
                                   >
-                                    <Ticket size={14} /> {escalating ? 'Creating...' : 'Request Service'}
+                                    <Ticket size={14} /> Create Ticket
                                   </button>
                                 </div>
                               </div>

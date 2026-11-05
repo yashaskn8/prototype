@@ -301,6 +301,12 @@ if _allowed_tenants_env:
 
 # Real company data isolation controls
 SERVY_CUSTOMER_DATA_MODE = os.getenv("SERVY_CUSTOMER_DATA_MODE", "verified_real_only")
+_local_app_data = os.getenv("LOCALAPPDATA")
+_local_state = Path(_local_app_data) if _local_app_data else Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+SERVY_LOCAL_TICKET_DB_PATH = Path(os.getenv(
+    "SERVY_LOCAL_TICKET_DB_PATH",
+    str(_local_state / "Servy" / "local-ticket-workspace.sqlite3"),
+)).expanduser()
 STARLLY_REAL_TENANTS = ["skydream"]
 STARLLY_REAL_ORGANISATIONS = ["273"]
 SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"
