@@ -232,6 +232,24 @@ class RealDemoBoundaryTests(unittest.TestCase):
         )
         self.assertIn("air filter", confirmed.completed_checks)
 
+    def test_follow_up_completion_does_not_invent_equipment_or_clause(self):
+        asset = SimpleNamespace(
+            id=61, name="Split AC Unit 2T", asset_code="SKY-AST-00001",
+            model_number="", product=SimpleNamespace(name="Split AC Unit 2T"),
+        )
+        first = "My Split AC is running, but the room is not cooling."
+        question = "The filter was cleaned but cooling is still weak. What else should I report?"
+        context, _ = demo._demo_query_context(asset, question, first, [first])
+        self.assertEqual(context.completed_checks, ["filter"])
+        self.assertNotIn("Split AC", context.completed_checks)
+        self.assertNotIn("but cooling", context.completed_checks)
+
+        active, _ = demo._demo_query_context(
+            asset, "I cleaned the air filter but cooling is still weak. What next?",
+            first, [first],
+        )
+        self.assertEqual(active.completed_checks, ["air filter"])
+
     def test_demo_query_route_passes_signed_continuation_in_read_only_context(self):
         handler = object.__new__(demo.Handler)
         handler.path = "/demo-api/query/"

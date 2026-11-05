@@ -34,13 +34,18 @@ SYMPTOM_INDICATORS = [
     "frozen", "icing", "frost on coil", "ice buildup",
 ]
 
+# A completed check needs a named component, not a following clause such as
+# "cleaned but cooling" or a running-state report about the equipment.
+_COMPONENT_WORD = r"(?!(?:but|and|or|was|is|still|after|before|because|so|then)\b)[a-z0-9_-]+"
+_COMPONENT = rf"({_COMPONENT_WORD}(?:\s+{_COMPONENT_WORD})?)"
+
 # Words indicating that the user confirmed performing a check
 COMPLETION_PATTERNS = [
     re.compile(r"\b(?:i\s+)?(?:already\s+)?(?:checked|inspected|cleaned|verified|confirmed|did|done|tested)\s+(?:that|this|it|already)\b", re.I),
     re.compile(r"\b(?:checked\s+that\s+already|already\s+checked|i\s+checked\s+it|already\s+done|done\s+that|i\s+did\s+that)\b", re.I),
-    re.compile(r"\b(?:i\s+have\s+)?(?:already\s+)?(?:cleaned|washed|replaced)\s+(?:the\s+)?([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b", re.I),
-    re.compile(r"\b(?:i\s+have\s+)?(?:already\s+)?(?:checked|inspected)\s+(?:the\s+)?([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\b", re.I),
-    re.compile(r"\b([a-z0-9_-]+(?:\s+[a-z0-9_-]+)?)\s+(?:is|was)\s+(?:clean|checked|fine|okay|ok|normal|on|running|clear)\b", re.I),
+    re.compile(rf"\b(?:the\s+)?{_COMPONENT}\s+(?:was|were|has been|have been)\s+(?:cleaned|washed|replaced|checked|inspected)\b", re.I),
+    re.compile(rf"\b(?:i\s+have\s+)?(?:already\s+)?(?:cleaned|washed|replaced)\s+(?:the\s+)?{_COMPONENT}\b", re.I),
+    re.compile(rf"\b(?:i\s+have\s+)?(?:already\s+)?(?:checked|inspected)\s+(?:the\s+)?{_COMPONENT}\b", re.I),
 ]
 
 # Patterns indicating the user is asking what to do next
