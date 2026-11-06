@@ -431,8 +431,6 @@ export function RealDemoPage() {
             </section>
           </div>
           {messages.at(-1)?.role === 'assistant' && messages.at(-1)?.data?.ticket_context
-            && (messages.at(-1).data.response_type !== 'DIAGNOSTIC_GUIDANCE'
-              || messages.filter(item => item.role === 'user').length >= 3)
             && !ticketDraft && !ticketConfirmation && (
             <section className="card real-demo-ticket-action" aria-label="Ticket escalation options">
               <div><strong>Still need assistance?</strong>
