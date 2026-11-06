@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 # Common equipment symptom and component indicators
 SYMPTOM_INDICATORS = [
-    "not cooling", "poor cooling", "weak cooling", "insufficient cooling",
+    "not cooling", "does not cool", "doesn't cool",
+    "poor cooling", "weak cooling", "insufficient cooling",
     "not heating", "poor heating", "weak heating",
     "weak airflow", "low airflow", "no airflow", "restricted airflow",
     "water leaking", "water leak", "dripping", "condensate leak",

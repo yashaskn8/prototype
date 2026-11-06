@@ -447,6 +447,7 @@ export function RealDemoPage() {
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
                                 {({
                                   DIAGNOSTIC_GUIDANCE: 'Cited answer',
+                                  TECHNICIAN_HANDOFF: 'Technician handoff',
                                   CLARIFICATION: 'Quick question',
                                   INSUFFICIENT_EVIDENCE: message.data?.reason_code === 'OUT_OF_SCOPE_QUERY'
                                     ? 'Outside manual scope' : 'More evidence needed',
@@ -455,7 +456,39 @@ export function RealDemoPage() {
                                 })[message.data?.response_type] || 'Response'}
                               </span>
                             </div>
-                            {message.data?.presentation ? <CustomerAnswer
+                            {message.data?.response_type === 'TECHNICIAN_HANDOFF'
+                              && message.data?.handoff ? (
+                                <section className="real-demo-handoff" aria-label="Technician handoff checklist">
+                                  {message.data.handoff.reported_details?.length > 0 && (
+                                    <div>
+                                      <strong>{message.data.handoff.reported_details_label}</strong>
+                                      <ul>
+                                        {message.data.handoff.reported_details.map((detail, detailIndex) => (
+                                          <li key={detailIndex}>{detail.text}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {message.data.handoff.checklist?.length > 0 && (
+                                    <div>
+                                      <strong>{message.data.handoff.checklist_label}</strong>
+                                      <ul>
+                                        {message.data.handoff.checklist.map((item, itemIndex) => (
+                                          <li key={itemIndex}>{item}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {message.data.handoff.follow_up_question && (
+                                    <p className="real-demo-handoff-followup">
+                                      {message.data.handoff.follow_up_question}
+                                    </p>
+                                  )}
+                                  <p className="real-demo-handoff-note">
+                                    This checklist prepares a handoff; it is not a diagnosis or repair procedure.
+                                  </p>
+                                </section>
+                              ) : message.data?.presentation ? <CustomerAnswer
                               assetId={Number(assetId)}
                               presentation={message.data.presentation}
                               loadSource={url => call(url, token)}

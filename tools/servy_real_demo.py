@@ -33,6 +33,7 @@ from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, focused_causal_query, requested_topics,
+    is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response,
 )
 
@@ -334,6 +335,23 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                     "engine": "dialogue-scope-guard"}
         rag = {"retrieval_backend": "not-required",
                "reranker_applied": False, "reranker_model": None}
+    elif is_technician_handoff_request(question):
+        # A handoff checklist is generic communication help, not an equipment
+        # diagnosis. Keep it outside RAG and its evidence-only answer contract.
+        handoff = build_technician_handoff(question, history)
+        contract = {
+            "response_type": "TECHNICIAN_HANDOFF",
+            "presentation": None,
+            "message": (
+                "Use this checklist to prepare a service handoff. "
+                "Customer-reported details are not independently verified."
+            ),
+            "handoff": handoff,
+            "reason_code": "CUSTOMER_TECHNICIAN_HANDOFF",
+            "engine": "local-dialogue-handoff",
+        }
+        rag = {"retrieval_backend": "not-required",
+               "reranker_applied": False, "reranker_model": None}
     elif small_talk is not None or ambiguous_reply is not None or recap is not None:
         presentation = exception_presentation({
             "response_type": "CLARIFICATION",
@@ -463,9 +481,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         "asset": asset_id, "customer": customer.id,
         "question_sha256": hashlib.sha256(question.encode("utf-8")).hexdigest(),
     }, salt="servy-real-demo-ticket-preview-v1")
-    presentation = contract["presentation"]
+    presentation = contract.get("presentation")
     response_type = contract["response_type"]
-    message = presentation.get("message", "")
+    message = (presentation.get("message", "")
+               if isinstance(presentation, dict) else contract.get("message", ""))
     clarification_question = None
     clarification_options = []
     if response_type == "INSUFFICIENT_EVIDENCE" and not history:
@@ -491,6 +510,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     return {
         "response_type": response_type, "reason_code": contract.get("reason_code"),
         "message": message, "presentation": presentation,
+        "handoff": contract.get("handoff"),
         "clarification_question": clarification_question,
         "clarification_options": clarification_options,
         "suggested_follow_ups": suggestions if response_type == "DIAGNOSTIC_GUIDANCE" else [],
@@ -501,12 +521,16 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             last_topic=last_topic, shown_facts=previous_facts, thread_id=thread_id,
         ),
         "conversation_turn": len(history) + 1,
-        "dialogue_planner": "local-ollama-structured" if local_planner_used else "deterministic-grounded",
+        "dialogue_planner": (
+            "local-handoff-checklist" if contract.get("engine") == "local-dialogue-handoff"
+            else "local-ollama-structured" if local_planner_used
+            else "deterministic-grounded"
+        ),
         "retrieval_attempts": retrieval_attempts,
         "ticket_context": None if off_topic is not None else ticket_context,
         "citations": [
             {"document_id": c["document_id"], "chunk_id": c["chunk_id"]}
-            for c in presentation.get("citations", [])
+            for c in (presentation.get("citations", []) if isinstance(presentation, dict) else [])
         ],
         "retrieval_backend": rag.get("retrieval_backend"),
         "reranker_applied": rag.get("reranker_applied"),

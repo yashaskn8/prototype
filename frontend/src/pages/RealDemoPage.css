@@ -191,6 +191,11 @@
 .real-demo-dialogue-meta summary { width: fit-content; cursor: pointer; }
 .real-demo-dialogue-meta p { margin: 7px 0 0; max-width: 65ch; }
 
+.real-demo-handoff { display: grid; gap: 12px; color: #344054; font-size: .84rem; line-height: 1.55; }
+.real-demo-handoff ul { margin: 5px 0 0; padding-left: 22px; }
+.real-demo-handoff li + li { margin-top: 4px; }
+.real-demo-handoff-followup { margin: 0; padding-top: 10px; border-top: 1px solid #e5e7eb; font-weight: 650; }
+.real-demo-handoff-note { margin: 0; color: #667085; font-size: .76rem; }
 
 /* Multiple independent conversations, scoped to one unlocked asset.
    This is a memory-only demo and is not persistent CRM chat history. */

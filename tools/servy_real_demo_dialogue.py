@@ -39,6 +39,180 @@ NO_EVIDENCE = {
     "documents": "I couldn't find a relevant, source-backed statement in the approved documentation for that question.",
     "general": "I couldn't verify a relevant answer in the approved documentation. Please share the specific symptom or displayed code.",
 }
+_HANDOFF_RECIPIENT = re.compile(
+    r"\b(?:technician|service team|service staff|service department|"
+    r"service desk|support)\b", re.I,
+)
+_HANDOFF_REQUEST = re.compile(
+    r"\b(?:details?|information|summari[sz](?:e|es|ed|ing)?|summary|"
+    r"tell|give|share|report|prepare|provide|include|pass on)\b", re.I,
+)
+_HANDOFF_PROCEDURE_REQUEST = re.compile(
+    r"\b(?:how (?:do|can|should) i|how to|can i|may i|should i)\b"
+    r".{0,100}\b(?:open|remove|replace|repair|fix|reset|restart|adjust|"
+    r"measure|probe|wire|bypass|charge|clean|test|operate|run)\b|"
+    r"\b(?:tell|ask|instruct|explain)\b.{0,80}\b(?:how to|to)\s+"
+    r"(?:open|remove|replace|repair|fix|reset|restart|adjust|measure|"
+    r"probe|wire|bypass|charge|clean|test|operate|run)\b", re.I,
+)
+_HANDOFF_TECHNICAL_REQUEST = re.compile(
+    r"\b(?:why|cause|causes|reason|diagnos(?:e|is|tic)|troubleshoot(?:ing)?|"
+    r"fix(?:es|ing)?|repair(?:ing)?|solve|solution|resolve|recommend(?:ation)?|"
+    r"what should i do|what can i do|how (?:do|can|should) i|"
+    r"is it safe to|is it normal to)\b", re.I,
+)
+_START_STOP_SYMPTOM = (
+    r"\b(?:start(?:s|ed|ing)?\b.{0,60}\b"
+    r"(?:stop(?:s|ped|ping)?|shuts?\s+(?:down|off))|"
+    r"(?:stop(?:s|ped|ping)?|shuts?\s+(?:down|off))\b.{0,35}\b"
+    r"after\s+(?:it\s+)?start(?:s|ed|ing)?)\b"
+)
+_HANDOFF_PERSISTENCE = re.compile(
+    r"\b(?:issue|problem|symptom)\b.{0,30}\b(?:still happening|"
+    r"continues?|persists?|recurs?)\b|\b(?:still happening|"
+    r"still occurs|still stops?|problem persists|issue continues)\b", re.I,
+)
+_HANDOFF_CODE = re.compile(r"\b(?:E|F|ERR)[- ]?\d{1,3}\b", re.I)
+_HANDOFF_NO_CODE = re.compile(
+    r"\b(?:no (?:displayed )?(?:fault |error |alarm )?code|"
+    r"(?:not|isn't|doesn't|does not) (?:show|display|have) "
+    r"(?:any )?(?:displayed )?(?:fault |error |alarm )?code|"
+    r"(?:no|not|isn't|doesn't|does not) (?:any )?(?:fault |error |alarm )?code "
+    r"(?:is )?(?:shown|displayed|on|present)|"
+    r"nothing (?:is )?(?:shown|displayed) on the display)\b", re.I,
+)
+_HANDOFF_TIME = re.compile(
+    r"\b(?:since|yesterday|today|last (?:night|week|month)|"
+    r"every|each time|once|twice|daily|weekly|hourly|"
+    r"\d+\s*(?:minutes?|hours?|days?|weeks?|months?)|"
+    r"sometimes|often|occasionally|intermittently|constantly|frequently)\b|"
+    r"\b(?:issue|problem|symptom)\s+(?:first )?(?:started|began)\b", re.I,
+)
+_HANDOFF_OPERATING_STATE = re.compile(
+    r"\b(?:starts?|running|stopped|shuts?\s+down|trips?|"
+    r"while (?:cooling|heating|running)|during operation)\b", re.I,
+)
+_HANDOFF_VISIBLE = re.compile(
+    r"\b(?:visible|see|saw|smoke|sparks?|burning smell|leak\w*|dripping|"
+    r"noise|rattl\w*|display shows|indicator shows|residue|damage)\b", re.I,
+)
+_HANDOFF_RECENT_CHANGE = re.compile(
+    r"\b(?:recent(?:ly)?|service|maintenance|repair|installation|"
+    r"installed|replaced|changed|power outage)\b", re.I,
+)
+_HANDOFF_TRIED = re.compile(
+    r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?"
+    r"(?:tried|checked|cleaned|restarted|reset|inspected|replaced|changed|called)\b",
+    re.I,
+)
+_HANDOFF_SAFETY = re.compile(
+    r"\b(?:smoke|sparks?|burning smell|electric(?:al)? shock|"
+    r"burn(?:ing)?|unsafe|safety concern)\b", re.I,
+)
+_HANDOFF_QUESTION_START = re.compile(
+    r"^(?:if|whether|what if|what (?:should|can|could|do|does|is|are)\s+(?:i|you)|"
+    r"how (?:should|can|could|do|does)\s+(?:i|you)|"
+    r"(?:can|could|should|may)\s+(?:i|you)|"
+    r"is there|are there|does anyone|would it)\b", re.I,
+)
+_HANDOFF_CLAUSE_SPLIT = re.compile(
+    r"(?<=[.!?])\s+|\s+[—–]\s+|,\s*(?=(?:what|how|can i|could i|"
+    r"should i|can you|could you|please)\b)", re.I,
+)
+
+
+def _handoff_has_symptom(text):
+    return bool(TECHNICAL_SYMPTOMS.search(text))
+
+
+def is_technician_handoff_request(question):
+    """Recognize nontechnical requests to prepare information for service."""
+    q = " ".join(str(question or "").split())
+    return bool(
+        q and _HANDOFF_RECIPIENT.search(q) and _HANDOFF_REQUEST.search(q)
+        and not _HANDOFF_PROCEDURE_REQUEST.search(q)
+        and not _HANDOFF_TECHNICAL_REQUEST.search(q)
+    )
+
+
+def build_technician_handoff(question, history=()):
+    """Build a source-free handoff checklist from customer-authored reports.
+
+    The result contains no technical diagnosis or procedure. Each reported
+    detail remains explicitly attributable to the customer.
+    """
+    turns = [*(history or []), question]
+    clauses = []
+    for turn in turns:
+        normalized = " ".join(str(turn or "").split())
+        for raw_clause in _HANDOFF_CLAUSE_SPLIT.split(normalized):
+            clause = raw_clause.strip(" \t\r\n,;:-")
+            if not clause or _HANDOFF_QUESTION_START.search(clause):
+                continue
+            if not any(pattern.search(clause) for pattern in (
+                TECHNICAL_SYMPTOMS,
+                _HANDOFF_PERSISTENCE, _HANDOFF_CODE,
+                _HANDOFF_NO_CODE, _HANDOFF_TIME, _HANDOFF_OPERATING_STATE,
+                _HANDOFF_VISIBLE, _HANDOFF_RECENT_CHANGE, _HANDOFF_TRIED,
+                _HANDOFF_SAFETY,
+            )):
+                continue
+            if clause not in clauses:
+                clauses.append(clause[:260])
+
+    reported_details = [
+        {"text": clause, "provenance": "customer-reported"}
+        for clause in clauses[:6]
+    ]
+    has_symptom = any(_handoff_has_symptom(clause) for clause in clauses)
+    has_code = any(_HANDOFF_CODE.search(clause) or _HANDOFF_NO_CODE.search(clause)
+                   for clause in clauses)
+    has_timing = any(_HANDOFF_TIME.search(clause) for clause in clauses)
+    has_operating_state = any(_HANDOFF_OPERATING_STATE.search(clause)
+                              for clause in clauses)
+    has_visible_sign = any(_HANDOFF_VISIBLE.search(clause) for clause in clauses)
+    has_recent_change = any(_HANDOFF_RECENT_CHANGE.search(clause)
+                            for clause in clauses)
+    has_tried_action = any(_HANDOFF_TRIED.search(clause) for clause in clauses)
+    has_safety_concern = any(_HANDOFF_SAFETY.search(clause) for clause in clauses)
+
+    checklist = []
+    if not has_symptom:
+        checklist.append("The exact symptom: what the equipment does or does not do.")
+    if not has_timing:
+        checklist.append("When it began and how often it occurs.")
+    if not has_operating_state:
+        checklist.append("What the equipment was doing when it occurred.")
+    if not has_code:
+        checklist.append("Any displayed code, copied exactly, or that no code was shown.")
+    if not has_visible_sign:
+        checklist.append("Any visible signs noticed.")
+    if not has_recent_change:
+        checklist.append("Any recent changes, installation, or service.")
+    if not has_tried_action:
+        checklist.append("What you already tried and what happened.")
+    if not has_safety_concern:
+        checklist.append("Any safety concern.")
+
+    if not has_symptom:
+        follow_up = "What exact symptom is the equipment showing or experiencing?"
+    elif not has_code:
+        follow_up = "Is any code displayed? If so, what exact characters appear?"
+    elif not has_timing:
+        follow_up = "When did this start, and how often does it happen?"
+    elif not has_tried_action:
+        follow_up = "What have you already tried, and what happened?"
+    else:
+        follow_up = None
+    return {
+        "reported_details": reported_details,
+        "checklist": checklist,
+        "follow_up_question": follow_up,
+        "reported_details_label": "Customer-reported so far (not independently verified)",
+        "checklist_label": "Details to share with the technician, if known",
+    }
+
+
 SHORT_TURNS = frozenset({"hi", "hello", "hey", "good morning", "good evening",
                          "thanks", "thank you", "thank you very much", "okay", "ok"})
 
@@ -149,7 +323,7 @@ TECHNICAL_SYMPTOMS = re.compile(
     r"leak(?:ing|age)?|dripping|"
     r"noise|noisy|vibration|vibrating|"
     r"not starting|not turning on|not working|"
-    r"low airflow|weak airflow|"
+    r"low airflow|weak airflow|" + _START_STOP_SYMPTOM + r"|"
     r"e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
 )
 SPECIFIC_EVIDENCE = {
@@ -168,6 +342,10 @@ SPECIFIC_EVIDENCE = {
     "poor cooling or airflow": (
         re.compile(r"\b(?:not cool(?:ing)?|poor cooling|weak cooling|no cooling|weak airflow|low airflow)\b", re.I),
         re.compile(r"\b(?:cool(?:ing)?|air ?flow|capacity)\b", re.I),
+    ),
+    "starting and stopping": (
+        re.compile(_START_STOP_SYMPTOM, re.I),
+        re.compile(_START_STOP_SYMPTOM, re.I),
     ),
 }
 
@@ -240,6 +418,8 @@ def is_contextual_followup(question):
         return False
     if TECHNICAL_SYMPTOMS.search(q):
         return False
+    if is_technician_handoff_request(q):
+        return True
     if is_component_followup(q):
         return True
     if re.fullmatch(
@@ -471,6 +651,7 @@ _FOCUSED_SUBJECTS = (
      r"\b(?:power|supply|electrical)\b"),
     (r"\b(?:not starting|doesn.t start|won.t start|no power)\b",
      r"\b(?:start\w*|power|supply)\b"),
+    (_START_STOP_SYMPTOM, _START_STOP_SYMPTOM),
 )
 
 
@@ -554,8 +735,9 @@ def question_topic(question, last_topic=None):
         return last_topic if last_topic in {"causes", "documents", "observations"} else "general"
     if last_topic in TOPICS and is_contextual_followup(question):
         return last_topic
-    if re.search(r"\b(?:fault|alarm|error code|e-\d+|f-\d+|not cooling|"
-                 r"not working|weak airflow|leak|rattl|noise)\b", q):
+    if (re.search(_START_STOP_SYMPTOM, q, re.I)
+            or re.search(r"\b(?:fault|alarm|error code|e-\d+|f-\d+|not cooling|"
+                         r"not working|weak airflow|leak|rattl|noise)\b", q)):
         return "causes"
     return "general"
 

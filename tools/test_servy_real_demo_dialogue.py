@@ -6,6 +6,7 @@ from tools.servy_real_demo_dialogue import (
     conversational_turn, fact_fingerprint, focus_answer,
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
     out_of_scope_response, focused_causal_query,
+    is_technician_handoff_request, build_technician_handoff,
 )
 
 
@@ -579,6 +580,117 @@ class MixedQuestionRegressionTests(unittest.TestCase):
         self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["presentation"]["citations"], [])
         self.assertNotIn("airflow", result["answer"].casefold())
+
+
+class TechnicianHandoffTests(unittest.TestCase):
+    def test_exact_failure_and_equivalent_handoff_phrasings_are_recognized(self):
+        for question in (
+            "The issue is still happening. What details should I give the technician?",
+            "What should I tell support?",
+            "Can you summarize this for the service team?",
+            "What information should I share with the technician?",
+        ):
+            with self.subTest(question=question):
+                self.assertTrue(is_technician_handoff_request(question))
+        self.assertFalse(is_technician_handoff_request(
+            "Can you tell the technician how to repair this compressor?"
+        ))
+        self.assertFalse(is_technician_handoff_request(
+            "Why is this happening, and what details should I give support?"
+        ))
+        self.assertTrue(is_technician_handoff_request(
+            "Should I tell support that no code is displayed?"
+        ))
+
+    def test_handoff_reuses_customer_reports_without_marking_them_verified(self):
+        history = [
+            "The outdoor module starts, but the room does not cool and then the unit stops.",
+            "I tried restarting it, but it stopped again.",
+        ]
+        handoff = build_technician_handoff(
+            "The issue is still happening. What details should I give the technician?",
+            history,
+        )
+        reported = [item["text"] for item in handoff["reported_details"]]
+        self.assertTrue(any("room does not cool" in item for item in reported))
+        self.assertTrue(any("still happening" in item for item in reported))
+        self.assertTrue(any("tried restarting" in item for item in reported))
+        self.assertTrue(all(item["provenance"] == "customer-reported"
+                            for item in handoff["reported_details"]))
+        self.assertIn("not independently verified", handoff["reported_details_label"])
+        self.assertFalse(any("exact symptom" in item.casefold()
+                             for item in handoff["checklist"]))
+        self.assertNotIn("What exact symptom", handoff["follow_up_question"])
+        self.assertIn("code", handoff["follow_up_question"].casefold())
+
+    def test_missing_symptom_gets_one_focused_clarification(self):
+        handoff = build_technician_handoff(
+            "What details should I give the technician?", [],
+        )
+        self.assertEqual(handoff["reported_details"], [])
+        self.assertIn("exact symptom", handoff["follow_up_question"].casefold())
+        self.assertEqual(handoff["follow_up_question"].count("?"), 1)
+        self.assertTrue(any("exact symptom" in item.casefold()
+                            for item in handoff["checklist"]))
+
+    def test_hypothetical_fault_code_is_not_reused_as_a_customer_report(self):
+        handoff = build_technician_handoff(
+            "What details should I give the technician?",
+            ["If an external indicator shows a fault code, what should I do?"],
+        )
+        self.assertFalse(any("fault code" in item["text"].casefold()
+                             for item in handoff["reported_details"]))
+        self.assertIn("exact symptom", handoff["follow_up_question"].casefold())
+
+    def test_known_absence_of_display_code_is_not_asked_again(self):
+        handoff = build_technician_handoff(
+            "What details should I give the technician?",
+            ["The unit is not cooling. No code is displayed."],
+        )
+        self.assertFalse(any("code" in item.casefold() for item in handoff["checklist"]))
+        self.assertNotIn("code", handoff["follow_up_question"].casefold())
+        self.assertIn("when did this start", handoff["follow_up_question"].casefold())
+
+    def test_handoff_adds_no_technical_claims_citations_or_repair_steps(self):
+        handoff = build_technician_handoff(
+            "Can you summarize this for the service team?",
+            ["The VRF is not cooling."],
+        )
+        self.assertNotIn("citations", handoff)
+        self.assertNotIn("claims", handoff)
+        text = " ".join(handoff["checklist"]).casefold()
+        for forbidden in ("repair", "open the unit", "reset", "replace", "adjust"):
+            self.assertNotIn(forbidden, text)
+
+    def test_technical_repair_question_remains_in_the_evidence_path(self):
+        question = "How do I repair this compressor?"
+        self.assertFalse(is_technician_handoff_request(question))
+        generic = (
+            "There is insufficient evidence to establish a safe answer for this "
+            "equipment and question. Ask an authorized technician for help."
+        )
+        initial = {
+            "response_type": "INSUFFICIENT_EVIDENCE",
+            "presentation": {
+                "schema_version": "customer-answer-v1",
+                "response_type": "INSUFFICIENT_EVIDENCE",
+                "message": generic,
+                "sections": [],
+                "citations": [],
+            },
+        }
+        result, _ = focus_answer(initial, question)
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["presentation"]["citations"], [])
+        self.assertNotIn("open", result["presentation"]["message"].casefold())
+        self.assertNotIn("repair this compressor", result["presentation"]["message"].casefold())
+
+    def test_start_stop_symptom_cannot_borrow_poor_cooling_citations(self):
+        question = "Why does this unit keep starting and stopping?"
+        result, _ = focus_answer(contract(), question)
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["presentation"]["citations"], [])
+        self.assertNotIn("reduced airflow", result["answer"].casefold())
 
     def test_negated_symptom_is_not_required_to_have_evidence(self):
         result, _ = focus_answer(

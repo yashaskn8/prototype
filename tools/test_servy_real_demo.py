@@ -26,12 +26,107 @@ if not settings.configured:
     settings.configure(SECRET_KEY="synthetic-test-signing-key")
 
 
+def _fake_demo_answer_modules():
+    answer = ModuleType("core.services.customer_answer")
+    answer._question_guard = Mock(return_value=None)
+    answer.build_customer_answer = Mock()
+    answer.exception_presentation = Mock()
+    diagnostic = ModuleType("core.services.customer_diagnostic")
+    diagnostic.check_for_safety_hazard = Mock(return_value=(False, ""))
+    diagnostic.check_for_vague_complaint = Mock(return_value=(False, "", []))
+    rag = ModuleType("core.services.rag")
+    rag.ask_rag = Mock()
+    return {
+        "core.services.customer_answer": answer,
+        "core.services.customer_diagnostic": diagnostic,
+        "core.services.rag": rag,
+    }
+
+
 class RealDemoBoundaryTests(unittest.TestCase):
     def test_unapproved_asset_refuses_before_rag_or_database_lookup(self):
-        with patch.object(demo, "_asset", side_effect=AssertionError("DB lookup")):
-            result = demo._answer(62, "Why is this equipment failing?")
-        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        for question in (
+            "Why is this equipment failing?",
+            "What details should I give the technician?",
+        ):
+            with self.subTest(question=question), patch.object(
+                demo, "_asset", side_effect=AssertionError("DB lookup"),
+            ):
+                result = demo._answer(62, question)
+            self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+            self.assertEqual(result["citations"], [])
+
+    def test_handoff_request_uses_signed_scoped_history_without_rag(self):
+        question = "The issue is still happening. What details should I give the technician?"
+        first = "The outdoor module starts, but the room does not cool and then the unit stops."
+        thread_id = "thread-01234567-89ab-cdef-0123-456789abcdef"
+        token = demo._sign_demo_context(
+            60, 13, first, first, [first], last_topic="next", thread_id=thread_id,
+        )
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
+            model_number="VRF-1",
+            product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
+        modules = _fake_demo_answer_modules()
+        with patch.dict("sys.modules", modules):
+            with patch.object(demo, "_asset", return_value=(tenant, customer, asset)):
+                with patch.object(
+                    demo, "plan_turn",
+                    side_effect=AssertionError("Handoff must not invoke a planner"),
+                ):
+                    result = demo._answer(
+                        60, question, continuation=token, thread_id=thread_id,
+                    )
+
+        self.assertEqual(result["response_type"], "TECHNICIAN_HANDOFF")
+        self.assertEqual(result["reason_code"], "CUSTOMER_TECHNICIAN_HANDOFF")
+        self.assertEqual(result["retrieval_attempts"], 0)
+        self.assertEqual(result["retrieval_backend"], "not-required")
         self.assertEqual(result["citations"], [])
+        self.assertIsNone(result["presentation"])
+        self.assertIn("room does not cool", " ".join(
+            item["text"] for item in result["handoff"]["reported_details"]
+        ))
+        self.assertIsNotNone(result["ticket_context"])
+        self.assertEqual(result["dialogue_planner"], "local-handoff-checklist")
+        modules["core.services.rag"].ask_rag.assert_not_called()
+
+    def test_safety_escalation_takes_precedence_over_handoff_checklist(self):
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
+            model_number="VRF-1",
+            product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
+        modules = _fake_demo_answer_modules()
+        modules["core.services.customer_diagnostic"].check_for_safety_hazard.return_value = (
+            True, "Stop using the equipment and contact authorized service."
+        )
+        with patch.dict("sys.modules", modules):
+            with patch.object(demo, "_asset", return_value=(tenant, customer, asset)):
+                result = demo._answer(
+                    60,
+                    "There is smoke near the equipment. What details should I give the technician?",
+                )
+
+        self.assertEqual(result["response_type"], "ESCALATION_REQUIRED")
+        self.assertIsNone(result["handoff"])
+        self.assertEqual(result["retrieval_attempts"], 0)
+        modules["core.services.rag"].ask_rag.assert_not_called()
+
+    def test_handoff_cannot_cross_customer_scope_for_approved_asset_id(self):
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
+            model_number="VRF-1",
+            product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        tenant, wrong_customer = SimpleNamespace(id=273), SimpleNamespace(id=14)
+        with patch.dict("sys.modules", _fake_demo_answer_modules()):
+            with patch.object(demo, "_asset", return_value=(tenant, wrong_customer, asset)):
+                with self.assertRaisesRegex(ValueError, "Customer scope changed"):
+                    demo._answer(60, "What details should I give the technician?")
 
     def test_missing_customer_binding_never_matches_missing_scope(self):
         self.assertNotIn(64, demo.ASSET_SCOPE)
@@ -332,6 +427,21 @@ class RealDemoBoundaryTests(unittest.TestCase):
             ["I checked the air filter."],
         )
         self.assertIn("air filter", confirmed.completed_checks)
+
+    def test_handoff_follow_up_retains_reported_non_cooling_symptom(self):
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
+            model_number="VRF-1", product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        first = "The outdoor module starts, but the room does not cool and then the unit stops."
+        context, query = demo._demo_query_context(
+            asset,
+            "The issue is still happening. What details should I give the technician?",
+            first, [first],
+        )
+        self.assertTrue(context.is_followup)
+        self.assertIn("does not cool", context.reported_symptoms)
+        self.assertIn("does not cool", query)
 
     def test_follow_up_completion_does_not_invent_equipment_or_clause(self):
         asset = SimpleNamespace(
