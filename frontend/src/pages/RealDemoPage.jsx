@@ -399,16 +399,6 @@ export function RealDemoPage() {
                                   ))}
                                 </div>
                               )}
-                            {index === messages.length - 1 && message.data?.ticket_context
-                              && (message.data.response_type !== 'DIAGNOSTIC_GUIDANCE'
-                                || messages.filter(item => item.role === 'user').length >= 3) && (
-                              <div className="real-demo-ticket-action">
-                                <p>Still need assistance? Prepare a service ticket draft for review only.</p>
-                                <button className="btn btn-secondary btn-sm" type="button" onClick={startTicket}>
-                                  <Ticket size={17} /> Review ticket draft
-                                </button>
-                              </div>
-                            )}
                           </>}
                     </div>
                   </div>
@@ -432,7 +422,6 @@ export function RealDemoPage() {
                   }}
                 />
                 <div className="real-demo-chat-composer-footer">
-                  <span>{question.length}/4000 · Answers must be supported by permitted documents</span>
                   <button className="btn btn-primary" type="submit"
                     disabled={busy || !question.trim() || !asset?.can_query}>
                     <Send size={16} /> {busy ? 'Searching…' : 'Send'}
@@ -441,6 +430,18 @@ export function RealDemoPage() {
               </form>
             </section>
           </div>
+          {messages.at(-1)?.role === 'assistant' && messages.at(-1)?.data?.ticket_context
+            && (messages.at(-1).data.response_type !== 'DIAGNOSTIC_GUIDANCE'
+              || messages.filter(item => item.role === 'user').length >= 3)
+            && !ticketDraft && !ticketConfirmation && (
+            <section className="card real-demo-ticket-action" aria-label="Ticket escalation options">
+              <div><strong>Still need assistance?</strong>
+                <p>Prepare a service ticket draft for review.</p></div>
+              <button className="btn btn-secondary" type="button" onClick={startTicket}>
+                <Ticket size={17} /> Review ticket draft
+              </button>
+            </section>
+          )}
           {ticketDraft && <section className="card real-demo-ticket" aria-label="Mock ticket form">
             <div className="real-demo-ticket-heading"><div><span className="real-demo-kicker">REVIEW ONLY</span>
               <h2>Review service ticket details</h2></div>

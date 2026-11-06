@@ -7,6 +7,7 @@ export const focusedAnswerTitles = [
   'Documented possible causes', 'Safe observations from the manual',
   'Approved customer checks', 'What the manual says',
   'What the document says', 'What the manual supports',
+  'What I could not verify', 'Evidence limitation',
 ];
 
 // URL shape is client-side defense in depth. The server still verifies the
@@ -36,7 +37,7 @@ export function validateCustomerPresentation(value) {
   }
   const focused = value.view_mode === 'focused';
   if (!Array.isArray(value.sections) ||
-    (focused ? value.sections.length !== 1 : value.sections.length !== 4) ||
+    (focused ? value.sections.length < 1 || value.sections.length > 6 : value.sections.length !== 4) ||
     !Array.isArray(value.citations) || value.citations.length > 30) return invalid();
   const citations = value.citations.filter(s => s && typeof s.id === 'string' && typeof s.url === 'string'
     && isTrustedSourceUrl(s.url) && typeof s.title === 'string');
@@ -52,8 +53,10 @@ export function validateCustomerPresentation(value) {
     for (const claim of section.claims) {
       if (!claim || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
         || !Array.isArray(claim.evidence_ids) || claim.evidence_ids.some(id => !ids.has(id))
-        || (focused && (!['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure'].includes(claim.kind)
-          || claim.evidence_ids.length !== 1))
+        || (focused && (!['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure', 'uncertainty', 'next_step'].includes(claim.kind)
+          || (['uncertainty', 'next_step'].includes(claim.kind)
+            ? claim.evidence_ids.length !== 0
+            : claim.evidence_ids.length !== 1)))
         || (!['uncertainty', 'next_step'].includes(claim.kind) && !claim.evidence_ids.length)) return invalid();
     }
   }
