@@ -360,8 +360,15 @@ def contextualize_customer_query(
     if not clean_input:
         return ""
 
+    # A mixed message ("filter is clean, outdoor unit is near a wall, could
+    # blocked clearance explain poor cooling? what can I observe?") is searched
+    # by its substantive report + request, not by incidental negative clauses.
+    # The unmodified message is still used for intent detection below.
+    from .query_decomposition import retrieval_focus
+    query_input = retrieval_focus(clean_input) or clean_input
+
     if not context.is_followup or context.turn_count == 0:
-        return clean_input
+        return query_input
 
     target_asset = asset or (context.asset_name if context else None)
     asset_str = context.asset_name or (target_asset.name if hasattr(target_asset, "name") else "equipment")
@@ -400,7 +407,7 @@ def contextualize_customer_query(
         parts.append("next troubleshooting steps and technical causes")
     else:
         # Include user's current specific remark/question
-        parts.append(clean_input)
+        parts.append(query_input)
 
     rewritten = "; ".join(p for p in parts if p)
     # Bound query length

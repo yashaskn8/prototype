@@ -32,7 +32,7 @@ from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
-    is_contextual_followup,
+    is_contextual_followup, focused_causal_query, requested_topics,
     out_of_scope_response,
 )
 
@@ -345,7 +345,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     else:
         # Targeted component follow-ups benefit from a slightly wider
         # authorized candidate set, without adding an unbounded agent loop.
-        retrieval_top_k = 8 if is_component_followup(question) and history else 5
+        # A multi-intent question draws causes and checks from different
+        # passages, so it gets the same bounded wider set.
+        multi_intent = len(requested_topics(question)) > 1
+        retrieval_top_k = 8 if (is_component_followup(question) and history) or multi_intent else 5
         rag = ask_rag(
             tenant=tenant, customer=customer, asset=asset, question=retrieval_query,
             original_question=question, conversation_context=context if history else None,

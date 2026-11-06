@@ -474,6 +474,7 @@ def build_customer_answer(interaction, session, references, conversation_context
     terms = set(re.findall(r"[a-z0-9_-]{3,}", normalize_domain_terms(question).casefold())) - _STOPWORDS
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
+    eligible = []
     if sufficient and not wrong_model and not query_is_control_abuse(question):
         for result in sufficient.grounded_chunks:
             for text, kind, start, end in source_claims(result.text):
@@ -509,16 +510,40 @@ def build_customer_answer(interaction, session, references, conversation_context
                     target = causes
                 else:
                     continue
-                # Preserve up to four separately grounded claims per answer section.
-                if (len(target) >= 4 or (target is not causes and len(observations + procedures) >= 4)
-                    or any(c["source_text"] == text for c in causes + observations + procedures)):
-                    continue
-                citation = _citation(result.chunk, start, end, asset=asset, customer=customer,
-                                     user_id=interaction.created_by_id, kind=kind)
-                citation["id"] = f"s{len(citations)+1}"
-                citations.append(citation)
-                target.append({"id": f"c{len(citations)}", "text": ("Possible documented cause: " + text) if kind == "possible_cause" else text,
-                               "source_text": text, "kind": kind, "evidence_ids": [citation["id"]]})
+                # Candidates are ranked for relevance to this question below,
+                # then capped; the cap must not keep an earlier but less
+                # relevant sentence merely because it appears first.
+                eligible.append({
+                    "order": len(eligible), "target": target, "kind": kind,
+                    "text": text, "start": start, "end": end, "result": result,
+                })
+        seen_text = set()
+        unique = []
+        for item in eligible:
+            if item["text"] in seen_text:
+                continue
+            seen_text.add(item["text"])
+            unique.append(item)
+        question_stems = {w[:5] for w in terms if len(w) >= 4}
+
+        def _relevance(item):
+            claim_stems = {w[:5] for w in re.findall(r"[a-z0-9]{4,}", item["text"].casefold())}
+            return len(question_stems & claim_stems)
+
+        cause_pool = [i for i in unique if i["target"] is causes]
+        action_pool = [i for i in unique if i["target"] is not causes]
+        # Preserve up to four separately grounded claims per answer section.
+        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:4]
+                  + sorted(action_pool, key=lambda i: -_relevance(i))[:4])
+        chosen.sort(key=lambda i: i["order"])
+        for item in chosen:
+            target, kind, text = item["target"], item["kind"], item["text"]
+            citation = _citation(item["result"].chunk, item["start"], item["end"], asset=asset,
+                                 customer=customer, user_id=interaction.created_by_id, kind=kind)
+            citation["id"] = f"s{len(citations)+1}"
+            citations.append(citation)
+            target.append({"id": f"c{len(citations)}", "text": ("Possible documented cause: " + text) if kind == "possible_cause" else text,
+                           "source_text": text, "kind": kind, "evidence_ids": [citation["id"]]})
     normal = bool(causes or observations or procedures)
     no_authorized_docs = False
     if not normal and not candidates:

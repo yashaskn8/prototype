@@ -9,6 +9,9 @@ import hashlib
 import re
 
 from core.services.content_safety import detect_document_prompt_injection
+from core.services.query_decomposition import (
+    ask_text, negated_text, relevance_text, retrieval_focus,
+)
 
 TOPICS = frozenset({"causes", "observations", "next", "meaning", "documents", "general"})
 FACT_KINDS = frozenset({"possible_cause", "information", "document_fact", "observation", "customer_procedure"})
@@ -150,9 +153,22 @@ TECHNICAL_SYMPTOMS = re.compile(
     r"e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
 )
 SPECIFIC_EVIDENCE = {
-    "overheating": re.compile(r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot|excessive heat|high temperature)\b", re.I),
-    "noise": re.compile(r"\b(?:nois(?:e|y)|rattl\w*|vibrat\w*|buzz\w*|hum\w*)\b", re.I),
-    "leak": re.compile(r"\b(?:leak\w*|drip\w*|water escap\w*|water collect\w*)\b", re.I),
+    "overheating": (
+        re.compile(r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot)\b", re.I),
+        re.compile(r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot|excessive heat|high temperature)\b", re.I),
+    ),
+    "noise or vibration": (
+        re.compile(r"\b(?:nois(?:e|y)|rattl\w*|vibrat\w*|buzz\w*|hum\w*)\b", re.I),
+        re.compile(r"\b(?:nois(?:e|y)|rattl\w*|vibrat\w*|buzz\w*|hum\w*)\b", re.I),
+    ),
+    "water leakage": (
+        re.compile(r"\b(?:leak\w*|drip\w*|water escap\w*|water collect\w*)\b", re.I),
+        re.compile(r"\b(?:leak\w*|drip\w*|water|drain\w*|condensat\w*)\b", re.I),
+    ),
+    "poor cooling or airflow": (
+        re.compile(r"\b(?:not cool(?:ing)?|poor cooling|weak cooling|no cooling|weak airflow|low airflow)\b", re.I),
+        re.compile(r"\b(?:cool(?:ing)?|air ?flow|capacity)\b", re.I),
+    ),
 }
 
 
@@ -255,20 +271,172 @@ def is_contextual_followup(question):
 
 
 def _specific_symptom_supported(question, source_context):
-    """Never repurpose generic cooling causes as evidence of overheating etc."""
+    """Allow a passage to support only the symptom it actually covers.
+
+    A multi-symptom question may have evidence for one part and none for
+    another. Keep the matching claim; the response separately states which
+    requested symptoms remain unsupported.
+    """
     q = _words(question)
-    for trigger, required in SPECIFIC_EVIDENCE.items():
-        if trigger == "overheating":
-            specified = re.search(
-                r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot)\b", q
-            )
-        elif trigger == "noise":
-            specified = re.search(r"\b(?:nois(?:e|y)|rattl\w*|vibrat\w*)\b", q)
+    requested = [
+        evidence for query, evidence in SPECIFIC_EVIDENCE.values()
+        if query.search(q)
+    ]
+    return not requested or any(
+        evidence.search(source_context or "") for evidence in requested
+    )
+
+
+def _requested_topics(question, primary):
+    """Keep independently answerable intents in a mixed customer question."""
+    q = _words(question)
+    topics = [primary]
+    asks_causes = bool(re.search(
+        r"\b(?:causes?|reasons?|why|what (?:could|might) be wrong|"
+        r"diagnos\w*|root cause)\b|"
+        r"\b(?:could|might|may)\b.{0,100}\b(?:cause|explain|account for|"
+        r"lead to|result in)\b", q
+    ))
+    asks_observations = bool(re.search(
+        r"\b(?:what|which)\b.{0,80}\b(?:safely\s+)?"
+        r"(?:check|inspect|observe|report|notice)\b|"
+        r"\b(?:safe|customer-safe)\s+(?:checks?|observations?)\b", q
+    ))
+    asks_next = bool(re.search(
+        r"\b(?:what should i do|what next|next step|how do i (?:fix|resolve))\b", q
+    ))
+    for requested, condition in (
+        ("causes", asks_causes),
+        ("observations", asks_observations),
+        ("next", asks_next),
+    ):
+        if condition and requested not in topics:
+            topics.append(requested)
+    return topics
+
+
+def requested_topics(question):
+    """Independently answerable intents in the customer's question."""
+    return _requested_topics(question, question_topic(question))
+
+
+def focused_causal_query(question):
+    """One focused retrieval query for a mixed question, or None.
+
+    Keeps the customer's relevant reported condition together with the
+    substantive request. Drops only incidental negatives ("the filter is
+    clean", "no warning is showing"), completed checks, and content-free
+    request tails; a relevant context clause (for example a blocked or cramped
+    location) is never discarded.
+    """
+    if out_of_scope_response(question) is not None:
+        return None
+    return retrieval_focus(question)
+
+
+# --- clause-aware relevance -------------------------------------------------
+# Customer-reported negatives must neither dominate retrieval nor become a
+# subject every answer claim has to mention. These helpers only read the
+# customer's words; they add no technical statement.
+_HYPOTHESIS = re.compile(
+    r"\b(?:could|might|may|can)\b\s+(?P<h>.{3,140}?)\s+"
+    r"(?:cause|explain|account for|lead to|result in)\b", re.I)
+_LOCATION_WORDS = frozenset({
+    "outdoor", "indoor", "unit", "external", "internal", "system", "machine",
+    "equipment", "split", "this", "that", "these", "those", "manual", "according",
+    "troubleshooting", "poor", "weak", "cooling", "with", "from",
+})
+_OBSTRUCTION_FAMILY = re.compile(
+    r"^(?:block|obstruct|restrict|clearance|clog|blockage)", re.I)
+_OBSTRUCTION_SUPPORT = (
+    r"(?:block\w*|obstruct\w*|restrict\w*|clearance|clog\w*|"
+    r"insufficient (?:space|clearance)|too close)"
+)
+
+
+def _hypothesis(ask):
+    """Return (support_regex, hypothesis_text) for 'Could X explain Y?'."""
+    match = _HYPOTHESIS.search(ask or "")
+    if not match:
+        return None, ""
+    text = match.group("h")
+    supports = []
+    for token in re.findall(r"[a-z]{4,}", text.casefold()):
+        if token in _LOCATION_WORDS:
+            continue
+        # Match each asked word's own stem family only. "Blocked" must not be
+        # widened to "restricted": that would admit unrelated causes.
+        if re.match(r"(?:block|obstruct|clog)", token):
+            supports.append(r"(?:block|obstruct|clog)\w*")
         else:
-            specified = re.search(r"\b(?:leak\w*|drip\w*)\b", q)
-        if specified and not required.search(source_context or ""):
+            supports.append(re.escape(token[:5]) + r"\w*")
+    if not supports:
+        return None, text
+    return re.compile(r"\b(?:" + "|".join(dict.fromkeys(supports)) + r")", re.I), text
+
+
+class _FocusPlan:
+    """What the current question genuinely asks about."""
+    def __init__(self, question):
+        self.relevant = relevance_text(question)
+        ask = ask_text(question)
+        self.hypothesis, hypothesis_text = _hypothesis(ask)
+        # With an explicit hypothesis, the hypothesis defines the subject; a
+        # reported context clause only helps retrieval and is not a hard
+        # requirement on every claim.
+        required_source = (
+            re.sub(re.escape(hypothesis_text), " ", ask, flags=re.I)
+            if self.hypothesis is not None else self.relevant
+        )
+        self.required = [pair for pair in _FOCUSED_SUBJECTS
+                         if re.search(pair[0], required_source, re.I)]
+        wanted = [pair for pair in _FOCUSED_SUBJECTS
+                  if re.search(pair[0], self.relevant, re.I)]
+        self.wanted_support = [pair[1] for pair in wanted]
+        negated = negated_text(question)
+        self.negated_support = [
+            supported for asked, supported in _FOCUSED_SUBJECTS
+            if re.search(asked, negated, re.I) and not re.search(asked, self.relevant, re.I)
+        ]
+
+    def accepts(self, claim, citation):
+        source = f"{claim.get('source_text', '')} {citation.get('heading') or ''}"
+        claim_only = str(claim.get("source_text", ""))
+        if not all(re.search(supported, source, re.I) for _asked, supported in self.required):
             return False
-    return True
+        # The hypothesis ("could X explain Y?") constrains only cause claims; a
+        # separately requested safe observation is judged on its own evidence.
+        if (self.hypothesis is not None
+                and claim.get("kind") in {"possible_cause", "information"}
+                and not self.hypothesis.search(claim_only)):
+            return False
+        # A component the customer reported fine/already checked, and did not
+        # ask about, is not offered as an unrelated answer.
+        if any(re.search(supported, claim_only, re.I) for supported in self.negated_support):
+            asked_about = any(re.search(supported, claim_only, re.I)
+                              for supported in self.wanted_support)
+            if not asked_about and not (
+                    self.hypothesis is not None and self.hypothesis.search(claim_only)):
+                return False
+        return True
+
+    def relevance(self, claim):
+        """Count distinctive request words in the claim's own sentence."""
+        words = {w[:5] for w in re.findall(r"[a-z]{4,}", self.relevant.casefold())
+                 if w not in _GENERAL_WORDS and w not in _LOCATION_WORDS}
+        claim_words = {w[:5] for w in re.findall(r"[a-z]{4,}",
+                                                 str(claim.get("source_text", "")).casefold())}
+        return len(words & claim_words)
+
+
+def _claim_topic(claim, primary):
+    if claim.get("kind") == "possible_cause":
+        return "causes"
+    if claim.get("kind") == "observation":
+        return "observations"
+    if claim.get("kind") == "customer_procedure":
+        return "next"
+    return primary
 
 
 _GENERAL_WORDS = frozenset({
@@ -307,19 +475,19 @@ _FOCUSED_SUBJECTS = (
 
 
 def _direct_subject_match(question, claim, citation):
-    """An authorized citation must mention the subject asked about now."""
-    source = f"{claim.get('source_text', '')} {citation.get('heading') or ''}"
-    return all(
-        not re.search(asked, question, re.I) or re.search(supported, source, re.I)
-        for asked, supported in _FOCUSED_SUBJECTS
-    )
+    """An authorized citation must mention the subject asked about now.
+
+    Subjects come from what the customer is asking (and reporting as a
+    problem), never from components they say are fine or already checked.
+    """
+    return _FocusPlan(question).accepts(claim, citation)
 
 
 def _direct_general_overlap(question, claim, citation):
     """A general question requires its own content overlap, not old history."""
     if is_contextual_followup(question):
         return True
-    tokens = {w for w in re.findall(r"[a-z0-9]{3,}", _words(question))
+    tokens = {w for w in re.findall(r"[a-z0-9]{3,}", _words(relevance_text(question)))
               if w not in _GENERAL_WORDS}
     if not tokens:
         return False
@@ -349,7 +517,11 @@ def question_topic(question, last_topic=None):
                  r"|\b(?:meaning|indicates?|denotes?|definition)\b"
                  r"|\b(?:explain|identify)\s+(?:the\s+)?(?:error|fault|alarm)\s+code\b", q):
         return "meaning"
-    if re.search(r"\b(?:causes?|reasons?|why|what (?:could|might) be wrong|diagnos\w*|root cause)\b", q):
+    if re.search(
+        r"\b(?:causes?|reasons?|why|what (?:could|might) be wrong|diagnos\w*|root cause)\b|"
+        r"\b(?:could|might|may)\b.{0,100}\b(?:cause|explain|account for|lead to|result in)\b",
+        q,
+    ):
         return "causes"
     if re.search(
         r"\b(?:how (?:do|can|should) i\b|how to\b|"
@@ -525,7 +697,10 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             and isinstance(plan, dict)
             and plan.get("intent") in TOPICS):
         topic = plan["intent"]
-    allowed = frozenset() if off_topic else _match_kinds(topic)
+    topics = _requested_topics(question, topic)
+    focus = _FocusPlan(question)
+    allowed = (frozenset().union(*(_match_kinds(item) for item in topics))
+               if not off_topic else frozenset())
     citations_by_id = {
         c.get("id"): c for c in original.get("citations", [])
         if isinstance(c, dict) and isinstance(c.get("id"), str)
@@ -591,8 +766,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         source_context = (
             str(claim["source_text"]) + " " + str(citation.get("heading") or "")
         )
-        if (not _specific_symptom_supported(question, source_context)
-                or not _direct_subject_match(question, claim, citation)):
+        if (not _specific_symptom_supported(focus.relevant, source_context)
+                or not focus.accepts(claim, citation)):
             continue
         if topic == "general" and not _direct_general_overlap(
             question, claim, citation
@@ -619,8 +794,13 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             continue
         seen.add(fp)
         collected.append((claim, citation, fp))
-        if len(collected) >= (4 if topic == "causes" else 3):
-            break
+
+    # For a specific hypothesis ("could X explain Y?") rank the claim that
+    # states X first; ties keep the authorized source order. Never filters.
+    claim_limit = sum(4 if item == "causes" else 3 for item in topics)
+    if focus.hypothesis is not None:
+        collected.sort(key=lambda row: -focus.relevance(row[0]))
+    collected = collected[:claim_limit]
 
     # A local model may rank/deselect permitted source IDs but can never add
     # a claim absent from the server-authorized candidate collection.
@@ -700,10 +880,59 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             "documents": "The approved document states:",
             "general": "Verified manual information:",
         }[topic]
+    if len(topics) > 1:
+        lead = ("I found supporting evidence for part of your question. "
+                "The sections separate documented claims from parts I could not verify.")
+
+    requested_symptoms = [
+        label for label, (query_pattern, _evidence_pattern) in SPECIFIC_EVIDENCE.items()
+        if query_pattern.search(_words(focus.relevant))
+    ]
+    supported_symptoms = set()
+    for claim, citation, _fingerprint in collected:
+        source_context = f"{claim['source_text']} {citation.get('heading') or ''}"
+        supported_symptoms.update(
+            label for label, (query_pattern, evidence_pattern) in SPECIFIC_EVIDENCE.items()
+            if query_pattern.search(_words(focus.relevant)) and evidence_pattern.search(source_context)
+        )
+    unsupported_symptoms = [label for label in requested_symptoms
+                            if label not in supported_symptoms]
+    symptom_limit = None
+    if supported_symptoms and unsupported_symptoms:
+        symptom_limit = (
+            "The retrieved citations support " + ", ".join(sorted(supported_symptoms))
+            + " only; they do not establish a cause for "
+            + ", ".join(unsupported_symptoms) + "."
+        )
+
+    sections = []
+    if len(topics) > 1:
+        for section_topic in topics:
+            section_claims = [claim for claim in selected_claims
+                              if _claim_topic(claim, topic) == section_topic]
+            if section_claims:
+                sections.append({"number": len(sections) + 1,
+                                 "title": HEADING[section_topic],
+                                 "claims": section_claims})
+            else:
+                sections.append({"number": len(sections) + 1,
+                                 "title": "What I could not verify",
+                                 "claims": [{"text": NO_EVIDENCE[section_topic],
+                                             "kind": "uncertainty",
+                                             "evidence_ids": []}]})
+    else:
+        sections.append({"number": 1, "title": HEADING[topic],
+                         "claims": selected_claims})
+    if symptom_limit:
+        sections.append({"number": len(sections) + 1,
+                         "title": "Evidence limitation",
+                         "claims": [{"text": symptom_limit, "kind": "uncertainty",
+                                     "evidence_ids": []}]})
+        lead = (lead + " " + symptom_limit).strip()
     new_presentation = {
         **original,
         "view_mode": "focused",
-        "sections": [{"number": 1, "title": HEADING[topic], "claims": selected_claims}],
+        "sections": sections,
         "citations": selected_citations,
         "supporting_claims": selected_claims,
         "customer_permitted_observations": [
@@ -723,7 +952,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                     a for a in contract.get("customer_safe_actions", [])
                     if a.get("action_id") in {c.get("id") for c in selected_claims}
                 ],
-                "can_resolve": bool(topic in {"next", "observations"}
+        "can_resolve": bool(set(topics) & {"next", "observations"}
                                     and any(c.get("kind") in {"observation", "customer_procedure"}
                                             for c in selected_claims)
                                     and contract.get("can_resolve"))}

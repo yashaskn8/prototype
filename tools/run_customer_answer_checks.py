@@ -59,7 +59,7 @@ class Runner(DiscoverRunner):
 
 
 if __name__ == "__main__":
-    labels = ["core.tests_customer_answer", "core.tests_customer_answer_redteam", "core.tests_serving_truth",
+    labels = ["core.tests_customer_answer", "core.tests_query_decomposition", "core.tests_customer_answer_redteam", "core.tests_serving_truth",
               "core.tests_customer_mutations", "core.tests_real_company_isolation", "core.tests_safety_authority",
               "core.tests_customer_rag_endtoend", "core.tests_llm_answer_ranking",
               "core.tests_customer_acceptance_scenarios", "core.tests_diagnostics", "core.tests_diagnostics_hardening"]
