@@ -5,6 +5,8 @@ from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
 
+from core.local_ticket_options import PRIORITIES
+
 
 def knowledge_upload_path(instance, filename):
     suffix = Path(filename).suffix.lower()[:12]
@@ -401,7 +403,6 @@ class ServiceCall(TenantOwnedModel):
         ("open", "Open"), ("assigned", "Assigned"), ("in_progress", "In Progress"),
         ("marked_for_closure", "Marked For Closure"), ("closed", "Closed")
     ]
-    PRIORITIES = [("low", "Low"), ("normal", "Normal"), ("high", "High"), ("critical", "Critical")]
     servy_id = models.PositiveIntegerField()
     call_type = models.CharField(max_length=80, default="Service")
     complaint_type = models.CharField(max_length=180)

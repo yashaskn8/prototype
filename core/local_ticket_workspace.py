@@ -2,7 +2,6 @@
 
 import ipaddress
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -17,6 +16,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import Asset, CustomerConversation, ServiceCall, Site
+from core.local_ticket_options import COMPLAINT_TYPES, MACHINE_STATUSES, SEVERITIES, TICKET_TYPES
+from core.local_ticket_store import (
+    MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, MAX_DESCRIPTION_CHARS,
+    list_tickets as _list_tickets, open_local_store as _open_local_store,
+    serialize_ticket as _serialize_ticket,
+)
 from core.security import ADMIN_ROLES, CUSTOMER_ROLES, TECH_ROLES, require_api_context
 from core.services.customer_isolation import (
     get_customer_data_mode,
@@ -24,19 +29,6 @@ from core.services.customer_isolation import (
     validate_customer_serving_policy,
 )
 
-MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-MAX_ATTACHMENTS = 10
-MAX_DESCRIPTION_CHARS = 1_000_000
-TICKET_TYPES = {
-    "Breakdown Service", "Installation / Demo", "Service",
-    "Preventive Maintenance (PM)", "AMC",
-}
-SEVERITIES = {"", "Low", "Medium", "High", "Critical"}
-MACHINE_STATUSES = {"", "Running", "Intermittent", "Stopped", "Unknown"}
-COMPLAINT_TYPES = {
-    "Cooling / performance", "Electrical", "Noise / vibration", "Leakage",
-    "Installation / commissioning", "Preventive maintenance", "Other",
-}
 LOCAL_TICKET_STATUSES = {"open", "assigned", "in_progress", "marked_for_closure", "closed"}
 
 
@@ -50,104 +42,6 @@ def _ensure_loopback_debug_request(request):
         raise Http404 from exc
     if not address.is_loopback:
         raise Http404
-
-
-def _open_local_store():
-    path = Path(settings.SERVY_LOCAL_TICKET_DB_PATH).expanduser().resolve()
-    for database in settings.DATABASES.values():
-        if "sqlite" in str(database.get("ENGINE", "")).lower():
-            configured_database = Path(database["NAME"]).expanduser().resolve()
-            if configured_database == path:
-                raise RuntimeError("The local ticket workspace cannot share the Servy application database file.")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS local_tickets (
-            id TEXT PRIMARY KEY,
-            tenant_id INTEGER NOT NULL,
-            customer_id INTEGER NOT NULL,
-            customer_name TEXT NOT NULL,
-            site_id INTEGER NOT NULL,
-            site_name TEXT NOT NULL,
-            asset_id INTEGER NOT NULL,
-            asset_name TEXT NOT NULL,
-            asset_code TEXT NOT NULL,
-            call_type TEXT NOT NULL,
-            complaint_type TEXT NOT NULL,
-            complaint_text TEXT NOT NULL,
-            contact_name TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            priority TEXT NOT NULL,
-            machine_status TEXT NOT NULL,
-            status TEXT NOT NULL,
-            technician_notes TEXT NOT NULL,
-            source_conversation_id TEXT NOT NULL,
-            created_by TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS local_tickets_tenant_created
-            ON local_tickets (tenant_id, created_at DESC);
-        CREATE INDEX IF NOT EXISTS local_tickets_customer_created
-            ON local_tickets (tenant_id, customer_id, created_at DESC);
-        CREATE TABLE IF NOT EXISTS local_ticket_attachments (
-            id TEXT PRIMARY KEY,
-            ticket_id TEXT NOT NULL,
-            tenant_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            content_type TEXT NOT NULL,
-            size INTEGER NOT NULL,
-            content BLOB NOT NULL,
-            FOREIGN KEY(ticket_id) REFERENCES local_tickets(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS local_ticket_attachments_ticket
-            ON local_ticket_attachments (ticket_id);
-    """)
-    return connection
-
-
-def _attachments_for(connection, ticket_id):
-    return [
-        {
-            "id": row["id"], "name": row["name"], "type": row["content_type"], "size": row["size"],
-        }
-        for row in connection.execute(
-            "SELECT id, name, content_type, size FROM local_ticket_attachments WHERE ticket_id = ? ORDER BY rowid",
-            (ticket_id,),
-        )
-    ]
-
-
-def _serialize_ticket(connection, row, include_description=True):
-    serialized = {
-        "id": row["id"],
-        "tenantId": str(row["tenant_id"]),
-        "customerId": str(row["customer_id"]),
-        "customerName": row["customer_name"],
-        "siteId": str(row["site_id"]),
-        "siteName": row["site_name"],
-        "assetId": str(row["asset_id"]),
-        "assetName": row["asset_name"],
-        "assetCode": row["asset_code"],
-        "callType": row["call_type"],
-        "complaintType": row["complaint_type"],
-        "contactName": row["contact_name"],
-        "severity": row["severity"],
-        "priority": row["priority"],
-        "machineStatus": row["machine_status"],
-        "status": row["status"],
-        "technicianNotes": row["technician_notes"],
-        "sourceConversationId": row["source_conversation_id"],
-        "createdBy": row["created_by"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-        "attachments": _attachments_for(connection, row["id"]),
-    }
-    if include_description:
-        serialized["complaintText"] = row["complaint_text"]
-    return serialized
 
 
 def _transcript_for(conversation):
@@ -187,13 +81,7 @@ class LocalTicketWorkspaceView(APIView):
         customer_id = _authorize_ticket_list(context)
         connection = _open_local_store()
         try:
-            sql = "SELECT * FROM local_tickets WHERE tenant_id = ?"
-            params = [context["tenant"].id]
-            if customer_id is not None:
-                sql += " AND customer_id = ?"
-                params.append(customer_id)
-            sql += " ORDER BY created_at DESC"
-            rows = connection.execute(sql, params).fetchall()
+            rows = _list_tickets(connection, context["tenant"].id, customer_id)
             return Response({"tickets": [_serialize_ticket(connection, row, include_description=False) for row in rows]})
         finally:
             connection.close()

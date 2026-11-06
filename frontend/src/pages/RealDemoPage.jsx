@@ -1,18 +1,75 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Bot, BookOpen, Building2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2 } from 'lucide-react';
+import { Bot, BookOpen, Building2, FilePlus2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2, X } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
 import { appendDemoThread, canOpenDemoThread, chatTitle } from './demoThreadState';
 import './RealDemoPage.css';
 
 async function call(path, token, options = {}) {
+  const headers = { 'Authorization': `Demo ${token}` };
+  if (typeof FormData === 'undefined' || !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
   const response = await fetch(path, {
     ...options,
-    headers: { 'Authorization': `Demo ${token}`, 'Content-Type': 'application/json' },
+    headers,
     cache: 'no-store',
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.detail || 'Demo request failed');
   return data;
+}
+
+const TICKET_TYPES = ['Breakdown Service', 'Installation / Demo', 'Service', 'Preventive Maintenance (PM)', 'AMC'];
+const SEVERITIES = ['Low', 'Medium', 'High', 'Critical'];
+const PRIORITIES = [
+  { value: 'low', label: 'Low' }, { value: 'normal', label: 'Normal' },
+  { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' },
+];
+const MACHINE_STATUSES = ['Running', 'Intermittent', 'Stopped', 'Unknown'];
+const COMPLAINT_TYPES = [
+  'Cooling / performance', 'Electrical', 'Noise / vibration', 'Leakage',
+  'Installation / commissioning', 'Preventive maintenance', 'Other',
+];
+const MAX_TICKET_FILES = 10;
+const MAX_TICKET_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function answerForTicket(data) {
+  const presentation = data?.presentation;
+  if (!Array.isArray(presentation?.sections)) return data?.message || '';
+  const citations = presentation.citations || [];
+  const refs = new Map(citations.map((citation, index) => [citation.id, {
+    number: index + 1, text: [citation.title, citation.heading].filter(Boolean).join(' — '),
+  }]));
+  const used = new Map();
+  const sections = presentation.sections.map((section) => {
+    const claims = (section.claims || []).map((claim) => {
+      const markers = (claim.evidence_ids || []).map((id) => {
+        const source = refs.get(id);
+        if (source) used.set(source.number, source.text);
+        return source ? `[${source.number}]` : '';
+      }).filter(Boolean).join(' ');
+      return `• ${claim.text}${markers ? ` ${markers}` : ''}`;
+    });
+    return `${section.title}\n${claims.join('\n')}`;
+  });
+  const sourceList = [...used.entries()].sort(([a], [b]) => a - b)
+    .map(([number, source]) => `[${number}] ${source}`);
+  return [sections.join('\n\n'), sourceList.length ? `Sources\n${sourceList.join('\n')}` : '']
+    .filter(Boolean).join('\n\n');
+}
+
+function conversationForTicket(messages) {
+  let turn = 0;
+  return messages.filter(message => !message.pending).map((message) => {
+    if (message.role === 'user') {
+      turn += 1;
+      return `Customer · Turn ${turn}\n${message.text}`;
+    }
+    if (message.role === 'assistant' && message.data) {
+      return `Servy · Turn ${turn}\n${answerForTicket(message.data)}`;
+    }
+    return '';
+  }).filter(Boolean).join('\n\n');
 }
 
 export function RealDemoPage() {
@@ -32,7 +89,7 @@ export function RealDemoPage() {
   const [result, setResult] = useState(null);
   const [answeredQuestion, setAnsweredQuestion] = useState('');
   const [ticketDraft, setTicketDraft] = useState(null);
-  const [ticketPreview, setTicketPreview] = useState(null);
+  const [ticketFiles, setTicketFiles] = useState([]);
   const [ticketConfirmation, setTicketConfirmation] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -49,7 +106,7 @@ export function RealDemoPage() {
     setResult(null);
     setAnsweredQuestion('');
     setTicketDraft(null);
-    setTicketPreview(null);
+    setTicketFiles([]);
     setTicketConfirmation(null);
     setBusy(false);
     setError('');
@@ -58,7 +115,7 @@ export function RealDemoPage() {
   // Each thread has separate signed state. Browser memory only: no disk writes.
   function snapshotThread() {
     return { assetId, messages, continuation, question, result, answeredQuestion,
-      ticketDraft, ticketPreview, ticketConfirmation };
+      ticketDraft, ticketFiles, ticketConfirmation };
   }
 
   function hydrateThread(snapshot) {
@@ -69,7 +126,7 @@ export function RealDemoPage() {
     setResult(snapshot?.result || null);
     setAnsweredQuestion(snapshot?.answeredQuestion || '');
     setTicketDraft(snapshot?.ticketDraft || null);
-    setTicketPreview(snapshot?.ticketPreview || null);
+    setTicketFiles(snapshot?.ticketFiles || []);
     setTicketConfirmation(snapshot?.ticketConfirmation || null);
     setError('');
   }
@@ -170,7 +227,7 @@ export function RealDemoPage() {
     setError('');
     setBusy(true);
     setTicketDraft(null);
-    setTicketPreview(null);
+    setTicketFiles([]);
     setTicketConfirmation(null);
     setMessages(previous => [...previous,
       { id: messageId, role: 'user', text: submittedQuestion },
@@ -212,39 +269,73 @@ export function RealDemoPage() {
   }
 
   function startTicket() {
-    const customerTurns = messages.filter(message => message.role === 'user');
-    const originalComplaint = customerTurns[0]?.text || answeredQuestion;
-    const customerHistory = customerTurns.map((message, index) =>
-      `Turn ${index + 1}: ${message.text}`).join('\n');
+    const latest = messages.at(-1);
+    if (latest?.role !== 'assistant' || !latest.data?.ticket_context) return;
     setTicketDraft({
-      complaint_type: originalComplaint.slice(0, 180),
-      complaint_text: customerHistory.slice(0, 4000) || originalComplaint,
+      ticket_context: latest.data.ticket_context,
+      question: answeredQuestion,
+      call_type: TICKET_TYPES[0],
+      complaint_type: '',
+      complaint_text: conversationForTicket(messages).slice(0, 100_000),
+      contact_name: '',
+      severity: '',
+      priority: 'normal',
+      machine_status: '',
     });
-    setTicketPreview(null);
+    setTicketFiles([]);
     setTicketConfirmation(null);
     setError('');
   }
 
-  async function reviewTicket(event) {
+  function closeTicketPanel() {
+    if (busy) return;
+    setTicketDraft(null);
+    setTicketFiles([]);
+    setError('');
+  }
+
+  function updateTicketDraft(field, value) {
+    setTicketDraft(current => current ? { ...current, [field]: value } : current);
+    setError('');
+  }
+
+  function addTicketFiles(incoming) {
+    const selected = [...ticketFiles, ...Array.from(incoming || [])]
+      .filter((file, index, all) => all.findIndex(item =>
+        `${item.name}:${item.size}:${item.lastModified}` === `${file.name}:${file.size}:${file.lastModified}`) === index);
+    if (selected.length > MAX_TICKET_FILES) {
+      setError(`Choose no more than ${MAX_TICKET_FILES} attachments.`);
+      return;
+    }
+    if (selected.some(file => file.size > MAX_TICKET_UPLOAD_BYTES)
+      || selected.reduce((total, file) => total + file.size, 0) > MAX_TICKET_UPLOAD_BYTES) {
+      setError('Attachments must total 25 MB or less.');
+      return;
+    }
+    setTicketFiles(selected);
+    setError('');
+  }
+
+  async function createTicket(event) {
     event.preventDefault();
     setError('');
     setBusy(true);
     try {
-      const data = await call('/demo-api/tickets/preview/', token, {
-        method: 'POST', body: JSON.stringify({ ...ticketDraft, question: answeredQuestion,
-          ticket_context: result.ticket_context }),
+      const payload = new FormData();
+      payload.append('ticket', JSON.stringify(ticketDraft));
+      ticketFiles.forEach(file => payload.append('attachments', file, file.name));
+      const data = await call('/demo-api/tickets/create-local/', token, {
+        method: 'POST', body: payload,
       });
-      setTicketPreview(data.ticket);
+      if (data.mode !== 'LOCAL_SQLITE' || !data.ticket?.id) {
+        throw new Error('The local technician ticket was not confirmed.');
+      }
+      setTicketConfirmation({ ticket: data.ticket,
+        detail: 'Created in the local SQLite technician workspace.' });
+      setTicketDraft(null);
+      setTicketFiles([]);
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
-  }
-
-  function confirmTicketDetails() {
-    if (!ticketPreview) return;
-    setTicketConfirmation({ ticket: ticketPreview,
-      detail: 'Details reviewed locally. No Servy ticket or database record was created.' });
-    setTicketPreview(null);
-    setTicketDraft(null);
   }
 
   const asset = assets?.find(item => String(item.id) === assetId);
@@ -434,49 +525,127 @@ export function RealDemoPage() {
             && !ticketDraft && !ticketConfirmation && (
             <section className="card real-demo-ticket-action" aria-label="Ticket escalation options">
               <div><strong>Still need assistance?</strong>
-                <p>Prepare a service ticket draft for review.</p></div>
+                <p>Raise a ticket with the conversation attached for the technician.</p></div>
               <button className="btn btn-secondary" type="button" onClick={startTicket}>
-                <Ticket size={17} /> Review ticket draft
+                <Ticket size={17} /> Create Ticket
               </button>
             </section>
           )}
-          {ticketDraft && <section className="card real-demo-ticket" aria-label="Mock ticket form">
-            <div className="real-demo-ticket-heading"><div><span className="real-demo-kicker">REVIEW ONLY</span>
-              <h2>Review service ticket details</h2></div>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => {
-                setTicketDraft(null); setTicketPreview(null); }}>Cancel</button></div>
-            <p className="real-demo-ticket-note">Ticket creation is not authorized for this demo. You can review the details, but nothing will be submitted or saved.</p>
-            <dl className="real-demo-ticket-context"><div><dt>Equipment</dt><dd>{asset?.name} ({asset?.code})</dd></div>
-              {asset?.site && <div><dt>Site</dt><dd>{asset.site}</dd></div>}</dl>
-            <form onSubmit={reviewTicket}>
-              <label className="form-label" htmlFor="ticket-complaint-type">Issue summary</label>
-              <input className="form-control" id="ticket-complaint-type" maxLength={180} required
-                value={ticketDraft.complaint_type} onChange={event => { setTicketDraft({ ...ticketDraft,
-                  complaint_type: event.target.value }); setTicketPreview(null); }} />
-              <label className="form-label real-demo-ticket-label" htmlFor="ticket-complaint-text">Issue description</label>
-              <textarea className="form-control" id="ticket-complaint-text" maxLength={4000} rows={5} required
-                value={ticketDraft.complaint_text} onChange={event => { setTicketDraft({ ...ticketDraft,
-                  complaint_text: event.target.value }); setTicketPreview(null); }} />
-              <button className="btn btn-primary" type="submit" disabled={busy}>Review ticket details</button>
-            </form>
-            {ticketPreview && <div className="real-demo-ticket-preview" aria-live="polite">
-              <h3>Confirm details for review</h3>
-              <p><strong>Type:</strong> {ticketPreview.call_type} · <strong>Priority:</strong> {ticketPreview.priority}
-                {' · '}<strong>Status:</strong> {ticketPreview.status}</p>
-              <p><strong>Issue summary:</strong> {ticketPreview.complaint_type}</p>
-              <p><strong>Issue description:</strong> {ticketPreview.complaint_text}</p>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={confirmTicketDetails}>
-                Confirm reviewed details</button>
-            </div>}
-          </section>}
+          {ticketDraft && <div className="real-demo-ticket-overlay" role="presentation"
+            onMouseDown={event => { if (event.target === event.currentTarget) closeTicketPanel(); }}>
+            <section className="real-demo-ticket-panel" role="dialog" aria-modal="true"
+              aria-labelledby="real-demo-ticket-title">
+              <header className="real-demo-ticket-modal-heading">
+                <div><h2 id="real-demo-ticket-title">Create New Ticket</h2>
+                  <p>Fill in the details below to raise a service ticket.</p></div>
+                <button type="button" className="real-demo-ticket-close" aria-label="Close ticket form"
+                  onClick={closeTicketPanel} disabled={busy}><X size={19} /></button>
+              </header>
+              <div className="real-demo-ticket-panel-body">
+                <section className="real-demo-ticket-details" aria-labelledby="real-demo-ticket-details-title">
+                  <h3 id="real-demo-ticket-details-title">TICKET DETAILS</h3>
+                  <form onSubmit={createTicket}>
+                    <div className="real-demo-ticket-field real-demo-ticket-types">
+                      <span className="real-demo-ticket-label">Ticket Type <b>*</b></span>
+                      <div className="real-demo-ticket-type-list" role="group" aria-label="Ticket Type">
+                        {TICKET_TYPES.map(type => <button key={type} type="button"
+                          className={ticketDraft.call_type === type ? 'is-selected' : ''}
+                          aria-pressed={ticketDraft.call_type === type}
+                          onClick={() => updateTicketDraft('call_type', type)}>{type}</button>)}
+                      </div>
+                    </div>
+
+                    <div className="real-demo-ticket-grid real-demo-ticket-grid-three">
+                      <label className="real-demo-ticket-field"><span>Customer</span>
+                        <input className="form-control" value={asset?.customer_name || `Customer ${asset?.customer_id || ''}`}
+                          readOnly aria-readonly="true" /></label>
+                      <label className="real-demo-ticket-field"><span>Facility <b>*</b></span>
+                        <input className="form-control" value={asset?.site || ''} readOnly aria-readonly="true" /></label>
+                      <label className="real-demo-ticket-field"><span>Contact Person</span>
+                        <input className="form-control" maxLength={150} value={ticketDraft.contact_name}
+                          onChange={event => updateTicketDraft('contact_name', event.target.value)}
+                          placeholder="Enter contact name" /></label>
+                    </div>
+
+                    <label className="real-demo-ticket-field real-demo-ticket-equipment"><span>Facility Equipment <b>*</b></span>
+                      <input className="form-control" value={`${asset?.name || ''} (${asset?.code || ''})`}
+                        readOnly aria-readonly="true" /></label>
+
+                    <div className="real-demo-ticket-grid real-demo-ticket-grid-two">
+                      <label className="real-demo-ticket-field"><span>Severity Level</span>
+                        <select className="form-control" value={ticketDraft.severity}
+                          onChange={event => updateTicketDraft('severity', event.target.value)}>
+                          <option value="">Select Severity Level</option>
+                          {SEVERITIES.map(value => <option key={value} value={value}>{value}</option>)}
+                        </select></label>
+                      <label className="real-demo-ticket-field"><span>Priority Level</span>
+                        <select className="form-control" value={ticketDraft.priority}
+                          onChange={event => updateTicketDraft('priority', event.target.value)}>
+                          <option value="">Select Priority Level</option>
+                          {PRIORITIES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                        </select></label>
+                    </div>
+
+                    <div className="real-demo-ticket-grid real-demo-ticket-grid-two">
+                      <label className="real-demo-ticket-field"><span>Machine Status</span>
+                        <select className="form-control" value={ticketDraft.machine_status}
+                          onChange={event => updateTicketDraft('machine_status', event.target.value)}>
+                          <option value="">Select Machine Status</option>
+                          {MACHINE_STATUSES.map(value => <option key={value} value={value}>{value}</option>)}
+                        </select></label>
+                      <label className="real-demo-ticket-field"><span>Complaint Type <b>*</b></span>
+                        <select className="form-control" value={ticketDraft.complaint_type} required
+                          onChange={event => updateTicketDraft('complaint_type', event.target.value)}>
+                          <option value="">Select Complaint</option>
+                          {COMPLAINT_TYPES.map(value => <option key={value} value={value}>{value}</option>)}
+                        </select></label>
+                    </div>
+
+                    <label className="real-demo-ticket-field real-demo-ticket-description"><span>Description <b>*</b></span>
+                      <textarea className="form-control" value={ticketDraft.complaint_text} maxLength={100_000}
+                        rows={8} required onChange={event => updateTicketDraft('complaint_text', event.target.value)}
+                        placeholder="The complete customer and Servy conversation is pre-filled here." /></label>
+
+                    <div className="real-demo-ticket-field">
+                      <span className="real-demo-ticket-label">Issue Documentation</span>
+                      <label className="real-demo-ticket-upload" htmlFor="real-demo-ticket-files"
+                        onDragOver={event => event.preventDefault()}
+                        onDrop={event => { event.preventDefault(); addTicketFiles(event.dataTransfer.files); }}>
+                        <FilePlus2 size={25} />
+                        <strong>Click or drag to upload</strong>
+                        <span>Files are stored with this local SQLite ticket · up to 10 files, 25 MB total</span>
+                        <input id="real-demo-ticket-files" type="file" multiple
+                          onChange={event => { addTicketFiles(event.target.files); event.target.value = ''; }} />
+                      </label>
+                      {ticketFiles.length > 0 && <ul className="real-demo-ticket-files">
+                        {ticketFiles.map((file, index) => <li key={`${file.name}:${file.size}:${file.lastModified}`}>
+                          <span>{file.name} · {(file.size / (1024 * 1024)).toFixed(2)} MB</span>
+                          <button type="button" aria-label={`Remove ${file.name}`} disabled={busy}
+                            onClick={() => setTicketFiles(current => current.filter((_, i) => i !== index))}>
+                            <X size={15} /></button></li>)}
+                      </ul>}
+                    </div>
+                    {error && <p className="real-demo-error" role="alert">{error}</p>}
+                    <div className="real-demo-ticket-modal-actions">
+                      <button type="button" className="btn btn-secondary" onClick={closeTicketPanel} disabled={busy}>Cancel</button>
+                      <button type="submit" className="btn btn-primary" disabled={busy || !ticketDraft.complaint_type
+                        || !ticketDraft.complaint_text.trim()}>
+                        <Ticket size={16} /> {busy ? 'Creating…' : 'Create Ticket'}
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              </div>
+            </section>
+          </div>}
           {ticketConfirmation && <div className="real-demo-ticket-confirmation" role="status">
-            <strong>Ticket details confirmed for review</strong><span>{ticketConfirmation.detail}</span>
-            <dl><div><dt>Equipment</dt><dd>{asset?.name} ({asset?.code})</dd></div>
-              <div><dt>Issue summary</dt><dd>{ticketConfirmation.ticket.complaint_type}</dd></div>
-              <div><dt>Issue description</dt><dd>{ticketConfirmation.ticket.complaint_text}</dd></div></dl>
+            <strong>Ticket {ticketConfirmation.ticket.id} created</strong><span>{ticketConfirmation.detail}</span>
+            <dl><div><dt>Equipment</dt><dd>{ticketConfirmation.ticket.assetName} ({ticketConfirmation.ticket.assetCode})</dd></div>
+              <div><dt>Complaint Type</dt><dd>{ticketConfirmation.ticket.complaintType}</dd></div>
+              <div><dt>Status</dt><dd>{ticketConfirmation.ticket.status}</dd></div></dl>
           </div>}
         </>}
-        {error && <p className="real-demo-error" role="alert">{error}</p>}
+        {error && !ticketDraft && <p className="real-demo-error" role="alert">{error}</p>}
       </div>
     </main>
   </div>;
