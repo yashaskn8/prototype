@@ -785,14 +785,14 @@ def _direct_general_overlap(question, claim, citation):
 
 
 _EXPLANATION_FOLLOWUP = re.compile(
-    r"\\b(?:explain|elaborate|expand on|break down|go into detail on|"
-    r"go into more detail on)\\b.{0,100}\\b(?:each|both|those|these|them|"
-    r"the above|the listed|all)\\b.{0,45}\\b(?:issues?|problems?|causes?|"
-    r"reasons?|possibilities|factors?|items?)\\b|"
-    r"\\b(?:explain|elaborate|expand|break down)\\b.{0,80}\\b"
-    r"(?:each|those|these|them)\\b|"
-    r"\\b(?:more detail|in detail|in depth)\\b.{0,60}\\b"
-    r"(?:above|those|these|issues?|causes?|possibilities)\\b",
+    r"\b(?:explain|elaborate|expand on|break down|go into detail on|"
+    r"go into more detail on)\b.{0,100}\b(?:each|both|those|these|them|"
+    r"the above|the listed|all)\b.{0,45}\b(?:issues?|problems?|causes?|"
+    r"reasons?|possibilities|factors?|items?)\b|"
+    r"\b(?:explain|elaborate|expand|break down)\b.{0,80}\b"
+    r"(?:each|those|these|them)\b|"
+    r"\b(?:more detail|in detail|in depth)\b.{0,60}\b"
+    r"(?:above|those|these|issues?|causes?|possibilities)\b",
     re.I,
 )
 
