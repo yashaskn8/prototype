@@ -6,7 +6,7 @@ from tools.servy_real_demo_dialogue import (
     conversational_turn, fact_fingerprint, focus_answer,
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
     out_of_scope_response, focused_causal_query, wants_additional,
-    is_technician_handoff_request, build_technician_handoff,
+    is_technician_handoff_request, build_technician_handoff, NO_EVIDENCE,
 )
 
 
@@ -452,6 +452,13 @@ class IntentFocusTests(unittest.TestCase):
         repeated, _ = focus_answer(contract(), "What are the possible causes?",
                                    last_topic=state["topic"], previous_facts=state["facts"])
         self.assertEqual(repeated["response_type"], "DIAGNOSTIC_GUIDANCE")
+
+    def test_missing_cause_evidence_asks_for_a_specific_observed_symptom(self):
+        fallback = NO_EVIDENCE["causes"]
+        self.assertIn("What are you actually observing?", fallback)
+        self.assertIn("fail to start", fallback)
+        self.assertIn("fault code", fallback)
+        self.assertEqual(fallback.count("?"), 1)
 
     def test_additional_diagnostic_checks_do_not_trigger_more_causes_mode(self):
         question = (
