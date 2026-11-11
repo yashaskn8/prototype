@@ -120,10 +120,12 @@ class TechnicianDemoWorkspaceTests(unittest.TestCase):
                 "LOCAL-20261111-ABCDEF13", self.attachment_id, self.db,
             )
 
-    def test_workspace_must_already_exist_and_have_expected_name(self):
+    def test_queue_can_start_before_first_ticket_without_creating_database(self):
         missing = Path(self.temp.name) / "missing-local-ticket-workspace.sqlite3"
-        with self.assertRaises(FileNotFoundError):
-            tech.list_tickets(missing)
+        self.assertEqual(tech.list_tickets(missing), [])
+        self.assertFalse(missing.exists(), "Technician queue must not initialize customer ticket storage")
+
+    def test_workspace_path_must_keep_expected_name(self):
         wrong = Path(self.temp.name) / "company.sqlite3"
         with self.assertRaises(RuntimeError):
             tech.list_tickets(wrong)
