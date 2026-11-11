@@ -300,14 +300,14 @@ def main():
     # customer ticket exists yet, start an empty queue without creating a file.
     workspace_exists = DB_PATH.is_file()
     if workspace_exists:
-        connection = _open_store()
+        connection = _open_store(DB_PATH)
         connection.close()
     Handler.token = _ensure_access_code()
     server = HTTPServer((HOST, PORT), Handler)
     print(json.dumps({
         "ready": True,
         "mode": "local-rag-technician-workspace",
-        "ticket_count": len(list_tickets()),
+        "ticket_count": len(list_tickets(DB_PATH)),
         "ticket_workspace": "ready" if workspace_exists else "waiting_for_first_customer_ticket",
         "database": "separate-local-sqlite-ticket-workspace",
         "access_file": str(ACCESS_FILE),
