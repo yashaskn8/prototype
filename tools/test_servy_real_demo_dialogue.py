@@ -610,10 +610,23 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertTrue(result["presentation"]["citations"])
         self.assertEqual(result["presentation"]["sections"][0]["title"], "Documented possible causes")
-        self.assertIn(
-            "do not contain a separately citable explanation",
-            result["answer"],
-        )
+        limitation_sections = [
+            section for section in result["presentation"]["sections"]
+            if section["title"] == "Evidence limitation"
+        ]
+        self.assertEqual(len(limitation_sections), 1)
+        limitation = limitation_sections[0]["claims"][0]["text"]
+        self.assertIn("do not contain a separately citable explanation", limitation)
+        self.assertNotIn(limitation, result["presentation"]["message"])
+        rendered_text = "\n".join([
+            result["presentation"]["message"],
+            *[
+                claim["text"]
+                for section in result["presentation"]["sections"]
+                for claim in section["claims"]
+            ],
+        ])
+        self.assertEqual(rendered_text.count(limitation), 1)
         self.assertEqual(state["topic"], "causes")
 
     def test_wrong_error_code_cannot_supply_a_cited_definition(self):
