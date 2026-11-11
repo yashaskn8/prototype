@@ -26,8 +26,9 @@ $ticketDb = Join-Path $sharedLocalAppData 'Servy\local-ticket-workspace.sqlite3'
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Project virtualenv Python is missing: $python" }
 if (-not (Test-Path -LiteralPath $viteEntry -PathType Leaf)) { throw 'Installed Vite dependencies are missing; no package reinstall was attempted.' }
-if (-not (Test-Path -LiteralPath $ticketDb -PathType Leaf)) {
-    throw "The authorized customer RAG has not created its local ticket workspace yet. First raise and confirm a ticket at http://127.0.0.1:5175/, then run this technician launcher. No database file was created."
+$workspaceExists = Test-Path -LiteralPath $ticketDb -PathType Leaf
+if (-not $workspaceExists) {
+    Write-Warning "No customer RAG ticket workspace exists yet. The technician portal will start with an empty queue without creating a database. After the first customer ticket is confirmed, use Refresh queue."
 }
 
 function Test-LocalPort([int]$Port) {
@@ -114,6 +115,11 @@ try {
     Write-Host 'Access code:    open the separate local file below'
     Write-Host "Access file:    $accessFile"
     Write-Host "Ticket storage: $ticketDb (separate local SQLite workspace)"
+    if (-not $workspaceExists) {
+        Write-Host 'Queue state:     Waiting for the first customer RAG ticket; refresh the portal after submission.'
+    } else {
+        Write-Host 'Queue state:     Existing local RAG ticket workspace detected.'
+    }
     Write-Host "Logs:           $logRoot"
     Write-Host 'No MySQL connection, migration, company record write, or service-call creation was performed.'
 } catch {
