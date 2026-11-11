@@ -456,7 +456,7 @@ class IntentFocusTests(unittest.TestCase):
     def test_missing_cause_evidence_asks_for_a_specific_observed_symptom(self):
         fallback = NO_EVIDENCE["causes"]
         self.assertIn("What are you actually observing?", fallback)
-        self.assertIn("fail to start", fallback)
+        self.assertIn("fails to start", fallback)
         self.assertIn("fault code", fallback)
         self.assertEqual(fallback.count("?"), 1)
 
