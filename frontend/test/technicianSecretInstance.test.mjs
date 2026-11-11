@@ -19,6 +19,8 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(vite, /127\.0\.0\.1:8003/);
   assert.match(page, /Technician access code/);
   assert.match(page, /Authorization:/);
+  assert.match(page, /Authorization: `Technician \\$\{token\}`/);
+  assert.doesNotMatch(page, /\\\\`|\\\\\\$\\{/);
   assert.match(page, /tech-api\/tickets/);
   assert.match(page, /technicianNotes/);
   assert.match(page, /downloadAttachment/);
