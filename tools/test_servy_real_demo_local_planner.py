@@ -55,6 +55,25 @@ class LocalOllamaPlannerTests(TestCase):
         self.assertIn("external display", query)
         self.assertIn("visible air path", query)
 
+    def test_detailed_cause_followup_retrieval_is_asset_agnostic_for_all_three_families(self):
+        cases = [
+            ("Split AC Unit 2T", "AC-2T", "Split AC Unit 2T is not working."),
+            ("VRF Outdoor Module", "VRF-OUT", "VRF Outdoor Module is not working."),
+            ("Ductable AC 5T", "DUCT-5T", "Ductable AC 5T is not working."),
+        ]
+        for name, model, complaint in cases:
+            with self.subTest(asset=name):
+                asset = SimpleNamespace(
+                    name=name, model_number=model,
+                )
+                context = SimpleNamespace(original_complaint=complaint)
+                query = targeted_retry_query(
+                    "Could you explain each issue in detail?",
+                    asset, context, last_topic="causes",
+                )
+                self.assertIn(name, query)
+                self.assertIn("detailed documented causes explanation", query)
+
     def test_targeted_retry_expands_a_cited_cause_list_with_a_deeper_source_search(self):
         asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
         context = SimpleNamespace(original_complaint="The VRF outdoor module is not working.")
