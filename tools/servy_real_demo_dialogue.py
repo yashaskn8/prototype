@@ -865,9 +865,22 @@ def expand_display_observation_query(question, retrieval_query=None):
 
 
 def wants_additional(question):
-    return bool(re.search(r"\b(?:what else|anything else|other|another|"
-                          r"additional|more causes|more reasons|any more|"
-                          r"tell me more|give me more)\b", _words(question)))
+    """Detect an explicit request for more of the current answer's facts.
+
+    Do not treat words such as "additional" inside a multi-part request
+    (for example, "causes and additional diagnostic checks") as a request to
+    suppress every fact already shown. "Other" and "additional" must qualify
+    causes/reasons; broad conversational phrases remain supported.
+    """
+    return bool(re.search(
+        r"\b(?:what else|anything else|"
+        r"other (?:documented )?(?:possible )?causes?|"
+        r"another (?:documented )?(?:possible )?cause|"
+        r"additional (?:documented )?(?:possible )?causes?|"
+        r"more causes?|more reasons?|any more(?: causes?| reasons?)?|"
+        r"tell me more|give me more)\b",
+        _words(question),
+    ))
 
 
 def _error_codes(text):
@@ -1012,7 +1025,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     collected = []
     shown = set(previous_facts)
     seen = set()
-    novelty = wants_additional(question) and topic == last_topic
+    novelty = wants_additional(question) and topic == last_topic == "causes"
     for claim in original.get("supporting_claims", []):
         if not isinstance(claim, dict) or claim.get("kind") not in allowed:
             continue
@@ -1094,7 +1107,12 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             or not citation["url"].startswith("/demo-api/source/?citation=")):
             continue
         fp = fact_fingerprint(claim, citation)
-        if fp in seen or (novelty and fp in shown):
+        # An explicit request for additional causes may hide previously
+        # shown cause facts, but it must not hide already-approved observations
+        # or checks in the same multi-part question.
+        if fp in seen or (
+            novelty and claim["kind"] in {"possible_cause", "information"} and fp in shown
+        ):
             continue
         seen.add(fp)
         collected.append((claim, citation, fp))
