@@ -230,11 +230,25 @@ def run_audit():
             ranked_doc_ids = [
                 int(item.document_id) for item in retrieved if item.document_id is not None
             ]
+            expected_positive_document_ids = sorted({
+                int(positive_chunks[chunk_id].document_id) for chunk_id in positives
+            })
+            if any(doc_id not in expected_doc_ids for doc_id in expected_positive_document_ids):
+                raise RuntimeError(
+                    f"{row['query_id']}: expected positive document is outside its asset's nine manuals."
+                )
             hit_ranks = [
                 index + 1 for index, chunk_id in enumerate(ranked_ids)
                 if chunk_id in positives
             ]
             first_relevant = min(hit_ranks) if hit_ranks else None
+            document_hit_ranks = [
+                index + 1 for index, document_id in enumerate(ranked_doc_ids)
+                if document_id in expected_positive_document_ids
+            ]
+            first_relevant_document_rank = (
+                min(document_hit_ranks) if document_hit_ranks else None
+            )
             cross_asset_documents = sorted({
                 doc_id for doc_id in ranked_doc_ids
                 if doc_id in all_target_doc_ids and doc_id not in expected_doc_ids
@@ -250,9 +264,20 @@ def run_audit():
                 "category": row.get("category"),
                 "query_sha256": hashlib.sha256(row["query_text"].encode("utf-8")).hexdigest(),
                 "expected_positive_chunk_ids": sorted(positives),
+                "expected_positive_document_ids": expected_positive_document_ids,
                 "ranked_chunk_ids": ranked_ids[:10],
                 "ranked_document_ids": ranked_doc_ids[:10],
                 "first_relevant_rank": first_relevant,
+                "first_relevant_document_rank": first_relevant_document_rank,
+                "document_hit_at_1": first_relevant_document_rank == 1,
+                "document_hit_at_5": (
+                    first_relevant_document_rank is not None
+                    and first_relevant_document_rank <= 5
+                ),
+                "document_hit_at_10": (
+                    first_relevant_document_rank is not None
+                    and first_relevant_document_rank <= 10
+                ),
                 "hit_at_1": first_relevant == 1,
                 "hit_at_5": first_relevant is not None and first_relevant <= 5,
                 "hit_at_10": first_relevant is not None and first_relevant <= 10,
@@ -279,6 +304,24 @@ def run_audit():
             "hit_at_10": sum(item["hit_at_10"] for item in rows),
             "cited_positive": sum(item["cited_positive"] for item in rows),
             "cross_asset_leaks": sum(bool(item["cross_asset_document_ids"]) for item in rows),
+        }
+
+    by_document = {}
+    for document_id, metadata in documents.items():
+        rows = [
+            item for item in query_rows
+            if document_id in item["expected_positive_document_ids"]
+        ]
+        denom = len(rows)
+        by_document[str(document_id)] = {
+            **metadata,
+            "queries": denom,
+            "coverage_status": "EVALUATED" if denom else "NOT_EVALUATED_BY_FROZEN_FIXTURE",
+            "chunk_hit_at_1": sum(item["hit_at_1"] for item in rows) if denom else None,
+            "chunk_hit_at_5": sum(item["hit_at_5"] for item in rows) if denom else None,
+            "document_hit_at_1": sum(item["document_hit_at_1"] for item in rows) if denom else None,
+            "document_hit_at_5": sum(item["document_hit_at_5"] for item in rows) if denom else None,
+            "citation_coverage": sum(item["cited_positive"] for item in rows) if denom else None,
         }
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -317,6 +360,7 @@ def run_audit():
         "operational_counts_after": after,
         "operational_counts_unchanged": before == after,
         "metrics_by_asset": by_asset,
+        "metrics_by_document": by_document,
         "total_queries": len(query_rows),
         "total_hit_at_1": sum(item["hit_at_1"] for item in query_rows),
         "total_hit_at_5": sum(item["hit_at_5"] for item in query_rows),
@@ -340,6 +384,7 @@ def run_audit():
         "benchmark_role": report["benchmark"]["dataset_role"],
         "serving_config": report["serving_config"],
         "metrics_by_asset": by_asset,
+        "metrics_by_document": by_document,
         "total_queries": len(query_rows),
         "total_hit_at_1": report["total_hit_at_1"],
         "total_hit_at_5": report["total_hit_at_5"],
