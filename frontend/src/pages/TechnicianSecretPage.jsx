@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle, Check, ClipboardList, Clock3, Download, FileText,
   Inbox, KeyRound, LogOut, RefreshCw, ShieldCheck, Ticket, Wrench,
@@ -48,6 +48,32 @@ export function TechnicianSecretPage() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [filter, setFilter] = useState('all');
+
+  // Keep an unlocked technician queue current when the customer creates a
+  // ticket in the separate RAG tab. Reads are safe when the workspace is absent.
+  useEffect(() => {
+    if (!token) return undefined;
+    let stopped = false;
+    let inFlight = false;
+    const refreshQueue = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const response = await technicianCall('/tech-api/tickets/', token);
+        const data = await response.json();
+        if (!stopped) setTickets(Array.isArray(data.tickets) ? data.tickets : []);
+      } catch {
+        // Keep the last successful queue visible; the manual refresh reports errors.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(refreshQueue, 8000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [token]);
 
   async function loadQueue(accessCode = token) {
     if (!accessCode) return;
@@ -266,7 +292,7 @@ export function TechnicianSecretPage() {
               {loading && tickets.length === 0
                 ? <div className="technician-secret-empty"><RefreshCw size={20} className="technician-secret-spin" /> Loading requests…</div>
                 : visibleTickets.length === 0
-                  ? <div className="technician-secret-empty"><Inbox size={24} /><strong>No requests in this view</strong><span>New RAG tickets will appear here after submission.</span></div>
+                  ? <div className="technician-secret-empty"><Inbox size={24} /><strong>No requests in this view</strong><span>Create and confirm a ticket in Customer RAG. This queue refreshes automatically.</span></div>
                   : visibleTickets.map(ticket => (
                     <button type="button" key={ticket.id}
                       className={`technician-secret-ticket ${selected?.id === ticket.id ? 'selected' : ''}`}
