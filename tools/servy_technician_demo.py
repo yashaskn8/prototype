@@ -243,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                 name, content_type, content, size = read_attachment(
                     unquote(attachment.group(1)), unquote(attachment.group(2))
                 )
-                safe_name = re.sub(r"[\\r\\n]", "", Path(name.replace("\\\\", "/")).name).replace('"', "")
+                safe_name = Path(name).name.replace('"', '').replace("\r", "").replace("\n", "")
                 self.send_response(200)
                 self.send_header("Content-Type", content_type or "application/octet-stream")
                 self.send_header("Content-Length", str(size))
