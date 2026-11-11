@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import secrets
 import sqlite3
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 PRIVATE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Servy" / "private_evaluations" / "servy_technician_demo_20261111_01"
 ACCESS_FILE = PRIVATE / "technician_access.txt"
