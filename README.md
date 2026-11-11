@@ -23,6 +23,56 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
 - Two high-quality initial RAG domains: **Milk Analyzer** and **Aerolift**.
 - Standalone review artifacts: `sample_data/servy_dummy_schema.sqlite3` and `sample_data/servy_dummy_data.xlsx` for independent data review.
 
+## Windows PowerShell: Start the Authorized Customer and Technician RAG Instances
+
+**Important folder rule:** the Git checkout is the `prototype` subfolder. If your PowerShell prompt is
+`C:\\Users\\prana\\OneDrive\\Desktop\\SURVY-RAG>`, you are one directory above the repository.
+From that exact prompt, first run:
+
+```powershell
+Set-Location .\\prototype
+git switch main
+git fetch origin
+git pull --ff-only origin main
+```
+
+Your prompt must now end in `SURVY-RAG\\prototype>`. The launchers are under
+`prototype\\tools\\`; running `.`\\tools\\... from the parent `SURVY-RAG` folder will return
+PowerShell's “term is not recognized” error because that relative path does not exist there.
+
+**Start the customer authorized RAG first:**
+
+```powershell
+.\\tools\\Start-ServyRealDemo.ps1
+```
+
+Open `http://127.0.0.1:5175/`, enter the existing customer RAG access code, and create/confirm a ticket.
+This first step creates the dedicated local SQLite ticket workspace. It does not create an official
+MySQL service call.
+
+**Then start the separate technician code-gated instance:**
+
+```powershell
+.\\tools\\Start-ServyTechnicianDemo.ps1
+```
+
+Open `http://127.0.0.1:5176/` and use the code in the local `technician_access.txt` file printed by
+the launcher. The technician launcher intentionally refuses to initialize an empty ticket database.
+
+You can also invoke either launcher directly while remaining in the parent `SURVY-RAG` folder by
+including the repository directory in the path:
+
+```powershell
+.\\prototype\\tools\\Start-ServyRealDemo.ps1
+.\\prototype\\tools\\Start-ServyTechnicianDemo.ps1
+```
+
+If a launcher gets past the path check but fails during startup, use the private log path printed by
+that launcher; do not delete the ticket database, reset the company database, or start another MySQL
+instance as a troubleshooting shortcut.
+
+---
+
 ## Quick Start & Running Commands
 
 ### Prerequisites
