@@ -1020,11 +1020,15 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                 "There is insufficient evidence to establish a safe answer for this equipment and question. Ask an authorized technician for help."):
             topic = question_topic(question, last_topic)
             message = NO_EVIDENCE[topic]
+            preserve_topic = (
+                bool(previous_facts) and is_contextual_followup(question)
+                and last_topic in TOPICS
+            )
             return {
                 **contract, "summary": message, "answer": message,
                 "presentation": {**presentation, "message": message},
-            }, {"topic": topic, "facts": list(previous_facts)[:24],
-                "suggestions": []}
+            }, {"topic": last_topic if preserve_topic else topic,
+                "facts": list(previous_facts)[:24], "suggestions": []}
         return contract, {"topic": last_topic, "facts": list(previous_facts)[:24],
                           "suggestions": []}
     original = contract.get("presentation") or {}
