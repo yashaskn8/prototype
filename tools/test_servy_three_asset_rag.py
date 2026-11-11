@@ -109,6 +109,27 @@ class ThreeAssetNineDocumentRegistryTests(unittest.TestCase):
                 )
             self.assertFalse(is_document_applicable_to_asset(document, None))
 
+    def test_frozen_ci_fixture_has_regressions_for_all_three_assets(self):
+        from core.ml.benchmark_registry import load_and_verify_benchmark
+
+        benchmark = load_and_verify_benchmark("servy-ci-regression-fixture-v1")
+        rows = [
+            row for row in benchmark["cases"]
+            if row.get("equipment") in {item["name"] for item in EXPECTED_ASSETS.values()}
+            and row.get("positive_chunk_ids")
+        ]
+        counts = {
+            name: sum(row["equipment"] == name for row in rows)
+            for name in (item["name"] for item in EXPECTED_ASSETS.values())
+        }
+        self.assertEqual(counts, {
+            "Split AC Unit 2T": 11,
+            "VRF Outdoor Module": 8,
+            "Ductable AC 5T": 9,
+        })
+        self.assertEqual(len(rows), 28)
+        self.assertTrue(all(row.get("positive_chunk_ids") for row in rows))
+
     def test_demo_customer_scope_matches_the_three_asset_registry(self):
         expected_scope = {
             asset_id: row["customer_id"] for asset_id, row in EXPECTED_ASSETS.items()
