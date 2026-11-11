@@ -26,6 +26,8 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(page, /tech-api\/tickets/);
   assert.match(page, /technicianNotes/);
   assert.match(page, /downloadAttachment/);
+  assert.match(page, /window\.setInterval\(refreshQueue, 8000\)/);
+  assert.match(page, /queue refreshes automatically/i);
   assert.match(customerPage, /http:\/\/127\.0\.0\.1:5176\//);
   assert.match(customerPage, /technician_access\.txt/);
   assert.match(launcher, /technician_access\.txt/);
