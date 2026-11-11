@@ -1,7 +1,9 @@
 """Isolation and update tests for the separate code-gated technician demo."""
+import io
 import sqlite3
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -83,6 +85,24 @@ class TechnicianDemoWorkspaceTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_http_request_log_shows_status_without_ticket_content_or_id(self):
+        handler = object.__new__(tech.Handler)
+        ticket_id = "LOCAL-20261111-ABCDEF12"
+        handler.path = f"/tech-api/tickets/{ticket_id}/"
+        handler.command = "GET"
+        handler._request_started = tech.time.perf_counter()
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda _status: None
+        handler.send_header = lambda _name, _value: None
+        handler.end_headers = lambda: None
+        output = io.StringIO()
+        with redirect_stdout(output):
+            handler._send_json(200, {"ticket": {"complaintText": "private customer report"}})
+        line = output.getvalue()
+        self.assertIn("HTTP 200 OK | GET /tech-api/tickets/{ticket_id}/", line)
+        self.assertNotIn(ticket_id, line)
+        self.assertNotIn("private customer report", line)
 
     def test_queue_includes_only_authorized_rag_demo_tickets(self):
         tickets = tech.list_tickets(self.db)
