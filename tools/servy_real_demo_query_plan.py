@@ -11,7 +11,9 @@ import re
 
 from core.services.content_safety import query_is_control_abuse
 from core.services.query_decomposition import relevance_text, retrieval_focus
-from tools.servy_real_demo_dialogue import out_of_scope_response
+from tools.servy_real_demo_dialogue import (
+    is_explanation_followup, out_of_scope_response, question_topic,
+)
 
 _COMPONENT = re.compile(
     r"\b(?:compressor|fan|coil|filter|refrigerant|thermostat|sensor|"
@@ -21,7 +23,7 @@ _COMPONENT = re.compile(
 _CODE = re.compile(r"\b(?:E|F|ERR)[- ]?\d{1,3}\b", re.I)
 
 
-def targeted_retry_query(question, asset, context):
+def targeted_retry_query(question, asset, context, *, last_topic=None):
     """Generate one safe retrieval query or return None.
 
     The caller must enforce the same customer/asset permissions, source
@@ -35,13 +37,21 @@ def targeted_retry_query(question, asset, context):
     q = " ".join(question.split())
     if not q or out_of_scope_response(q) or query_is_control_abuse(q):
         return None
-    # Anchor on what is being asked/reported now. A component the customer says
-    # is clean or already checked must not become the retry subject.
+
+    topic = question_topic(q, last_topic=last_topic)
+    explanation_request = (
+        last_topic == "causes" and is_explanation_followup(q)
+    )
+    observation_request = topic == "observations"
+    # Keep the established component/code retry, and add two bounded
+    # evidence-only retrieval intents: customer-visible observations and a
+    # deeper source search for an explicitly referenced cause list.
     relevant = relevance_text(q)
     subject = _CODE.search(relevant) or _COMPONENT.search(relevant)
-    if subject is None:
+    if subject is None and not (observation_request or explanation_request):
         return None
-    # This is a retrieval hint, not a new customer observation or a diagnosis.
+
+    # This is a retrieval hint, not a new customer observation or diagnosis.
     # Only the selected asset and latest signed customer issue are considered.
     asset_name = " ".join(str(getattr(asset, "name", "") or "").split())[:90]
     asset_model = " ".join(str(getattr(asset, "model_number", "") or "").split())[:45]
@@ -50,11 +60,26 @@ def targeted_retry_query(question, asset, context):
     issue = issue[:160]
     if query_is_control_abuse(issue) or out_of_scope_response(issue):
         issue = ""
-    anchor = subject.group(0)
-    clauses = [asset_name, asset_model, anchor]
-    if issue and issue.casefold() != q.casefold() and anchor.casefold() not in issue.casefold():
-        clauses.append(issue)
-    elif issue and issue.casefold() != q.casefold():
-        clauses = [asset_name, asset_model, issue]
-    # Do not repeat the entire conversation; avoid noisy keyword saturation.
+
+    if observation_request:
+        clauses = [
+            asset_name, asset_model, issue,
+            "customer-visible safe observations external display fault code warning "
+            "indicator operating mode visible status and visible air path",
+        ]
+    elif explanation_request:
+        clauses = [
+            asset_name, asset_model, issue,
+            "detailed documented causes explanation operating conditions sensor control "
+            "refrigerant system troubleshooting factors",
+        ]
+    else:
+        anchor = subject.group(0)
+        clauses = [asset_name, asset_model, anchor]
+        if issue and issue.casefold() != q.casefold() and anchor.casefold() not in issue.casefold():
+            clauses.append(issue)
+        elif issue and issue.casefold() != q.casefold():
+            clauses = [asset_name, asset_model, issue]
+
+    # Do not repeat the transcript; the retry is still limited to one query.
     return " ".join(item for item in clauses if item).strip()[:350] or None
