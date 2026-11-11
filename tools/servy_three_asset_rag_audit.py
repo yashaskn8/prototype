@@ -148,6 +148,12 @@ def _build_cases(benchmark):
 
 
 def run_audit():
+    # Match the customer demo's extractive answer path and keep the audit fully
+    # local/offline. This measures retrieval, not LLM paraphrase quality.
+    os.environ["SERVY_LLM_PROVIDER"] = "extractive"
+    os.environ["SERVY_ALLOW_REMOTE_LLM"] = "0"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     from tools.servy_100_readonly_eval import configure_process, verify_readonly_identity
     configure_process()
     identity = verify_readonly_identity()
