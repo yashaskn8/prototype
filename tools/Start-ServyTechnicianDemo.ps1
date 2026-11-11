@@ -16,12 +16,11 @@ $accessFile = Join-Path $instanceRoot 'technician_access.txt'
 $logRoot = Join-Path $instanceRoot 'logs'
 
 # Match the exact local ticket database path used by Start-ServyRealDemo.ps1.
-$sharedLocalAppData = $env:LOCALAPPDATA
+# Resolve the actual Windows known folder, not a LOCALAPPDATA value that
+# Start-ServyRealDemo.ps1 may have temporarily overridden in this shell.
+$sharedLocalAppData = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
 if ([string]::IsNullOrWhiteSpace($sharedLocalAppData)) {
-    $sharedLocalAppData = $env:XDG_STATE_HOME
-    if ([string]::IsNullOrWhiteSpace($sharedLocalAppData)) {
-        $sharedLocalAppData = Join-Path $env:USERPROFILE '.local\state'
-    }
+    $sharedLocalAppData = Join-Path $env:USERPROFILE 'AppData\Local'
 }
 $ticketDb = Join-Path $sharedLocalAppData 'Servy\local-ticket-workspace.sqlite3'
 
