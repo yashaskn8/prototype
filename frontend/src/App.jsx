@@ -15,6 +15,7 @@ import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { RealDemoPage } from './pages/RealDemoPage';
 import { TechnicianInboxPage } from './pages/TechnicianInboxPage';
 import { TicketWorkspacePage } from './pages/TicketWorkspacePage';
+import { TechnicianSecretPage } from './pages/TechnicianSecretPage';
 
 function isTechnicianInboxLocation() {
   return window.location.pathname === '/technician/inbox' || window.location.hash === '#/technician/inbox';
@@ -151,6 +152,7 @@ function MainLayout() {
 }
 
 export default function App() {
+  if (import.meta.env.VITE_SERVY_TECH_DEMO === '1') return <TechnicianSecretPage />;
   if (import.meta.env.VITE_SERVY_REAL_DEMO === '1') return <RealDemoPage />;
   return (
     <AuthProvider>
