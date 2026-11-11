@@ -1,10 +1,15 @@
 # Reopen the existing localhost-only, read-only real-data demo.
 # No migrations, seeding, account creation, or company-data changes.
-param([switch]$Watch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
+param([switch]$Watch, [switch]$NoWatch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
 $demoFolder = Join-Path $privateLocal 'Servy\private_evaluations\servy_real_demo_20261031_01'
+$backendOutLog = Join-Path $demoFolder 'startup.out'
+$backendErrLog = Join-Path $demoFolder 'startup.err'
+$viteOutLog = Join-Path $demoFolder 'vite.out'
+$viteErrLog = Join-Path $demoFolder 'vite.err'
+$activityLogPaths = @($backendOutLog, $backendErrLog, $viteOutLog, $viteErrLog)
 $accessFile = Join-Path $demoFolder 'real_demo_access.txt'
 $credentialFile = Join-Path $privateLocal 'Servy\private_evaluations\servy_eval_credentials\servy_eval_ro.dpapi'
 # Resolve the Windows known folder before redirecting LOCALAPPDATA to the
@@ -156,8 +161,6 @@ if ($ReviewRequest) {
 }
 
 if (!(Test-LocalPort 8002)) {
-    $backendOutLog = Join-Path $demoFolder 'startup.out'
-    $backendErrLog = Join-Path $demoFolder 'startup.err'
     $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
     # A previous invocation may have timed out while its model/index load was
@@ -205,15 +208,18 @@ $env:VITE_SERVY_REAL_DEMO = '1'
 if (!(Test-LocalPort 5175)) {
     Start-Process -FilePath 'npm.cmd' -ArgumentList 'run','dev','--','--host','127.0.0.1','--port','5175','--strictPort' `
         -WorkingDirectory (Join-Path $projectRoot 'frontend') -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $demoFolder 'vite.out') `
-        -RedirectStandardError (Join-Path $demoFolder 'vite.err') | Out-Null
+        -RedirectStandardOutput $viteOutLog `
+        -RedirectStandardError $viteErrLog | Out-Null
     for ($i = 0; $i -lt 15 -and !(Test-LocalPort 5175); $i++) { Start-Sleep -Seconds 1 }
     if (!(Test-LocalPort 5175)) { throw "Demo frontend failed; inspect private vite.err locally." }
 }
 
 Write-Output 'Real-data demo ready: http://127.0.0.1:5175/'
 Write-Output ('Enter the separate code from: ' + $accessFile)
-if ($Watch) {
-    Write-Output 'Watching safe backend request status. Press Ctrl+C to stop watching; the servers remain running.'
-    Get-Content -LiteralPath (Join-Path $demoFolder 'startup.out') -Tail 1 -Wait
+if (-not $NoWatch) {
+    $availableLogs = @($activityLogPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    Write-Output ''
+    Write-Output 'Live customer RAG logs: backend HTTP statuses and Vite development-server activity.'
+    Write-Output 'Press Ctrl+C to close this log viewer only; the backend and frontend processes remain running.'
+    Get-Content -Path $availableLogs -Tail 15 -Wait
 }
