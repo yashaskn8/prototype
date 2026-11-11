@@ -1301,13 +1301,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                          "title": "Evidence limitation",
                          "claims": [{"text": symptom_limit, "kind": "uncertainty",
                                      "evidence_ids": []}]})
-        lead = (lead + " " + symptom_limit).strip()
     if detail_limit:
         sections.append({"number": len(sections) + 1,
                          "title": "Evidence limitation",
                          "claims": [{"text": detail_limit, "kind": "uncertainty",
                                      "evidence_ids": []}]})
-        lead = (lead + " " + detail_limit).strip()
     new_presentation = {
         **original,
         "view_mode": "focused",
