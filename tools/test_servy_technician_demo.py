@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tools import servy_technician_demo as tech
 
@@ -124,6 +125,16 @@ class TechnicianDemoWorkspaceTests(unittest.TestCase):
         missing = Path(self.temp.name) / "missing-local-ticket-workspace.sqlite3"
         self.assertEqual(tech.list_tickets(missing), [])
         self.assertFalse(missing.exists(), "Technician queue must not initialize customer ticket storage")
+
+    def test_main_starts_empty_queue_without_creating_workspace(self):
+        missing = Path(self.temp.name) / "local-ticket-workspace.sqlite3"
+        with patch.object(tech, "DB_PATH", missing), \
+                patch.object(tech, "_ensure_access_code", return_value="test-only-code"), \
+                patch.object(tech, "HTTPServer") as server:
+            server.return_value.serve_forever.side_effect = RuntimeError("test server stop")
+            with self.assertRaisesRegex(RuntimeError, "test server stop"):
+                tech.main()
+        self.assertFalse(missing.exists(), "Technician startup must not create customer ticket storage")
 
     def test_workspace_path_must_keep_expected_name(self):
         wrong = Path(self.temp.name) / "company.sqlite3"
