@@ -1,7 +1,7 @@
 <# Start the separate code-gated technician view for authorized RAG tickets.
    Uses only the dedicated local SQLite ticket workspace; never connects to MySQL. #>
 [CmdletBinding()]
-param([ValidateRange(10, 120)][int]$ReadinessTimeoutSeconds = 45)
+param([ValidateRange(10, 120)][int]$ReadinessTimeoutSeconds = 45, [switch]$NoWatch)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -45,6 +45,15 @@ function Test-LocalPort([int]$Port) {
         if ($null -ne $attempt) { $attempt.AsyncWaitHandle.Close() }
         $client.Dispose()
     }
+
+if (-not $NoWatch) {
+    $activityLogs = @($backendOut, $backendErr, $frontendOut, $frontendErr) |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    Write-Host ''
+    Write-Host 'Live technician logs: HTTP request statuses and Vite development-server activity.'
+    Write-Host 'Press Ctrl+C to close this log viewer only; the technician backend and UI remain running.'
+    Get-Content -Path $activityLogs -Tail 15 -Wait
+}
 }
 
 foreach ($port in 8003, 5176) {
