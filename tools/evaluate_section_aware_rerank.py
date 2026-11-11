@@ -17,6 +17,13 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+import os
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
+import django
+
+django.setup()
+
 from core.ml.section_aware_rerank import experimental_evidence_section_rerank
 from core.services.retriever import RetrievedChunk
 
