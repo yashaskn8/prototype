@@ -453,6 +453,8 @@ def is_contextual_followup(question):
         return True
     if is_component_followup(q):
         return True
+    if is_explanation_followup(q):
+        return True
     if re.fullmatch(
         r"(?:what (?:next|now|else)|what should i do(?: next)?|"
         r"any(?:thing)? (?:else|more)|tell me more|"
@@ -782,6 +784,24 @@ def _direct_general_overlap(question, claim, citation):
     return bool(tokens & words)
 
 
+_EXPLANATION_FOLLOWUP = re.compile(
+    r"\\b(?:explain|elaborate|expand on|break down|go into detail on|"
+    r"go into more detail on)\\b.{0,100}\\b(?:each|both|those|these|them|"
+    r"the above|the listed|all)\\b.{0,45}\\b(?:issues?|problems?|causes?|"
+    r"reasons?|possibilities|factors?|items?)\\b|"
+    r"\\b(?:explain|elaborate|expand|break down)\\b.{0,80}\\b"
+    r"(?:each|those|these|them)\\b|"
+    r"\\b(?:more detail|in detail|in depth)\\b.{0,60}\\b"
+    r"(?:above|those|these|issues?|causes?|possibilities)\\b",
+    re.I,
+)
+
+
+def is_explanation_followup(question):
+    """Recognize a request to expand on a previously cited equipment answer."""
+    return bool(_EXPLANATION_FOLLOWUP.search(" ".join(str(question or "").split())))
+
+
 def question_topic(question, last_topic=None):
     """Deterministic routing; no extra intents are invented from documents."""
     q = _words(question)
@@ -834,6 +854,8 @@ def question_topic(question, last_topic=None):
         return "documents"
     # Preserve context only for genuine referential follow-ups.
     # "Who is Yashas?" must never inherit "causes" merely for being short.
+    if last_topic in {"causes", "documents", "observations"} and is_explanation_followup(question):
+        return last_topic
     if last_topic in TOPICS and is_component_followup(question):
         # The component question inherits the current *type* of question,
         # not arbitrary prior answer text. This helps "what about the fan?"
@@ -1157,7 +1179,14 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                    "citations": [], "references": [], "customer_safe_actions": [],
                    "can_resolve": False, "reason_code":
                        "OUT_OF_SCOPE_QUERY" if off_topic else "NO_RELEVANT_APPROVED_EVIDENCE"}
-        return revised, {"topic": last_topic if off_topic else topic,
+        # A failed contextual follow-up must not overwrite the topic of the
+        # last successful cited answer. Otherwise "explain each issue" after
+        # an unanswered observation request loses the earlier cause list.
+        preserve_topic = (
+            off_topic is not None
+            or (bool(previous_facts) and is_contextual_followup(question))
+        )
+        return revised, {"topic": last_topic if preserve_topic and last_topic in TOPICS else topic,
                          "facts": list(previous_facts)[:24], "suggestions": []}
 
     follow_up = _follow_up(topic, question, history)
