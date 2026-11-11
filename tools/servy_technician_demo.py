@@ -33,7 +33,7 @@ def _open_store(db_path=DB_PATH):
         raise RuntimeError("Technician demo is not pointed at the dedicated local ticket workspace.")
     if not path.is_file():
         raise FileNotFoundError("The customer RAG has not created its local ticket workspace yet.")
-    uri = "file:" + quote(str(path).replace("\\", "/"), safe="/:") + "?mode=rw"
+    uri = path.as_uri() + "?mode=rw"
     connection = sqlite3.connect(uri, uri=True, timeout=10)
     connection.row_factory = sqlite3.Row
     tables = {row["name"] for row in connection.execute(
@@ -243,13 +243,14 @@ class Handler(BaseHTTPRequestHandler):
                 name, content_type, content, size = read_attachment(
                     unquote(attachment.group(1)), unquote(attachment.group(2))
                 )
-                safe_name = Path(name.replace("\\", "/")).name.replace('"', "")
+                safe_name = re.sub(r"[\\r\\n]", "", Path(name.replace("\\\\", "/")).name).replace('"', "")
                 self.send_response(200)
                 self.send_header("Content-Type", content_type or "application/octet-stream")
                 self.send_header("Content-Length", str(size))
                 self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
                 self.send_header("Cache-Control", "no-store, private")
                 self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
                 self.end_headers()
                 self.wfile.write(content)
                 print("GET ticket-attachment 200", flush=True)
