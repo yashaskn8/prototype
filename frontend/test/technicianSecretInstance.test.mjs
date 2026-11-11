@@ -37,6 +37,10 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(customerLauncher, /GetFolderPath\(\[System\.Environment\+SpecialFolder\]::LocalApplicationData\)/);
   assert.match(launcher, /SERVY_LOCAL_TICKET_DB_PATH/);
   assert.match(customerLauncher, /SERVY_LOCAL_TICKET_DB_PATH/);
+  assert.match(customerLauncher, /Get-Content -Path \$availableLogs -Tail 15 -Wait/);
+  assert.match(customerLauncher, /Live customer RAG logs/);
+  assert.match(launcher, /Get-Content -Path \$activityLogs -Tail 15 -Wait/);
+  assert.match(launcher, /Live technician logs/);
   assert.match(backend, /if not path\.is_file\(\):\s+return \[\]/);
   assert.match(backend, /secrets\.compare_digest/);
   assert.match(backend, /127\.0\.0\.1/);
