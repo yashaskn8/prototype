@@ -26,7 +26,10 @@ function isRagTicketWorkspaceLocation() {
 
 function MainLayout() {
   const { user, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState(() => isTechnicianInboxLocation() ? 'technician-inbox' : 'dashboard');
+  const [activeTab, setActiveTab] = useState(() => (
+    isRagTicketWorkspaceLocation() ? 'rag-ticket-workspace'
+      : isTechnicianInboxLocation() ? 'technician-inbox' : 'dashboard'
+  ));
   const [copilotCallId, setCopilotCallId] = useState(null);
 
   const inboxPath = import.meta.env.DEV ? '/technician/inbox' : '/app/#/technician/inbox';
