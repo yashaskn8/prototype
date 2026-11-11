@@ -541,6 +541,62 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(question_topic("No error code", "causes"), "next")
         self.assertEqual(question_topic("There is no warning on the display", "causes"), "next")
 
+    def test_unanswered_observation_followup_preserves_last_successful_cause_topic(self):
+        base = contract()
+        cause_claims = [
+            item for item in base["presentation"]["supporting_claims"]
+            if item["kind"] == "possible_cause"
+        ]
+        base["presentation"]["supporting_claims"] = cause_claims
+        previous = [
+            fact_fingerprint(
+                item,
+                next(c for c in base["presentation"]["citations"]
+                     if c["id"] == item["evidence_ids"][0]),
+            )
+            for item in cause_claims
+        ]
+        unanswered, state = focus_answer(
+            base, "What can I safely observe?",
+            last_topic="causes", previous_facts=previous,
+        )
+        self.assertEqual(unanswered["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(state["topic"], "causes")
+        self.assertEqual(state["facts"], previous)
+        followup = "ok could you explain each issue in detailed"
+        self.assertTrue(is_contextual_followup(followup))
+        self.assertEqual(question_topic(followup, state["topic"]), "causes")
+
+    def test_explain_each_issue_in_detail_reuses_cited_causes_and_states_depth_limit(self):
+        base = contract()
+        cause_claims = [
+            item for item in base["presentation"]["supporting_claims"]
+            if item["kind"] == "possible_cause"
+        ]
+        cause_citations = [
+            citation for citation in base["presentation"]["citations"]
+            if citation["id"] in {item["evidence_ids"][0] for item in cause_claims}
+        ]
+        previous = [
+            fact_fingerprint(
+                item,
+                next(c for c in cause_citations if c["id"] == item["evidence_ids"][0]),
+            )
+            for item in cause_claims
+        ]
+        question = "ok could you explain each issue in detailed"
+        result, state = focus_answer(
+            base, question, last_topic="causes", previous_facts=previous,
+        )
+        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertTrue(result["presentation"]["citations"])
+        self.assertEqual(result["presentation"]["sections"][0]["title"], "Documented possible causes")
+        self.assertIn(
+            "do not contain a separately citable explanation",
+            result["answer"],
+        )
+        self.assertEqual(state["topic"], "causes")
+
     def test_wrong_error_code_cannot_supply_a_cited_definition(self):
         base = contract()
         wrong = base["presentation"]["supporting_claims"][-2]
