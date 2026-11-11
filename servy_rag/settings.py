@@ -277,6 +277,8 @@ SERVY_RERANKER_EXPECTED_SHA256 = os.getenv("SERVY_RERANKER_EXPECTED_SHA256", "")
 SERVY_RERANKER_DEVICE = os.getenv("SERVY_RERANKER_DEVICE", SERVY_EMBEDDING_DEVICE)
 # The evaluated BGE+V5 dev configuration used a head pool of five candidates.
 SERVY_RERANKER_POOL_SIZE = int(os.getenv("SERVY_RERANKER_POOL_SIZE", "5"))
+# Experimental evidence + section-intent reranking. OFF by default; isolate for evaluation.
+SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK = os.getenv("SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK", "0") == "1"
 SERVY_ML_ARTIFACTS_DIR = BASE_DIR / "ml_artifacts"
 
 # Starlly API Integration

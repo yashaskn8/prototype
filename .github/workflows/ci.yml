@@ -126,6 +126,9 @@ jobs:
       - name: Three-Asset / Nine-Manual V5 Retrieval Regressions
         run: python manage.py test core.tests_three_asset_retrieval -v 2
 
+      - name: Experimental Section-Aware Reranker Unit Tests (default remains off)
+        run: python manage.py test core.tests_section_aware_rerank -v 2
+
       - name: RAG Accuracy Red-Team Unit Tests
         run: python manage.py test core.tests_accuracy_redteam -v 2
 

@@ -50,6 +50,11 @@ class RetrievedChunk:
     equipment_applicable: bool = False
     customer_action_authorized: bool = False
     source_eligible: bool = False
+    section_query_intents: tuple[str, ...] = ()
+    section_candidate_intents: tuple[str, ...] = ()
+    section_rerank_adjustment: float = 0.0
+    section_rerank_score: float | None = None
+    section_rerank_reason: str = ""
 
     @property
     def reference(self):
@@ -58,11 +63,12 @@ class RetrievedChunk:
 
 
 class RetrievedResultList(list):
-    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False, reranker_model=None):
+    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False, reranker_model=None, experimental_section_rerank_applied=False):
         super().__init__(items)
         self.retrieval_backend = retrieval_backend
         self.reranker_applied = reranker_applied
         self.reranker_model = reranker_model if reranker_applied else None
+        self.experimental_section_rerank_applied = bool(experimental_section_rerank_applied)
 
 
 def is_authorized_candidate(
@@ -1313,15 +1319,51 @@ def retrieve(
         if len(selected) >= rerank_pool_limit:
             break
 
+    experimental_section_rerank_enabled = (
+        getattr(settings, "SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK", False) is True
+    )
+    asset_context = ""
+    if experimental_section_rerank_enabled and asset is not None:
+        asset_context = " | ".join(
+            str(value).strip()
+            for value in (
+                getattr(asset, "name", ""),
+                getattr(asset, "asset_code", ""),
+                getattr(asset, "model_number", ""),
+            )
+            if value
+        )
+
     try:
         from core.ml.reranker import rerank_candidates
-        selected = rerank_candidates(evidence_text, selected, top_k=top_k)
+        if experimental_section_rerank_enabled:
+            selected = rerank_candidates(
+                evidence_text, selected, top_k=top_k,
+                context_aware=True, asset_context=asset_context,
+            )
+        else:
+            # Preserve the exact production/default invocation and candidate text.
+            selected = rerank_candidates(evidence_text, selected, top_k=top_k)
     except Exception as exc:
         # Required-model deployments must not silently serve baseline results.
         if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
             raise
         logger.warning("Reranker step skipped due to error: %s", exc)
         selected = selected[:top_k]
+
+    experimental_section_rerank_applied = False
+    if experimental_section_rerank_enabled and selected:
+        before_experiment = list(selected)
+        try:
+            from core.ml.section_aware_rerank import experimental_evidence_section_rerank
+            selected = experimental_evidence_section_rerank(
+                selected, evidence_text, top_k=top_k,
+            )
+            experimental_section_rerank_applied = True
+        except Exception as exc:
+            # Experimental failures preserve the pre-experiment ranking.
+            logger.warning("Experimental section-aware reranking skipped: %s", exc)
+            selected = before_experiment
 
     if len(selected) > top_k:
         selected = selected[:top_k]
@@ -1343,4 +1385,5 @@ def retrieve(
              and getattr(item, "reranker_model", None)),
             None,
         ),
+        experimental_section_rerank_applied=experimental_section_rerank_applied,
     )

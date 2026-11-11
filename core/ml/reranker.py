@@ -157,7 +157,29 @@ def calibrated_sigmoid_score(logit: float) -> float:
     return y / (1.0 + y)
 
 
-def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
+
+def build_contextual_candidate_text(candidate, asset_context: str = "") -> str:
+    """Add scoped asset/document/section metadata without altering source text."""
+    metadata = []
+    if asset_context:
+        metadata.append(f"Asset: {asset_context}")
+    title = str(getattr(candidate, "title", "") or "").strip()
+    heading = str(getattr(candidate, "heading", "") or "").strip()
+    doc_type = str(getattr(candidate, "doc_type", "") or "").strip()
+    if title:
+        metadata.append(f"Document: {title}")
+    if heading:
+        metadata.append(f"Section: {heading}")
+    if doc_type:
+        metadata.append(f"Document type: {doc_type}")
+    passage = str(getattr(candidate, "text", "") or "").strip()
+    prefix = "\n".join(metadata)
+    budget = max(800, 3200 - len(prefix))
+    passage = passage[:budget]
+    return f"{prefix}\nPassage: {passage}" if prefix else passage
+
+
+def rerank_candidates(query: str, candidates: List, top_k: int = 8, *, context_aware: bool = False, asset_context: str = "") -> List:
     """Rerank only pre-authorized technical chunks in a bounded top-N pool.
 
     No source discovery, authorization bypass, or changes to historical cases.
@@ -186,7 +208,10 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8) -> List:
         pool = docs[:pool_size]
         # Validate the full prediction BEFORE mutating any result objects.
         if pool:
-            pairs = [[query, c.text] for c in pool]
+            pairs = [
+                [query, build_contextual_candidate_text(c, asset_context) if context_aware else c.text]
+                for c in pool
+            ]
             # Explicit identity activation matches the offline research scorer.
             # For one-label CrossEncoders, predict() commonly defaults to
             # sigmoid; applying calibrated_sigmoid_score again would distort
