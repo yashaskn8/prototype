@@ -158,22 +158,44 @@ if ($ReviewRequest) {
 if (!(Test-LocalPort 8002)) {
     $backendOutLog = Join-Path $demoFolder 'startup.out'
     $backendErrLog = Join-Path $demoFolder 'startup.err'
-    $backendProcess = Start-Process -FilePath (Join-Path $projectRoot '.venv\Scripts\python.exe') `
-        -ArgumentList '-B','-u','tools\servy_real_demo.py' -WorkingDirectory $projectRoot `
-        -WindowStyle Hidden -PassThru -RedirectStandardOutput $backendOutLog `
-        -RedirectStandardError $backendErrLog
+    $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
+
+    # A previous invocation may have timed out while its model/index load was
+    # still running. Reuse only this exact project's virtualenv Python process;
+    # never launch a duplicate backend or stop an unidentified process.
+    $matchingBackends = @(
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop |
+        Where-Object {
+            [string]::Equals([string]$_.ExecutablePath, $pythonPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $_.CommandLine -match 'tools[\\/]servy_real_demo\.py'
+        }
+    )
+    if ($matchingBackends.Count -gt 1) {
+        throw "Found $($matchingBackends.Count) matching Servy real-demo Python processes but port 8002 is closed. No process was stopped or duplicated; inspect Task Manager and the private logs."
+    }
+    if ($matchingBackends.Count -eq 1) {
+        $backendProcessId = [int]$matchingBackends[0].ProcessId
+        Write-Output "Reusing existing Servy real-demo backend process $backendProcessId while it finishes startup."
+    } else {
+        $backendProcess = Start-Process -FilePath $pythonPath `
+            -ArgumentList '-B','-u','tools\servy_real_demo.py' -WorkingDirectory $projectRoot `
+            -WindowStyle Hidden -PassThru -RedirectStandardOutput $backendOutLog `
+            -RedirectStandardError $backendErrLog
+        $backendProcessId = [int]$backendProcess.Id
+    }
+
     # A private BGE index reconstruction can take several minutes on CPU.
     # Wait safely, and distinguish an exited child from a slow startup.
     $backendChecks = 240
     for ($i = 0; $i -lt $backendChecks -and !(Test-LocalPort 8002); $i++) {
-        if ($null -eq (Get-Process -Id $backendProcess.Id -ErrorAction SilentlyContinue)) { break }
+        if ($null -eq (Get-Process -Id $backendProcessId -ErrorAction SilentlyContinue)) { break }
         Start-Sleep -Seconds 1
     }
     if (!(Test-LocalPort 8002)) {
-        $processState = if ($null -eq (Get-Process -Id $backendProcess.Id -ErrorAction SilentlyContinue)) {
-            "Python backend process $($backendProcess.Id) exited."
+        $processState = if ($null -eq (Get-Process -Id $backendProcessId -ErrorAction SilentlyContinue)) {
+            "Python backend process $backendProcessId exited."
         } else {
-            "Python backend process $($backendProcess.Id) is still running but did not open port 8002 within $backendChecks seconds."
+            "Python backend process $backendProcessId is still running but did not open port 8002 within $backendChecks seconds."
         }
         throw "$processState Inspect the private logs: stdout=$backendOutLog ; stderr=$backendErrLog"
     }
