@@ -235,6 +235,11 @@ class TechnicianHandoffFlowTests(TestCase):
     def test_customer_and_out_of_scope_technician_cannot_access_ticket_inbox(self):
         created = self.create_ticket()
         call_id = created.data["ticket"]["id"]
+        assigned_call = ServiceCall.objects.get(pk=call_id)
+        self.assertEqual(assigned_call.technician_id, self.technician.id)
+
+        self.login(self.technician_user)
+        self.assertEqual(self.client.get(reverse("api_call_detail", args=[call_id])).status_code, 200)
 
         self.login(self.customer_user)
         self.assertEqual(self.client.get(reverse("api_technician_inbox")).status_code, 403)
@@ -257,13 +262,37 @@ class TechnicianHandoffFlowTests(TestCase):
             403,
         )
         self.assertEqual(self.client.get(reverse("api_calls")).data["calls"], [])
-        self.assertEqual(self.client.get(reverse("api_call_detail", args=[call_id])).status_code, 404)
+        assigned_to_other = self.client.get(reverse("api_call_detail", args=[call_id]))
+        self.assertEqual(assigned_to_other.status_code, 404)
+        self.assertEqual(assigned_to_other.data, {"detail": "Call not found."})
         self.assertEqual(self.client.get(reverse("api_asset_calls", args=[self.asset.id])).data["calls"], [])
         copilot = self.client.post(reverse("api_engineer_copilot_query"), {
             "call_id": call_id,
             "question": "What should I inspect?",
         }, format="json")
         self.assertEqual(copilot.status_code, 404)
+        self.assertEqual(copilot.data, {"detail": "Service call not found in this tenant."})
+
+        # An open, unassigned ticket is visible only inside its dispatch zone.
+        south_site = Site.objects.create(
+            tenant=self.tenant, customer=self.other_customer, zone=self.other_zone, name="Plant South",
+        )
+        south_call = ServiceCall.objects.create(
+            tenant=self.tenant, servy_id=902, complaint_type="South zone issue",
+            complaint_text="Reported issue in the south zone.", customer=self.other_customer,
+            site=south_site, zone=self.other_zone, status="open",
+        )
+        self.login(self.technician_user)
+        north_inbox = self.client.get(reverse("api_technician_inbox"))
+        self.assertNotIn(south_call.id, [item["id"] for item in north_inbox.data["tickets"]])
+        out_of_zone = self.client.get(reverse("api_call_detail", args=[south_call.id]))
+        self.assertEqual(out_of_zone.status_code, 404)
+        self.assertEqual(out_of_zone.data, {"detail": "Call not found."})
+
+        self.login(self.out_of_scope_user)
+        south_inbox = self.client.get(reverse("api_technician_inbox"))
+        self.assertIn(south_call.id, [item["id"] for item in south_inbox.data["tickets"]])
+        self.assertEqual(self.client.get(reverse("api_call_detail", args=[south_call.id])).status_code, 200)
 
     def test_technician_cannot_act_as_customer_in_pre_ticket_support_workflow(self):
         self.login(self.technician_user)

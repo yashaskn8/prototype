@@ -38,7 +38,7 @@ class ApiSecurityAndPermissionsTests(TestCase):
         # 4. Customers & Sites
         self.customer_a1 = Customer.objects.create(tenant=self.tenant_a, name="Customer A1")
         self.customer_a2 = Customer.objects.create(tenant=self.tenant_a, name="Customer A2")
-        self.site_a1 = Site.objects.create(tenant=self.tenant_a, customer=self.customer_a1, name="Plant 1", city="Springfield")
+        self.site_a1 = Site.objects.create(tenant=self.tenant_a, customer=self.customer_a1, name="Plant 1", city="Springfield", zone=self.zone)
         self.site_a2 = Site.objects.create(tenant=self.tenant_a, customer=self.customer_a2, name="Plant 2", city="Shelbyville")
 
         # 5. Assets
@@ -194,7 +194,8 @@ class ApiSecurityAndPermissionsTests(TestCase):
         # Create a service call to query against
         call = ServiceCall.objects.create(
             tenant=self.tenant_a, servy_id=201, complaint_type="Leak", complaint_text="Hydraulic pressure loss",
-            customer=self.customer_a1, site=self.site_a1, asset=self.asset_a1, status="open"
+            customer=self.customer_a1, site=self.site_a1, asset=self.asset_a1,
+            technician=self.tech_profile, zone=self.zone, status="assigned"
         )
         self.client.login(username="tech_user", password="TechPassword!2026")
         url = reverse("api_engineer_copilot_query")
@@ -204,7 +205,7 @@ class ApiSecurityAndPermissionsTests(TestCase):
             "call_id": call.id,
             "question": "Provide hydraulic valve repair procedure.",
         }, format="json")
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 200, res.data)
         self.assertIn("answer", res.data)
         self.assertIn("references", res.data)
 
@@ -213,7 +214,7 @@ class ApiSecurityAndPermissionsTests(TestCase):
             "call_id": call.id,
             "query": "Provide hydraulic valve repair procedure.",
         }, format="json")
-        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.status_code, 200, res2.data)
 
     # ------------------------------------------------------------------
     # 3. Canonical URLs and Escalation / Resolution IDOR Protection
@@ -506,6 +507,10 @@ class ApiSecurityAndPermissionsTests(TestCase):
         call_id = esc_res.data["call_id"]
         servy_id = esc_res.data["servy_id"]
         self.assertTrue(servy_id)
+        call = ServiceCall.objects.get(pk=call_id)
+        self.assertEqual(call.zone_id, self.zone.id)
+        self.assertEqual(call.technician_id, self.tech_profile.id)
+        self.assertEqual(call.status, "assigned")
 
         # Step D: Call appears in Call Register
         calls_url = reverse("api_calls")
@@ -520,7 +525,7 @@ class ApiSecurityAndPermissionsTests(TestCase):
 
         call_detail_url = reverse("api_call_detail", kwargs={"pk": call_id})
         detail_res = self.client.get(call_detail_url)
-        self.assertEqual(detail_res.status_code, 200)
+        self.assertEqual(detail_res.status_code, 200, detail_res.data)
         self.assertEqual(detail_res.data["call"]["asset"]["name"], "Lift-01")
 
         # Step F: Engineer Copilot query against this call
@@ -529,7 +534,7 @@ class ApiSecurityAndPermissionsTests(TestCase):
             "call_id": call_id,
             "question": "How do I calibrate and test the hydraulic valve seal replacement?",
         }, format="json")
-        self.assertEqual(copilot_res.status_code, 200)
+        self.assertEqual(copilot_res.status_code, 200, copilot_res.data)
         self.assertIn("answer", copilot_res.data)
         self.assertIn("references", copilot_res.data)
         # Tech does NOT see confidential key because can_view_confidential=False
@@ -548,6 +553,8 @@ class ApiSecurityAndPermissionsTests(TestCase):
             customer=self.customer_a1,
             site=self.site_a1,
             asset=self.asset_a1,
+            technician=self.tech_profile,
+            zone=self.zone,
             status="assigned",
             priority="normal"
         )
@@ -587,7 +594,7 @@ class ApiSecurityAndPermissionsTests(TestCase):
                 "question": "How do I fix valve leak?",
             }, format="json")
 
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 200, res.data)
         self.assertIn("past_resolutions", res.data)
         self.assertEqual(len(res.data["past_resolutions"]), 1)
         self.assertEqual(res.data["past_resolutions"][0]["service_call_id"], call.id)
