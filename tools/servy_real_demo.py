@@ -435,7 +435,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             # denied source, restricted procedure or safety escalation.
             retry_for_missing_evidence = (
                 contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
-                and contract.get("reason_code") == "NO_RELEVANT_APPROVED_EVIDENCE"
+                and contract.get("reason_code") in {None, "NO_RELEVANT_APPROVED_EVIDENCE"}
             )
             retry_for_deeper_explanation = (
                 explanation_followup
