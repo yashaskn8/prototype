@@ -826,7 +826,14 @@ class RealDemoBoundaryTests(unittest.TestCase):
             result = demo._answer(60, question, continuation=continuation)
 
         self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
-        self.assertIn("An operating-condition limit", result["answer"])
+        self.assertIn(
+            "An operating-condition limit",
+            "\n".join(
+                claim.get("text", "")
+                for claim in result["presentation"]["supporting_claims"]
+            ),
+        )
+        self.assertIn(30, [item["chunk_id"] for item in result["citations"]])
         self.assertEqual(result["retrieval_attempts"], 2)
         self.assertEqual(rag_mod.ask_rag.call_count, 2)
         self.assertIn(
