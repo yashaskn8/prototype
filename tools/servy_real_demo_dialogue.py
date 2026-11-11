@@ -32,7 +32,7 @@ LEAD = {
     "general": "Here is what I could verify in the approved documentation.",
 }
 NO_EVIDENCE = {
-    "causes": "I couldn't verify a documented cause for that symptom in the approved passages. What are you actually observing: does the equipment fail to start, start but perform poorly, stop intermittently, or display a fault code? Please share the exact code if one is shown.",
+    "causes": "I couldn't verify a documented cause for that symptom in the approved passages. What are you actually observing? For example, note whether the equipment fails to start, starts but performs poorly, stops intermittently, or displays a fault code; share its exact characters if shown.",
     "observations": "I couldn't verify a customer-safe check for that specific issue. I won't suggest an unapproved procedure.",
     "next": "I couldn't verify an approved customer check for this issue. Please ask an authorized technician for model-specific help.",
     "meaning": "I couldn't verify the meaning of that code or condition from the approved passages for this equipment.",
