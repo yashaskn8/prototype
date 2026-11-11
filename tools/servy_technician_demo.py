@@ -13,9 +13,12 @@ import secrets
 import sqlite3
 from urllib.parse import quote, unquote, urlsplit
 
-PRIVATE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations" / "servy_technician_demo_20261111_01"
+PRIVATE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Servy" / "private_evaluations" / "servy_technician_demo_20261111_01"
 ACCESS_FILE = PRIVATE / "technician_access.txt"
-DB_PATH = Path(os.environ["SERVY_LOCAL_TICKET_DB_PATH"]).expanduser().resolve()
+DB_PATH = Path(os.environ.get(
+    "SERVY_LOCAL_TICKET_DB_PATH",
+    str(Path.home() / "AppData" / "Local" / "Servy" / "local-ticket-workspace.sqlite3"),
+)).expanduser().resolve()
 PORT = 8003
 HOST = "127.0.0.1"
 DEMO_CREATOR = "servy-real-demo"
