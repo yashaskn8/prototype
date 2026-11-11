@@ -11,6 +11,8 @@ from unittest.mock import Mock, patch
 from tools import servy_real_demo_local_planner as planner
 from tools.servy_real_demo_dialogue import focus_answer, conversation_recap
 from tools.test_servy_real_demo_dialogue import contract
+from tools.servy_real_demo_query_plan import targeted_retry_query
+from types import SimpleNamespace
 
 
 class LocalOllamaPlannerTests(TestCase):
@@ -40,6 +42,37 @@ class LocalOllamaPlannerTests(TestCase):
                 last_topic="causes", contract=context or contract(),
             )
         return result, session
+
+    def test_targeted_retry_retrieves_customer_visible_observations_without_weakening_evidence(self):
+        asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
+        context = SimpleNamespace(original_complaint="The VRF outdoor module is not working.")
+        query = targeted_retry_query(
+            "What can I safely observe?", asset, context, last_topic="causes",
+        )
+        self.assertIn("VRF Outdoor Module", query)
+        self.assertIn("not working", query)
+        self.assertIn("customer-visible safe observations", query)
+        self.assertIn("external display", query)
+        self.assertIn("visible air path", query)
+
+    def test_targeted_retry_expands_a_cited_cause_list_with_a_deeper_source_search(self):
+        asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
+        context = SimpleNamespace(original_complaint="The VRF outdoor module is not working.")
+        query = targeted_retry_query(
+            "ok could you explain each issue in detailed",
+            asset, context, last_topic="causes",
+        )
+        self.assertIn("VRF Outdoor Module", query)
+        self.assertIn("not working", query)
+        self.assertIn("detailed documented causes explanation", query)
+        self.assertIn("sensor control refrigerant system", query)
+
+    def test_targeted_retry_does_not_run_for_unrelated_general_questions(self):
+        asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
+        context = SimpleNamespace(original_complaint="The VRF outdoor module is not working.")
+        self.assertIsNone(targeted_retry_query(
+            "Who is Yashas?", asset, context, last_topic="causes",
+        ))
 
     def test_local_planner_structured_selection_is_fixed_to_allowed_ids(self):
         choice = {
