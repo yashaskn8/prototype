@@ -563,6 +563,25 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(unanswered["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(state["topic"], "causes")
         self.assertEqual(state["facts"], previous)
+
+        generic = {
+            "response_type": "INSUFFICIENT_EVIDENCE",
+            "presentation": {
+                "schema_version": "customer-answer-v1",
+                "response_type": "INSUFFICIENT_EVIDENCE",
+                "message": (
+                    "There is insufficient evidence to establish a safe answer "
+                    "for this equipment and question. Ask an authorized technician for help."
+                ),
+                "sections": [], "citations": [],
+            },
+        }
+        _, generic_state = focus_answer(
+            generic, "What can I safely observe?",
+            last_topic="causes", previous_facts=previous,
+        )
+        self.assertEqual(generic_state["topic"], "causes")
+
         followup = "ok could you explain each issue in detailed"
         self.assertTrue(is_contextual_followup(followup))
         self.assertEqual(question_topic(followup, state["topic"]), "causes")
