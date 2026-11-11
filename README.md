@@ -67,6 +67,42 @@ Get-Content -LiteralPath '<startup.err path printed by the launcher>' -Tail 80
 
 Remove or redact access codes, credentials, passwords and customer details before sharing log output.
 
+### Three-asset / nine-manual quality audit
+
+The authorized real-data scope currently contains three assets and nine approved manuals:
+- Split AC Unit 2T: asset 59, docs 168–170
+- VRF Outdoor Module: asset 60, docs 171–173
+- Ductable AC 5T: asset 61, docs 174–176
+
+The offline CI suite checks all nine source-to-asset bindings, document types, exact-asset applicability, and the 28 relevant regression cases in the frozen three-asset fixture. The fixture is a software regression set, **not** a production accuracy certification.
+
+To run the real read-only retrieval audit against the existing company MySQL data and the current serving/index on this Windows machine, open a separate PowerShell window and run:
+
+~~~powershell
+cd "C:\Users\prana\OneDrive\Desktop\SURVY-RAG\prototype"
+
+$env:LOCALAPPDATA = "C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local"
+
+.\.venv\Scripts\python.exe -B tools\servy_three_asset_rag_audit.py
+~~~
+
+This requires the existing MySQL service and the current user's DPAPI-protected SELECT-only evaluation credential. It verifies the nine source attachments and records current retrieval hit@1/hit@5/hit@10, citation coverage, cross-asset leakage, and per-document coverage in a private folder under `%LOCALAPPDATA%\Servy\private_evaluations`. Manuals with no matching query in the frozen fixture are reported as **NOT_EVALUATED**, not as passes or failures. It does not update MySQL records, production Chroma, application indexes, or model checkpoints.
+
+### Prepare source-grounded SME training review
+
+To prepare a private review workspace from the nine verified manuals, run:
+
+~~~powershell
+.\.venv\Scripts\python.exe -B tools\servy_three_asset_training_export.py
+~~~
+
+The exporter creates:
+- `approved_source_chunks.jsonl` — exact verified chunk text and provenance for the nine manuals.
+- `sme_review_template.csv` — candidate positive passages, with the query, hard negatives, reviewer, and split left for review.
+- `manifest.json` — asset/document/file hashes and unchanged operational record counts.
+
+Every row is marked `pending_sme_review`. **Do not train from this template as-is.** Each question/positive/negative relationship must be reviewed by an authorized HVAC subject-matter reviewer, and train/dev/independent-test splits must be source-family disjoint. The earlier BGE fine-tune was weakly supervised and measured below the fair MiniLM baseline, so this workflow intentionally does not auto-promote or start another blind fine-tune.
+
 **Start the separate technician code-gated instance (it can start before the first ticket):**
 
 ~~~powershell
