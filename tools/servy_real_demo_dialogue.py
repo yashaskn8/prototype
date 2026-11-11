@@ -1263,6 +1263,17 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             + ", ".join(unsupported_symptoms) + "."
         )
 
+    detail_limit = None
+    if topic == "causes" and is_explanation_followup(question):
+        has_new_detail = any(row[2] not in shown for row in collected)
+        if not has_new_detail:
+            detail_limit = (
+                "The approved passages retrieved for this asset provide only the "
+                "cited high-level categories; they do not contain a separately "
+                "citable explanation of each category. I won't add technical details "
+                "that the approved manuals do not support."
+            )
+
     sections = []
     if len(topics) > 1:
         for section_topic in topics:
@@ -1287,6 +1298,12 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                          "claims": [{"text": symptom_limit, "kind": "uncertainty",
                                      "evidence_ids": []}]})
         lead = (lead + " " + symptom_limit).strip()
+    if detail_limit:
+        sections.append({"number": len(sections) + 1,
+                         "title": "Evidence limitation",
+                         "claims": [{"text": detail_limit, "kind": "uncertainty",
+                                     "evidence_ids": []}]})
+        lead = (lead + " " + detail_limit).strip()
     new_presentation = {
         **original,
         "view_mode": "focused",
