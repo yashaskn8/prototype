@@ -131,7 +131,11 @@ if (-not $env:SERVY_REAL_DEMO_CHAT_MODEL) {
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
-$env:SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES = if ($RebuildFromVerifiedDocs) { '1' } else { '0' }
+# Prefer the guarded source-document reconstruction automatically when the frozen
+# Chroma bytes differ. The Python path verifies unchanged read-only MySQL records,
+# original document hashes, model weights and approved asset scope first. It builds
+# a disposable local BGE index and never repairs or writes production Chroma.
+$env:SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES = '1'
 if ($ReviewRequest -and $RebuildFromVerifiedDocs) {
     throw 'Run either the read-only review diagnostic or the verified-source rebuild, not both.'
 }
@@ -152,13 +156,27 @@ if ($ReviewRequest) {
 }
 
 if (!(Test-LocalPort 8002)) {
-    Start-Process -FilePath (Join-Path $projectRoot '.venv\Scripts\python.exe') `
+    $backendOutLog = Join-Path $demoFolder 'startup.out'
+    $backendErrLog = Join-Path $demoFolder 'startup.err'
+    $backendProcess = Start-Process -FilePath (Join-Path $projectRoot '.venv\Scripts\python.exe') `
         -ArgumentList '-B','-u','tools\servy_real_demo.py' -WorkingDirectory $projectRoot `
-        -WindowStyle Hidden -RedirectStandardOutput (Join-Path $demoFolder 'startup.out') `
-        -RedirectStandardError (Join-Path $demoFolder 'startup.err') | Out-Null
-    $backendChecks = if ($RebuildFromVerifiedDocs) { 240 } else { 30 }
-    for ($i = 0; $i -lt $backendChecks -and !(Test-LocalPort 8002); $i++) { Start-Sleep -Seconds 1 }
-    if (!(Test-LocalPort 8002)) { throw "Read-only demo backend failed; inspect private startup.err locally." }
+        -WindowStyle Hidden -PassThru -RedirectStandardOutput $backendOutLog `
+        -RedirectStandardError $backendErrLog
+    # A private BGE index reconstruction can take several minutes on CPU.
+    # Wait safely, and distinguish an exited child from a slow startup.
+    $backendChecks = 240
+    for ($i = 0; $i -lt $backendChecks -and !(Test-LocalPort 8002); $i++) {
+        if ($null -eq (Get-Process -Id $backendProcess.Id -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Seconds 1
+    }
+    if (!(Test-LocalPort 8002)) {
+        $processState = if ($null -eq (Get-Process -Id $backendProcess.Id -ErrorAction SilentlyContinue)) {
+            "Python backend process $($backendProcess.Id) exited."
+        } else {
+            "Python backend process $($backendProcess.Id) is still running but did not open port 8002 within $backendChecks seconds."
+        }
+        throw "$processState Inspect the private logs: stdout=$backendOutLog ; stderr=$backendErrLog"
+    }
 }
 
 $env:VITE_SERVY_REAL_DEMO = '1'
