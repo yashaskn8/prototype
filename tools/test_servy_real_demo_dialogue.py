@@ -590,7 +590,7 @@ class IntentFocusTests(unittest.TestCase):
         base = contract()
         cause_claims = [
             item for item in base["presentation"]["supporting_claims"]
-            if item["kind"] == "possible_cause"
+            if item["kind"] in {"possible_cause", "information"}
         ]
         cause_citations = [
             citation for citation in base["presentation"]["citations"]
