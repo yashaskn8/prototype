@@ -86,7 +86,18 @@ def _serialize(connection, row, include_description=True):
 
 
 def list_tickets(db_path=DB_PATH):
-    connection = _open_store(db_path)
+    """Return an empty queue until the customer RAG writes its first ticket.
+
+    A missing workspace is not initialized here: only the customer ticket-create
+    path may create the SQLite file and schema. This lets technicians unlock the
+    portal before the first handoff and refresh when a ticket arrives.
+    """
+    path = Path(db_path).expanduser().resolve()
+    if path.name.lower() != "local-ticket-workspace.sqlite3":
+        raise RuntimeError("Technician demo is not pointed at the dedicated local ticket workspace.")
+    if not path.is_file():
+        return []
+    connection = _open_store(path)
     try:
         rows = connection.execute(
             "SELECT * FROM local_tickets WHERE created_by = ? ORDER BY created_at DESC",
@@ -283,20 +294,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    if DB_PATH.name.lower() != "local-ticket-workspace.sqlite3" or not DB_PATH.is_file():
-        raise RuntimeError(
-            "The authorized customer RAG must create the separate local ticket workspace first. "
-            "This technician launcher does not initialize or create ticket storage."
-        )
-    # Validate schema before publishing the listener, without changing a row.
-    connection = _open_store()
-    connection.close()
+    if DB_PATH.name.lower() != "local-ticket-workspace.sqlite3":
+        raise RuntimeError("Technician demo is not pointed at the dedicated local ticket workspace.")
+    # Validate an existing workspace before publishing the listener. When no
+    # customer ticket exists yet, start an empty queue without creating a file.
+    workspace_exists = DB_PATH.is_file()
+    if workspace_exists:
+        connection = _open_store()
+        connection.close()
     Handler.token = _ensure_access_code()
     server = HTTPServer((HOST, PORT), Handler)
     print(json.dumps({
         "ready": True,
         "mode": "local-rag-technician-workspace",
         "ticket_count": len(list_tickets()),
+        "ticket_workspace": "ready" if workspace_exists else "waiting_for_first_customer_ticket",
         "database": "separate-local-sqlite-ticket-workspace",
         "access_file": str(ACCESS_FILE),
         "url": "http://127.0.0.1:8003/",
