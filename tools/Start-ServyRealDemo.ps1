@@ -7,12 +7,11 @@ $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g
 $demoFolder = Join-Path $privateLocal 'Servy\private_evaluations\servy_real_demo_20261031_01'
 $accessFile = Join-Path $demoFolder 'real_demo_access.txt'
 $credentialFile = Join-Path $privateLocal 'Servy\private_evaluations\servy_eval_credentials\servy_eval_ro.dpapi'
-$sharedLocalAppData = $env:LOCALAPPDATA
+# Resolve the Windows known folder before redirecting LOCALAPPDATA to the
+# demo's private identity directory. This keeps the ticket SQLite path stable.
+$sharedLocalAppData = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
 if ([string]::IsNullOrWhiteSpace($sharedLocalAppData)) {
-    $sharedLocalAppData = $env:XDG_STATE_HOME
-    if ([string]::IsNullOrWhiteSpace($sharedLocalAppData)) {
-        $sharedLocalAppData = Join-Path $env:USERPROFILE '.local\state'
-    }
+    $sharedLocalAppData = Join-Path $env:USERPROFILE 'AppData\Local'
 }
 $env:SERVY_LOCAL_TICKET_DB_PATH = Join-Path $sharedLocalAppData 'Servy\local-ticket-workspace.sqlite3'
 
