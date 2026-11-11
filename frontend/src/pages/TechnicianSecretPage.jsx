@@ -7,7 +7,7 @@ import './TechnicianSecretPage.css';
 
 async function technicianCall(path, token, options = {}) {
   const headers = {
-    Authorization: \`Technician \${token}\`,
+    Authorization: `Technician ${token}`,
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
   };
   const response = await fetch(path, {
@@ -91,7 +91,7 @@ export function TechnicianSecretPage() {
     setNotice('');
     try {
       const response = await technicianCall(
-        \`/tech-api/tickets/\${encodeURIComponent(ticket.id)}/\`, token,
+        `/tech-api/tickets/${encodeURIComponent(ticket.id)}/`, token,
       );
       const data = await response.json();
       setSelected(data.ticket || null);
@@ -110,7 +110,7 @@ export function TechnicianSecretPage() {
     setNotice('');
     try {
       const response = await technicianCall(
-        \`/tech-api/tickets/\${encodeURIComponent(selected.id)}/\`,
+        `/tech-api/tickets/${encodeURIComponent(selected.id)}/`,
         token,
         {
           method: 'PATCH',
@@ -133,7 +133,7 @@ export function TechnicianSecretPage() {
     setError('');
     try {
       const response = await technicianCall(
-        \`/tech-api/tickets/\${encodeURIComponent(selected.id)}/attachments/\${encodeURIComponent(attachment.id)}/\`,
+        `/tech-api/tickets/${encodeURIComponent(selected.id)}/attachments/${encodeURIComponent(attachment.id)}/`,
         token,
       );
       const blob = await response.blob();
@@ -269,11 +269,11 @@ export function TechnicianSecretPage() {
                   ? <div className="technician-secret-empty"><Inbox size={24} /><strong>No requests in this view</strong><span>New RAG tickets will appear here after submission.</span></div>
                   : visibleTickets.map(ticket => (
                     <button type="button" key={ticket.id}
-                      className={\`technician-secret-ticket \${selected?.id === ticket.id ? 'selected' : ''}\`}
+                      className={`technician-secret-ticket ${selected?.id === ticket.id ? 'selected' : ''}`}
                       onClick={() => openTicket(ticket)}>
                       <span className="technician-secret-ticket-top">
                         <strong>{ticket.id}</strong>
-                        <em className={\`status-\${ticket.status}\`}>{ticket.status.replaceAll('_', ' ')}</em>
+                        <em className={`status-${ticket.status}`}>{ticket.status.replaceAll('_', ' ')}</em>
                       </span>
                       <b>{ticket.complaintType || ticket.callType}</b>
                       <span>{ticket.assetName} · {ticket.customerName}</span>
@@ -295,12 +295,12 @@ export function TechnicianSecretPage() {
               <article>
                 <header className="technician-secret-detail-heading">
                   <div><span className="technician-secret-eyebrow">CUSTOMER HANDOFF</span><h2>{selected.id}</h2></div>
-                  <em className={\`status-\${selected.status}\`}>{selected.status.replaceAll('_', ' ')}</em>
+                  <em className={`status-${selected.status}`}>{selected.status.replaceAll('_', ' ')}</em>
                 </header>
                 <div className="technician-secret-metadata">
                   <div><span>Customer</span><strong>{selected.customerName || 'Not recorded'}</strong></div>
                   <div><span>Facility</span><strong>{selected.siteName || 'Not recorded'}</strong></div>
-                  <div><span>Equipment</span><strong>{selected.assetName || 'Not recorded'}{selected.assetCode ? \` · \${selected.assetCode}\` : ''}</strong></div>
+                  <div><span>Equipment</span><strong>{selected.assetName || 'Not recorded'}{selected.assetCode ? ` · ${selected.assetCode}` : ''}</strong></div>
                   <div><span>Priority</span><strong>{selected.priority || 'Normal'}</strong></div>
                   <div><span>Severity</span><strong>{selected.severity || 'Not recorded'}</strong></div>
                   <div><span>Machine status</span><strong>{selected.machineStatus || 'Not recorded'}</strong></div>
