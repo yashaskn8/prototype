@@ -110,7 +110,11 @@ function Ensure-ServyMySQL {
         ([string]$_.PathName).IndexOf($mysqlExe, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
         ([string]$_.PathName).IndexOf($mysqlConfig, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
     })
-    $otherServices = @($mysqlServices | Where-Object { $matchingServices -notcontains $_ })
+    $matchingServiceNames = @($matchingServices | ForEach-Object { [string]$_.Name })
+    $otherServices = @($mysqlServices | Where-Object {
+        $candidateServiceName = [string]$_.Name
+        $matchingServiceNames -notcontains $candidateServiceName
+    })
     if ($otherServices.Count -gt 0) {
         $details = ($otherServices | ForEach-Object { "$($_.Name) [$($_.State)]" }) -join ', '
         throw "A MySQL/MariaDB Windows service exists but does not match the configured Servy binary and my.ini ($details). No second server was started."
