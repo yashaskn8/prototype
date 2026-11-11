@@ -146,7 +146,7 @@ $runId = Get-Date -Format 'yyyyMMdd-HHmmss'
 $runLog = Join-Path $stateRoot $runId
 New-Item -ItemType Directory -Path $runLog -Force | Out-Null
 
-$envNames = @('SERVY_DB_ENGINE', 'DJANGO_SETTINGS_MODULE', 'VITE_SERVY_REAL_DEMO', 'SERVY_UI_TEST_API_TARGET')
+$envNames = @('SERVY_DB_ENGINE', 'DJANGO_SETTINGS_MODULE', 'VITE_SERVY_REAL_DEMO', 'SERVY_UI_TEST_API_TARGET', 'SERVY_REPO_ROOT')
 $oldEnvironment = @{}
 foreach ($name in $envNames) { $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $backendProcess = $null
@@ -175,8 +175,11 @@ try {
     if ($LASTEXITCODE -ne 0) { $migrationPlan | ForEach-Object { Write-Host $_ }; throw 'Could not read migration state.' }
     if (($migrationPlan | Out-String) -match '(?m)^\s*\[\s*\]') { throw 'The schema has unapplied migrations. None were run and no server was started.' }
 
+    [Environment]::SetEnvironmentVariable('SERVY_REPO_ROOT', $repoRoot, 'Process')
     $routeProbe = @'
 import os
+import sys
+sys.path.insert(0, os.environ["SERVY_REPO_ROOT"])
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 import django
 django.setup()
@@ -193,7 +196,11 @@ for path in paths:
     match = resolve(path)
     print(f"{path} -> {match.url_name}")
 '@
-    $routeOutput = & $python -c $routeProbe 2>&1
+    # Windows PowerShell 5.1 can corrupt multiline native -c arguments.
+    # Write the probe to this run's private temp log directory and execute the file.
+    $routeProbePath = Join-Path $runLog 'route_probe.py'
+    [System.IO.File]::WriteAllText($routeProbePath, $routeProbe, [System.Text.UTF8Encoding]::new($false))
+    $routeOutput = & $python $routeProbePath 2>&1
     if ($LASTEXITCODE -ne 0) { $routeOutput | ForEach-Object { Write-Host $_ }; throw 'One or more required API routes failed to resolve.' }
     $routeOutput | ForEach-Object { Write-Host $_ }
 
