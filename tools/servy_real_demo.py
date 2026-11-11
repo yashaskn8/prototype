@@ -33,7 +33,7 @@ from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
-    is_contextual_followup, focused_causal_query, requested_topics,
+    is_contextual_followup, is_explanation_followup, focused_causal_query, requested_topics,
     is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response, expand_display_observation_query,
 )
@@ -374,7 +374,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         # A multi-intent question draws causes and checks from different
         # passages, so it gets the same bounded wider set.
         multi_intent = len(requested_topics(question)) > 1
-        retrieval_top_k = 8 if (is_component_followup(question) and history) or multi_intent else 5
+        explanation_followup = last_topic == "causes" and is_explanation_followup(question)
+        retrieval_top_k = 8 if (
+            (is_component_followup(question) and history) or multi_intent or explanation_followup
+        ) else 5
         rag = ask_rag(
             tenant=tenant, customer=customer, asset=asset, question=retrieval_query,
             original_question=question, conversation_context=context if history else None,
@@ -430,9 +433,18 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             # Conditional agentic retrieval: at most ONE additional query.
             # The first pass must be merely non-answerable, never a refusal,
             # denied source, restricted procedure or safety escalation.
-            if (contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
-                    and contract.get("reason_code") == "NO_RELEVANT_APPROVED_EVIDENCE"):
-                second_query = targeted_retry_query(question, asset, context)
+            retry_for_missing_evidence = (
+                contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
+                and contract.get("reason_code") == "NO_RELEVANT_APPROVED_EVIDENCE"
+            )
+            retry_for_deeper_explanation = (
+                explanation_followup
+                and contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
+            )
+            if retry_for_missing_evidence or retry_for_deeper_explanation:
+                second_query = targeted_retry_query(
+                    question, asset, context, last_topic=last_topic,
+                )
                 if second_query and second_query != retrieval_query:
                     retried = ask_rag(
                         tenant=tenant, customer=customer, asset=asset,
@@ -471,12 +483,42 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                 plan=next_plan, history=history,
                             )
                             if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
-                                contract = next_contract
-                                rag = retried
-                                local_planner_used = next_plan is not None
-                                last_topic = next_dialogue["topic"]
-                                previous_facts = next_dialogue["facts"]
-                                suggestions = next_dialogue["suggestions"]
+                                use_retry = retry_for_missing_evidence
+                                if retry_for_deeper_explanation and not use_retry:
+                                    first_presentation = contract.get("presentation") or {}
+                                    second_presentation = next_contract.get("presentation") or {}
+                                    first_claims = first_presentation.get("supporting_claims", [])
+                                    second_claims = second_presentation.get("supporting_claims", [])
+                                    first_sources = {
+                                        (item.get("document_id"), item.get("chunk_id"))
+                                        for item in first_presentation.get("citations", [])
+                                        if isinstance(item, dict)
+                                    }
+                                    second_sources = {
+                                        (item.get("document_id"), item.get("chunk_id"))
+                                        for item in second_presentation.get("citations", [])
+                                        if isinstance(item, dict)
+                                    }
+                                    first_words = sum(
+                                        len(str(item.get("source_text", "")).split())
+                                        for item in first_claims if isinstance(item, dict)
+                                    )
+                                    second_words = sum(
+                                        len(str(item.get("source_text", "")).split())
+                                        for item in second_claims if isinstance(item, dict)
+                                    )
+                                    use_retry = (
+                                        len(second_claims) > len(first_claims)
+                                        or bool(second_sources - first_sources)
+                                        and second_words > first_words
+                                    )
+                                if use_retry:
+                                    contract = next_contract
+                                    rag = retried
+                                    local_planner_used = next_plan is not None
+                                    last_topic = next_dialogue["topic"]
+                                    previous_facts = next_dialogue["facts"]
+                                    suggestions = next_dialogue["suggestions"]
 
     from django.core import signing
     ticket_context = signing.dumps({
