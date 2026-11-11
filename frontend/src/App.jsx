@@ -14,9 +14,14 @@ import { StaffPage } from './pages/StaffPage';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { RealDemoPage } from './pages/RealDemoPage';
 import { TechnicianInboxPage } from './pages/TechnicianInboxPage';
+import { TicketWorkspacePage } from './pages/TicketWorkspacePage';
 
 function isTechnicianInboxLocation() {
   return window.location.pathname === '/technician/inbox' || window.location.hash === '#/technician/inbox';
+}
+
+function isRagTicketWorkspaceLocation() {
+  return window.location.pathname === '/technician/rag-tickets' || window.location.hash === '#/technician/rag-tickets';
 }
 
 function MainLayout() {
@@ -25,18 +30,23 @@ function MainLayout() {
   const [copilotCallId, setCopilotCallId] = useState(null);
 
   const inboxPath = import.meta.env.DEV ? '/technician/inbox' : '/app/#/technician/inbox';
+  const ragTicketWorkspacePath = import.meta.env.DEV ? '/technician/rag-tickets' : '/app/#/technician/rag-tickets';
   const appRootPath = import.meta.env.DEV ? '/' : '/app/';
 
   useEffect(() => {
     function handlePopState() {
-      setActiveTab(isTechnicianInboxLocation() ? 'technician-inbox' : 'dashboard');
+      if (isRagTicketWorkspaceLocation()) {
+        setActiveTab('rag-ticket-workspace');
+      } else {
+        setActiveTab(isTechnicianInboxLocation() ? 'technician-inbox' : 'dashboard');
+      }
     }
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   useEffect(() => {
-    if (user?.role === 'customer' && activeTab === 'technician-inbox') {
+    if (user?.role === 'customer' && ['technician-inbox', 'rag-ticket-workspace'].includes(activeTab)) {
       window.history.replaceState({}, '', appRootPath);
     }
   }, [user?.role, activeTab, appRootPath]);
@@ -59,7 +69,9 @@ function MainLayout() {
 
   function navigateToTab(tab) {
     setActiveTab(tab);
-    const targetPath = tab === 'technician-inbox' ? inboxPath : appRootPath;
+    const targetPath = tab === 'technician-inbox'
+      ? inboxPath
+      : tab === 'rag-ticket-workspace' ? ragTicketWorkspacePath : appRootPath;
     if (window.location.pathname !== targetPath || window.location.hash) window.history.pushState({ servyTab: tab }, '', targetPath);
   }
 
@@ -68,7 +80,7 @@ function MainLayout() {
     navigateToTab('engineer-copilot');
   }
 
-  const currentTab = user.role === 'customer' && activeTab === 'technician-inbox'
+  const currentTab = user.role === 'customer' && ['technician-inbox', 'rag-ticket-workspace'].includes(activeTab)
     ? 'customer-support'
     : activeTab;
 
@@ -78,6 +90,7 @@ function MainLayout() {
     'engineer-copilot': 'Workflow 2: Engineer Field Copilot',
     'calls': 'Service Call Register',
     'technician-inbox': 'Technician Incoming Tickets',
+    'rag-ticket-workspace': 'Authorized RAG Ticket Workspace',
     'knowledge': 'Knowledge Base & Schematics',
     'assets': 'Equipment & Assets',
     'projects': 'Service Contracts & Projects',
@@ -120,6 +133,7 @@ function MainLayout() {
           {currentTab === 'dashboard' && <DashboardPage onNavigate={navigateToTab} />}
           {currentTab === 'customer-support' && <CustomerSupportPage onNavigate={navigateToTab} />}
           {currentTab === 'technician-inbox' && <TechnicianInboxPage />}
+          {currentTab === 'rag-ticket-workspace' && <TicketWorkspacePage />}
           {currentTab === 'engineer-copilot' && <EngineerCopilotPage initialCallId={copilotCallId} />}
           {currentTab === 'calls' && <CallRegisterPage onOpenCopilot={handleOpenCopilotForCall} />}
           {currentTab === 'knowledge' && <KnowledgeBasePage />}
