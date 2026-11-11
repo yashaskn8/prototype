@@ -46,14 +46,6 @@ function Test-LocalPort([int]$Port) {
         $client.Dispose()
     }
 
-if (-not $NoWatch) {
-    $activityLogs = @($backendOut, $backendErr, $frontendOut, $frontendErr) |
-        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
-    Write-Host ''
-    Write-Host 'Live technician logs: HTTP request statuses and Vite development-server activity.'
-    Write-Host 'Press Ctrl+C to close this log viewer only; the technician backend and UI remain running.'
-    Get-Content -Path $activityLogs -Tail 15 -Wait
-}
 }
 
 foreach ($port in 8003, 5176) {
@@ -140,4 +132,13 @@ try {
     throw
 } finally {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $old[$name], 'Process') }
+}
+
+if (-not $NoWatch) {
+    $activityLogs = @($backendOut, $backendErr, $frontendOut, $frontendErr) |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    Write-Host ''
+    Write-Host 'Live technician logs: HTTP request statuses and Vite development-server activity.'
+    Write-Host 'Press Ctrl+C to close this log viewer only; the technician backend and UI remain running.'
+    Get-Content -Path $activityLogs -Tail 15 -Wait
 }
