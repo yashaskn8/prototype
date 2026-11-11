@@ -334,7 +334,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
         with redirect_stdout(output):
             handler._send(200, {"answer": "private-answer-sentinel"})
         line = output.getvalue()
-        self.assertIn("GET /demo-api/source/ 200", line)
+        self.assertIn("HTTP 200 OK | GET /demo-api/source/", line)
         self.assertNotIn("private-sentinel", line)
         self.assertNotIn("private-answer-sentinel", line)
 
