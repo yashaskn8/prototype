@@ -916,9 +916,11 @@ class RealDemoBoundaryTests(unittest.TestCase):
                     "core.services.rag": rag_mod,
                 }
 
-                with patch.dict("sys.modules", fake_modules), \\
-                     patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \\
-                     patch.object(demo, "plan_turn", return_value=None):
+                with (
+                    patch.dict("sys.modules", fake_modules),
+                    patch.object(demo, "_asset", return_value=(tenant, customer, asset)),
+                    patch.object(demo, "plan_turn", return_value=None),
+                ):
                     result = demo._answer(
                         asset_id, question, continuation=continuation,
                     )
@@ -933,7 +935,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
                 )
                 self.assertIn(
                     new_source,
-                    "\\n".join(
+                    "\n".join(
                         claim.get("text", "")
                         for claim in result["presentation"]["supporting_claims"]
                     ),
