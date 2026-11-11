@@ -69,6 +69,9 @@ jobs:
       - name: Three-Asset / Nine-Manual Retrieval Scope Regressions
         run: python -m unittest tools.test_servy_three_asset_rag -v
 
+      - name: Three-Asset SME Training Export Safety Tests
+        run: python -m unittest tools.test_servy_three_asset_training_export -v
+
       - name: Real-data Demo Signed Index Integrity and Chat Tests
         run: python -m unittest tools.test_servy_real_demo -v
         env:
