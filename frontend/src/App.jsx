@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AuthProvider, useAuth } from './AuthContext';
 import { Navigation } from './components/Navigation';
 import { LoginPage } from './pages/LoginPage';
@@ -13,13 +13,33 @@ import { InventoryPage } from './pages/InventoryPage';
 import { StaffPage } from './pages/StaffPage';
 import { ShieldCheck, RefreshCw } from 'lucide-react';
 import { RealDemoPage } from './pages/RealDemoPage';
-import { TicketWorkspacePage } from './pages/TicketWorkspacePage';
+import { TechnicianInboxPage } from './pages/TechnicianInboxPage';
+
+function isTechnicianInboxLocation() {
+  return window.location.pathname === '/technician/inbox' || window.location.hash === '#/technician/inbox';
+}
 
 function MainLayout() {
   const { user, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => isTechnicianInboxLocation() ? 'technician-inbox' : 'dashboard');
   const [copilotCallId, setCopilotCallId] = useState(null);
-  const [ticketPrefill, setTicketPrefill] = useState(null);
+
+  const inboxPath = import.meta.env.DEV ? '/technician/inbox' : '/app/#/technician/inbox';
+  const appRootPath = import.meta.env.DEV ? '/' : '/app/';
+
+  useEffect(() => {
+    function handlePopState() {
+      setActiveTab(isTechnicianInboxLocation() ? 'technician-inbox' : 'dashboard');
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (user?.role === 'customer' && activeTab === 'technician-inbox') {
+      window.history.replaceState({}, '', appRootPath);
+    }
+  }, [user?.role, activeTab, appRootPath]);
 
   if (loading) {
     return (
@@ -37,22 +57,27 @@ function MainLayout() {
     return <LoginPage />;
   }
 
-  function handleOpenCopilotForCall(callId) {
-    setCopilotCallId(callId);
-    setActiveTab('engineer-copilot');
+  function navigateToTab(tab) {
+    setActiveTab(tab);
+    const targetPath = tab === 'technician-inbox' ? inboxPath : appRootPath;
+    if (window.location.pathname !== targetPath || window.location.hash) window.history.pushState({ servyTab: tab }, '', targetPath);
   }
 
-  function handleOpenTicketWorkspace(prefill) {
-    setTicketPrefill(prefill || null);
-    setActiveTab('ticket-workspace');
+  function handleOpenCopilotForCall(callId) {
+    setCopilotCallId(callId);
+    navigateToTab('engineer-copilot');
   }
+
+  const currentTab = user.role === 'customer' && activeTab === 'technician-inbox'
+    ? 'customer-support'
+    : activeTab;
 
   const titles = {
     'dashboard': 'Operational Dashboard',
     'customer-support': 'Workflow 1: Customer AI Self-Service',
     'engineer-copilot': 'Workflow 2: Engineer Field Copilot',
     'calls': 'Service Call Register',
-    'ticket-workspace': user.role === 'customer' ? 'Create Service Ticket' : 'Technician Ticket Inbox',
+    'technician-inbox': 'Technician Incoming Tickets',
     'knowledge': 'Knowledge Base & Schematics',
     'assets': 'Equipment & Assets',
     'projects': 'Service Contracts & Projects',
@@ -62,12 +87,12 @@ function MainLayout() {
 
   return (
     <div className="app-container">
-      <Navigation activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Navigation activeTab={currentTab} setActiveTab={navigateToTab} />
       
       <main className="main-area">
         <header className="top-bar">
           <div className="top-bar-title">
-            <h2>{titles[activeTab] || 'Servy RAG'}</h2>
+            <h2>{titles[currentTab] || 'Servy RAG'}</h2>
             <p>
               Tenant: <strong>{user.tenant_name || 'Standard'}</strong> | Role: <strong style={{ textTransform: 'capitalize' }}>{user.role}</strong>
             </p>
@@ -92,16 +117,16 @@ function MainLayout() {
         </header>
 
         <div>
-          {activeTab === 'dashboard' && <DashboardPage onNavigate={setActiveTab} />}
-          {activeTab === 'customer-support' && <CustomerSupportPage onNavigate={setActiveTab} onCreateTicket={handleOpenTicketWorkspace} />}
-          {activeTab === 'ticket-workspace' && <TicketWorkspacePage prefill={ticketPrefill} onClearPrefill={() => setTicketPrefill(null)} />}
-          {activeTab === 'engineer-copilot' && <EngineerCopilotPage initialCallId={copilotCallId} />}
-          {activeTab === 'calls' && <CallRegisterPage onOpenCopilot={handleOpenCopilotForCall} />}
-          {activeTab === 'knowledge' && <KnowledgeBasePage />}
-          {activeTab === 'assets' && <AssetsPage />}
-          {activeTab === 'projects' && <ProjectsPage />}
-          {activeTab === 'inventory' && <InventoryPage />}
-          {activeTab === 'staff' && <StaffPage />}
+          {currentTab === 'dashboard' && <DashboardPage onNavigate={navigateToTab} />}
+          {currentTab === 'customer-support' && <CustomerSupportPage onNavigate={navigateToTab} />}
+          {currentTab === 'technician-inbox' && <TechnicianInboxPage />}
+          {currentTab === 'engineer-copilot' && <EngineerCopilotPage initialCallId={copilotCallId} />}
+          {currentTab === 'calls' && <CallRegisterPage onOpenCopilot={handleOpenCopilotForCall} />}
+          {currentTab === 'knowledge' && <KnowledgeBasePage />}
+          {currentTab === 'assets' && <AssetsPage />}
+          {currentTab === 'projects' && <ProjectsPage />}
+          {currentTab === 'inventory' && <InventoryPage />}
+          {currentTab === 'staff' && <StaffPage />}
         </div>
       </main>
     </div>

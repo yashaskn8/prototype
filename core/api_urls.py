@@ -7,6 +7,11 @@ from .local_ticket_workspace import (
     LocalTicketWorkspaceDetailView,
     LocalTicketWorkspaceView,
 )
+from .technician_inbox import (
+    TechnicianInboxDetailView,
+    TechnicianInboxView,
+    TechnicianTicketAcknowledgeView,
+)
 
 urlpatterns = [
     path("customer-support/source/", CustomerSourceView.as_view(), name="api_customer_source"),
@@ -33,6 +38,9 @@ urlpatterns = [
     path("customer-support/conversations/<uuid:conversation_uuid>/ticket/", api_views.CustomerConversationTicketView.as_view(), name="api_customer_conversation_ticket"),
     path("customer-support/tickets/", api_views.CustomerTicketsListView.as_view(), name="api_customer_tickets"),
     path("customer-support/tickets/<int:pk>/", api_views.CustomerTicketDetailView.as_view(), name="api_customer_ticket_detail"),
+    path("technician/inbox/", TechnicianInboxView.as_view(), name="api_technician_inbox"),
+    path("technician/inbox/<int:pk>/", TechnicianInboxDetailView.as_view(), name="api_technician_inbox_detail"),
+    path("technician/inbox/<int:pk>/acknowledge/", TechnicianTicketAcknowledgeView.as_view(), name="api_technician_ticket_acknowledge"),
     path("local-ticket-workspace/", LocalTicketWorkspaceView.as_view(), name="api_local_ticket_workspace"),
     path("local-ticket-workspace/<str:ticket_id>/", LocalTicketWorkspaceDetailView.as_view(), name="api_local_ticket_workspace_detail"),
     path("local-ticket-workspace/<str:ticket_id>/attachments/<str:attachment_id>/", LocalTicketAttachmentView.as_view(), name="api_local_ticket_workspace_attachment"),

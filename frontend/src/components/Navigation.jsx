@@ -23,14 +23,14 @@ export function Navigation({ activeTab, setActiveTab }) {
 
   const role = user.role;
   const isCustomer = role === 'customer';
-  const isTechnician = ['technician', 'admin', 'manager', 'superuser'].includes(role);
+  const isTechnician = ['technician', 'admin', 'manager'].includes(role);
   const isStaff = !isCustomer;
   const isSuperuser = role === 'superuser';
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, show: true },
     { id: 'customer-support', label: 'AI Self-Service', icon: Bot, show: true, badge: 'Pre-Ticket' },
-    { id: 'ticket-workspace', label: isCustomer ? 'Create Ticket' : 'Technician Tickets', icon: Ticket, show: isCustomer || isTechnician },
+    { id: 'technician-inbox', label: 'Technician Inbox', icon: Ticket, show: isTechnician },
     { id: 'engineer-copilot', label: 'Engineer Copilot', icon: Wrench, show: isTechnician, badge: 'Staff' },
     { id: 'calls', label: 'Service Calls', icon: PhoneCall, show: true },
     { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen, show: isTechnician },

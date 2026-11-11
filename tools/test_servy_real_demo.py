@@ -443,6 +443,18 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertIn("does not cool", context.reported_symptoms)
         self.assertIn("does not cool", query)
 
+    def test_reportable_detail_follow_up_retrieval_keeps_prior_reported_fault(self):
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", asset_code="SKY-AST-00002",
+            model_number="VRF-1", product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        first = "The VRF module reports a low-pressure or capacity-fault alarm."
+        question = "Should I mention which indoor units are affected by the alarm?"
+        context, query = demo._demo_query_context(asset, question, first, [first])
+        self.assertTrue(context.is_followup)
+        self.assertIn("low-pressure or capacity-fault alarm", query)
+        self.assertIn("affected by the alarm", query)
+
     def test_follow_up_completion_does_not_invent_equipment_or_clause(self):
         asset = SimpleNamespace(
             id=61, name="Split AC Unit 2T", asset_code="SKY-AST-00001",

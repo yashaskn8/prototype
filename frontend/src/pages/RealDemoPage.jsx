@@ -1,6 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bot, BookOpen, Building2, FilePlus2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2, X } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
+import { AssistantTypingIndicator } from '../components/AssistantTypingIndicator';
+import {
+  EMPTY_ASSISTANT_RESPONSE,
+  createAssistantTypingMessage,
+  finishRequest,
+  hasAssistantResponse,
+  replaceMessageById,
+  tryBeginRequest,
+} from '../components/assistantRequestLifecycle';
+import '../components/AssistantTypingIndicator.css';
 import { appendDemoThread, canOpenDemoThread, chatTitle } from './demoThreadState';
 import './RealDemoPage.css';
 
@@ -86,6 +96,7 @@ export function RealDemoPage() {
   const threadSequence = useRef(0);
   const chatEndRef = useRef(null);
   const requestRevision = useRef(0);
+  const requestInFlight = useRef(null);
   const [result, setResult] = useState(null);
   const [answeredQuestion, setAnsweredQuestion] = useState('');
   const [ticketDraft, setTicketDraft] = useState(null);
@@ -100,6 +111,7 @@ export function RealDemoPage() {
   // No customer conversation is saved to the company's operational database.
   function resetConversation() {
     requestRevision.current += 1;
+    requestInFlight.current = null;
     setMessages([]);
     setContinuation(null);
     setQuestion('');
@@ -220,10 +232,11 @@ export function RealDemoPage() {
     event?.preventDefault?.();
     const submittedQuestion = (suggestedQuestion ?? question).trim();
     if (!submittedQuestion || busy || !token || !assetId) return;
-    const activeRevision = requestRevision.current;
-    const activeAsset = assetId;
     const messageId = `user-${Date.now()}-${Math.random()}`;
     const responseId = `assistant-${Date.now()}-${Math.random()}`;
+    if (!tryBeginRequest(requestInFlight, responseId)) return;
+    const activeRevision = requestRevision.current;
+    const activeAsset = assetId;
     setError('');
     setBusy(true);
     setTicketDraft(null);
@@ -231,7 +244,7 @@ export function RealDemoPage() {
     setTicketConfirmation(null);
     setMessages(previous => [...previous,
       { id: messageId, role: 'user', text: submittedQuestion },
-      { id: responseId, role: 'assistant', pending: true },
+      createAssistantTypingMessage(responseId),
     ]);
     setThreads(previous => previous.map(item =>
       item.id === activeThreadId && item.title === 'New chat'
@@ -249,19 +262,25 @@ export function RealDemoPage() {
         }),
       });
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
-      setMessages(previous => previous.map(message => message.id === responseId
-        ? { id: responseId, role: 'assistant', data }
-        : message));
+      if (hasAssistantResponse(data)) {
+        setMessages(previous => replaceMessageById(previous, responseId,
+          { id: responseId, role: 'assistant', data }));
+      } else {
+        setMessages(previous => replaceMessageById(previous, responseId,
+          { id: responseId, role: 'assistant', errorMessage: EMPTY_ASSISTANT_RESPONSE }));
+        setQuestion(submittedQuestion);
+      }
       setContinuation(data.continuation || null);
-      setResult(data);
-      setAnsweredQuestion(submittedQuestion);
-    } catch (err) {
+      setResult(hasAssistantResponse(data) ? data : null);
+      if (hasAssistantResponse(data)) setAnsweredQuestion(submittedQuestion);
+    } catch {
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
-      setMessages(previous => previous.filter(message =>
-        message.id !== responseId && message.id !== messageId));
+      setMessages(previous => replaceMessageById(previous, responseId,
+        { id: responseId, role: 'assistant', errorMessage: 'Servy could not complete that response. Please try again.' }));
       setQuestion(submittedQuestion);
-      setError(err.message);
+      setError('');
     } finally {
+      finishRequest(requestInFlight, responseId);
       if (requestRevision.current === activeRevision && activeAsset === assetId) {
         setBusy(false);
       }
@@ -426,7 +445,7 @@ export function RealDemoPage() {
                   </div>)}
                 </div>
               </div>
-              <div className="real-demo-chat-thread" role="log" aria-label="Conversation messages" aria-live="polite">
+              <div className="real-demo-chat-thread" role="log" aria-label="Conversation messages" aria-live="polite" aria-busy={busy}>
                 {messages.length === 0 && <div className="real-demo-chat-empty">
                   <Bot size={28} />
                   <h3>Ask about this equipment</h3>
@@ -439,7 +458,8 @@ export function RealDemoPage() {
                     <div className="real-demo-chat-avatar">{message.role === 'user' ? 'You' : <Bot size={19} />}</div>
                     <div className="real-demo-chat-bubble">
                       {message.role === 'user' ? <div className="real-demo-chat-user-text">{message.text}</div>
-                        : message.pending ? <p role="status">Checking the approved manuals and earlier messages…</p>
+                        : message.pending ? <AssistantTypingIndicator />
+                          : message.errorMessage ? <p className="servy-chat-error" role="alert">{message.errorMessage}</p>
                           : <>
                             <div className="real-demo-chat-answer-heading">
                               <strong>Servy</strong>
@@ -548,7 +568,7 @@ export function RealDemoPage() {
                 <div className="real-demo-chat-composer-footer">
                   <button className="btn btn-primary" type="submit"
                     disabled={busy || !question.trim() || !asset?.can_query}>
-                    <Send size={16} /> {busy ? 'Searching…' : 'Send'}
+                    <Send size={16} /> Send
                   </button>
                 </div>
               </form>

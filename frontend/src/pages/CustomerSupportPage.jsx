@@ -1,8 +1,17 @@
 import { CustomerAnswer } from '../components/CustomerAnswer';
+import { AssistantTypingIndicator } from '../components/AssistantTypingIndicator';
+import {
+  EMPTY_ASSISTANT_RESPONSE,
+  createAssistantTypingMessage,
+  finishRequest,
+  hasAssistantResponse,
+  tryBeginRequest,
+} from '../components/assistantRequestLifecycle';
+import '../components/AssistantTypingIndicator.css';
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useAuth } from '../AuthContext';
-import { makeConversationDescription } from './conversationTranscript';
+import { customerHandoffMessage, handoffLabel } from './technicianHandoffState';
 import {
   Bot,
   Send,
@@ -34,7 +43,7 @@ export function normalizeArray(data, primaryKey) {
 }
 
 
-export function CustomerSupportPage({ onCreateTicket }) {
+export function CustomerSupportPage() {
   const { user } = useAuth();
   const [contextData, setContextData] = useState(null);
   const [loadingContext, setLoadingContext] = useState(true);
@@ -60,10 +69,15 @@ export function CustomerSupportPage({ onCreateTicket }) {
   const [startingConversation, setStartingConversation] = useState(false);
   const chatEndRef = useRef(null);
   const chatRevision = useRef(0); // Ignore responses for an incident no longer selected.
+  const requestInFlight = useRef(null);
   const [activeSessionNotice, setActiveSessionNotice] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolutionNotice, setResolutionNotice] = useState(null);
   const [escalationResult, setEscalationResult] = useState(null);
+  const [ticketPreview, setTicketPreview] = useState(null);
+  const [ticketPreviewLoading, setTicketPreviewLoading] = useState(false);
+  const [ticketSubmitting, setTicketSubmitting] = useState(false);
+  const [ticketError, setTicketError] = useState(null);
 
   // Persistent History / Tracking State
   const [conversations, setConversations] = useState([]);
@@ -77,6 +91,7 @@ export function CustomerSupportPage({ onCreateTicket }) {
   const [ticketsOffset, setTicketsOffset] = useState(0);
   const [loadingTickets, setLoadingTickets] = useState(false);
   const [ticketsError, setTicketsError] = useState(null);
+  const loadTicketsRef = useRef(null);
 
   const [activeTranscript, setActiveTranscript] = useState(null);
   const [transcriptMessages, setTranscriptMessages] = useState([]);
@@ -150,6 +165,27 @@ export function CustomerSupportPage({ onCreateTicket }) {
       setLoadingTickets(false);
     }
   }
+
+  loadTicketsRef.current = loadTickets;
+
+  useEffect(() => {
+    if (activeTab !== 'tickets') return undefined;
+    const poller = window.setInterval(() => loadTicketsRef.current?.(ticketsOffset), 12000);
+    return () => window.clearInterval(poller);
+  }, [activeTab, ticketsOffset]);
+
+  useEffect(() => {
+    if (!conversationUuid || !escalationResult?.id || activeTab === 'tickets') return undefined;
+    const poller = window.setInterval(async () => {
+      try {
+        const response = await api.get(`/api/customer-support/conversations/${conversationUuid}/ticket/`);
+        if (response.ticket?.id === escalationResult.id) setEscalationResult(response.ticket);
+      } catch {
+        // Keep the last server-confirmed state visible during a temporary network interruption.
+      }
+    }, 12000);
+    return () => window.clearInterval(poller);
+  }, [conversationUuid, escalationResult?.id, activeTab]);
 
   // Dynamically load assets belonging to the selected site
   async function loadAssetsForSite(siteId, initialActiveSession = null) {
@@ -287,6 +323,7 @@ export function CustomerSupportPage({ onCreateTicket }) {
 
   function handleSiteChange(e) {
     chatRevision.current += 1;
+    requestInFlight.current = null;
     assetLoadVersion.current += 1;
     setSubmitting(false);
     setResolutionNotice(null);
@@ -309,6 +346,7 @@ export function CustomerSupportPage({ onCreateTicket }) {
 
   function handleAssetChange(e) {
     chatRevision.current += 1;
+    requestInFlight.current = null;
     setSubmitting(false);
     const newAssetId = e.target.value;
     setSelectedAsset(newAssetId);
@@ -344,6 +382,8 @@ export function CustomerSupportPage({ onCreateTicket }) {
 
   async function resumeConversationFromHistory(conv) {
     chatRevision.current += 1;
+    requestInFlight.current = null;
+    setSubmitting(false);
     setMessages([]);
     setActiveTab('diagnostics');
     const siteId = String(conv.site_id || (conv.site ? conv.site.id : ''));
@@ -363,13 +403,15 @@ export function CustomerSupportPage({ onCreateTicket }) {
     setResult(null);
     setResolutionNotice(null);
     setEscalationResult(null);
+    setTicketPreview(null);
+    setTicketError(null);
     await loadConversationMessages(convUuid);
 
     // If conversation is already escalated or has a linked service call, load the ticket
     if (conv.linked_service_call_id || conv.linked_service_call) {
       try {
         const ticketRes = await api.get(`/api/customer-support/conversations/${convUuid}/ticket/`);
-        setEscalationResult(ticketRes);
+        setEscalationResult(ticketRes.ticket || null);
       } catch (e) {
         console.warn('Could not load linked ticket', e);
       }
@@ -417,10 +459,14 @@ export function CustomerSupportPage({ onCreateTicket }) {
     const revision = chatRevision.current;
     if (!queryText.trim() || !selectedSite || !currentAssetId || submitting || startingConversation) return;
 
+    const requestId = `assistant-${Date.now()}-${Math.random()}`;
+    if (!tryBeginRequest(requestInFlight, requestId)) return;
+
     setSubmitting(true);
     setError(null);
     setResolutionNotice(null);
     setEscalationResult(null);
+    setResult(null);
 
     const fullTurnInput = clarificationAnswer || queryText;
     const tempUserMsg = {
@@ -429,7 +475,11 @@ export function CustomerSupportPage({ onCreateTicket }) {
       message_text: fullTurnInput,
       created_at: new Date().toISOString(),
     };
-    setMessages(prev => [...prev, tempUserMsg]);
+    const typingMessage = createAssistantTypingMessage(requestId, {
+      senderRole: true,
+      createdAt: new Date().toISOString(),
+    });
+    setMessages(prev => [...prev, tempUserMsg, typingMessage]);
     setQuery('');
     setCustomClarification('');
 
@@ -444,12 +494,17 @@ export function CustomerSupportPage({ onCreateTicket }) {
         }
         const res = await api.post(`/api/customer-support/conversations/${conversationUuid}/messages/`, payload);
         if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
-          turnContract = res.contract;
+          const hasResponse = hasAssistantResponse(res.assistant_message);
+          const assistantMessage = hasResponse
+            ? res.assistant_message
+            : { ...typingMessage, pending: false, requestError: EMPTY_ASSISTANT_RESPONSE };
+          turnContract = hasResponse ? res.contract : null;
           setMessages(prev => [
-            ...prev.filter(m => m.id !== tempUserMsg.id),
+            ...prev.filter(m => m.id !== tempUserMsg.id && m.id !== requestId),
             res.user_message || tempUserMsg,
-            res.assistant_message,
+            assistantMessage,
           ]);
+          if (!hasResponse) setQuery(queryText);
         }
       } else {
         const payload = {
@@ -464,23 +519,25 @@ export function CustomerSupportPage({ onCreateTicket }) {
         }
         const res = await api.post('/api/customer-support/query/', payload);
         if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
-          turnContract = res;
+          const hasResponse = hasAssistantResponse(res);
+          turnContract = hasResponse ? res : null;
           if (res.conversation_uuid) {
             setConversationUuid(res.conversation_uuid);
           }
-          const asstMsg = {
-            id: 'asst-' + Date.now(),
+          const asstMsg = hasResponse ? {
+            id: requestId,
             sender_role: 'assistant',
-            message_text: res.answer || res.summary || '',
+            message_text: res.answer || res.summary || res.message || '',
             structured_contract: res,
             source_refs: res.citations || res.references || [],
             created_at: new Date().toISOString(),
-          };
-          setMessages(prev => [
-            ...prev.filter(m => m.id !== tempUserMsg.id),
-            tempUserMsg,
-            asstMsg,
-          ]);
+          } : { ...typingMessage, pending: false, requestError: EMPTY_ASSISTANT_RESPONSE };
+          setMessages(prev => prev.map(message => {
+            if (message.id === tempUserMsg.id) return tempUserMsg;
+            if (message.id === requestId) return asstMsg;
+            return message;
+          }));
+          if (!hasResponse) setQuery(queryText);
         }
       }
 
@@ -488,13 +545,16 @@ export function CustomerSupportPage({ onCreateTicket }) {
         setResult(turnContract);
         loadConversations();
       }
-    } catch (err) {
+    } catch {
       if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
-        setError(err.detail || 'Error communicating with AI assistant.');
-        setMessages(prev => prev.filter(m => m.id !== tempUserMsg.id));
+        setMessages(prev => prev.map(message => message.id === requestId
+          ? { ...typingMessage, pending: false,
+            requestError: 'Servy could not complete that response. Please try again.' }
+          : message));
         setQuery(queryText);
       }
     } finally {
+      finishRequest(requestInFlight, requestId);
       if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
         setSubmitting(false);
       }
@@ -539,29 +599,57 @@ export function CustomerSupportPage({ onCreateTicket }) {
   }
 
   async function handleCreateTicketFromConversation() {
-    if (!onCreateTicket) {
-      setError('The ticket workspace is not available.');
+    if (!conversationUuid || ticketPreviewLoading || ticketSubmitting) {
+      setTicketError('Save this troubleshooting conversation before requesting a technician.');
       return;
     }
-    let conversationMessages = messages.filter((message) => ['customer', 'assistant'].includes(message.sender_role));
-    if (conversationUuid) {
-      try {
-        const completeConversation = await api.get(`/api/customer-support/conversations/${conversationUuid}/messages/`);
-        if (Array.isArray(completeConversation.messages)) conversationMessages = completeConversation.messages;
-      } catch (loadError) {
-        setError(loadError.detail || 'Could not load the complete conversation for the ticket. Please retry.');
+    setTicketPreviewLoading(true);
+    setTicketError(null);
+    try {
+      const [conversation, ticketResponse] = await Promise.all([
+        api.get(`/api/customer-support/conversations/${conversationUuid}/messages/`),
+        api.get(`/api/customer-support/conversations/${conversationUuid}/ticket/`),
+      ]);
+      if (ticketResponse.ticket) {
+        setEscalationResult(ticketResponse.ticket);
+        setActiveTab('tickets');
+        await loadTickets();
         return;
       }
+      const transcript = normalizeArray(conversation, 'messages')
+        .filter((message) => ['customer', 'assistant'].includes(message.sender_role));
+      const firstCustomerMessage = transcript.find((message) => message.sender_role === 'customer');
+      const lastRelevantMessage = transcript[transcript.length - 1];
+      const outstandingQuestion = lastRelevantMessage?.sender_role === 'assistant'
+        ? lastRelevantMessage.structured_contract?.clarification_question
+        : null;
+      setTicketPreview({ conversationUuid, messages: transcript, reportedIssue: firstCustomerMessage?.message_text || '', outstandingQuestion: outstandingQuestion || '' });
+    } catch (loadError) {
+      setTicketError(loadError.detail || 'Could not prepare the full conversation for technician review. Please retry.');
+    } finally {
+      setTicketPreviewLoading(false);
     }
-    const description = makeConversationDescription(conversationMessages);
-    const selectedSiteObj = contextData?.sites?.find((site) => String(site.id) === String(selectedSite));
-    onCreateTicket({
-      description,
-      customer: contextData?.customer,
-      site: selectedSiteObj,
-      asset: selectedAssetObj,
-      conversationUuid,
-    });
+  }
+
+  async function confirmTicketCreation() {
+    if (!ticketPreview || ticketSubmitting) return;
+    setTicketSubmitting(true);
+    setTicketError(null);
+    try {
+      const result = await api.post(
+        `/api/customer-support/conversations/${ticketPreview.conversationUuid}/ticket/`,
+        { confirm_ticket_creation: true },
+      );
+      setEscalationResult(result.ticket);
+      setTicketPreview(null);
+      await loadConversationMessages(ticketPreview.conversationUuid);
+      await loadTickets();
+    } catch (submitError) {
+      // The endpoint is idempotent, so retrying after a lost response is safe.
+      setTicketError(submitError.detail || 'The service request was not confirmed. Retry to check its status.');
+    } finally {
+      setTicketSubmitting(false);
+    }
   }
 
 
@@ -674,20 +762,20 @@ export function CustomerSupportPage({ onCreateTicket }) {
       {escalationResult && (
         <div className="alert alert-info" role="status" style={{ display: 'block' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, marginBottom: '6px' }}>
-            <Ticket size={18} /> Service Ticket Created: #{escalationResult.servy_id}
+            <Ticket size={18} /> Service Request {escalationResult.ticket_ref || `SRV-${escalationResult.servy_id}`}
           </div>
           <p style={{ fontSize: '0.85rem', marginBottom: '6px' }}>
-            {escalationResult.status === 'assigned'
-              ? 'A certified service technician has been assigned to your case. Your diagnostic history has been safely handed off.'
-              : 'Your service request has been logged and queued for technician dispatch.'}
+            {customerHandoffMessage(escalationResult.handoff_state)}
           </p>
           <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            Status: <strong>{escalationResult.status?.toUpperCase() || 'OPEN'}</strong> | Priority: <strong>{escalationResult.priority?.toUpperCase() || 'NORMAL'}</strong>
-            {escalationResult.technician && escalationResult.technician !== 'Unassigned' && (
-              <span> | Technician: <strong>{escalationResult.technician}</strong></span>
-            )}
+            Status: <strong>{handoffLabel(escalationResult.handoff_state || escalationResult.status || 'created').toUpperCase()}</strong>
+            {' '}| Priority: <strong>{escalationResult.priority?.toUpperCase() || 'NORMAL'}</strong>
           </div>
         </div>
+      )}
+
+      {ticketError && !ticketPreview && (
+        <div className="alert alert-warning" role="alert">{ticketError}</div>
       )}
 
       {/* TAB 1: GUIDED DIAGNOSTICS */}
@@ -806,7 +894,7 @@ export function CustomerSupportPage({ onCreateTicket }) {
                 </div>
               )}
 
-              <div style={{
+              <div role="log" aria-label="Troubleshooting conversation" aria-live="polite" aria-busy={submitting} style={{
                 background: 'var(--bg-app)',
                 padding: '12px 14px',
                 borderRadius: 'var(--radius-md)',
@@ -955,7 +1043,11 @@ export function CustomerSupportPage({ onCreateTicket }) {
                         ) : (
                           <div>
                             {/* Render Structured Contract Presentation if available */}
-                            {msg.structured_contract?.presentation && msg.structured_contract?.response_type !== 'CLARIFICATION' ? (
+                            {msg.pending ? (
+                              <AssistantTypingIndicator />
+                            ) : msg.requestError ? (
+                              <div className="servy-chat-error" role="alert">{msg.requestError}</div>
+                            ) : msg.structured_contract?.presentation && msg.structured_contract?.response_type !== 'CLARIFICATION' ? (
                               <CustomerAnswer
                                 presentation={msg.structured_contract.presentation}
                                 assetId={selectedAsset}
@@ -1023,10 +1115,17 @@ export function CustomerSupportPage({ onCreateTicket }) {
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-primary"
-                                    onClick={handleCreateTicketFromConversation}
-                                    disabled={!messages.some(message => ['customer', 'assistant'].includes(message.sender_role))}
+                                    onClick={() => {
+                                      if (escalationResult?.id) {
+                                        setActiveTab('tickets');
+                                        loadTickets();
+                                      } else {
+                                        handleCreateTicketFromConversation();
+                                      }
+                                    }}
+                                    disabled={ticketPreviewLoading || ticketSubmitting || !messages.some(message => ['customer', 'assistant'].includes(message.sender_role))}
                                   >
-                                    <Ticket size={14} /> Create Ticket
+                                    <Ticket size={14} /> {ticketPreviewLoading ? 'Preparing...' : escalationResult?.id ? 'View Service Ticket' : 'Request Technician'}
                                   </button>
                                 </div>
                               </div>
@@ -1076,17 +1175,8 @@ export function CustomerSupportPage({ onCreateTicket }) {
                   disabled={submitting || !query.trim() || !selectedSite || !selectedAsset}
                   style={{ minWidth: '100px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
                 >
-                  {submitting ? (
-                    <>
-                      <RefreshCw size={14} className="spin" />
-                      <span>Thinking...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Send size={14} />
-                      <span>{messages.length === 0 ? 'Start' : 'Send'}</span>
-                    </>
-                  )}
+                  <Send size={14} />
+                  <span>{messages.length === 0 ? 'Start' : 'Send'}</span>
                 </button>
               </form>
             </div>
@@ -1351,8 +1441,8 @@ export function CustomerSupportPage({ onCreateTicket }) {
                         <span style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--primary)' }}>
                           #{t.servy_id}
                         </span>
-                        <span className={`badge ${t.status === 'closed' ? 'badge-success' : t.status === 'assigned' ? 'badge-primary' : 'badge-warning'}`}>
-                          {t.status?.toUpperCase()}
+                        <span className={`badge ${['resolved'].includes(t.handoff_state) ? 'badge-success' : ['assigned', 'acknowledged', 'in_progress'].includes(t.handoff_state) ? 'badge-primary' : 'badge-warning'}`}>
+                          {handoffLabel(t.handoff_state || t.status || 'created').toUpperCase()}
                         </span>
                         <span className="badge" style={{ background: '#f1f5f9', color: '#475569' }}>
                           Priority: {t.priority?.toUpperCase()}
@@ -1378,7 +1468,12 @@ export function CustomerSupportPage({ onCreateTicket }) {
                       fontSize: '0.8rem',
                       color: 'var(--text-main)',
                     }}>
-                      Assigned Technician: <strong>{t.technician_name || 'Pending Dispatch'}</strong>
+                      Technician: <strong>{t.technician_acknowledged ? 'Acknowledged your request' : t.technician_name ? 'Assigned; awaiting acknowledgement' : t.handoff_state === 'queued' ? 'Request is in the technician queue' : 'Awaiting technician assignment'}</strong>
+                      {t.technician_acknowledged && t.acknowledged_at && (
+                        <div style={{ marginTop: '4px', color: '#166534' }}>
+                          Acknowledged: {new Date(t.acknowledged_at).toLocaleString()}
+                        </div>
+                      )}
                       {t.resolution_summary && (
                         <div style={{ marginTop: '4px', color: '#166534' }}>
                           Resolution: {t.resolution_summary}
@@ -1417,6 +1512,80 @@ export function CustomerSupportPage({ onCreateTicket }) {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {ticketPreview && (
+        <div
+          className="handoff-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !ticketSubmitting) setTicketPreview(null); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, background: 'rgba(15, 23, 42, 0.55)' }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="handoff-title"
+            style={{ width: 'min(760px, 100%)', maxHeight: '90vh', overflow: 'auto', background: '#fff', borderRadius: 16, boxShadow: '0 24px 72px rgba(15,23,42,.24)', padding: 24 }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+              <div>
+                <span className="badge" style={{ background: '#eef2ff', color: '#4338ca', fontWeight: 700 }}>TECHNICIAN HANDOFF</span>
+                <h2 id="handoff-title" style={{ margin: '10px 0 6px', color: 'var(--text-main)' }}>Review your service request</h2>
+                <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '.88rem' }}>Confirm to create one service ticket linked to this conversation.</p>
+              </div>
+              <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setTicketPreview(null)} disabled={ticketSubmitting} aria-label="Close ticket preview">Close</button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, margin: '18px 0' }}>
+              {[
+                ['Customer', contextData?.customer?.name || user?.username || 'Current customer'],
+                ['Facility', contextData?.sites?.find(site => String(site.id) === String(selectedSite))?.name || 'Not recorded'],
+                ['Equipment', `${selectedAssetObj?.name || 'Not recorded'}${selectedAssetObj?.asset_code ? ` · ${selectedAssetObj.asset_code}` : ''}${selectedAssetObj?.model_number ? ` · ${selectedAssetObj.model_number}` : ''}`],
+              ].map(([label, value]) => (
+                <div key={label} style={{ minWidth: 0, padding: '11px 12px', border: '1px solid var(--border)', borderRadius: 10, background: '#fafbfc' }}>
+                  <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '.7rem', marginBottom: 4 }}>{label}</small>
+                  <strong style={{ display: 'block', fontSize: '.82rem', overflowWrap: 'anywhere' }}>{value}</strong>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ marginBottom: 14, padding: '12px 14px', borderLeft: '3px solid #818cf8', borderRadius: '0 9px 9px 0', background: '#f8fafc' }}>
+              <small style={{ display: 'block', color: 'var(--text-muted)', fontSize: '.7rem', marginBottom: 4 }}>Customer-reported problem</small>
+              <strong style={{ display: 'block', fontSize: '.84rem', fontWeight: 600, whiteSpace: 'pre-wrap' }}>{ticketPreview.reportedIssue || 'No customer-authored problem statement was recorded.'}</strong>
+            </div>
+            {ticketPreview.outstandingQuestion && (
+              <div style={{ marginBottom: 14, padding: '10px 12px', border: '1px solid #fde68a', borderRadius: 9, background: '#fffbeb', fontSize: '.8rem' }}>
+                <strong>Still unanswered:</strong> {ticketPreview.outstandingQuestion}
+              </div>
+            )}
+
+            <div style={{ border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+              <div style={{ padding: '10px 14px', background: 'var(--bg-app)', fontWeight: 700 }}>Conversation context</div>
+              <div style={{ maxHeight: 310, overflowY: 'auto', padding: 14, display: 'grid', gap: 10 }}>
+                {ticketPreview.messages.map((message, index) => (
+                  <div key={message.id || index} style={{ padding: '10px 12px', borderRadius: 10, background: message.sender_role === 'customer' ? '#eef2ff' : '#f8fafc' }}>
+                    <strong style={{ display: 'block', marginBottom: 4, color: message.sender_role === 'customer' ? '#4338ca' : '#475569', fontSize: '.78rem' }}>
+                      {message.sender_role === 'customer' ? 'You reported' : 'Servy guidance (not confirmation of completion)'}
+                    </strong>
+                    <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '.85rem' }}>{message.message_text}</span>
+                  </div>
+                ))}
+                {ticketPreview.messages.length === 0 && <p style={{ color: 'var(--text-muted)' }}>No conversation messages are available.</p>}
+              </div>
+            </div>
+
+            <p style={{ color: 'var(--text-muted)', fontSize: '.8rem', lineHeight: 1.5, margin: '14px 0' }}>
+              The technician can review this conversation, your selected equipment, and any explicitly confirmed troubleshooting history. Assistant suggestions are not treated as steps you completed.
+            </p>
+            {ticketError && <div className="alert alert-warning" role="alert">{ticketError}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+              <button type="button" className="btn btn-outline-secondary" onClick={() => setTicketPreview(null)} disabled={ticketSubmitting}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={confirmTicketCreation} disabled={ticketSubmitting || ticketPreview.messages.length === 0}>
+                <Ticket size={15} /> {ticketSubmitting ? 'Creating ticket…' : 'Confirm and create ticket'}
+              </button>
+            </div>
+          </section>
         </div>
       )}
     </div>

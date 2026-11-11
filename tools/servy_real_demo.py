@@ -34,7 +34,7 @@ from tools.servy_real_demo_dialogue import (
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, focused_causal_query, requested_topics,
     is_technician_handoff_request, build_technician_handoff,
-    out_of_scope_response,
+    out_of_scope_response, expand_display_observation_query,
 )
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
@@ -287,6 +287,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         continuation, asset_id, customer.id, thread_id=thread_id)
     last_topic, previous_facts = _load_demo_dialogue_state(continuation)
     context, retrieval_query = _demo_query_context(asset, question, original, history)
+    retrieval_query = expand_display_observation_query(question, retrieval_query)
     # A new, explicit equipment symptom starts a new evidence thread; retain
     # the signed customer history, but don't hide relevant facts just because
     # they were shown for an earlier and different problem.

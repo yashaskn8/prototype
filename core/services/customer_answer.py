@@ -68,8 +68,16 @@ def _question_guard(question):
         return "safety"
     if re.search(r"\b(?:proves?|definitely|certainly|must mean|for sure)\b", lower):
         return "unsupported"
-    if (re.search(r"\bexact\b", lower) and re.search(
-        r"\b(?:value|limit|threshold|setting|pressure|torque|current|charge|code|range|clearance|interval)\b", lower)):
+    # Match a request for the exact technical item itself. Requiring the
+    # specification noun to follow "exact" avoids treating contextual terms
+    # such as "low-pressure fault" as a request for an exact pressure value.
+    if re.search(
+        r"\bexact\s+(?:(?:manufacturer(?:'s)?(?:[- ](?:specified|approved|rated))?|"
+        r"specified|rated|approved|operating|maximum|minimum|allowed|permitted)[- ]+){0,2}"
+        r"(?:value|limit|threshold|setting|pressure|torque|current|charge|"
+        r"code|range|clearance|interval)\b",
+        lower,
+    ):
         return "unsupported"
     if re.search(r"\b(?:in spec|within (?:the )?(?:approved|specified|manufacturer) range)\b", lower):
         return "unsupported"

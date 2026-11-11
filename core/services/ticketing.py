@@ -9,22 +9,29 @@ from core.models import ServiceCall, StaffProfile, SLAPolicy, Tenant
 
 
 def choose_technician(tenant, branch=None, zone=None):
-    qs = StaffProfile.objects.filter(tenant=tenant, role="technician", is_active=True)
+    # An assignment is only useful if the technician can authenticate into
+    # the same tenant and is in the actual dispatch scope. Never assign a call
+    # to an unlinked profile or silently fall back to another zone.
+    qs = StaffProfile.objects.filter(
+        tenant=tenant,
+        role="technician",
+        is_active=True,
+        user__isnull=False,
+        user__is_active=True,
+        user__tenant_memberships__tenant=tenant,
+        user__tenant_memberships__role="technician",
+        user__tenant_memberships__is_active=True,
+        user__tenant_memberships__tenant__is_active=True,
+    )
     if zone:
-        zone_qs = qs.filter(zone=zone)
-        if zone_qs.exists():
-            qs = zone_qs
-    if branch:
-        branch_qs = qs.filter(branch=branch)
-        if branch_qs.exists():
-            qs = branch_qs
+        if branch:
+            qs = qs.filter(Q(zone=zone) | Q(zone__isnull=True, branch=branch))
+        else:
+            qs = qs.filter(zone=zone)
+    elif branch:
+        qs = qs.filter(branch=branch)
 
-    # Prefer technicians with a linked user account so they can actually
-    # log in to see and act on the assigned call.
-    loginable_qs = qs.filter(user__isnull=False)
-    pick_from = loginable_qs if loginable_qs.exists() else qs
-
-    return pick_from.annotate(
+    return qs.distinct().annotate(
         active_calls=Count("service_calls", filter=Q(service_calls__status__in=["assigned", "in_progress"]))
     ).order_by("active_calls", "full_name").first()
 

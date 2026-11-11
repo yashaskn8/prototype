@@ -4,7 +4,7 @@ from django.conf import settings
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.db import transaction
-from django.db.models import Q, Count, Max
+from django.db.models import F, Q, Count, Max
 from django.http import FileResponse, Http404
 from django.middleware.csrf import get_token
 from django.utils import timezone
@@ -29,6 +29,11 @@ from core.security import (
 from core.services.rag import ask_rag
 from core.services.customer_diagnostic import check_for_safety_hazard
 from core.services.ticketing import create_call_from_interaction
+from core.services.ticket_handoff import (
+    authorized_service_calls,
+    customer_ticket_state,
+    customer_ticket_states,
+)
 from core.services.indexing import index_document
 from core.services.document_loader import UnsafeDocumentError
 from core.services.chroma_store import queue_chroma_deletion
@@ -70,6 +75,86 @@ from core.forms import MAX_KB_UPLOAD_BYTES
 logger = logging.getLogger("servy.api")
 
 ALLOWED_KB_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
+
+
+def _customer_ticket_data(call):
+    """Serialize a ServiceCall without staff-only notes or identities."""
+    return {
+        "id": call.id,
+        "servy_id": call.servy_id,
+        "ticket_ref": f"SRV-{call.servy_id}",
+        "status": call.status,
+        "priority": call.priority,
+        "complaint_type": call.complaint_type,
+        "complaint_text": call.complaint_text,
+        "created_at": call.created_at,
+        "response_due_at": call.response_due_at,
+        "resolution_due_at": call.resolution_due_at,
+        "technician_assigned": bool(call.technician_id),
+        "technician_name": call.technician.full_name if call.technician_id else None,
+        **customer_ticket_state(call),
+    }
+
+
+def _conversation_scope_is_consistent(ctx, conversation):
+    """Fail closed when customer conversation relations cross tenant or asset scope."""
+    tenant_id = ctx["tenant"].id
+    if conversation.tenant_id != tenant_id or not conversation.customer_id:
+        return False
+
+    customer = conversation.customer
+    if customer.tenant_id != tenant_id:
+        return False
+
+    if conversation.site_id:
+        site = conversation.site
+        if site.tenant_id != tenant_id or site.customer_id != conversation.customer_id:
+            return False
+
+    if conversation.asset_id:
+        asset = conversation.asset
+        if asset.tenant_id != tenant_id:
+            return False
+        if asset.customer_id and asset.customer_id != conversation.customer_id:
+            return False
+        if asset.site_id and conversation.site_id and asset.site_id != conversation.site_id:
+            return False
+
+    if conversation.linked_service_call_id:
+        call = conversation.linked_service_call
+        if (
+            call.tenant_id != tenant_id
+            or call.customer_id != conversation.customer_id
+            or call.asset_id != conversation.asset_id
+        ):
+            return False
+        if call.site_id:
+            call_site = call.site
+            if call_site.tenant_id != tenant_id or call_site.customer_id != conversation.customer_id:
+                return False
+            if conversation.site_id and call.site_id != conversation.site_id:
+                return False
+
+    return True
+
+
+def _can_read_customer_conversation(ctx, conversation):
+    if not _conversation_scope_is_consistent(ctx, conversation):
+        return False
+
+    role = ctx["role"]
+    if role in CUSTOMER_ROLES:
+        customer = ctx.get("customer")
+        return bool(customer and conversation.customer_id == customer.id)
+    if role == "technician":
+        call = conversation.linked_service_call
+        return bool(
+            call
+            and call.customer_id == conversation.customer_id
+            and call.asset_id == conversation.asset_id
+            and authorized_service_calls(ctx).filter(pk=call.id).exists()
+        )
+    return role in (ADMIN_ROLES | {"superuser"})
 
 
 # ----------------------------------------------------------------------
@@ -293,8 +378,10 @@ class DashboardView(APIView):
 
         else:
             # Staff / Technician / Admin / Superuser
-            calls_qs = ServiceCall.objects.filter(tenant=tenant)
+            calls_qs = authorized_service_calls(ctx) if role == "technician" else ServiceCall.objects.filter(tenant=tenant)
             interactions_qs = CustomerInteraction.objects.filter(tenant=tenant)
+            if role == "technician":
+                interactions_qs = interactions_qs.filter(escalated_call__in=calls_qs)
             staff = ctx.get("staff_profile")
             my_calls = calls_qs.filter(technician=staff) if staff else calls_qs.none()
 
@@ -353,6 +440,8 @@ class CustomerSupportContextView(APIView):
 
         if role in {"store_admin", "store_operator"}:
             return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+        if role == "technician":
+            return Response({"detail": "Technicians must use the assigned service-call workflow."}, status=status.HTTP_403_FORBIDDEN)
 
         # Staff can pass ?customer_id= to preview or assist
         if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
@@ -493,6 +582,8 @@ class CustomerSupportQueryView(APIView):
 
         if role in {"store_admin", "store_operator"}:
             return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+        if role == "technician":
+            return Response({"detail": "Technicians must use the assigned service-call workflow."}, status=status.HTTP_403_FORBIDDEN)
 
         if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
             cust_id = request.data.get("customer_id")
@@ -583,6 +674,8 @@ class CustomerSupportResolveView(APIView):
                 {"detail": "Customer AI Support is not available for store roles."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if ctx["role"] == "technician":
+            return Response({"detail": "Technicians must use the assigned service-call workflow."}, status=status.HTTP_403_FORBIDDEN)
         tenant = ctx["tenant"]
 
         try:
@@ -682,6 +775,8 @@ class CustomerSupportEscalateView(APIView):
                 {"detail": "Customer AI Support is not available for store roles."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if ctx["role"] == "technician":
+            return Response({"detail": "Technicians must use the assigned service-call workflow."}, status=status.HTTP_403_FORBIDDEN)
         tenant = ctx["tenant"]
 
         try:
@@ -763,8 +858,9 @@ class EngineerCopilotQueryView(APIView):
         if not call_id or not question:
             return Response({"detail": "Service call ID and question are required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        calls_qs = authorized_service_calls(ctx) if role == "technician" else ServiceCall.objects.filter(tenant=tenant)
         try:
-            call = ServiceCall.objects.select_related("asset", "customer", "site").get(tenant=tenant, id=call_id)
+            call = calls_qs.select_related("asset", "customer", "site").get(id=call_id)
         except ServiceCall.DoesNotExist:
             return Response({"detail": "Service call not found in this tenant."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1178,8 +1274,10 @@ class AssetCallsView(APIView):
         if not asset:
             return Response({"detail": "Asset not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        calls_qs = ServiceCall.objects.filter(tenant=tenant, asset=asset).select_related(
-            "customer", "site", "technician"
+        calls_qs = (
+            authorized_service_calls(ctx).filter(asset=asset)
+            if role == "technician"
+            else ServiceCall.objects.filter(tenant=tenant, asset=asset).select_related("customer", "site", "technician")
         )
         if role in CUSTOMER_ROLES:
             calls_qs = calls_qs.filter(customer=customer)
@@ -1304,8 +1402,10 @@ class CallRegisterView(APIView):
         role = ctx["role"]
         customer = ctx["customer"]
 
-        qs = ServiceCall.objects.filter(tenant=tenant).select_related(
-            "customer", "site", "asset", "technician"
+        qs = (
+            authorized_service_calls(ctx)
+            if role == "technician"
+            else ServiceCall.objects.filter(tenant=tenant).select_related("customer", "site", "asset", "technician")
         )
         if role in CUSTOMER_ROLES:
             if not customer:
@@ -1365,6 +1465,8 @@ class CallDetailView(APIView):
 
         is_customer = ctx["role"] in CUSTOMER_ROLES
         if is_customer and (not ctx["customer"] or call.customer_id != ctx["customer"].id):
+            return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
+        if ctx["role"] == "technician" and not authorized_service_calls(ctx).filter(pk=call.id).exists():
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
         updates_raw = list(call.updates.select_related("author").order_by("created_at").values(
@@ -2063,17 +2165,56 @@ class CustomerConversationsListView(APIView):
         if role in {"store_admin", "store_operator"}:
             return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
 
-        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
+        if role == "technician":
+            visible_calls = authorized_service_calls(ctx).values("id")
+            qs = CustomerConversation.objects.filter(
+                tenant=tenant,
+                linked_service_call_id__in=visible_calls,
+            )
+        elif not customer and role in (ADMIN_ROLES | {"superuser"}):
             cust_id = request.query_params.get("customer_id")
             if cust_id:
                 customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
             else:
                 customer = Customer.objects.filter(tenant=tenant).first()
+            if not customer:
+                return Response({"detail": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
+            qs = CustomerConversation.objects.filter(tenant=tenant, customer=customer)
+        elif role in CUSTOMER_ROLES:
+            qs = CustomerConversation.objects.filter(tenant=tenant, customer=customer)
+        else:
+            return Response({"detail": "Customer conversation access is not available."}, status=status.HTTP_403_FORBIDDEN)
 
-        if not customer:
-            return Response({"detail": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
+        qs = qs.filter(customer__tenant_id=tenant.id).filter(
+            Q(site__isnull=True) | Q(site__tenant_id=tenant.id, site__customer_id=F("customer_id"))
+        ).filter(
+            Q(asset__isnull=True)
+            | (
+                Q(asset__tenant_id=tenant.id)
+                & (Q(asset__customer__isnull=True) | Q(asset__customer_id=F("customer_id")))
+            )
+        ).filter(
+            Q(asset__site__isnull=True) | Q(site__isnull=True) | Q(asset__site_id=F("site_id"))
+        ).filter(
+            Q(linked_service_call__isnull=True)
+            | Q(
+                linked_service_call__tenant_id=tenant.id,
+                linked_service_call__customer_id=F("customer_id"),
+                linked_service_call__asset_id=F("asset_id"),
+            )
+        ).filter(
+            Q(linked_service_call__isnull=True)
+            | Q(linked_service_call__site__isnull=True)
+            | Q(linked_service_call__site__tenant_id=tenant.id,
+                linked_service_call__site__customer_id=F("customer_id"))
+        ).filter(
+            Q(linked_service_call__isnull=True)
+            | Q(linked_service_call__site__isnull=True)
+            | Q(site__isnull=True)
+            | Q(linked_service_call__site_id=F("site_id"))
+        )
 
-        qs = CustomerConversation.objects.filter(tenant=tenant, customer=customer).select_related(
+        qs = qs.select_related(
             "site", "asset", "current_diagnostic_session", "linked_service_call"
         ).order_by("-updated_at")
 
@@ -2119,6 +2260,7 @@ class CustomerConversationsListView(APIView):
                     "servy_id": c.linked_service_call.servy_id,
                     "status": c.linked_service_call.status,
                     "priority": c.linked_service_call.priority,
+                    **customer_ticket_state(c.linked_service_call),
                 } if c.linked_service_call else None,
                 "message_count": c.messages.count(),
                 "created_at": c.created_at,
@@ -2139,18 +2281,8 @@ class CustomerConversationsListView(APIView):
         customer = ctx["customer"]
         role = ctx["role"]
 
-        if role in {"store_admin", "store_operator"}:
-            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
-
-        if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
-            cust_id = request.data.get("customer_id")
-            if cust_id:
-                customer = Customer.objects.filter(tenant=tenant, id=cust_id).first()
-            if not customer:
-                customer = Customer.objects.filter(tenant=tenant).first()
-
-        if not customer:
-            return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
+        if role not in CUSTOMER_ROLES or not customer:
+            return Response({"detail": "Only an authenticated customer can start a customer support conversation."}, status=status.HTTP_403_FORBIDDEN)
 
         site_id = request.data.get("site_id")
         asset_id = request.data.get("asset_id")
@@ -2256,7 +2388,7 @@ class CustomerConversationDetailView(APIView):
         except CustomerConversation.DoesNotExist:
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+        if not _can_read_customer_conversation(ctx, conv):
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
         messages_qs = conv.messages.all().order_by("created_at")
@@ -2275,19 +2407,7 @@ class CustomerConversationDetailView(APIView):
         ticket_data = None
         if conv.linked_service_call:
             sc = conv.linked_service_call
-            ticket_data = {
-                "id": sc.id,
-                "servy_id": sc.servy_id,
-                "status": sc.status,
-                "priority": sc.priority,
-                "complaint_type": sc.complaint_type,
-                "complaint_text": sc.complaint_text,
-                "created_at": sc.created_at,
-                "response_due_at": sc.response_due_at,
-                "resolution_due_at": sc.resolution_due_at,
-                "technician_assigned": bool(sc.technician_id),
-                "technician_name": sc.technician.full_name if sc.technician else None,
-            }
+            ticket_data = _customer_ticket_data(sc)
 
         return Response({
             "id": conv.id,
@@ -2325,11 +2445,15 @@ class CustomerConversationMessagesView(APIView):
         role = ctx["role"]
 
         try:
-            conv = CustomerConversation.objects.get(tenant=tenant, conversation_uuid=conversation_uuid)
+            conv = CustomerConversation.objects.select_related(
+                "customer", "site", "asset", "linked_service_call"
+            ).get(
+                tenant=tenant, conversation_uuid=conversation_uuid
+            )
         except CustomerConversation.DoesNotExist:
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+        if not _can_read_customer_conversation(ctx, conv):
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
         messages = [
@@ -2351,14 +2475,19 @@ class CustomerConversationMessagesView(APIView):
         customer = ctx["customer"]
         role = ctx["role"]
 
+        if role not in CUSTOMER_ROLES or not customer:
+            return Response({"detail": "Only an authenticated customer can add messages to a support conversation."}, status=status.HTTP_403_FORBIDDEN)
+
         try:
-            conv = CustomerConversation.objects.select_related("asset", "site", "customer", "current_diagnostic_session").get(
+            conv = CustomerConversation.objects.select_related(
+                "asset", "site", "customer", "current_diagnostic_session", "linked_service_call"
+            ).get(
                 tenant=tenant, conversation_uuid=conversation_uuid
             )
         except CustomerConversation.DoesNotExist:
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+        if not _can_read_customer_conversation(ctx, conv):
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if conv.status in ("RESOLVED", "CLOSED"):
@@ -2420,28 +2549,14 @@ class CustomerConversationTicketView(APIView):
         except CustomerConversation.DoesNotExist:
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+        if not _can_read_customer_conversation(ctx, conv):
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if not conv.linked_service_call:
             return Response({"ticket": None, "detail": "No ticket has been created for this conversation yet."})
 
         sc = conv.linked_service_call
-        return Response({
-            "ticket": {
-                "id": sc.id,
-                "servy_id": sc.servy_id,
-                "status": sc.status,
-                "priority": sc.priority,
-                "complaint_type": sc.complaint_type,
-                "complaint_text": sc.complaint_text,
-                "created_at": sc.created_at,
-                "response_due_at": sc.response_due_at,
-                "resolution_due_at": sc.resolution_due_at,
-                "technician_assigned": bool(sc.technician_id),
-                "technician_name": sc.technician.full_name if sc.technician else None,
-            }
-        })
+        return Response({"ticket": _customer_ticket_data(sc)})
 
     def post(self, request, conversation_uuid):
         ctx = require_api_context(request)
@@ -2449,17 +2564,19 @@ class CustomerConversationTicketView(APIView):
         customer = ctx["customer"]
         role = ctx["role"]
 
-        if role in {"store_admin", "store_operator"}:
-            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+        if role not in CUSTOMER_ROLES or not customer:
+            return Response({"detail": "Only an authenticated customer can request a ticket for this conversation."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            conv = CustomerConversation.objects.select_related("linked_service_call", "asset", "site", "customer").get(
+            conv = CustomerConversation.objects.select_related(
+                "linked_service_call", "linked_service_call__technician", "asset", "site", "customer"
+            ).get(
                 tenant=tenant, conversation_uuid=conversation_uuid
             )
         except CustomerConversation.DoesNotExist:
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if role in CUSTOMER_ROLES and conv.customer_id != customer.id:
+        if not _can_read_customer_conversation(ctx, conv):
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
         # Enforce server-side real customer data isolation
@@ -2475,17 +2592,7 @@ class CustomerConversationTicketView(APIView):
         if conv.linked_service_call:
             sc = conv.linked_service_call
             return Response({
-                "ticket": {
-                    "id": sc.id,
-                    "servy_id": sc.servy_id,
-                    "status": sc.status,
-                    "priority": sc.priority,
-                    "complaint_type": sc.complaint_type,
-                    "complaint_text": sc.complaint_text,
-                    "created_at": sc.created_at,
-                    "technician_assigned": bool(sc.technician_id),
-                    "technician_name": sc.technician.full_name if sc.technician else None,
-                },
+                "ticket": _customer_ticket_data(sc),
                 "detail": f"Service Call #{sc.servy_id} already exists for this conversation."
             })
 
@@ -2495,9 +2602,17 @@ class CustomerConversationTicketView(APIView):
             conv = CustomerConversation.objects.select_for_update().get(
                 pk=conv.pk, tenant=tenant
             )
+            if not _can_read_customer_conversation(ctx, conv):
+                return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
             if conv.linked_service_call_id:
                 call = conv.linked_service_call
             else:
+                customer_report = conv.messages.filter(sender_role="customer").values_list(
+                    "message_text", flat=True
+                )
+                if not any((message_text or "").strip() for message_text in customer_report):
+                    return Response({"detail": "A customer-reported issue is required before creating a service ticket."}, status=400)
+
                 # Find latest interaction or create one for escalation
                 interaction = CustomerInteraction.objects.filter(conversation=conv).order_by("-id").first()
                 if not interaction:
@@ -2531,17 +2646,7 @@ class CustomerConversationTicketView(APIView):
 
 
         return Response({
-            "ticket": {
-                "id": call.id,
-                "servy_id": call.servy_id,
-                "status": call.status,
-                "priority": call.priority,
-                "complaint_type": call.complaint_type,
-                "complaint_text": call.complaint_text,
-                "created_at": call.created_at,
-                "technician_assigned": bool(call.technician_id),
-                "technician_name": call.technician.full_name if call.technician else None,
-            },
+            "ticket": _customer_ticket_data(call),
             "detail": f"Service Call #{call.servy_id} created successfully."
         })
 
@@ -2570,7 +2675,7 @@ class CustomerTicketsListView(APIView):
             return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
 
         qs = ServiceCall.objects.filter(tenant=tenant, customer=customer).select_related(
-            "asset", "site", "technician"
+            "asset", "site", "site__zone", "zone", "technician"
         ).order_by("-created_at")
 
         status_filter = request.query_params.get("status")
@@ -2588,17 +2693,20 @@ class CustomerTicketsListView(APIView):
             limit, offset = 20, 0
 
         total_count = qs.count()
-        calls = qs[offset:offset + limit]
+        calls = list(qs[offset:offset + limit])
+        ticket_states = customer_ticket_states(calls)
 
         results = [
             {
                 "id": c.id,
                 "servy_id": c.servy_id,
+                "ticket_ref": f"SRV-{c.servy_id}",
                 "status": c.status,
                 "priority": c.priority,
                 "complaint_type": c.complaint_type,
                 "complaint_text": c.complaint_text,
                 "created_at": c.created_at,
+                **ticket_states[c.id],
                 "asset": {"id": c.asset.id, "name": c.asset.name, "asset_code": c.asset.asset_code} if c.asset else None,
                 "site": {"id": c.site.id, "name": c.site.name} if c.site else None,
                 "technician_assigned": bool(c.technician_id),
@@ -2638,6 +2746,7 @@ class CustomerTicketDetailView(APIView):
         return Response({
             "id": call.id,
             "servy_id": call.servy_id,
+            "ticket_ref": f"SRV-{call.servy_id}",
             "status": call.status,
             "priority": call.priority,
             "complaint_type": call.complaint_type,
@@ -2655,5 +2764,6 @@ class CustomerTicketDetailView(APIView):
             "site": {"id": call.site.id, "name": call.site.name} if call.site else None,
             "technician_assigned": bool(call.technician_id),
             "technician_name": call.technician.full_name if call.technician else None,
+            **customer_ticket_state(call),
             "resolution_text": call.resolution_text if call.status in ("resolved", "closed") else None,
         })

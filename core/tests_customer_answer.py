@@ -37,6 +37,20 @@ class NumericObservationTests(SimpleTestCase):
         self.assertEqual(_question_guard('why is the split ac unit not working?'), 'clarify')
         self.assertIsNone(_question_guard('Why is the split AC unit not working after showing E-04?'))
 
+    def test_exact_handoff_observation_is_not_mistaken_for_exact_pressure_request(self):
+        from core.services.customer_answer import _question_guard
+        self.assertIsNone(_question_guard(
+            'What exact information from the display should I record for this low-pressure fault?'
+        ))
+        self.assertEqual(
+            _question_guard('What exact pressure value is specified for this equipment?'),
+            'unsupported',
+        )
+        self.assertEqual(
+            _question_guard('What exact manufacturer-approved range applies?'),
+            'unsupported',
+        )
+
     def test_elapsed_symptom_not_required_specification(self):
         q = 'My VRF outdoor unit has weak cooling after 20 minutes. What does the equipment troubleshooting documentation say about possible causes?'
         self.assertNotIn('20', extract_technical_numbers(q))

@@ -26,6 +26,17 @@ class VagueProblemClarificationTests(unittest.TestCase):
         self.assertTrue(is_contextual_followup("Why does this keep happening?"))
         self.assertFalse(is_contextual_followup("The machine is overheating"))
 
+    def test_reportable_fault_details_reuse_context_but_unrelated_questions_do_not(self):
+        self.assertTrue(is_contextual_followup(
+            "Should I mention which indoor units are affected by the alarm?"
+        ))
+        self.assertTrue(is_contextual_followup(
+            "Would trend data be relevant to this low-pressure or capacity-fault alarm?"
+        ))
+        self.assertFalse(is_contextual_followup(
+            "Should I mention the affected units at the restaurant?"
+        ))
+
     def test_known_prior_symptom_does_not_erase_context(self):
         self.assertIsNone(vague_problem_clarification(
             "It is not working", ["My Split AC runs but is not cooling"]))
@@ -98,6 +109,126 @@ def contract():
 
 
 class IntentFocusTests(unittest.TestCase):
+    def test_observation_detail_question_shows_only_requested_list_item(self):
+        base = contract()
+        observation = next(
+            claim for claim in base["presentation"]["supporting_claims"]
+            if claim["kind"] == "observation"
+        )
+        source_text = (
+            "Record the requested code, operating mode, affected indoor units, "
+            "and trend data."
+        )
+        observation["source_text"] = source_text
+        observation["text"] = source_text
+
+        focused, _ = focus_answer(
+            base, "Which operating mode should I note for the equipment?",
+        )
+        claim = focused["presentation"]["supporting_claims"][0]
+        self.assertEqual(claim["text"], "Record operating mode.")
+        self.assertEqual(claim["source_text"], source_text)
+        self.assertEqual(claim["evidence_ids"], ["s3"])
+        self.assertEqual([item["id"] for item in focused["presentation"]["citations"]], ["s3"])
+        self.assertNotIn("trend data", focused["answer"].casefold())
+
+        broad, _ = focus_answer(base, "What observation details should I record?")
+        broad_claim = broad["presentation"]["supporting_claims"][0]
+        self.assertEqual(broad_claim["text"], source_text)
+
+    def test_each_explicit_observation_facet_gets_its_own_cited_answer(self):
+        base = contract()
+        observation = next(
+            claim for claim in base["presentation"]["supporting_claims"]
+            if claim["kind"] == "observation"
+        )
+        source_text = (
+            "Record the requested code, operating mode, affected indoor units, "
+            "and trend data."
+        )
+        observation["source_text"] = source_text
+        observation["text"] = source_text
+        cases = (
+            ("What code should I report?", "Record the requested code."),
+            ("Which operating mode should I note?", "Record operating mode."),
+            ("Should I mention affected indoor units?", "Record affected indoor units."),
+            ("Would trend data be relevant to report?", "Record trend data."),
+        )
+        rendered = []
+        for question, expected in cases:
+            with self.subTest(question=question):
+                result, _ = focus_answer(copy.deepcopy(base), question)
+                claim = result["presentation"]["supporting_claims"][0]
+                self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+                self.assertEqual(claim["text"], expected)
+                self.assertEqual(claim["source_text"], source_text)
+                self.assertEqual(claim["evidence_ids"], ["s3"])
+                self.assertEqual([item["id"] for item in result["presentation"]["citations"]], ["s3"])
+                rendered.append(claim["text"])
+        self.assertEqual(len(set(rendered)), len(cases))
+
+        unsupported, _ = focus_answer(
+            copy.deepcopy(base), "What ambient temperature should I record?",
+        )
+        self.assertEqual(unsupported["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(unsupported["presentation"]["citations"], [])
+
+    def test_sensor_reading_comparison_safeguard_is_not_trimmed(self):
+        base = contract()
+        observation = next(
+            claim for claim in base["presentation"]["supporting_claims"]
+            if claim["kind"] == "observation"
+        )
+        source_text = (
+            "Record sensor readings and compare only with the manufacturer's "
+            "specified ranges."
+        )
+        observation["source_text"] = source_text
+        observation["text"] = source_text
+
+        result, _ = focus_answer(base, "What should I note about sensor readings?")
+        claim = result["presentation"]["supporting_claims"][0]
+        self.assertEqual(claim["text"], source_text)
+        self.assertEqual(claim["source_text"], source_text)
+
+    def test_fault_context_does_not_turn_reportable_detail_followups_into_cause_questions(self):
+        questions = (
+            "Should I mention which indoor units are affected by the alarm?",
+            "Would trend data be relevant to this low-pressure or capacity-fault alarm?",
+        )
+        base = contract()
+        citation = next(
+            item for item in base["presentation"]["citations"]
+            if item["id"] == "s3"
+        )
+        citation["heading"] = "4. LOW-PRESSURE OR CAPACITY FAULT"
+        observation = next(
+            claim for claim in base["presentation"]["supporting_claims"]
+            if claim["kind"] == "observation"
+        )
+        observation["source_text"] = "Record the affected indoor units and trend data."
+        observation["text"] = observation["source_text"]
+
+        for question in questions:
+            with self.subTest(question=question):
+                self.assertEqual(question_topic(question), "observations")
+                result, _ = focus_answer(base, question)
+                self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+                self.assertEqual(
+                    [item["heading"] for item in result["presentation"]["citations"]],
+                    ["4. LOW-PRESSURE OR CAPACITY FAULT"],
+                )
+                self.assertEqual(
+                    [claim["source_text"] for claim in result["presentation"]["supporting_claims"]],
+                    ["Record the affected indoor units and trend data."],
+                )
+
+        self.assertEqual(
+            question_topic("Could the low-pressure alarm explain why the unit stopped?"),
+            "causes",
+        )
+        self.assertEqual(question_topic("How do I change the operating mode?"), "next")
+
     def test_mixed_question_retrieval_keeps_relevant_context_and_drops_incidentals(self):
         question = (
             "No warning is showing. The filter is clean, but the outdoor unit is close "
@@ -179,6 +310,123 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["presentation"]["citations"], [])
         self.assertNotIn("Reduced airflow", result["answer"])
+
+    def test_low_pressure_alarm_does_not_borrow_other_fault_family_observations(self):
+        question = (
+            "What should I safely record if the low-pressure or capacity-fault "
+            "alarm occurs?"
+        )
+        base = contract()
+        citation = next(
+            item for item in base["presentation"]["citations"]
+            if item["id"] == "s3"
+        )
+        citation["heading"] = "6. FAN OR TEMPERATURE-SENSOR FAULT"
+        mismatched, _ = focus_answer(base, question)
+        self.assertEqual(mismatched["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(mismatched["presentation"]["citations"], [])
+
+        citation["heading"] = "4. LOW-PRESSURE OR CAPACITY FAULT"
+        matched, _ = focus_answer(base, question)
+        self.assertEqual(matched["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertEqual(
+            [item["heading"] for item in matched["presentation"]["citations"]],
+            ["4. LOW-PRESSURE OR CAPACITY FAULT"],
+        )
+
+    def test_fault_family_relevance_accepts_equivalent_phrasings_only_for_matching_sources(self):
+        from tools.servy_real_demo_dialogue import _specific_symptom_supported
+
+        cases = (
+            (
+                "What details should I note for a low pressure alarm?",
+                "4. LOW-PRESSURE OR CAPACITY FAULT",
+                "3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT",
+            ),
+            (
+                "What should I record about a high-pressure heat-exchange fault?",
+                "3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT",
+                "4. LOW-PRESSURE OR CAPACITY FAULT",
+            ),
+            (
+                "What can I safely observe for a fan or temperature-sensor fault?",
+                "6. FAN OR TEMPERATURE-SENSOR FAULT",
+                "4. LOW-PRESSURE OR CAPACITY FAULT",
+            ),
+            (
+                "Which details should I report for a capacity fault?",
+                "4. LOW-PRESSURE OR CAPACITY FAULT",
+                "6. FAN OR TEMPERATURE-SENSOR FAULT",
+            ),
+        )
+        for question, matching_heading, unrelated_heading in cases:
+            with self.subTest(question=question):
+                self.assertTrue(
+                    _specific_symptom_supported(question, matching_heading)
+                )
+                self.assertFalse(
+                    _specific_symptom_supported(question, unrelated_heading)
+                )
+
+    def test_requested_alarm_observation_details_must_be_present_in_the_cited_claim(self):
+        question = (
+            "For this low-pressure/capacity fault, what should I note about "
+            "the code and operating mode?"
+        )
+        base = contract()
+        citation = next(
+            item for item in base["presentation"]["citations"]
+            if item["id"] == "s3"
+        )
+        citation["heading"] = "4. LOW-PRESSURE OR CAPACITY FAULT"
+        observation = next(
+            claim for claim in base["presentation"]["supporting_claims"]
+            if claim["kind"] == "observation"
+        )
+        observation["source_text"] = "Record sensor readings."
+        observation["text"] = observation["source_text"]
+        unrelated, _ = focus_answer(base, question)
+        self.assertEqual(unrelated["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(unrelated["presentation"]["citations"], [])
+
+        observation["source_text"] = "Record the displayed code and operating mode."
+        observation["text"] = observation["source_text"]
+        matched, _ = focus_answer(base, question)
+        self.assertEqual(matched["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertEqual(
+            [item["heading"] for item in matched["presentation"]["citations"]],
+            ["4. LOW-PRESSURE OR CAPACITY FAULT"],
+        )
+
+    def test_display_observation_retrieval_expands_to_code_terms_without_inventing_values(self):
+        from tools.servy_real_demo_dialogue import expand_display_observation_query
+
+        question = (
+            "What exact information from the display should I record "
+            "for this low-pressure fault?"
+        )
+        expanded = expand_display_observation_query(question, question)
+        self.assertIn("displayed fault code", expanded)
+        self.assertNotRegex(expanded, r"\b(?:E|F)-?\d{1,3}\b")
+        self.assertEqual(
+            expand_display_observation_query(
+                "Why is the unit making noise?", "Why is the unit making noise?"
+            ),
+            "Why is the unit making noise?",
+        )
+
+    def test_unsupported_low_pressure_repair_question_remains_insufficient(self):
+        base = contract()
+        base["presentation"]["supporting_claims"] = [
+            claim for claim in base["presentation"]["supporting_claims"]
+            if claim["kind"] not in {"observation", "customer_procedure"}
+        ]
+        result, _ = focus_answer(
+            base, "How do I repair the low-pressure fault?"
+        )
+        self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["presentation"]["citations"], [])
+        self.assertEqual(result["customer_safe_actions"], [])
 
     def test_next_without_approved_safe_evidence_is_not_a_cause_dump(self):
         base = contract()

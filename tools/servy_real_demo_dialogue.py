@@ -347,6 +347,19 @@ SPECIFIC_EVIDENCE = {
         re.compile(_START_STOP_SYMPTOM, re.I),
         re.compile(_START_STOP_SYMPTOM, re.I),
     ),
+    "low-pressure or capacity fault": (
+        re.compile(r"\b(?:low[ -]?pressure|capacity[ -]?fault)\b", re.I),
+        re.compile(r"\b(?:low[ -]?pressure|capacity[ -]?fault)\b", re.I),
+    ),
+    "high-pressure or heat-exchange fault": (
+        re.compile(r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b", re.I),
+        re.compile(r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b", re.I),
+    ),
+    "fan or temperature-sensor fault": (
+        re.compile(r"\b(?:fan(?:\s+or\s+)?temperature[- ]sensor|"
+                   r"temperature[- ]sensor|fan)\b", re.I),
+        re.compile(r"\b(?:fan|temperature[- ]sensor)\b", re.I),
+    ),
 }
 
 
@@ -392,6 +405,15 @@ _COMPONENT_NOUN = re.compile(
     r"condenser|outdoor unit|drain|remote|airflow|vent|electrical supply)\b",
     re.I
 )
+_REPORTABLE_DETAIL_SUBJECT = re.compile(
+    r"\b(?:code|operating mode|mode|affected indoor units?|indoor units?|"
+    r"trend(?: data| history)?|ambient (?:conditions?|temperature)|"
+    r"alarm history|sensor readings?|display|indicator|readout)\b", re.I,
+)
+_REPORTING_INTENT = re.compile(
+    r"\b(?:record|note|report|mention|include|share|log|document|"
+    r"pass along|relevant|useful|capture)\b", re.I,
+)
 
 
 def is_component_followup(question):
@@ -407,6 +429,13 @@ def is_component_followup(question):
     return bool(_COMPONENT_ELLIPSIS.match(q) and _COMPONENT_NOUN.search(q))
 
 
+def is_reportable_detail_request(question):
+    """Recognize questions about documented observation/report fields."""
+    q = _words(question)
+    return bool(_REPORTABLE_DETAIL_SUBJECT.search(q)
+                and _REPORTING_INTENT.search(q))
+
+
 def is_contextual_followup(question):
     """Reuse earlier symptoms only for genuine elliptical equipment questions.
 
@@ -419,6 +448,8 @@ def is_contextual_followup(question):
     if TECHNICAL_SYMPTOMS.search(q):
         return False
     if is_technician_handoff_request(q):
+        return True
+    if is_reportable_detail_request(q):
         return True
     if is_component_followup(q):
         return True
@@ -479,7 +510,7 @@ def _requested_topics(question, primary):
     ))
     asks_observations = bool(re.search(
         r"\b(?:what|which)\b.{0,80}\b(?:safely\s+)?"
-        r"(?:check|inspect|observe|report|notice)\b|"
+        r"(?:check|inspect|observe|report|notice|note|record)\b|"
         r"\b(?:safe|customer-safe)\s+(?:checks?|observations?)\b", q
     ))
     asks_next = bool(re.search(
@@ -649,10 +680,82 @@ _FOCUSED_SUBJECTS = (
     (r"\b(?:heating|doesn.t heat|not warm)\b", r"\b(?:heat\w*|warm\w*)\b"),
     (r"\b(?:power supply|power failure|no power)\b",
      r"\b(?:power|supply|electrical)\b"),
+    (r"\b(?:low[ -]?pressure|capacity[ -]?fault)\b",
+     r"\b(?:low[ -]?pressure|capacity[ -]?fault)\b"),
+    (r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b",
+     r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b"),
+    (r"\b(?:error |fault |alarm )?code\b", r"\bcode\b"),
+    (r"\b(?:operating|operation|running)\s+mode\b|\bmode\b",
+     r"\b(?:operating\s+)?mode\b"),
+    (r"\b(?:affected\s+)?indoor\s+units?\b|\baffected\s+units?\b",
+     r"\bindoor\s+units?\b"),
+    (r"\btrend(?:\s+data|\s+history|s)?\b",
+     r"\btrend(?:\s+data|\s+history|s)?\b"),
+    (r"\bambient\s+(?:conditions?|temperature)\b",
+     r"\b(?:ambient|outdoor)\s+temperature\b|\bambient\s+conditions?\b"),
+    (r"\balarm\s+history\b", r"\balarm\s+history\b"),
+    (r"\b(?:display|displayed|indicator|readout)\b",
+     r"\b(?:display(?:ed)?|indicator|readout|code)\b"),
+    (r"\bsensor\s+readings?\b|\b(?:record|note|report)\s+readings?\b",
+     r"\b(?:sensor|readings?)\b"),
+    (r"\b(?:fan(?:\s+or\s+)?temperature[- ]sensor|"
+     r"temperature[- ]sensor|fan)\b",
+     r"\b(?:fan|temperature[- ]sensor)\b"),
     (r"\b(?:not starting|doesn.t start|won.t start|no power)\b",
      r"\b(?:start\w*|power|supply)\b"),
     (_START_STOP_SYMPTOM, _START_STOP_SYMPTOM),
 )
+
+_OBSERVATION_DETAIL_INTENT = re.compile(
+    r"\b(?:record|report|note|mention|include|share|log|document|"
+    r"pass along|relevant|useful|capture|details?|information|give|tell)\b",
+    re.I,
+)
+_OBSERVATION_FACETS = (
+    re.compile(r"\b(?:fault|error|alarm)?\s*code\b", re.I),
+    re.compile(r"\b(?:operating|operation|running)?\s*mode\b", re.I),
+    re.compile(r"\b(?:affected\s+)?indoor\s+units?\b|\baffected\s+units?\b", re.I),
+    re.compile(r"\btrend(?:\s+(?:data|history))?\b", re.I),
+    re.compile(r"\bambient\s+(?:conditions?|temperature)\b", re.I),
+    re.compile(r"\balarm\s+(?:history|log)\b", re.I),
+    re.compile(r"\b(?:sensor\s+)?readings?\b", re.I),
+    re.compile(r"\b(?:display|indicator|readout)\b", re.I),
+    re.compile(r"\b(?:manufacturer(?:'s)?|specified)\s+ranges?\b", re.I),
+)
+
+
+def _focused_observation_text(source_text, question):
+    """Show only the requested item from a simple cited observation list.
+
+    The source sentence and citation remain attached unchanged. This narrows
+    display text only; it does not split evidence, add technical content, or
+    turn a documentation sentence into an equipment procedure.
+    """
+    if not _OBSERVATION_DETAIL_INTENT.search(str(question or "")):
+        return source_text
+    match = re.fullmatch(
+        r"\s*(?P<verb>record|report|note|log|document|capture)\s+"
+        r"(?P<items>[^.!?;:]+)[.!?]?\s*",
+        str(source_text or ""), re.I,
+    )
+    if not match or re.search(
+        r"\b(?:compare|only|specified|manufacturer|range)\b",
+        match.group("items"), re.I,
+    ):
+        return source_text
+    items = [part.strip() for part in re.split(
+        r",\s*(?:and\s+)?|\s+and\s+", match.group("items"), flags=re.I
+    ) if part.strip()]
+    if len(items) < 2:
+        return source_text
+    asked = [pattern for pattern in _OBSERVATION_FACETS
+             if pattern.search(str(question or ""))]
+    if not asked:
+        return source_text
+    selected = [item for item in items if any(pattern.search(item) for pattern in asked)]
+    if not selected or len(selected) == len(items):
+        return source_text
+    return f"{match.group('verb').capitalize()} {' and '.join(selected)}."
 
 
 def _direct_subject_match(question, claim, citation):
@@ -704,6 +807,8 @@ def question_topic(question, last_topic=None):
         q,
     ):
         return "causes"
+    if is_reportable_detail_request(q):
+        return "observations"
     if re.search(
         r"\b(?:how (?:do|can|should) i\b|how to\b|"
         r"what settings? should i (?:use|select)|"
@@ -721,7 +826,8 @@ def question_topic(question, last_topic=None):
     ) and not re.search(r"\b(?:why|cause|reason)\b", q):
         return "next"
     if re.search(r"\b(?:safe(?:ly)?|check|inspect|observe|observation|look at|"
-                 r"report|visible|display|indicator|notice|readout)\b", q):
+                 r"note|record|report|mention|include|share|log|document|"
+                 r"visible|display|indicator|notice|readout)\b", q):
         return "observations"
     if re.search(r"\b(?:manual|document|documentation|checklist|"
                  r"source|according to|listed|template|log|record)\b", q):
@@ -740,6 +846,22 @@ def question_topic(question, last_topic=None):
                          r"not working|weak airflow|leak|rattl|noise)\b", q)):
         return "causes"
     return "general"
+
+
+def expand_display_observation_query(question, retrieval_query=None):
+    """Map display/indicator wording to the manual's documented code terminology.
+
+    This changes retrieval terms only. It does not supply a code value or add
+    any customer-facing technical claim.
+    """
+    query = " ".join(str(retrieval_query or question or "").split())
+    q = _words(question)
+    if (question_topic(question) == "observations"
+            and re.search(r"\b(?:display|indicator|readout)\b", q)
+            and re.search(r"\b(?:see|shown|showing|record|note|report|observe)\b", q)
+            and not re.search(r"\b(?:error|fault|alarm)\s+code\b|\bcode\b", q)):
+        return query + " displayed fault code"
+    return query
 
 
 def wants_additional(question):
@@ -772,7 +894,7 @@ def _explicit_intent(question):
     return bool(re.search(
         r"\b(?:why|causes?|reasons?|root cause|diagnos\w*|"
         r"what is|what's|explain|define|how does|"
-        r"what (?:can|should) i (?:check|do)|what next|next steps?|"
+        r"what (?:can|should) i (?:check|do|note|record|log)|what next|next steps?|"
         r"safe(?:ly)?|inspect|observe|observations?|"
         r"what does|meaning|indicate|code|fault|alarm|"
         r"manual|document|source|according to|repair|fix|resolve)\b",
@@ -1031,7 +1153,14 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             follow_up = plan["follow_up"]
         if plan.get("style") in STYLES:
             style = plan["style"]
-    selected_claims = [row[0] for row in collected]
+    selected_claims = []
+    for source_claim, _citation, _fingerprint in collected:
+        claim = dict(source_claim)
+        if claim.get("kind") == "observation":
+            claim["text"] = _focused_observation_text(
+                claim["source_text"], question,
+            )
+        selected_claims.append(claim)
     selected_citations = [row[1] for row in collected]
     next_facts = list(dict.fromkeys([*previous_facts, *(row[2] for row in collected)]))[-24:]
     # Variation is limited to nontechnical connective language. No source

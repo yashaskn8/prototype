@@ -32,23 +32,83 @@ function Test-LocalPort([int]$port) {
 
 # Only stop known real-data demo processes; never kill an unrelated listener.
 if ($Restart) {
-    foreach ($demoPort in @(8002, 5175)) {
-        $listeners = @(Get-NetTCPConnection -LocalPort $demoPort -State Listen -ErrorAction SilentlyContinue)
-        foreach ($ownedPid in @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)) {
-            $running = Get-CimInstance Win32_Process -Filter "ProcessId = $ownedPid" -ErrorAction SilentlyContinue
-            $command = [string]$running.CommandLine
-            $isDemo = (($demoPort -eq 8002 -and $command -match 'servy_real_demo\.py') -or
-                       ($demoPort -eq 5175 -and $command -match '(?:vite\.js|node_modules[\\/]+vite)'))
-            if (!$isDemo) {
-                throw "Cannot restart: port $demoPort belongs to a process that is not the Servy real-data demo."
+    $backendPortActive = Test-LocalPort 8002
+    $frontendPortActive = Test-LocalPort 5175
+    $processes = @()
+    if ($backendPortActive -or $frontendPortActive) {
+        # Process identity is needed only when a demo listener exists. If CIM
+        # is unavailable in that case, fail closed before stopping anything.
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    }
+    $expectedPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
+    $frontendRoot = Join-Path $projectRoot 'frontend'
+    $backendRoots = @($processes | Where-Object {
+        $_.Name -match '^python(?:\.exe)?$' -and
+        [string]::Equals($_.ExecutablePath, $expectedPython, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $_.CommandLine -match 'servy_real_demo\.py' -and
+        $_.CommandLine -match [regex]::Escape($projectRoot)
+    })
+    $backendChildren = @($processes | Where-Object {
+        $_.Name -match '^python(?:\.exe)?$' -and
+        $_.CommandLine -match 'servy_real_demo\.py' -and
+        @($backendRoots | Select-Object -ExpandProperty ProcessId) -contains $_.ParentProcessId
+    })
+    $viteServers = @($processes | Where-Object {
+        $_.Name -match '^node(?:\.exe)?$' -and
+        $_.CommandLine -match [regex]::Escape($frontendRoot) -and
+        $_.CommandLine -match 'vite\.js' -and
+        $_.CommandLine -match '--port\s+5175\b'
+    })
+    if ($backendPortActive -and !$backendRoots.Count) {
+        throw 'Cannot restart: port 8002 is reachable but no verified project backend process was found.'
+    }
+    if ($frontendPortActive -and !$viteServers.Count) {
+        throw 'Cannot restart: port 5175 is reachable but no verified project Vite process for port 5175 was found.'
+    }
+
+    foreach ($child in $backendChildren) {
+        Stop-Process -Id $child.ProcessId -Force -ErrorAction Stop
+    }
+    foreach ($backend in $backendRoots) {
+        Stop-Process -Id $backend.ProcessId -Force -ErrorAction Stop
+    }
+    $viteLaunchers = @()
+    foreach ($vite in $viteServers) {
+        $ancestorPid = $vite.ParentProcessId
+        while ($ancestorPid) {
+            $ancestor = $processes | Where-Object { $_.ProcessId -eq $ancestorPid } | Select-Object -First 1
+            if (!$ancestor -or $ancestor.Name -notmatch '^(?:cmd|node)(?:\.exe)?$' -or
+                $ancestor.CommandLine -notmatch '--port\s+5175\b' -or
+                ($ancestor.CommandLine -notmatch '\bvite\b' -and
+                 $ancestor.CommandLine -notmatch 'npm(?:-cli\.js|\.cmd).{0,100}\brun dev\b')) {
+                break
             }
-            Stop-Process -Id $ownedPid -Force -ErrorAction Stop
+            $viteLaunchers += $ancestor
+            $ancestorPid = $ancestor.ParentProcessId
         }
     }
-    Start-Sleep -Seconds 1
+    # Stop only the verified port-5175 launch chain, from its outer launcher
+    # down to Vite. In particular, a separate default-port 5173 Vite stays up.
+    for ($i = $viteLaunchers.Count - 1; $i -ge 0; $i--) {
+        Stop-Process -Id $viteLaunchers[$i].ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($vite in $viteServers) {
+        Stop-Process -Id $vite.ProcessId -Force -ErrorAction Stop
+    }
+    for ($i = 0; $i -lt 15; $i++) {
+        if (!(Test-LocalPort 8002) -and !(Test-LocalPort 5175)) { break }
+        Start-Sleep -Seconds 1
+    }
+    if ((Test-LocalPort 8002) -or (Test-LocalPort 5175)) {
+        throw 'A Servy demo port remained active after stopping its verified local process tree.'
+    }
 }
 
 if (!(Test-LocalPort 3306)) {
+    $existingMysql = @(Get-CimInstance Win32_Process -Filter "Name='mysqld.exe'" -ErrorAction SilentlyContinue)
+    if ($existingMysql.Count -gt 0) {
+        throw 'MySQL port 3306 is not reachable while an existing mysqld.exe process is running. Refusing to start another MySQL instance.'
+    }
     $mysql = 'C:\mysql\mysql-8.0.41-winx64\bin\mysqld.exe'
     $config = 'C:\mysql\my.ini'
     if (!(Test-Path -LiteralPath $mysql) -or !(Test-Path -LiteralPath $config)) {

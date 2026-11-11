@@ -29,6 +29,7 @@ from .services.excel_io import export_calls_xlsx, import_calls_xlsx
 from .services.indexing import index_document
 from .services.rag import ask_rag
 from .services.ticketing import create_call_from_interaction
+from .services.ticket_handoff import authorized_service_calls
 from .services.audit import audit_event
 
 STAFF_ROLES = ("admin", "manager", "technician", "store_admin", "store_operator")
@@ -47,6 +48,21 @@ def _tenant(request):
     return _membership(request).tenant
 
 
+def _staff_service_calls(request, tenant):
+    membership = _membership(request)
+    profile = None
+    if membership.role == "technician":
+        profile = StaffProfile.objects.filter(
+            tenant=tenant, user=request.user, role="technician", is_active=True,
+        ).first()
+    return authorized_service_calls({
+        "tenant": tenant,
+        "role": membership.role,
+        "staff_profile": profile,
+        "user": request.user,
+    })
+
+
 @any_member
 def dashboard(request):
     membership = _membership(request)
@@ -55,17 +71,21 @@ def dashboard(request):
     if membership.role in {"store_admin", "store_operator"}:
         return redirect("inventory")
     tenant = membership.tenant
+    visible_calls = _staff_service_calls(request, tenant)
+    visible_interactions = CustomerInteraction.objects.filter(tenant=tenant)
+    if membership.role == "technician":
+        visible_interactions = visible_interactions.filter(escalated_call__in=visible_calls)
     today = timezone.localdate()
     context = {
         "tenant": tenant,
         "asset_count": Asset.objects.filter(tenant=tenant).count(),
-        "call_count": ServiceCall.objects.filter(tenant=tenant).count(),
-        "open_calls": ServiceCall.objects.filter(tenant=tenant, status__in=["open", "assigned", "in_progress"]).count(),
+        "call_count": visible_calls.count(),
+        "open_calls": visible_calls.filter(status__in=["open", "assigned", "in_progress"]).count(),
         "kb_count": KnowledgeDocument.objects.filter(tenant=tenant).count(),
-        "interactions_today": CustomerInteraction.objects.filter(tenant=tenant, created_at__date=today).count(),
-        "escalations_today": CustomerInteraction.objects.filter(tenant=tenant, created_at__date=today, escalated_call__isnull=False).count(),
-        "recent_calls": ServiceCall.objects.filter(tenant=tenant).select_related("customer", "asset", "technician")[:8],
-        "recent_interactions": CustomerInteraction.objects.filter(tenant=tenant).select_related("customer", "asset")[:6],
+        "interactions_today": visible_interactions.filter(created_at__date=today).count(),
+        "escalations_today": visible_interactions.filter(created_at__date=today, escalated_call__isnull=False).count(),
+        "recent_calls": visible_calls.select_related("customer", "asset", "technician")[:8],
+        "recent_interactions": visible_interactions.select_related("customer", "asset")[:6],
     }
     return render(request, "core/dashboard.html", context)
 
@@ -235,7 +255,7 @@ def call_register(request):
     tenant = _tenant(request)
     q = request.GET.get("q", "").strip()
     status = request.GET.get("status", "").strip()
-    qs = ServiceCall.objects.filter(tenant=tenant).select_related("customer", "site", "project", "asset", "technician")
+    qs = _staff_service_calls(request, tenant).select_related("project")
     if q:
         text_filter = (
             Q(complaint_type__icontains=q) | Q(complaint_text__icontains=q)
@@ -258,8 +278,9 @@ def call_register(request):
 def call_detail(request, pk):
     tenant = _tenant(request)
     call = get_object_or_404(
-        ServiceCall.objects.select_related("customer", "site", "project", "asset", "asset__product", "technician"),
-        tenant=tenant,
+        _staff_service_calls(request, tenant).select_related(
+            "customer", "site", "project", "asset", "asset__product", "technician"
+        ),
         pk=pk,
     )
     result = None
