@@ -5,6 +5,7 @@ portal and the synthetic tester. It never writes operational records.
 """
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from http import HTTPStatus
 import json
 import os
 from pathlib import Path
@@ -722,7 +723,15 @@ class Handler(BaseHTTPRequestHandler):
         route = route if route in LOGGED_ROUTES else "other"
         started = getattr(self, "_request_started", None)
         elapsed = f" {int((time.perf_counter() - started) * 1000)}ms" if started is not None else ""
-        print(f"{time.strftime('%H:%M:%S')} {self.command} {route} {status}{elapsed}", flush=True)
+        try:
+            phrase = HTTPStatus(status).phrase
+        except ValueError:
+            phrase = "Unknown status"
+        print(
+            f"{time.strftime('%H:%M:%S')} HTTP {status} {phrase} | "
+            f"{self.command} {route}{elapsed}",
+            flush=True,
+        )
 
     def _authorized(self):
         host = self.headers.get("Host", "").split(":", 1)[0]
