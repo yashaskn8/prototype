@@ -5,12 +5,14 @@ It never connects to MySQL or modifies Servy operational ServiceCall records.
 """
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from http import HTTPStatus
 import json
 import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import time
 from urllib.parse import unquote, urlsplit
 
 PRIVATE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Servy" / "private_evaluations" / "servy_technician_demo_20261111_01"
@@ -210,6 +212,28 @@ class Handler(BaseHTTPRequestHandler):
         # Do not log access codes, ticket contents, attachment names, or URLs.
         pass
 
+    def _log_response(self, status):
+        route = urlsplit(self.path).path
+        if re.fullmatch(r"/tech-api/tickets/[^/]+/attachments/[^/]+/", route):
+            safe_route = "/tech-api/tickets/{ticket_id}/attachments/{attachment_id}/"
+        elif re.fullmatch(r"/tech-api/tickets/[^/]+/", route):
+            safe_route = "/tech-api/tickets/{ticket_id}/"
+        elif route == "/tech-api/tickets/":
+            safe_route = route
+        else:
+            safe_route = "/other"
+        try:
+            phrase = HTTPStatus(status).phrase
+        except ValueError:
+            phrase = "Unknown status"
+        started = getattr(self, "_request_started", None)
+        elapsed = f" {int((time.perf_counter() - started) * 1000)}ms" if started is not None else ""
+        print(
+            f"{datetime.now().astimezone().strftime('%H:%M:%S')} HTTP {status} {phrase} | "
+            f"{self.command} {safe_route}{elapsed}",
+            flush=True,
+        )
+
     def _send_json(self, status, value):
         raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -220,15 +244,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(raw)
-        route = urlsplit(self.path).path
-        safe_route = "tickets" if route.startswith("/tech-api/tickets/") else "other"
-        print(f"{self.command} {safe_route} {status}", flush=True)
+        self._log_response(status)
 
     def _authorized(self):
         supplied = self.headers.get("Authorization", "")
         return _loopback_request(self) and secrets.compare_digest(supplied, "Technician " + self.token)
 
     def do_GET(self):
+        self._request_started = time.perf_counter()
         if not self._authorized():
             return self._send_json(401, {"detail": "Technician access code required or invalid."})
         path = urlsplit(self.path).path
@@ -264,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Referrer-Policy", "no-referrer")
                 self.end_headers()
                 self.wfile.write(content)
-                print("GET ticket-attachment 200", flush=True)
+                self._log_response(200)
                 return
             except LookupError:
                 return self._send_json(404, {"detail": "Attachment not found."})
@@ -273,6 +296,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(404, {"detail": "Not found."})
 
     def do_PATCH(self):
+        self._request_started = time.perf_counter()
         if not self._authorized():
             return self._send_json(401, {"detail": "Technician access code required or invalid."})
         match = re.fullmatch(r"/tech-api/tickets/([^/]+)/", urlsplit(self.path).path)
