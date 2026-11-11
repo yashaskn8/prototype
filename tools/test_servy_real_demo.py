@@ -773,6 +773,69 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertIn("compressor", rag_mod.ask_rag.call_args.kwargs["question"])
         self.assertFalse(result.get("customer_safe_actions"))
 
+    def test_explain_each_cited_issue_runs_one_deeper_source_retrieval(self):
+        from tools.test_servy_real_demo_dialogue import contract
+        import copy
+
+        asset = SimpleNamespace(
+            id=60, name="Synthetic VRF Outdoor Module", model_number="VRF-1",
+            asset_code="SYN-60", product=SimpleNamespace(name="Synthetic VRF Outdoor Module"),
+        )
+        tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
+        question = "ok could you explain each issue in detailed"
+        history = ["The VRF outdoor module is not working.", "What are its possible causes?"]
+        continuation = demo._sign_demo_context(
+            60, 13, question, history[0], history, last_topic="causes",
+        )
+        first, second = contract(), copy.deepcopy(contract())
+        new_source = "An operating-condition limit may cause the outdoor module to stop."
+        second["presentation"]["citations"].append({
+            "id": "s6", "document_id": 3, "chunk_id": 30,
+            "title": "Synthetic authorized VRF manual", "heading": "Operating limits",
+            "url": "/demo-api/source/?citation=synthetic-evidence-6",
+        })
+        second["presentation"]["supporting_claims"].append({
+            "id": "c6", "text": "Possible documented cause: " + new_source,
+            "source_text": new_source, "kind": "possible_cause", "evidence_ids": ["s6"],
+        })
+        approved = [first, second]
+
+        answer_mod = ModuleType("core.services.customer_answer")
+        answer_mod._question_guard = Mock(return_value=None)
+        answer_mod.build_customer_answer = Mock(side_effect=approved)
+        answer_mod.exception_presentation = Mock(
+            side_effect=AssertionError("No exception contract expected")
+        )
+        diagnostic_mod = ModuleType("core.services.customer_diagnostic")
+        diagnostic_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
+        diagnostic_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
+        rag_mod = ModuleType("core.services.rag")
+        rag_mod.ask_rag = Mock(return_value={
+            "engine": "extractive", "references": [],
+            "retrieval_backend": "hybrid", "reranker_applied": True,
+            "reranker_model": "servy_v5_bge_verified",
+        })
+        fake_modules = {
+            "core.services.customer_answer": answer_mod,
+            "core.services.customer_diagnostic": diagnostic_mod,
+            "core.services.rag": rag_mod,
+        }
+        with patch.dict("sys.modules", fake_modules), \
+             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
+             patch.object(demo, "plan_turn", return_value=None):
+            result = demo._answer(60, question, continuation=continuation)
+
+        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertIn("An operating-condition limit", result["answer"])
+        self.assertEqual(result["retrieval_attempts"], 2)
+        self.assertEqual(rag_mod.ask_rag.call_count, 2)
+        self.assertIn(
+            "detailed documented causes explanation",
+            rag_mod.ask_rag.call_args_list[1].kwargs["question"],
+        )
+        self.assertEqual(rag_mod.ask_rag.call_args_list[1].kwargs["top_k"], 8)
+        self.assertEqual(answer_mod.build_customer_answer.call_count, 2)
+
     def test_targeted_retry_has_no_unbounded_loop_when_both_passes_fail(self):
         from tools.test_servy_real_demo_dialogue import contract
         asset = SimpleNamespace(
