@@ -5,7 +5,7 @@ import unittest
 from tools.servy_real_demo_dialogue import (
     conversational_turn, fact_fingerprint, focus_answer,
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
-    out_of_scope_response, focused_causal_query,
+    out_of_scope_response, focused_causal_query, wants_additional,
     is_technician_handoff_request, build_technician_handoff,
 )
 
@@ -452,6 +452,36 @@ class IntentFocusTests(unittest.TestCase):
         repeated, _ = focus_answer(contract(), "What are the possible causes?",
                                    last_topic=state["topic"], previous_facts=state["facts"])
         self.assertEqual(repeated["response_type"], "DIAGNOSTIC_GUIDANCE")
+
+    def test_additional_diagnostic_checks_do_not_trigger_more_causes_mode(self):
+        question = (
+            "For the VRF Outdoor Module, what are the documented reasons an outdoor "
+            "unit may fail to start or provide cooling? Explain possible causes and "
+            "the recommended preliminary diagnostic checks, and ask for a fault code "
+            "if the approved evidence is insufficient."
+        )
+        self.assertFalse(wants_additional(question))
+
+    def test_more_causes_does_not_hide_previously_shown_checks_in_a_mixed_request(self):
+        base = contract()
+        citations = {item["id"]: item for item in base["presentation"]["citations"]}
+        already_shown = [
+            fact_fingerprint(claim, citations[claim["evidence_ids"][0]])
+            for claim in base["presentation"]["supporting_claims"]
+        ]
+        result, state = focus_answer(
+            base,
+            "What other causes are documented, and what additional checks should I report?",
+            last_topic="causes",
+            previous_facts=already_shown,
+        )
+        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertIn(
+            "s3", [item["id"] for item in result["presentation"]["citations"]],
+            "A request for new causes must not suppress a previously shown observation/check.",
+        )
+        self.assertNotIn("another distinct, documented answer", result["answer"])
+        self.assertEqual(state["topic"], "causes")
 
     def test_more_causes_displays_only_new_source(self):
         base = contract()
