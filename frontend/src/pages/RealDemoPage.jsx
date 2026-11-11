@@ -696,6 +696,10 @@ export function RealDemoPage() {
             <dl><div><dt>Equipment</dt><dd>{ticketConfirmation.ticket.assetName} ({ticketConfirmation.ticket.assetCode})</dd></div>
               <div><dt>Complaint Type</dt><dd>{ticketConfirmation.ticket.complaintType}</dd></div>
               <div><dt>Status</dt><dd>{ticketConfirmation.ticket.status}</dd></div></dl>
+            <a className="btn btn-secondary" href="http://127.0.0.1:5176/" target="_blank" rel="noreferrer">
+              Open private technician portal
+            </a>
+            <small>Technicians use their separate code from technician_access.txt.</small>
           </div>}
         </>}
         {error && !ticketDraft && <p className="real-demo-error" role="alert">{error}</p>}
