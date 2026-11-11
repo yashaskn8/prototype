@@ -843,6 +843,115 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertEqual(rag_mod.ask_rag.call_args_list[1].kwargs["top_k"], 8)
         self.assertEqual(answer_mod.build_customer_answer.call_count, 2)
 
+    def test_detailed_cause_followup_stays_scoped_for_all_three_assets(self):
+        from tools.test_servy_real_demo_dialogue import contract
+        import copy
+
+        cases = (
+            (59, "Split AC Unit 2T", "SKY-AST-00001", 14, 168),
+            (60, "VRF Outdoor Module", "SKY-AST-00002", 13, 171),
+            (61, "Ductable AC 5T", "SKY-AST-00003", 14, 174),
+        )
+        for asset_id, asset_name, asset_code, customer_id, document_id in cases:
+            with self.subTest(asset=asset_code):
+                asset = SimpleNamespace(
+                    id=asset_id, name=asset_name, asset_code=asset_code,
+                    model_number=f"SYN-{asset_id}",
+                    product=SimpleNamespace(name=asset_name),
+                )
+                tenant = SimpleNamespace(id=273)
+                customer = SimpleNamespace(id=customer_id)
+                question = "Could you explain each issue in detail?"
+                history = [
+                    f"The {asset_name} is not working.",
+                    "What are its possible causes?",
+                ]
+                continuation = demo._sign_demo_context(
+                    asset_id, customer_id, question, history[0], history,
+                    last_topic="causes",
+                )
+                first, second = contract(), copy.deepcopy(contract())
+                for answer_contract in (first, second):
+                    for citation in answer_contract["presentation"]["citations"]:
+                        citation["document_id"] = document_id
+
+                new_source = (
+                    f"A documented operating-condition limit may affect the {asset_name}."
+                )
+                new_chunk_id = 6000 + asset_id
+                second["presentation"]["citations"].append({
+                    "id": "s6", "document_id": document_id,
+                    "chunk_id": new_chunk_id,
+                    "title": f"Synthetic authorized {asset_name} manual",
+                    "heading": "Operating limits",
+                    "url": "/demo-api/source/?citation=synthetic-evidence-6",
+                })
+                second["presentation"]["supporting_claims"].append({
+                    "id": "c6",
+                    "text": "Possible documented cause: " + new_source,
+                    "source_text": new_source,
+                    "kind": "possible_cause",
+                    "evidence_ids": ["s6"],
+                })
+
+                answer_mod = ModuleType("core.services.customer_answer")
+                answer_mod._question_guard = Mock(return_value=None)
+                answer_mod.build_customer_answer = Mock(side_effect=[first, second])
+                answer_mod.exception_presentation = Mock(
+                    side_effect=AssertionError("No exception contract expected")
+                )
+                diagnostic_mod = ModuleType("core.services.customer_diagnostic")
+                diagnostic_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
+                diagnostic_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
+                rag_mod = ModuleType("core.services.rag")
+                rag_mod.ask_rag = Mock(return_value={
+                    "engine": "extractive", "references": [],
+                    "retrieval_backend": "hybrid",
+                    "reranker_applied": True,
+                    "reranker_model": "servy_v5_bge_verified",
+                })
+                fake_modules = {
+                    "core.services.customer_answer": answer_mod,
+                    "core.services.customer_diagnostic": diagnostic_mod,
+                    "core.services.rag": rag_mod,
+                }
+
+                with patch.dict("sys.modules", fake_modules), \\
+                     patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \\
+                     patch.object(demo, "plan_turn", return_value=None):
+                    result = demo._answer(
+                        asset_id, question, continuation=continuation,
+                    )
+
+                self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
+                self.assertEqual(result["retrieval_attempts"], 2)
+                self.assertEqual(rag_mod.ask_rag.call_count, 2)
+                self.assertEqual(answer_mod.build_customer_answer.call_count, 2)
+                self.assertIn(
+                    "detailed documented causes explanation",
+                    rag_mod.ask_rag.call_args_list[1].kwargs["question"],
+                )
+                self.assertIn(
+                    new_source,
+                    "\\n".join(
+                        claim.get("text", "")
+                        for claim in result["presentation"]["supporting_claims"]
+                    ),
+                )
+                self.assertIn(
+                    new_chunk_id,
+                    [citation["chunk_id"] for citation in result["citations"]],
+                )
+                for rag_call in rag_mod.ask_rag.call_args_list:
+                    self.assertIs(rag_call.kwargs["asset"], asset)
+                    self.assertIs(rag_call.kwargs["customer"], customer)
+                    self.assertFalse(rag_call.kwargs["include_confidential"])
+                    self.assertFalse(rag_call.kwargs["staff_mode"])
+                self.assertEqual(
+                    {citation["document_id"] for citation in result["citations"]},
+                    {document_id},
+                )
+
     def test_targeted_retry_has_no_unbounded_loop_when_both_passes_fail(self):
         from tools.test_servy_real_demo_dialogue import contract
         asset = SimpleNamespace(
