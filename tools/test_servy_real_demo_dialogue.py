@@ -300,8 +300,14 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertEqual([citation["id"] for citation in result["presentation"]["citations"]],
                          ["s1", "s2"])
-        self.assertIn("poor cooling or airflow only", result["presentation"]["message"])
-        self.assertIn("water leakage", result["presentation"]["message"])
+        limitation_text = "\\n".join(
+            claim["text"]
+            for section in result["presentation"]["sections"]
+            if section["title"] == "Evidence limitation"
+            for claim in section["claims"]
+        )
+        self.assertIn("poor cooling or airflow only", limitation_text)
+        self.assertIn("water leakage", limitation_text)
         self.assertTrue(all(claim["kind"] == "possible_cause"
                             for claim in result["presentation"]["supporting_claims"]))
 
