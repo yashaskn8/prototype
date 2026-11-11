@@ -156,6 +156,10 @@ try {
     [Environment]::SetEnvironmentVariable('SERVY_DB_ENGINE', 'mysql', 'Process')
     [Environment]::SetEnvironmentVariable('DJANGO_SETTINGS_MODULE', 'servy_rag.settings', 'Process')
 
+    . (Join-Path $PSScriptRoot 'Ensure-ServyMySQL.ps1')
+    Write-Host 'Ensuring the existing MySQL instance is running (no data initialization or service reconfiguration)...'
+    Ensure-ServyMySQL -TimeoutSeconds ([Math]::Max(60, $ReadinessTimeoutSeconds)) -Port 3306
+
     Write-Host 'Checking configured MySQL readiness (read-only)...'
     $mysqlCheck = & $python (Join-Path $repoRoot 'manage.py') check_mysql_ready 2>&1
     $mysqlExit = $LASTEXITCODE
