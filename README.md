@@ -46,6 +46,12 @@ relative path does not exist there.
 .\tools\Start-ServyRealDemo.ps1
 ~~~
 
+Keep this PowerShell window open: it streams customer backend HTTP statuses and Vite activity.
+Examples include `HTTP 200 OK | POST /demo-api/query/` and
+`HTTP 201 Created | POST /demo-api/tickets/create-local/`. The log stream masks ticket IDs,
+question text, access codes, signed source tokens and response bodies. Press Ctrl+C to close only
+the log viewer; the launched servers remain running. Use `-NoWatch` to return to the prompt instead.
+
 Open http://127.0.0.1:5175/ and enter the existing customer RAG access code. The launcher now
 automatically uses a guarded, disposable BGE rebuild from verified approved documents only when
 the frozen Chroma bytes differ. It does not repair/write production Chroma or write company MySQL
@@ -67,11 +73,16 @@ Remove or redact access codes, credentials, passwords and customer details befor
 .\tools\Start-ServyTechnicianDemo.ps1
 ~~~
 
+Keep this second PowerShell window open: it streams technician API HTTP statuses and Vite activity,
+for example `HTTP 200 OK | GET /tech-api/tickets/` and
+`HTTP 200 OK | PATCH /tech-api/tickets/{ticket_id}/`. Ticket IDs and ticket contents are masked.
+Press Ctrl+C to close only the log viewer; the technician services remain running. Use
+`-NoWatch` to return to the prompt instead.
+
 Open http://127.0.0.1:5176/ and use the code in the local technician_access.txt file printed by
 the launcher. If no customer ticket exists yet, the portal opens with an empty queue and does not
-create or initialize the SQLite database. Create/confirm a ticket in the customer RAG, then select
-**Refresh queue** in the technician portal. Both launchers resolve the same Windows LocalAppData
-ticket database path.
+create or initialize the SQLite database. Create/confirm a ticket in the customer RAG; the queue
+refreshes automatically. Both launchers resolve the same Windows LocalAppData ticket database path.
 
 You can also invoke either launcher directly while remaining in the parent SURVY-RAG folder by
 including the repository directory in the path:
