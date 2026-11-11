@@ -142,12 +142,12 @@ class TechnicianDemoWorkspaceTests(unittest.TestCase):
             )
 
     def test_queue_can_start_before_first_ticket_without_creating_database(self):
-        missing = Path(self.temp.name) / "missing-local-ticket-workspace.sqlite3"
+        missing = Path(self.temp.name) / "empty-queue" / "local-ticket-workspace.sqlite3"
         self.assertEqual(tech.list_tickets(missing), [])
         self.assertFalse(missing.exists(), "Technician queue must not initialize customer ticket storage")
 
     def test_main_starts_empty_queue_without_creating_workspace(self):
-        missing = Path(self.temp.name) / "local-ticket-workspace.sqlite3"
+        missing = Path(self.temp.name) / "empty-startup" / "local-ticket-workspace.sqlite3"
         with patch.object(tech, "DB_PATH", missing), \
                 patch.object(tech, "_ensure_access_code", return_value="test-only-code"), \
                 patch.object(tech, "HTTPServer") as server:
