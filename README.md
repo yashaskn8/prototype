@@ -61,14 +61,17 @@ Get-Content -LiteralPath '<startup.err path printed by the launcher>' -Tail 80
 
 Remove or redact access codes, credentials, passwords and customer details before sharing log output.
 
-**Then start the separate technician code-gated instance:**
+**Start the separate technician code-gated instance (it can start before the first ticket):**
 
 ~~~powershell
 .\tools\Start-ServyTechnicianDemo.ps1
 ~~~
 
 Open http://127.0.0.1:5176/ and use the code in the local technician_access.txt file printed by
-the launcher. The technician launcher intentionally refuses to initialize an empty ticket database.
+the launcher. If no customer ticket exists yet, the portal opens with an empty queue and does not
+create or initialize the SQLite database. Create/confirm a ticket in the customer RAG, then select
+**Refresh queue** in the technician portal. Both launchers resolve the same Windows LocalAppData
+ticket database path.
 
 You can also invoke either launcher directly while remaining in the parent SURVY-RAG folder by
 including the repository directory in the path:
