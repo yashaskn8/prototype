@@ -46,9 +46,20 @@ relative path does not exist there.
 .\tools\Start-ServyRealDemo.ps1
 ~~~
 
-Open http://127.0.0.1:5175/, enter the existing customer RAG access code, and create/confirm a ticket.
-This first step creates the dedicated local SQLite ticket workspace. It does not create an official
-MySQL service call.
+Open http://127.0.0.1:5175/ and enter the existing customer RAG access code. The launcher now
+automatically uses a guarded, disposable BGE rebuild from verified approved documents only when
+the frozen Chroma bytes differ. It does not repair/write production Chroma or write company MySQL
+records. The first guarded rebuild can take up to four minutes.
+
+Create/confirm a ticket in the customer RAG to create the dedicated local SQLite ticket workspace.
+This does not create an official MySQL service call. If backend startup fails, the launcher reports
+the exact private `startup.out` and `startup.err` paths. Inspect the error with:
+
+~~~powershell
+Get-Content -LiteralPath '<startup.err path printed by the launcher>' -Tail 80
+~~~
+
+Remove or redact access codes, credentials, passwords and customer details before sharing log output.
 
 **Then start the separate technician code-gated instance:**
 
