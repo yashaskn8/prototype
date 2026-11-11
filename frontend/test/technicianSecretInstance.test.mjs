@@ -5,13 +5,14 @@ import test from 'node:test';
 const readSource = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('technician experience is a distinct access-code instance', async () => {
-  const [page, app, vite, launcher, backend, customerPage] = await Promise.all([
+  const [page, app, vite, launcher, backend, customerPage, customerLauncher] = await Promise.all([
     readSource('../src/pages/TechnicianSecretPage.jsx'),
     readSource('../src/App.jsx'),
     readSource('../vite.config.js'),
     readSource('../../tools/Start-ServyTechnicianDemo.ps1'),
     readSource('../../tools/servy_technician_demo.py'),
     readSource('../src/pages/RealDemoPage.jsx'),
+    readSource('../../tools/Start-ServyRealDemo.ps1'),
   ]);
 
   assert.match(app, /VITE_SERVY_TECH_DEMO === '1'\) return <TechnicianSecretPage \/>/);
@@ -29,6 +30,12 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(customerPage, /technician_access\.txt/);
   assert.match(launcher, /technician_access\.txt/);
   assert.match(launcher, /VITE_SERVY_TECH_DEMO/);
+  assert.match(launcher, /No customer RAG ticket workspace exists yet/);
+  assert.match(launcher, /GetFolderPath\(\[System\.Environment\+SpecialFolder\]::LocalApplicationData\)/);
+  assert.match(customerLauncher, /GetFolderPath\(\[System\.Environment\+SpecialFolder\]::LocalApplicationData\)/);
+  assert.match(launcher, /SERVY_LOCAL_TICKET_DB_PATH/);
+  assert.match(customerLauncher, /SERVY_LOCAL_TICKET_DB_PATH/);
+  assert.match(backend, /if not path\.is_file\(\):\s+return \[\]/);
   assert.match(backend, /secrets\.compare_digest/);
   assert.match(backend, /127\.0\.0\.1/);
   assert.match(backend, /created_by = \?/);
