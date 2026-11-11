@@ -27,7 +27,15 @@ test('technician inbox polls the authenticated backend and persists acknowledgem
     assert.ok(page.includes(heading), `missing ticket section: ${heading}`);
   }
   assert.match(app, /TechnicianInboxPage/);
+  assert.match(app, /TicketWorkspacePage/);
   assert.match(app, /technician\/inbox/);
+  assert.match(app, /technician\/rag-tickets/);
   assert.match(navigation, /show: isTechnician/);
-  assert.doesNotMatch(navigation, /id: 'ticket-workspace'/);
+  assert.match(navigation, /id: 'rag-ticket-workspace'/);
+  assert.match(navigation, /http:\/\/127\.0\.0\.1:5175\//);
+
+  const workspace = await readSource('../src/pages/TicketWorkspacePage.jsx');
+  assert.match(workspace, /listLocalTickets/);
+  assert.match(workspace, /Technician Ticket Inbox/);
+  assert.match(workspace, /local ticket workspace/i);
 });
