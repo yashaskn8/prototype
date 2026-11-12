@@ -76,7 +76,7 @@ test('accepts only customer-safe claim kinds in observation and check sections',
   for (const [title, kind] of [
     ['Safe observations from the manual', 'observation'],
     ['Safe observations from the manual', 'customer_procedure'],
-    ['Approved customer checks', 'observation'],
+    ['Approved customer checks', 'next_step'],
     ['Approved customer checks', 'customer_procedure'],
   ]) {
     const presentation = mixedPresentation();
