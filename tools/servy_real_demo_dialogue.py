@@ -326,12 +326,8 @@ TECHNICAL_SYMPTOMS = re.compile(
     r"leak(?:ing|age)?|dripping|"
     r"noise|noisy|vibration|vibrating|"
     r"not starting|not turning on|not working|"
-    r"low airflow|weak airflow|"
-    r"communication(?:\s+or\s+address(?:ing)?)?\s+fault|address(?:ing)?\s+fault|"
-    r"high[ -]?pressure|heat[ -]?exchange|low[ -]?pressure|capacity\s+fault|"
-    r"compressor(?:\s+or\s+inverter)?\s+fault|inverter\s+fault|"
-    r"fan(?:\s+or\s+temperature[- ]sensor)?\s+fault|temperature[- ]sensor\s+fault|"
-    + _START_STOP_SYMPTOM + r"|e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
+    r"low airflow|weak airflow|" + _START_STOP_SYMPTOM + r"|"
+    r"e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
 )
 
 # These are customer-selected fault categories, not verified diagnoses.
@@ -345,10 +341,18 @@ DOCUMENTED_FAULT_CATEGORY_PATTERNS = (
     ("low-pressure or capacity fault",
      re.compile(r"\b(?:low[ -]?pressure|capacity)\b", re.I)),
     ("compressor or inverter fault",
-     re.compile(r"\b(?:compressor|inverter)\b", re.I)),
+     re.compile(r"\b(?:compressor|inverter)(?:\s+or\s+(?:compressor|inverter))?\s+fault\b", re.I)),
     ("fan or temperature-sensor fault",
-     re.compile(r"\b(?:fan|temperature[- ]sensor)\b", re.I)),
+     re.compile(r"\b(?:fan(?:\s+or\s+temperature[- ]sensor)?|temperature[- ]sensor)\s+fault\b", re.I)),
 )
+
+
+def has_documented_fault_category(text):
+    """Whether a customer-authored turn explicitly names one fault category."""
+    value = str(text or "")
+    return any(pattern.search(value) for _label, pattern in DOCUMENTED_FAULT_CATEGORY_PATTERNS)
+
+
 SPECIFIC_EVIDENCE = {
     "overheating": (
         re.compile(r"\b(?:overheat(?:ing|ed|s)?|hot to (?:the )?touch|too hot)\b", re.I),
@@ -1278,6 +1282,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     focus = _FocusPlan(question)
     allowed = (frozenset().union(*(_match_kinds(item) for item in topics))
                if not off_topic else frozenset())
+    if topic == "causes" and is_explanation_followup(question) and not off_topic:
+        allowed = allowed | frozenset({"information"})
     citations_by_id = {
         c.get("id"): c for c in original.get("citations", [])
         if isinstance(c, dict) and isinstance(c.get("id"), str)
