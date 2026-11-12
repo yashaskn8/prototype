@@ -248,15 +248,22 @@ class CauseFollowUpTests(unittest.TestCase):
         self.assertEqual([c["source_text"] for c in _claims(result)],
                          ["Blocked external clearance."])
         self.assertEqual(result["evidence_state"], "PARTIAL")
-        self.assertIn("Evidence limitation",
-                      [s["title"] for s in result["presentation"]["sections"]])
+        self.assertEqual(
+            [s["title"] for s in result["presentation"]["sections"]],
+            ["Documented possible causes"],
+        )
+        self.assertTrue(result["presentation"]["cause_explanation_unavailable"])
+        self.assertNotIn(
+            "The approved documents for this equipment contain no further explanation",
+            json.dumps(result["presentation"]),
+        )
         block = result["issue_assignment"]
         self.assertEqual(block["status"], "AWAITING_CUSTOMER_CONFIRMATION")
         self.assertIn("refers to documented cause: Blocked external clearance.",
                       block["description"])
         self.assertIn("Explain the second cause", block["unanswered_question"])
 
-    def test_explain_each_without_new_passages_keeps_limitation_and_escalates(self):
+    def test_explain_each_without_new_passages_hides_limitation_and_escalates(self):
         first, _ = _cause_turn()
         with patch.object(demo, "explain_claims",
                           side_effect=AssertionError("no rewording")):
@@ -264,6 +271,10 @@ class CauseFollowUpTests(unittest.TestCase):
                                 [contract(), contract()],
                                 continuation=first["continuation"])
         self.assertEqual(result["evidence_state"], "PARTIAL")
+        self.assertTrue(result["presentation"]["cause_explanation_unavailable"])
+        self.assertNotIn("Evidence limitation", [
+            section["title"] for section in result["presentation"]["sections"]
+        ])
         self.assertTrue(result["issue_assignment"]["required"])
 
     def test_reference_beyond_the_listed_causes_asks_which_one(self):
