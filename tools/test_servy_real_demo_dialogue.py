@@ -7,9 +7,89 @@ from tools.servy_real_demo_dialogue import (
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
     out_of_scope_response, focused_causal_query, wants_additional,
     is_technician_handoff_request, build_technician_handoff, NO_EVIDENCE,
+    contextualize_fault_category_followup,
     _follow_up,
 )
 
+
+
+
+
+class FaultCategoryFollowupTests(unittest.TestCase):
+    HISTORY = [
+        "What could be the possible reasons why my VRF outdoor module is not working?",
+        "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
+    ]
+
+    def test_generic_followups_keep_the_last_customer_selected_fault_category(self):
+        cases = (
+            ("What possible causes are documented?", "causes",
+             "What possible causes are documented for the suspected communication or addressing fault?"),
+            ("What can I safely observe?", "observations",
+             "What can I safely observe or report for the suspected communication or addressing fault?"),
+            ("What should I do next?", "next",
+             "What should I do next for the suspected communication or addressing fault?"),
+        )
+        for question, topic, expected in cases:
+            with self.subTest(question=question):
+                self.assertEqual(
+                    contextualize_fault_category_followup(
+                        question, self.HISTORY, last_topic=topic,
+                    ),
+                    expected,
+                )
+
+    def test_new_explicit_fault_question_is_not_overridden_by_old_context(self):
+        question = "What causes are documented for a high-pressure fault?"
+        self.assertEqual(
+            contextualize_fault_category_followup(question, self.HISTORY, "causes"),
+            question,
+        )
+
+    def test_ambiguous_history_does_not_guess_between_fault_categories(self):
+        history = [*self.HISTORY,
+                   "It may be a communication fault or a compressor fault."]
+        question = "What possible causes are documented?"
+        self.assertEqual(
+            contextualize_fault_category_followup(question, history, "causes"),
+            question,
+        )
+
+    def test_fault_categories_require_the_matching_source_section(self):
+        base = contract()
+        causes = [
+            {
+                "id": f"c{i}", "text": "Possible documented cause: " + source,
+                "source_text": source, "kind": "possible_cause",
+                "evidence_ids": [f"s{i}"],
+            }
+            for i, source in enumerate((
+                "Communication cable damage or incorrect topology.",
+                "Duplicate/missing addresses or configuration mismatch.",
+                "Power loss to a connected unit or module.",
+            ), start=1)
+        ]
+        for citation in base["presentation"]["citations"]:
+            if citation["id"] in {"s1", "s2", "s3"}:
+                citation["heading"] = "2. COMMUNICATION OR ADDRESSING FAULT"
+        base["presentation"]["supporting_claims"] = causes
+        allowed, _ = focus_answer(
+            base,
+            "What possible causes are documented for the suspected communication or addressing fault?",
+        )
+        self.assertEqual(
+            [c["source_text"] for c in allowed["presentation"]["supporting_claims"]],
+            [c["source_text"] for c in causes],
+        )
+        wrong = copy.deepcopy(base)
+        for citation in wrong["presentation"]["citations"]:
+            citation["heading"] = "5. COMPRESSOR OR INVERTER FAULT"
+        rejected, _ = focus_answer(
+            wrong,
+            "What possible causes are documented for the suspected communication or addressing fault?",
+        )
+        self.assertEqual(rejected["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(rejected["presentation"]["citations"], [])
 
 
 class VagueProblemClarificationTests(unittest.TestCase):
