@@ -745,6 +745,46 @@ class RealDemoBoundaryTests(unittest.TestCase):
             self.assertFalse(context.is_followup)
             self.assertEqual(query, unrelated)
 
+    def test_generic_vrf_causes_followup_keeps_selected_fault_in_retrieval_query(self):
+        from tools.test_servy_real_demo_dialogue import contract
+
+        asset = SimpleNamespace(
+            id=60, name="VRF Outdoor Module", model_number="VRF-1",
+            asset_code="SKY-AST-00002",
+            product=SimpleNamespace(name="VRF Outdoor Module"),
+        )
+        tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
+        modules = _fake_demo_answer_modules()
+        modules["core.services.customer_answer"].build_customer_answer.return_value = contract()
+        modules["core.services.rag"].ask_rag.return_value = {
+            "engine": "extractive", "references": [],
+            "retrieval_backend": "hybrid", "reranker_applied": True,
+            "reranker_model": "servy_v5_bge_verified",
+        }
+        history = [
+            "What could be the possible reasons why my VRF outdoor module is not working?",
+            "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
+        ]
+        thread_id = "thread-vrf-category-0001"
+        continuation = demo._sign_demo_context(
+            60, 13, "What possible causes are documented?",
+            history[0], history, last_topic="causes", thread_id=thread_id,
+        )
+        with patch.dict("sys.modules", modules), \\
+             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \\
+             patch.object(demo, "plan_turn", return_value=None), \\
+             patch.object(demo, "search_all_approved_documents",
+                          side_effect=RuntimeError("synthetic scan unavailable")):
+            demo._answer(
+                60, "What possible causes are documented?",
+                continuation=continuation, thread_id=thread_id,
+            )
+
+        self.assertGreaterEqual(modules["core.services.rag"].ask_rag.call_count, 1)
+        first_query = modules["core.services.rag"].ask_rag.call_args_list[0].kwargs["question"]
+        self.assertIn("communication or addressing fault", first_query.casefold())
+        self.assertIn("not working", first_query.casefold())
+
     def test_targeted_retry_reruns_verified_contract_once_for_a_specific_component(self):
         from tools.test_servy_real_demo_dialogue import contract
         import copy
