@@ -135,6 +135,7 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
                  if isinstance(c, dict)}
     shown = set(shown_before or ())
     target, extra = [], []
+    target_heading = ""
     for claim in presentation.get("supporting_claims", []):
         if not isinstance(claim, dict):
             continue
@@ -148,7 +149,10 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
         source = claim.get("source_text", "")
         if kind == "possible_cause" and _norm(source) == _norm(cause):
             target.append(claim)
-        elif (kind == "information" and _related(cause, source)
+            target_heading = _norm(citation.get("heading", ""))
+        elif (kind == "information" and target_heading
+              and _norm(citation.get("heading", "")) == target_heading
+              and _related(cause, source)
               and fingerprint(claim, citation) not in shown):
             extra.append(claim)
     target, extra = target[:1], extra[:8]
