@@ -634,6 +634,29 @@ class IntentFocusTests(unittest.TestCase):
         ])
         self.assertEqual(rendered_text.count(limitation), 1)
         self.assertEqual(state["topic"], "causes")
+        self.assertIsNone(result["presentation"]["follow_up_question"])
+
+    def test_already_asked_followup_is_not_repeated(self):
+        asked = ["Is a fault code or warning visible on the display?"]
+        result, state = focus_answer(
+            contract(), "What possible causes are documented?",
+            asked_followups=asked,
+        )
+        self.assertNotEqual(
+            result["presentation"]["follow_up_question"],
+            asked[0],
+        )
+        self.assertEqual(state["asked_followups"][-1],
+                         result["presentation"]["follow_up_question"])
+
+    def test_explanation_followup_does_not_append_a_new_question(self):
+        asked = ["Is a fault code or warning visible on the display?"]
+        result, state = focus_answer(
+            contract(), "Could you explain each issue in detail?",
+            last_topic="causes", asked_followups=asked,
+        )
+        self.assertIsNone(result["presentation"]["follow_up_question"])
+        self.assertEqual(state["asked_followups"], asked)
 
     def test_wrong_error_code_cannot_supply_a_cited_definition(self):
         base = contract()
