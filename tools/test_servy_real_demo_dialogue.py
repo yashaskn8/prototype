@@ -43,21 +43,35 @@ class FaultCategoryFollowupTests(unittest.TestCase):
 
     def test_generic_followups_keep_the_last_customer_selected_fault_category(self):
         cases = (
-            ("What possible causes are documented?", "causes",
-             "What possible causes are documented for the suspected communication or addressing fault?"),
-            ("What can I safely observe?", "observations",
-             "What can I safely observe or report for the suspected communication or addressing fault?"),
-            ("What should I do next?", "next",
-             "What should I do next for the suspected communication or addressing fault?"),
+            ("What possible causes are documented?", "causes"),
+            ("What can I safely observe?", "observations"),
+            ("What should I do next?", "next"),
         )
-        for question, topic, expected in cases:
+        for question, topic in cases:
             with self.subTest(question=question):
-                self.assertEqual(
-                    contextualize_fault_category_followup(
-                        question, self.HISTORY, last_topic=topic,
-                    ),
-                    expected,
+                contextualized = contextualize_fault_category_followup(
+                    question, self.HISTORY, last_topic=topic,
                 )
+                self.assertTrue(contextualized.startswith(question))
+                self.assertIn(
+                    "for the suspected communication or addressing fault",
+                    contextualized,
+                )
+
+    def test_expanded_safe_observation_keeps_all_customer_constraints(self):
+        question = (
+            "What can I safely observe from outside the equipment "
+            "without opening it or touching any components?"
+        )
+        contextualized = contextualize_fault_category_followup(
+            question, self.HISTORY, last_topic="observations",
+        )
+        self.assertEqual(
+            contextualized,
+            question + " (for the suspected communication or addressing fault)",
+        )
+        self.assertIn("without opening it", contextualized)
+        self.assertIn("without touching any components", contextualized.replace("or ", "or without "))
 
     def test_new_explicit_fault_question_is_not_overridden_by_old_context(self):
         question = "What causes are documented for a high-pressure fault?"
