@@ -9,6 +9,9 @@ import hashlib
 import re
 
 from core.services.content_safety import detect_document_prompt_injection
+from core.services.term_matching import (
+    heading_states_symptom, match_keys, question_states_heading, symptom_concepts,
+)
 from core.services.query_decomposition import (
     ask_text, negated_text, relevance_text, retrieval_focus,
 )
@@ -37,7 +40,7 @@ NO_EVIDENCE = {
     "next": "I couldn't verify an approved customer check for this issue. Please ask an authorized technician for model-specific help.",
     "meaning": "I couldn't verify the meaning of that code or condition from the approved passages for this equipment.",
     "documents": "I couldn't find a relevant, source-backed statement in the approved documentation for that question.",
-    "general": "I couldn't verify a relevant answer in the approved documentation. Please share the specific symptom or displayed code.",
+    "general": "The approved documentation for this equipment does not contain an answer to that question that I can share. I won't guess.",
 }
 _HANDOFF_RECIPIENT = re.compile(
     r"\b(?:technician|service team|service staff|service department|"
@@ -592,6 +595,7 @@ class _FocusPlan:
     """What the current question genuinely asks about."""
     def __init__(self, question):
         self.relevant = relevance_text(question)
+        self.symptoms = symptom_concepts(question)
         ask = ask_text(question)
         self.hypothesis, hypothesis_text = _hypothesis(ask)
         # With an explicit hypothesis, the hypothesis defines the subject; a
@@ -615,7 +619,16 @@ class _FocusPlan:
     def accepts(self, claim, citation):
         source = f"{claim.get('source_text', '')} {citation.get('heading') or ''}"
         claim_only = str(claim.get("source_text", ""))
-        if not all(re.search(supported, source, re.I) for _asked, supported in self.required):
+        # A communication loss is reported by naming the units that lost it
+        # ("the indoor units lost connection"). When the cited section's own
+        # heading names that fault, those units are where it was noticed, not
+        # a further subject every cause must repeat. Any other named
+        # component (filter, fan, coil ...) still has to appear in the claim.
+        required = self.required
+        if "communication" in self.symptoms and heading_states_symptom(
+                citation.get("heading"), {"communication"}):
+            required = [pair for pair in required if "indoor" not in pair[1]]
+        if not all(re.search(supported, source, re.I) for _asked, supported in required):
             return False
         # The hypothesis ("could X explain Y?") constrains only cause claims; a
         # separately requested safe observation is judged on its own evidence.
@@ -781,7 +794,17 @@ def _direct_general_overlap(question, claim, citation):
     # the manual says about a new topic. Match the actual cited source/heading.
     source = f"{claim['source_text']} {citation.get('heading') or ''}".casefold()
     words = set(re.findall(r"[a-z0-9]{3,}", source))
-    return bool(tokens & words)
+    return bool(match_keys(tokens) & match_keys(words))
+
+
+_SCHEDULE_QUALIFIER = re.compile(
+    r"\b(?:takes? precedence|planning intervals only|adjust intervals)\b", re.I)
+
+
+def _is_schedule_qualifier(claim):
+    """The document's own qualification of a maintenance schedule."""
+    return (claim.get("disclosure") == "descriptive"
+            and bool(_SCHEDULE_QUALIFIER.search(str(claim.get("source_text", "")))))
 
 
 _EXPLANATION_FOLLOWUP = re.compile(
@@ -972,6 +995,21 @@ def _repeat_or_answered_followup(candidate, report):
         r"\b(?:is there|showing|display showing)\b", candidate, re.I
     ):
         return True
+    # Never re-ask onset or frequency once the customer has stated it.
+    if re.search(r"\bwhen did you first notice\b|\bsuddenly or gradually\b",
+                 candidate, re.I) and re.search(
+        r"\b(?:since|yesterday|today|last (?:night|week|month)|"
+        r"\d+\s*(?:minutes?|hours?|days?|weeks?|months?)|"
+        r"(?:issue|problem|symptom)\s+(?:first )?(?:started|began))\b",
+        report, re.I,
+    ):
+        return True
+    if re.search(r"\bcontinuously or intermittently\b|\bparticular times\b",
+                 candidate, re.I) and re.search(
+        r"\b(?:every|each time|sometimes|often|occasionally|intermittently|"
+        r"constant(?:ly)?|continuous(?:ly)?|frequently|all the time)\b", report, re.I,
+    ):
+        return True
     return False
 
 
@@ -1027,6 +1065,41 @@ def _follow_up(topic, question, history=(), asked_followups=()):
             return candidate
     return None
 
+CATEGORY_QUESTION = "Which of these documented conditions matches what you observe?"
+NEEDS_SYMPTOM = "NEEDS_SYMPTOM_CLARIFICATION"
+
+
+def _no_cause_reply(contract, asked_followups):
+    """Honest reply when no documented cause matches the customer's wording.
+
+    Names the conditions the approved manual does document causes for (its own
+    section headings) and asks which applies, once. A second request without
+    that information states the limitation plainly instead of repeating the
+    question. Returns (message, reason_code, asked_followups).
+    """
+    asked = list(asked_followups)[-8:]
+    sections = [s for s in contract.get("documented_cause_sections") or []
+                if isinstance(s, str) and s.strip()][:10]
+    if not sections:
+        return NO_EVIDENCE["causes"], contract.get("reason_code"), asked
+    listed = "; ".join(s.strip().capitalize() for s in sections)
+    already = _words(CATEGORY_QUESTION) in {_words(a) for a in asked if isinstance(a, str)}
+    if already:
+        return (
+            "The approved manual has no cause list for the problem as described, and I "
+            "still can't tell which documented condition applies (" + listed + "). "
+            "I won't guess a cause.",
+            "NO_RELEVANT_APPROVED_EVIDENCE", asked,
+        )
+    asked = (asked + [CATEGORY_QUESTION])[-8:]
+    return (
+        "The approved manual does not list causes for the problem as you described it. "
+        "It documents possible causes only for these conditions: " + listed + ". "
+        + CATEGORY_QUESTION,
+        NEEDS_SYMPTOM, asked,
+    )
+
+
 def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan=None,
                  history=(), asked_followups=()):
     """Keep only direct, valid, signed evidence matching the user's intent.
@@ -1045,17 +1118,19 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             and presentation.get("message") ==
                 "There is insufficient evidence to establish a safe answer for this equipment and question. Ask an authorized technician for help."):
             topic = question_topic(question, last_topic)
-            message = NO_EVIDENCE[topic]
+            message, reason, next_asked = NO_EVIDENCE[topic], None, list(asked_followups)[-8:]
+            if topic == "causes":
+                message, reason, next_asked = _no_cause_reply(contract, asked_followups)
             preserve_topic = (
                 bool(previous_facts) and is_contextual_followup(question)
                 and last_topic in TOPICS
             )
             return {
-                **contract, "summary": message, "answer": message,
+                **contract, "summary": message, "answer": message, "reason_code": reason,
                 "presentation": {**presentation, "message": message},
             }, {"topic": last_topic if preserve_topic else topic,
                 "facts": list(previous_facts)[:24], "suggestions": [],
-                "asked_followups": list(asked_followups)[-8:]}
+                "asked_followups": next_asked}
         return contract, {"topic": last_topic, "facts": list(previous_facts)[:24],
                           "suggestions": [], "asked_followups": list(asked_followups)[-8:]}
     original = contract.get("presentation") or {}
@@ -1081,6 +1156,10 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     novelty = wants_additional(question) and topic == last_topic == "causes"
     for claim in original.get("supporting_claims", []):
         if not isinstance(claim, dict) or claim.get("kind") not in allowed:
+            continue
+        # A documented fact (schedule entry, descriptive statement) is not a
+        # cause. It may answer a factual question, never a causes question.
+        if claim.get("disclosure") and not set(topics) & {"general", "documents", "meaning"}:
             continue
         if (not isinstance(claim.get("text"), str)
             or not claim["text"].strip()
@@ -1136,11 +1215,15 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         source_context = (
             str(claim["source_text"]) + " " + str(citation.get("heading") or "")
         )
-        if (not _specific_symptom_supported(focus.relevant, source_context)
+        # The document's own qualification of a schedule accompanies that
+        # schedule entry; it is not required to name the asked component.
+        if not _is_schedule_qualifier(claim) and (
+                not _specific_symptom_supported(focus.relevant, source_context)
                 or not focus.accepts(claim, citation)):
             continue
-        if topic == "general" and not _direct_general_overlap(
-            question, claim, citation
+        if topic == "general" and not (
+            _direct_general_overlap(question, claim, citation)
+            or _is_schedule_qualifier(claim)
         ):
             continue
         asked_codes = _error_codes(question)
@@ -1170,6 +1253,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         seen.add(fp)
         collected.append((claim, citation, fp))
 
+    # A schedule qualification is shown only beside the schedule entry it
+    # qualifies, never as an answer by itself.
+    if not any(row[0].get("disclosure") == "maintenance_schedule" for row in collected):
+        collected = [row for row in collected if not _is_schedule_qualifier(row[0])]
+
     # For a specific hypothesis ("could X explain Y?") rank the claim that
     # states X first; ties keep the authorized source order. Never filters.
     claim_limit = sum(10 if item == "causes" else 4 for item in topics)
@@ -1186,12 +1274,17 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             planned = [row for row in collected if row[0].get("id") in rank]
             if planned:
                 collected = sorted(planned, key=lambda row: rank[row[0]["id"]])
+    no_evidence_reason = "NO_RELEVANT_APPROVED_EVIDENCE"
+    next_asked_on_refusal = list(asked_followups)[-8:]
     if not collected:
         if off_topic:
             message = off_topic
         elif novelty:
             message = ("I don't have another distinct, documented answer for that question. "
                        "Please share a different symptom or displayed fault code.")
+        elif topic == "causes":
+            message, reason, next_asked_on_refusal = _no_cause_reply(contract, asked_followups)
+            no_evidence_reason = reason or no_evidence_reason
         else:
             message = NO_EVIDENCE[topic]
         revised = {**contract,
@@ -1209,7 +1302,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                    },
                    "citations": [], "references": [], "customer_safe_actions": [],
                    "can_resolve": False, "reason_code":
-                       "OUT_OF_SCOPE_QUERY" if off_topic else "NO_RELEVANT_APPROVED_EVIDENCE"}
+                       "OUT_OF_SCOPE_QUERY" if off_topic else no_evidence_reason}
         # A failed contextual follow-up must not overwrite the topic of the
         # last successful cited answer. Otherwise "explain each issue" after
         # an unanswered observation request loses the earlier cause list.
@@ -1219,7 +1312,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         )
         return revised, {"topic": last_topic if preserve_topic and last_topic in TOPICS else topic,
                          "facts": list(previous_facts)[:24], "suggestions": [],
-                         "asked_followups": list(asked_followups)[-8:]}
+                         "asked_followups": next_asked_on_refusal}
 
     follow_up = _follow_up(topic, question, history, asked_followups)
     style = "direct"
@@ -1237,12 +1330,25 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         if plan.get("style") in STYLES:
             style = plan["style"]
     selected_claims = []
-    for source_claim, _citation, _fingerprint in collected:
+    reported = " ".join([*[str(t) for t in list(history or [])[-6:]], question or ""])
+    sectioned_observations = False
+    for source_claim, citation, _fingerprint in collected:
         claim = dict(source_claim)
         if claim.get("kind") == "observation":
             claim["text"] = _focused_observation_text(
                 claim["source_text"], question,
             )
+            # An observation listed under one documented condition is tied
+            # to that condition. Unless the customer has reported it, say
+            # which section it comes from rather than present it as general.
+            section = re.sub(r"^\s*\d+[.)]\s*", "", str(citation.get("heading") or ""))
+            section = re.sub(r"^symptom\s*:\s*", "", section, flags=re.I).strip()
+            if (section and len(section) <= 80
+                    and not question_states_heading(reported, citation.get("heading"))
+                    and not heading_states_symptom(
+                        citation.get("heading"), symptom_concepts(reported))):
+                claim["text"] = "Listed for \u201c" + section.capitalize() + "\u201d: " + claim["text"]
+                sectioned_observations = True
         selected_claims.append(claim)
     selected_citations = [row[1] for row in collected]
     next_facts = list(dict.fromkeys([*previous_facts, *(row[2] for row in collected)]))[-24:]
@@ -1274,6 +1380,13 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             "documents": "The approved document states:",
             "general": "Verified manual information:",
         }[topic]
+    if sectioned_observations and topic in {"observations", "next"}:
+        lead = ("The approved manual lists these observations under specific conditions. "
+                "It does not establish which condition applies to your equipment, and they "
+                "are not permission to open or repair it.")
+    if any(c.get("disclosure") == "maintenance_schedule" for c in selected_claims):
+        lead = ("The approved documentation lists this maintenance schedule. It describes "
+                "planned service, not work for you to carry out yourself.")
     if len(topics) > 1:
         lead = ("I found supporting evidence for part of your question. "
                 "The sections separate documented claims from parts I could not verify.")

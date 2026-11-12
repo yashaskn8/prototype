@@ -70,6 +70,9 @@ function validatedDocumentCoverage(value) {
     documentsWithoutSearchableChunks: missing,
     passagesSearched: passages,
     documentsWithMatches: count('documents_with_matches') ?? 0,
+    // false when the scan did not run to completion: its counts are then
+    // placeholders and must not be shown as a finding.
+    countsAvailable: value.scan_completed !== false,
     note: typeof value.note === 'string' ? value.note.slice(0, 700) : '',
   };
 }

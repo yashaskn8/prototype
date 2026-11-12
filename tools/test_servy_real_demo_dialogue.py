@@ -825,9 +825,24 @@ class IntentFocusTests(unittest.TestCase):
         self.assertEqual(answer["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertEqual([c["id"] for c in answer["presentation"]["citations"]],
                          ["s1", "s2"])
-        self.assertIn("constantly", answer["presentation"]["follow_up_question"])
+        self.assertIn("first notice", answer["presentation"]["follow_up_question"])
         self.assertNotIn("code", answer["presentation"]["follow_up_question"])
         self.assertEqual(state["topic"], "causes")
+
+    def test_stated_onset_and_frequency_are_not_asked_again(self):
+        for history in (
+            ["My AC has poor cooling since yesterday", "There is no error code"],
+            ["My AC has poor cooling since yesterday and it is constant",
+             "There is no error code"],
+        ):
+            answer, _ = focus_answer(
+                contract(), "What causes are documented?",
+                last_topic="causes", history=history,
+            )
+            q = answer["presentation"]["follow_up_question"] or ""
+            self.assertNotIn("first notice", q)
+            if "constant" in history[0]:
+                self.assertNotIn("continuously", q)
 
     def test_known_no_code_cannot_prompt_customer_to_inspect_same_code(self):
         history = ["My AC is not cooling", "No error code"]

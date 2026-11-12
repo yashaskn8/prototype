@@ -54,6 +54,56 @@ def _descriptive_cause(text):
     return not re.search(r"(?:^|[.;:]\s*|\b(?:must|should|please|then|and|need to|try to|you can)\s+)" + directive, text, re.I)
 
 
+_IMPERATIVE_START = re.compile(
+    r"^(?:\[\s?[xX ]?\]\s*)?(?:do not|don't|never|always|please|"
+    + PHYSICAL_OPERATION.pattern[len(r"\b(?:"):-len(r")\b")] + r"|"
+    r"check|confirm|inspect|verify|observe|read|report|record|note|use|refer|"
+    r"escalate|stop|isolate|attach|create|review|look|have|make|ensure|keep|"
+    r"follow|arrange|mount|route|start|lift|secure|complete|calculate|evacuate|"
+    r"perform|position|compare|pressure-test|link|select|allow|apply|provide)\b", re.I)
+_SCHEDULE_FACT = re.compile(
+    r"^(?:daily|weekly|fortnightly|monthly|quarterly|half-yearly|semi-annually|"
+    r"annually|yearly|every\s+\d+\s+(?:days?|weeks?|months?|years?|hours?))\b[^:]{0,60}:\s*\S",
+    re.I)
+_FACT_QUALIFIER = re.compile(
+    r"\b(?:takes? precedence|planning intervals only|adjust intervals)\b", re.I)
+_CAUSE_QUESTION = re.compile(
+    r"\b(?:causes?|reasons?|why|wrong|diagnos\w*|root cause|issues?|problems?|"
+    r"malfunction\w*|not working|(?:isn'?t|doesn'?t|won'?t|stopped) work\w*)\b", re.I)
+_RESTRICTED_LEVELS = frozenset({"PROHIBITED", "TECHNICIAN_ONLY"})
+_FREQUENCY_QUESTION = re.compile(
+    r"\b(?:how (?:often|frequently|regularly|many times)|"
+    r"when (?:is|are|should|do|does|must)|every\s+\d+|intervals?|schedules?|"
+    r"frequency|periodic\w*|monthly|quarterly|annual\w*|yearly)\b", re.I)
+# An instruction is not only a sentence that starts with a verb: "During
+# brazing, use ..." is one too. Any clause-initial directive disqualifies.
+_CLAUSE_DIRECTIVE = re.compile(
+    r"(?:^|[,;:]\s+)" + _IMPERATIVE_START.pattern.lstrip("^"), re.I)
+
+
+def customer_safe_fact(text, level):
+    """Classify an informational source sentence for customer disclosure.
+
+    Returns "maintenance_schedule", "descriptive", or None. The existing
+    action-safety classification is the authority: anything it marks
+    technician-only or prohibited is never disclosed. Beyond that a sentence
+    qualifies only if it is a labelled schedule entry ("Annually: ...") or a
+    plain statement containing no directive and no physical operation.
+    Anything else, including checklist items and instructions, fails closed.
+    """
+    clean = " ".join(str(text or "").split())
+    # Blank form fields and labels ("Measured airflow: ____") state nothing.
+    if (not clean or level in _RESTRICTED_LEVELS or "_" in clean
+            or clean.endswith(":") or len(clean.split()) < 4):
+        return None
+    if _SCHEDULE_FACT.match(clean):
+        return "maintenance_schedule"
+    if (_CLAUSE_DIRECTIVE.search(clean) or PHYSICAL_OPERATION.search(clean)
+            or not _descriptive_cause(clean)):
+        return None
+    return "descriptive"
+
+
 def _question_guard(question):
     """Require a direct answer for permission, proof, or exact-spec questions."""
     from .retriever import normalize_domain_terms
@@ -445,6 +495,9 @@ def build_customer_answer(interaction, session, references, conversation_context
     from .identifiers import extract_error_codes
     from .retriever import normalize_domain_terms
     from .conversation_context import completed_action_matches
+    from .term_matching import (
+        heading_states_symptom, match_keys, question_states_heading, stem, symptom_concepts,
+    )
     asset, customer, tenant = interaction.asset, interaction.customer, interaction.tenant
     question = interaction.question or ""
     raw_user_q = original_question or question
@@ -478,8 +531,14 @@ def build_customer_answer(interaction, session, references, conversation_context
         if fact_answer:
             return fact_answer
     sufficient = check_evidence_sufficiency(question, asset, candidates)
-    causes, observations, procedures, citations = [], [], [], []
+    causes, observations, procedures, facts, citations = [], [], [], [], []
     terms = set(re.findall(r"[a-z0-9_-]{3,}", normalize_domain_terms(question).casefold())) - _STOPWORDS
+    # One matching rule for every answer-stage check: folded word forms, plus
+    # a symptom paraphrase only where the section heading names that symptom.
+    term_keys = match_keys(terms)
+    asked_symptoms = symptom_concepts(raw_user_q) | symptom_concepts(question)
+    wants_facts = not _CAUSE_QUESTION.search(raw_user_q) and not _CAUSE_QUESTION.search(question)
+    asks_frequency = bool(_FREQUENCY_QUESTION.search(raw_user_q))
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
     eligible = []
@@ -488,7 +547,9 @@ def build_customer_answer(interaction, session, references, conversation_context
             for text, kind, start, end in source_claims(result.text):
                 words = set(re.findall(r"[a-z0-9_-]{3,}", text.casefold())) - _STOPWORDS
                 heading_words = set(re.findall(r"[a-z0-9_-]{3,}", (result.heading or "").casefold()))
-                if not terms.intersection(words | heading_words):
+                sentence_overlap = term_keys & match_keys(words)
+                if (not sentence_overlap and not term_keys & match_keys(heading_words)
+                        and not heading_states_symptom(result.heading, asked_symptoms)):
                     continue
                 span_context = f"{result.heading or ''} {text}"
                 if codes and not codes.issubset(extract_error_codes(span_context)):
@@ -504,6 +565,16 @@ def build_customer_answer(interaction, session, references, conversation_context
                     # A descriptive cause list is information, never an action.
                     if not _descriptive_cause(text):
                         continue
+                    # A cause that shares no word with the question is
+                    # relevant only through its section. Sharing some heading
+                    # words is not enough ("server room temperature" is not
+                    # "uneven room temperatures"): the question must state the
+                    # symptom that heading names.
+                    if not sentence_overlap and not (
+                            heading_states_symptom(result.heading, asked_symptoms)
+                            or question_states_heading(
+                                f"{raw_user_q} {question}", result.heading)):
+                        continue
                     target = causes
                 elif level in ("INFORMATIONAL_OBSERVATION", "UNKNOWN_REQUIRES_REVIEW") and _noninvasive_observation(text):
                     if _is_completed_check(text):
@@ -516,6 +587,25 @@ def build_customer_answer(interaction, session, references, conversation_context
                 elif (kind == "information" and _descriptive_cause(text)
                       and re.search(r"\b(?:indicates?|means?|denotes?|occurs? when|is caused by)\b", text, re.I)):
                     target = causes
+                elif kind == "information" and wants_facts:
+                    # Customer-safe documented fact (for example a maintenance
+                    # interval). It must itself answer the question: the
+                    # sentence shares a question term, and sentence plus
+                    # heading share at least two. Restricted, directive or
+                    # unclassifiable sentences are never disclosed.
+                    disclosure = customer_safe_fact(text, level)
+                    if not disclosure or not sentence_overlap:
+                        continue
+                    if disclosure == "maintenance_schedule":
+                        # A schedule entry answers only a question about timing.
+                        if (not asks_frequency
+                                or len(term_keys & match_keys(words | heading_words)) < 2):
+                            continue
+                    elif asks_frequency or len({stem(w) for w in sentence_overlap}) < 2:
+                        # A plain statement must itself share two distinct
+                        # question terms, and never stands in for a schedule.
+                        continue
+                    target = facts
                 else:
                     continue
                 # Candidates are ranked for relevance to this question below,
@@ -532,16 +622,30 @@ def build_customer_answer(interaction, session, references, conversation_context
                 continue
             seen_text.add(item["text"])
             unique.append(item)
-        question_stems = {w[:5] for w in terms if len(w) >= 4}
-
         def _relevance(item):
-            claim_stems = {w[:5] for w in re.findall(r"[a-z0-9]{4,}", item["text"].casefold())}
-            return len(question_stems & claim_stems)
+            claim_words = re.findall(r"[a-z0-9_-]{3,}", item["text"].casefold())
+            return len(term_keys & match_keys(claim_words))
 
         cause_pool = [i for i in unique if i["target"] is causes]
-        action_pool = [i for i in unique if i["target"] is not causes]
+        fact_pool = [i for i in unique if i["target"] is facts]
+        action_pool = [i for i in unique if i["target"] is not causes and i["target"] is not facts]
+        fact_choice = sorted(fact_pool, key=lambda i: -_relevance(i))[:4]
+        # A schedule entry is shown together with the document's own
+        # qualification of that schedule, so its conditions are preserved.
+        if any(_SCHEDULE_FACT.match(i["text"]) for i in fact_choice):
+            for result in {id(i["result"]): i["result"] for i in fact_choice}.values():
+                for text, kind, start, end in source_claims(result.text):
+                    if (kind == "information" and _FACT_QUALIFIER.search(text)
+                            and text not in seen_text
+                            and customer_safe_fact(text, classify_action_safety(text, asset)[0])):
+                        seen_text.add(text)
+                        fact_choice.append({"order": len(eligible) + len(fact_choice),
+                                            "target": facts, "kind": "information",
+                                            "text": text, "start": start, "end": end,
+                                            "result": result})
         # Preserve up to four separately grounded claims per answer section.
         chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:10]
+                  + fact_choice
                   + sorted(action_pool, key=lambda i: -_relevance(i))[:8])
         chosen.sort(key=lambda i: i["order"])
         for item in chosen:
@@ -552,7 +656,21 @@ def build_customer_answer(interaction, session, references, conversation_context
             citations.append(citation)
             target.append({"id": f"c{len(citations)}", "text": ("Possible documented cause: " + text) if kind == "possible_cause" else text,
                            "source_text": text, "kind": kind, "evidence_ids": [citation["id"]]})
-    normal = bool(causes or observations or procedures)
+            if target is facts:
+                target[-1]["disclosure"] = (
+                    "maintenance_schedule" if _SCHEDULE_FACT.match(text) else "descriptive")
+    # Headings of the authorized sections that contain a documented cause
+    # list. They let the dialogue ask which documented condition applies
+    # instead of a generic question when no cause matches the customer's words.
+    cause_sections = []
+    for candidate in candidates:
+        label = re.sub(r"^\s*\d+[.)]\s*", "", candidate.heading or "")
+        label = re.sub(r"^symptom\s*:\s*", "", label, flags=re.I).strip()
+        if (label and label not in cause_sections
+                and any(kind == "possible_cause" for _t, kind, _s, _e in source_claims(candidate.text))):
+            cause_sections.append(label[:80])
+    cause_sections = cause_sections[:10]
+    normal = bool(causes or facts or observations or procedures)
     no_authorized_docs = False
     if not normal and not candidates:
         from .retriever import _knowledge_candidates
@@ -620,18 +738,20 @@ def build_customer_answer(interaction, session, references, conversation_context
             next_text = ("Ask an authorized technician for model-specific help if the issue continues. "
                          "No ticket has been created.")
         content = [
-            causes or [{"text": "The available evidence does not establish a possible cause.", "kind": "uncertainty", "evidence_ids": []}],
+            causes or facts or [{"text": "The available evidence does not establish a possible cause.", "kind": "uncertainty", "evidence_ids": []}],
             observations + procedures or [{"text": "No customer procedure has been approved in the supporting evidence. Report what you observed to a technician.", "kind": "uncertainty", "evidence_ids": []}],
             [{"text": unknown_text, "kind": "uncertainty", "evidence_ids": []}],
             [{"text": next_text, "kind": "next_step", "evidence_ids": []}],
         ]
         sections = [{"number": i+1, "title": title, "claims": claims} for i, (title, claims) in enumerate(zip(TITLES, content))]
+        if facts and not causes:
+            sections[0]["title"] = "What the document says"
     can_resolve = bool(normal and (observations or procedures) and (not session or session.status not in ("ESCALATED", "ABANDONED")))
     response_type = "DIAGNOSTIC_GUIDANCE" if normal else "INSUFFICIENT_EVIDENCE"
     presentation = {"schema_version": "customer-answer-v1", "response_type": response_type,
         "equipment": {"id": asset.id, "name": asset.name, "model_number": asset.model_number} if asset else {},
         "sections": sections, "citations": citations, "hazard": {"severity": "none", "message": ""},
-        "supporting_claims": causes + observations + procedures,
+        "supporting_claims": causes + facts + observations + procedures,
         "customer_permitted_observations": observations,
         "customer_authorized_actions": procedures,
         "message": "" if normal else message,
@@ -646,8 +766,11 @@ def build_customer_answer(interaction, session, references, conversation_context
         "response_type": response_type, "interaction_id": interaction.id,
         "session_id": str(session.session_id) if session else None,
         "session_status": session.status if session else "ACTIVE", "session_version": session.version if session else 1,
-        "asset": presentation["equipment"], "summary": "Possible causes from documentation; diagnosis unconfirmed." if normal else message,
+        "asset": presentation["equipment"], "summary": (
+            "Documented information from the approved manual." if facts and not causes
+            else "Possible causes from documentation; diagnosis unconfirmed.") if normal else message,
         "answer": answer, "citations": citations, "references": citations,
+        "documented_cause_sections": cause_sections,
         "customer_safe_actions": actions, "check_first": [], "technician_only_actions": [],
         "stop_conditions": [], "expected_result": "", "clarification_question": None,
         "can_resolve": can_resolve, "can_escalate": True, "engine": "source-structured-extractive",

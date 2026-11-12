@@ -358,10 +358,12 @@ def evaluate_chunk_claim_support(
                 vars.add(w[:-3] + "e")
         return vars
 
+    from .term_matching import heading_states_symptom, match_keys, symptom_concepts
     raw_words = {w.lower() for w in re.findall(r"[A-Za-z0-9_-]{2,}", chunk_text)}
     chunk_words = set(raw_words)
     for rw in raw_words:
         chunk_words.update(_stem_variants(rw))
+    chunk_words.update(match_keys(raw_words))
 
     # 1. Numerical Threshold Check (typed dimensional matching + boundary-aware):
     typed_q_quantities = []
@@ -454,8 +456,15 @@ def evaluate_chunk_claim_support(
     if len(asked_qualifiers) >= 2 and len(asked_qualifiers & chunk_words) < 2:
         return False, "FAULT_QUALIFIER_MISMATCH"
 
+    # A customer paraphrase of a symptom ("the room is not getting cold") is
+    # supported only by a section whose own heading names that symptom
+    # ("POOR COOLING"). Wording similarity elsewhere in the passage is not
+    # evidence, and identifier/quantity checks above have already run.
+    if q_text and heading_states_symptom(getattr(chunk, "heading", ""), symptom_concepts(q_text)):
+        return True, f"PARAPHRASED_SYMPTOM_HEADING: {getattr(chunk, 'heading', '')}"
+
     # 3. Content Terms Overlap Check:
-    matched_terms = {t for t in terms if _stem_variants(t) & chunk_words}
+    matched_terms = {t for t in terms if (_stem_variants(t) | match_keys([t])) & chunk_words}
     overlap_count = len(matched_terms)
     n_terms = len(terms)
 

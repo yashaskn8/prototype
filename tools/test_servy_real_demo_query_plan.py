@@ -18,7 +18,7 @@ class ScopedTargetedRetryTests(unittest.TestCase):
         self.assertIn("Synthetic Split AC", q)
         self.assertIn("AC-60", q)
         self.assertIn("compressor", q)
-        self.assertIn("not cooling", q)
+        self.assertIn("not cooling", q.casefold())
         self.assertLessEqual(len(q), 350)
 
     def test_exact_fault_code_stays_identical_and_is_not_invented(self):

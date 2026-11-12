@@ -87,7 +87,9 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
       : "customer-answer-document-coverage is-incomplete"}>
       <strong>{data.documentCoverage.complete ? 'Approved document review' : 'Document review limitation'}</strong>
       <p>{data.documentCoverage.note}</p>
-      <small>{data.documentCoverage.documentsSearched} documents searched · {data.documentCoverage.approvedDocuments} approved in scope · {data.documentCoverage.passagesSearched} passages reviewed</small>
+      {data.documentCoverage.countsAvailable
+        ? <small>{data.documentCoverage.documentsSearched} documents searched · {data.documentCoverage.approvedDocuments} approved in scope · {data.documentCoverage.passagesSearched} passages reviewed</small>
+        : <small>Review counts unavailable</small>}
     </div>}
     {data.onlineResearch && <section className="customer-answer-online" aria-label="Supplementary online information">
       <h3>{data.onlineResearch.label}</h3>

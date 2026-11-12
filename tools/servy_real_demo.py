@@ -33,13 +33,18 @@ from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_explainer import explain_claims
 from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_exhaustive import search_all_approved_documents
-from tools.servy_real_demo_web_research import search_model_matched_sources
+from tools.servy_real_demo_assignment import (
+    EXPLAIN_CAUSES_QUESTION, INSUFFICIENT, PARTIAL, add_limitation,
+    build_issue_description, cause_reference, code_conflict, evidence_state,
+    find_open_ticket, focus_on_cause, issue_assignment, issue_key,
+    limitation_texts, listed_causes, valid_cause_state,
+)
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, is_explanation_followup, focused_causal_query, requested_topics,
     is_technician_handoff_request, build_technician_handoff,
-    out_of_scope_response, expand_display_observation_query,
+    out_of_scope_response, expand_display_observation_query, fact_fingerprint,
 )
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
@@ -216,9 +221,21 @@ def _load_demo_dialogue_state(token):
     return topic, facts, asked
 
 
+def _load_demo_cause_state(token):
+    """Restore the server-signed cause list shown by the previous cause answer."""
+    if not token:
+        return []
+    from django.core import signing
+    state = signing.loads(token, salt=DEMO_CONTEXT_SALT, max_age=DEMO_CONTEXT_MAX_AGE)
+    causes = state.get("last_causes", [])
+    if not valid_cause_state(causes):
+        raise ValueError("Invalid signed dialogue state")
+    return list(causes)
+
+
 def _sign_demo_context(asset_id, customer_id, question, first, history,
                        hazard=False, last_topic=None, shown_facts=None,
-                       asked_followups=None, thread_id=None):
+                       asked_followups=None, thread_id=None, last_causes=None):
     from django.core import signing
     recent = (history + [question[:DEMO_CONTEXT_TEXT_LIMIT]])[-DEMO_CONTEXT_MAX_TURNS:]
     return signing.dumps({
@@ -231,6 +248,8 @@ def _sign_demo_context(asset_id, customer_id, question, first, history,
         "last_topic": last_topic if last_topic in TOPICS else None,
         "shown_facts": list(shown_facts or [])[-24:],
         "asked_followups": list(asked_followups or [])[-8:],
+        **({"last_causes": list(last_causes)}
+           if last_causes and valid_cause_state(last_causes) else {}),
     }, salt=DEMO_CONTEXT_SALT, compress=True)
 
 
@@ -316,6 +335,7 @@ def _attach_full_scope_scan(rag, *, tenant, customer, asset, question,
             "documents_with_matches": 0, "matching_passages": 0,
             "references_in_answer_pool": 0, "document_titles": [],
             "note": "The complete approved-document scan could not be verified.",
+            "scan_completed": False,
         })
     except Exception:
         rag["document_coverage"] = {
@@ -324,9 +344,13 @@ def _attach_full_scope_scan(rag, *, tenant, customer, asset, question,
             "documents_without_searchable_chunks": 0, "passages_searched": 0,
             "documents_with_matches": 0, "matching_passages": 0,
             "references_in_answer_pool": 0, "document_titles": [],
+            # No scan result exists: the zero counts above are placeholders,
+            # not a finding that zero documents were reviewed.
+            "scan_completed": False,
             "note": (
-                "The complete approved-document scan did not finish. "
-                "This answer uses only ordinary verified retrieval results."
+                "The complete approved-document scan did not finish, so no review "
+                "count is available. This answer uses only ordinary verified "
+                "retrieval results."
             ),
         }
     return rag
@@ -350,6 +374,17 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     original, history, earlier_hazard = _load_demo_context(
         continuation, asset_id, customer.id, thread_id=thread_id)
     last_topic, previous_facts, asked_followups = _load_demo_dialogue_state(continuation)
+    last_causes = _load_demo_cause_state(continuation)
+    # "Explain the second cause" refers to the signed cause list of the
+    # previous answer. The customer's own wording is kept for the signed
+    # history, hazard check and ticket binding; the dialogue layer receives
+    # the canonical explanation request it already understands.
+    asked_question = question
+    reference = cause_reference(question, last_causes)
+    selected_cause = reference["cause"] if reference else None
+    if selected_cause:
+        question = EXPLAIN_CAUSES_QUESTION
+        last_topic = "causes"
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     retrieval_query = expand_display_observation_query(question, retrieval_query)
     # A new, explicit equipment symptom starts a new evidence thread; retain
@@ -361,10 +396,18 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         previous_facts = []
         last_topic = None
         asked_followups = []
-    current_hazard, hazard_warning = check_for_safety_hazard(question)
+        last_causes = []
+    facts_before = list(previous_facts)
+    conflict = None
+    current_hazard, hazard_warning = check_for_safety_hazard(asked_question)
     small_talk = conversational_turn(question)
     ambiguous_reply = (followup_clarification(question, history)
                        or vague_problem_clarification(question, history))
+    if reference and selected_cause is None:
+        ambiguous_reply = (
+            "The previous answer listed " + str(reference["available"])
+            + " documented cause(s). Which one should I explain?"
+        )
     recap = conversation_recap(question, history)
     off_topic = out_of_scope_response(question)
     suggestions = []
@@ -440,6 +483,13 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         # passages, so it gets the same bounded wider set.
         multi_intent = len(requested_topics(question)) > 1
         explanation_followup = last_topic == "causes" and is_explanation_followup(question)
+        selected_claims = [{"source_text": selected_cause}] if selected_cause else ()
+        if selected_cause:
+            # Search again for that cause, using the asset, model and complaint.
+            retrieval_query = targeted_retry_query(
+                question, asset, context, last_topic="causes",
+                cause_claims=selected_claims,
+            ) or retrieval_query
         retrieval_top_k = 8 if (
             (is_component_followup(question) and history) or multi_intent or explanation_followup
         ) else 5
@@ -452,6 +502,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         rag = _attach_full_scope_scan(
             rag, tenant=tenant, customer=customer, asset=asset,
             question=retrieval_query, original_complaint=context.original_complaint,
+            cause_claims=selected_claims,
         )
         retrieval_attempts = 1
         if rag.get("engine") == "policy-guard":
@@ -507,7 +558,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             # denied source, restricted procedure or safety escalation.
             retry_for_missing_evidence = (
                 contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
-                and contract.get("reason_code") in {None, "NO_RELEVANT_APPROVED_EVIDENCE"}
+                and contract.get("reason_code") in {
+                    None, "NO_RELEVANT_APPROVED_EVIDENCE", "NEEDS_SYMPTOM_CLARIFICATION"}
             )
             retry_for_deeper_explanation = (
                 explanation_followup
@@ -519,6 +571,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                     item for item in current_claims
                     if isinstance(item, dict) and item.get("kind") in {"possible_cause", "information"}
                 ]
+                if selected_cause:
+                    cause_claims = list(selected_claims)
                 second_query = targeted_retry_query(
                     question, asset, context, last_topic=last_topic,
                     cause_claims=cause_claims if retry_for_deeper_explanation else (),
@@ -619,13 +673,44 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                     asked_followups = next_dialogue.get("asked_followups", asked_followups)
                                     suggestions = next_dialogue["suggestions"]
 
+            if selected_cause:
+                suggestions = []
+                if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
+                    contract, _ = focus_on_cause(
+                        contract, selected_cause, facts_before, fact_fingerprint)
+                elif contract.get("reason_code") in {None, "NO_RELEVANT_APPROVED_EVIDENCE"}:
+                    no_detail = (
+                        "The approved internal documentation does not contain any further "
+                        "explanation of that cause for this equipment. I won't add technical "
+                        "detail that the documents do not support."
+                    )
+                    contract = {
+                        **contract, "summary": no_detail, "answer": no_detail,
+                        "presentation": {**(contract.get("presentation") or {}),
+                                         "message": no_detail},
+                    }
+            if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
+                conflict = code_conflict(contract.get("presentation"), asked_question)
+                if conflict:
+                    contract = add_limitation(
+                        contract,
+                        "The approved documents describe " + conflict + " differently, so I "
+                        "cannot establish which statement applies to this equipment.",
+                    )
+                if (last_topic == "causes" and not selected_cause
+                        and not is_explanation_followup(question)):
+                    last_causes = listed_causes(contract.get("presentation")) or last_causes
+
     # A requested explanation is generated only from the exact claims already
     # selected by the asset-scoped evidence pipeline. The local model cannot
     # create new claims, citations, diagnoses, or customer procedures.
     if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
             and last_topic == "causes" and is_explanation_followup(question)):
         explanation_presentation = contract.get("presentation") or {}
-        explanations = explain_claims(question, explanation_presentation)
+        # With no additional approved passage, rewording the same sentences
+        # would only look like more detail. Keep the stated limitation instead.
+        explanations = ({} if limitation_texts(explanation_presentation)
+                        else explain_claims(question, explanation_presentation))
         explanation_claims = [
             claim for claim in explanation_presentation.get("supporting_claims", [])
             if isinstance(claim, dict) and claim.get("kind") in {"possible_cause", "information"}
@@ -666,7 +751,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     from django.core import signing
     ticket_context = signing.dumps({
         "asset": asset_id, "customer": customer.id,
-        "question_sha256": hashlib.sha256(question.encode("utf-8")).hexdigest(),
+        "question_sha256": hashlib.sha256(asked_question.encode("utf-8")).hexdigest(),
+        "issue": issue_key(thread_id, getattr(context, "original_complaint", "")),
     }, salt="servy-real-demo-ticket-preview-v1")
     presentation = contract.get("presentation")
     response_type = contract["response_type"]
@@ -694,14 +780,35 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
                 "can_escalate": True,
             })
-    if (isinstance(presentation, dict) and not is_hazard and off_topic is None
-            and contract.get("engine") != "policy-guard"
-            and response_type not in {"POLICY_VIOLATION", "ESCALATION_REQUIRED", "TECHNICIAN_HANDOFF"}):
-        presentation["online_research"] = search_model_matched_sources(
-            asset, retrieval_query or question, original_question=question,
+    # Three evidence states for a technical answer. Anything short of
+    # SUFFICIENT hands the unresolved question to the existing ticket workflow;
+    # the customer still reviews and submits that ticket.
+    state = None
+    assignment = None
+    if (retrieval_attempts and contract.get("engine") != "policy-guard"
+            and response_type in {"DIAGNOSTIC_GUIDANCE", "INSUFFICIENT_EVIDENCE"}):
+        state = evidence_state(response_type, contract.get("reason_code"), presentation)
+    # A first request to say which documented condition applies is a
+    # clarification, not yet an unanswerable question. The ticket button stays
+    # available; the form is opened only once the question cannot be answered.
+    if contract.get("reason_code") == "NEEDS_SYMPTOM_CLARIFICATION":
+        state = None
+    if state in {PARTIAL, INSUFFICIENT}:
+        assignment = issue_assignment(
+            state=state, question=asked_question, conflict=conflict,
+            description=build_issue_description(
+                asset=asset, context=context, history=history,
+                question=asked_question, state=state, presentation=presentation,
+                selected_cause=selected_cause, conflict=conflict,
+            ),
+            existing_ticket=find_open_ticket(
+                tenant.id, customer.id, asset.id,
+                issue_key(thread_id, getattr(context, "original_complaint", "")),
+            ),
         )
     return {
         "response_type": response_type, "reason_code": contract.get("reason_code"),
+        "evidence_state": state, "issue_assignment": assignment,
         "message": message, "presentation": presentation,
         "handoff": contract.get("handoff"),
         "clarification_question": clarification_question,
@@ -710,9 +817,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         # Ignore unrelated turns in RAG memory. Keep the previous signed
         # continuation exactly unchanged, including its customer/asset scope.
         "continuation": continuation if off_topic is not None else _sign_demo_context(
-            asset_id, customer.id, question, original, history, hazard=is_hazard,
+            asset_id, customer.id, asked_question, original, history, hazard=is_hazard,
             last_topic=last_topic, shown_facts=previous_facts,
             asked_followups=asked_followups, thread_id=thread_id,
+            last_causes=last_causes,
         ),
         "conversation_turn": len(history) + 1,
         "dialogue_planner": (
@@ -756,6 +864,11 @@ def _validated_ticket_request(body, *, max_description=4000):
             or context.get("customer") != ASSET_SCOPE[asset_id] \
             or context.get("question_sha256") != hashlib.sha256(question.encode("utf-8")).hexdigest():
         raise ValueError("Ticket context is outside the approved question scope")
+    conversation_key = context.get("issue", "")
+    if (not isinstance(conversation_key, str) or len(conversation_key) > 120
+            or conversation_key and not re.fullmatch(
+                r"thread-[a-z0-9-]{8,90}:[0-9a-f]{16}", conversation_key)):
+        raise ValueError("Invalid ticket preview")
     tenant, customer, asset = _asset(asset_id)
     if customer.id != context["customer"]:
         raise ValueError("Customer scope changed")
@@ -764,7 +877,8 @@ def _validated_ticket_request(body, *, max_description=4000):
         raise ValueError("Site is outside the approved customer scope")
     return {"question": question, "complaint_type": complaint_type,
             "complaint_text": complaint_text, "tenant": tenant,
-            "customer": customer, "asset": asset}
+            "customer": customer, "asset": asset,
+            "conversation_key": conversation_key}
 
 
 def _ticket_fields(body):
@@ -806,8 +920,19 @@ def _local_ticket_fields(body):
             "call_type": call_type, "complaint_type": validated["complaint_type"],
             "complaint_text": validated["complaint_text"], "contact_name": contact_name,
             "severity": severity, "priority": priority, "machine_status": machine_status,
-            "status": "open", "technician_notes": "", "source_conversation_id": "",
+            "status": "open", "technician_notes": "",
+            "source_conversation_id": validated.get("conversation_key", ""),
             "created_by": "servy-real-demo"}
+
+
+def _existing_local_ticket(fields):
+    """An unresolved ticket already raised for the same chat issue, if any."""
+    if not isinstance(fields, dict):
+        return None
+    return find_open_ticket(
+        fields.get("tenant_id"), fields.get("customer_id"), fields.get("asset_id"),
+        fields.get("source_conversation_id", ""),
+    )
 
 
 def _store_local_ticket(fields, attachments=()):
@@ -982,6 +1107,11 @@ class Handler(BaseHTTPRequestHandler):
                         fields = _local_ticket_fields(body)
                 except Exception:
                     return self._send(400, {"detail": "Ticket details are invalid or authorization changed"})
+                existing = _existing_local_ticket(fields)
+                if existing:
+                    # Same unresolved issue in the same chat: never a second ticket.
+                    return self._send(200, {"mode": "LOCAL_SQLITE", "ticket": existing,
+                                            "duplicate": True})
                 try:
                     ticket = _store_local_ticket(fields, attachments)
                 except Exception:

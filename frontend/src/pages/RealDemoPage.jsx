@@ -43,9 +43,26 @@ const COMPLAINT_TYPES = [
 const MAX_TICKET_FILES = 10;
 const MAX_TICKET_UPLOAD_BYTES = 25 * 1024 * 1024;
 
+// Server-declared escalation for an answer the internal documents could not
+// (fully) support. Only well-formed blocks are honoured.
+function pendingAssignment(data) {
+  const value = data?.issue_assignment;
+  return value?.required === true && value.status === 'AWAITING_CUSTOMER_CONFIRMATION'
+    && typeof value.description === 'string' && value.description.trim() ? value : null;
+}
+
+function assignmentNotice(data) {
+  const value = data?.issue_assignment;
+  return value?.required === true && typeof value.notice === 'string'
+    ? value.notice.slice(0, 500) : '';
+}
+
 function answerForTicket(data) {
   const presentation = data?.presentation;
-  if (!Array.isArray(presentation?.sections)) return data?.message || '';
+  // A refusal has no sections; record what Servy actually told the customer.
+  if (!Array.isArray(presentation?.sections) || !presentation.sections.length) {
+    return presentation?.message || data?.message || '';
+  }
   const citations = presentation.citations || [];
   const refs = new Map(citations.map((citation, index) => [citation.id, {
     number: index + 1, text: [citation.title, citation.heading].filter(Boolean).join(' — '),
@@ -290,12 +307,17 @@ export function RealDemoPage() {
   function startTicket() {
     const latest = messages.at(-1);
     if (latest?.role !== 'assistant' || !latest.data?.ticket_context) return;
+    // When internal evidence was insufficient, the server-prepared issue
+    // summary leads the description; the customer can still edit it.
+    const escalation = pendingAssignment(latest.data)?.description;
+    const transcript = conversationForTicket(messages);
     setTicketDraft({
       ticket_context: latest.data.ticket_context,
       question: answeredQuestion,
       call_type: TICKET_TYPES[0],
       complaint_type: '',
-      complaint_text: conversationForTicket(messages).slice(0, 100_000),
+      complaint_text: (escalation ? `${escalation}\n\n--- Conversation ---\n${transcript}` : transcript)
+        .slice(0, 100_000),
       contact_name: '',
       severity: '',
       priority: 'normal',
@@ -349,13 +371,30 @@ export function RealDemoPage() {
       if (data.mode !== 'LOCAL_SQLITE' || !data.ticket?.id) {
         throw new Error('The local technician ticket was not confirmed.');
       }
-      setTicketConfirmation({ ticket: data.ticket,
-        detail: 'Created in the local SQLite technician workspace.' });
+      setTicketConfirmation({ ticket: data.ticket, duplicate: data.duplicate === true,
+        detail: data.duplicate === true
+          ? 'This issue was already recorded. No duplicate ticket was created.'
+          : 'Created in the local SQLite technician workspace.' });
       setTicketDraft(null);
       setTicketFiles([]);
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
+
+  // Insufficient internal evidence invokes the existing ticket workflow once
+  // per answer. The customer still completes and submits the form.
+  const promptedAssignment = useRef(new Set());
+  const startTicketRef = useRef(null);
+  useEffect(() => { startTicketRef.current = startTicket; });
+  useEffect(() => {
+    const latest = messages.at(-1);
+    if (latest?.role !== 'assistant' || !pendingAssignment(latest.data)
+      || !latest.data.ticket_context || answeredQuestion === ''
+      || promptedAssignment.current.has(latest.id)
+      || ticketDraft || ticketConfirmation) return;
+    promptedAssignment.current.add(latest.id);
+    startTicketRef.current();
+  }, [messages, answeredQuestion, ticketDraft, ticketConfirmation]);
 
   const asset = assets?.find(item => String(item.id) === assetId);
   return <div className="app-container real-demo-shell">
@@ -576,7 +615,17 @@ export function RealDemoPage() {
               </form>
             </section>
           </div>
+          {messages.at(-1)?.role === 'assistant' && assignmentNotice(messages.at(-1)?.data)
+            && !ticketConfirmation && (
+            <section className="card real-demo-ticket-action" role="status"
+              aria-label="Issue assignment status">
+              <div><strong>{messages.at(-1).data.issue_assignment.status === 'ALREADY_ASSIGNED'
+                ? 'Issue already assigned' : 'Issue needs the service team'}</strong>
+                <p>{assignmentNotice(messages.at(-1).data)}</p></div>
+            </section>
+          )}
           {messages.at(-1)?.role === 'assistant' && messages.at(-1)?.data?.ticket_context
+            && messages.at(-1)?.data?.issue_assignment?.status !== 'ALREADY_ASSIGNED'
             && !ticketDraft && !ticketConfirmation && (
             <section className="card real-demo-ticket-action" aria-label="Ticket escalation options">
               <div><strong>Still need assistance?</strong>
@@ -627,8 +676,8 @@ export function RealDemoPage() {
                         readOnly aria-readonly="true" /></label>
 
                     <div className="real-demo-ticket-grid real-demo-ticket-grid-two">
-                      <label className="real-demo-ticket-field"><span>Severity Level</span>
-                        <select className="form-control" value={ticketDraft.severity}
+                      <label className="real-demo-ticket-field"><span>Severity Level <b>*</b></span>
+                        <select className="form-control" value={ticketDraft.severity} required
                           onChange={event => updateTicketDraft('severity', event.target.value)}>
                           <option value="">Select Severity Level</option>
                           {SEVERITIES.map(value => <option key={value} value={value}>{value}</option>)}
@@ -642,8 +691,8 @@ export function RealDemoPage() {
                     </div>
 
                     <div className="real-demo-ticket-grid real-demo-ticket-grid-two">
-                      <label className="real-demo-ticket-field"><span>Machine Status</span>
-                        <select className="form-control" value={ticketDraft.machine_status}
+                      <label className="real-demo-ticket-field"><span>Machine Status <b>*</b></span>
+                        <select className="form-control" value={ticketDraft.machine_status} required
                           onChange={event => updateTicketDraft('machine_status', event.target.value)}>
                           <option value="">Select Machine Status</option>
                           {MACHINE_STATUSES.map(value => <option key={value} value={value}>{value}</option>)}
@@ -694,9 +743,9 @@ export function RealDemoPage() {
             </section>
           </div>}
           {ticketConfirmation && <div className="real-demo-ticket-confirmation" role="status">
-            <strong>Ticket {ticketConfirmation.ticket.id} created</strong><span>{ticketConfirmation.detail}</span>
-            <dl><div><dt>Equipment</dt><dd>{ticketConfirmation.ticket.assetName} ({ticketConfirmation.ticket.assetCode})</dd></div>
-              <div><dt>Complaint Type</dt><dd>{ticketConfirmation.ticket.complaintType}</dd></div>
+            <strong>Ticket {ticketConfirmation.ticket.id} {ticketConfirmation.duplicate ? 'already exists' : 'created'}</strong><span>{ticketConfirmation.detail}</span>
+            <dl>{ticketConfirmation.ticket.assetName && <div><dt>Equipment</dt><dd>{ticketConfirmation.ticket.assetName} ({ticketConfirmation.ticket.assetCode})</dd></div>}
+              {ticketConfirmation.ticket.complaintType && <div><dt>Complaint Type</dt><dd>{ticketConfirmation.ticket.complaintType}</dd></div>}
               <div><dt>Status</dt><dd>{ticketConfirmation.ticket.status}</dd></div></dl>
             <a className="btn btn-secondary" href="http://127.0.0.1:5176/" target="_blank" rel="noreferrer">
               Open private technician portal
