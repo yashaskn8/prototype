@@ -7,7 +7,7 @@ from tools.servy_real_demo_dialogue import (
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
     out_of_scope_response, focused_causal_query, wants_additional,
     is_technician_handoff_request, build_technician_handoff, NO_EVIDENCE,
-    contextualize_fault_category_followup,
+    contextualize_fault_category_followup, documented_fault_categories,
     _follow_up,
 )
 
@@ -20,6 +20,20 @@ class FaultCategoryFollowupTests(unittest.TestCase):
         "What could be the possible reasons why my VRF outdoor module is not working?",
         "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
     ]
+
+    def test_fault_category_extraction_is_explicit_and_preserves_ambiguity(self):
+        self.assertEqual(
+            documented_fault_categories(
+                "I suspect a communication or addressing fault."
+            ),
+            ("communication or addressing fault",),
+        )
+        self.assertEqual(
+            documented_fault_categories(
+                "Could this be a communication fault or a compressor fault?"
+            ),
+            ("communication or addressing fault", "compressor or inverter fault"),
+        )
 
     def test_category_selection_with_causes_is_a_contextual_followup(self):
         self.assertTrue(is_contextual_followup(
