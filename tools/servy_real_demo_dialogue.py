@@ -1188,11 +1188,22 @@ def _follow_up(topic, question, history=(), asked_followups=()):
     )
     if topic == "causes":
         if _already_reported_code_absence(reports):
-            candidates = (
-                "Did the problem start suddenly or gradually?",
-                "Does the problem happen continuously or intermittently?",
-                "When did you first notice this symptom?",
-            )
+            # A one-line "no code" is an answer to the display prompt, so move
+            # directly to onset. If no-code is older history and the customer
+            # is now asking a new causes question, ask when they first noticed
+            # the problem instead of repeating the onset-choice prompt.
+            if _already_reported_code_absence(question):
+                candidates = (
+                    "Did the problem start suddenly or gradually?",
+                    "Does the problem happen continuously or intermittently?",
+                    "When did you first notice this symptom?",
+                )
+            else:
+                candidates = (
+                    "When did you first notice this symptom?",
+                    "Did the problem start suddenly or gradually?",
+                    "Does the problem happen continuously or intermittently?",
+                )
         elif _error_codes(reports):
             candidates = (
                 "When does that displayed code appear?",
