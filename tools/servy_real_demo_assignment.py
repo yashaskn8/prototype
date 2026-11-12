@@ -24,7 +24,8 @@ ALREADY_ASSIGNED = "ALREADY_ASSIGNED"
 MAX_CAUSES = 10
 MAX_CAUSE_CHARS = 240
 MAX_DESCRIPTION_CHARS = 3500
-CAUSE_KINDS = frozenset({"possible_cause", "information"})
+CAUSE_KINDS = frozenset({"possible_cause"})
+CAUSE_DETAIL_KINDS = frozenset({"possible_cause", "information"})
 LIMITATION_TITLES = frozenset({"Evidence limitation", "What I could not verify"})
 # Canonical wording understood by the existing explanation-follow-up path.
 EXPLAIN_CAUSES_QUESTION = "Explain those causes in more detail"
@@ -135,7 +136,7 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
     shown = set(shown_before or ())
     target, extra = [], []
     for claim in presentation.get("supporting_claims", []):
-        if not isinstance(claim, dict) or claim.get("kind") not in CAUSE_KINDS:
+        if not isinstance(claim, dict) or claim.get("kind") not in CAUSE_DETAIL_KINDS:
             continue
         evidence = claim.get("evidence_ids") or []
         citation = citations.get(evidence[0]) if len(evidence) == 1 else None
