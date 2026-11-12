@@ -216,9 +216,11 @@ def check_for_safety_hazard(text_input: str) -> Tuple[bool, str]:
     for pat in HAZARD_PATTERNS:
         if re.search(pat, text):
             return True, (
-                "IMMEDIATE SAFETY RISK DETECTED: Symptoms indicate a hazardous electrical, thermal, or chemical condition. "
-                "Disconnect main power immediately if it is safe to do so. Do not operate or open the equipment. "
-                "An urgent technician service call should be dispatched."
+                "IMMEDIATE SAFETY RISK DETECTED: The reported condition may indicate immediate danger. "
+                "Move away from the equipment and keep others clear. Do not touch the equipment, controls, "
+                "wiring or electrical switches. Do not open, operate, reset or attempt to disconnect power. "
+                "Follow the site's emergency procedure and notify the site safety lead and an authorized "
+                "service technician. Contact emergency responders if anyone is injured or there is immediate danger."
             )
     return False, ""
 
