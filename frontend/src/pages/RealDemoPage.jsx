@@ -517,9 +517,11 @@ export function RealDemoPage() {
                               <details className="real-demo-dialogue-meta">
                                 <summary>How this answer was prepared</summary>
                                 <p>The technical statements are drawn from approved company sources.
-                                  {message.data.dialogue_planner === 'local-ollama-structured'
-                                    ? ' A local language model helped organize the conversation.'
-                                    : ' The response was organized without a generative language model.'}
+                                  {message.data.dialogue_planner === 'local-ollama-explainer'
+                                    ? ' A local language model rewrote the cited statements in plain language; the source claims and citations remained fixed.'
+                                    : message.data.dialogue_planner === 'local-ollama-structured'
+                                      ? ' A local language model helped organize the conversation.'
+                                      : ' The response was organized without a generative language model.'}
                                 </p>
                               </details>
                             )}
