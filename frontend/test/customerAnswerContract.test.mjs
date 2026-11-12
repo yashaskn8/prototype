@@ -145,7 +145,7 @@ test('focused answers preserve a bounded plain-language explanation with its sou
     '',
     'x'.repeat(601),
     'A short explanation.',
-    'First line.\\nSecond line.',
+    'First line.\nSecond line.',
   ]) {
     const changed = structuredClone(p);
     changed.sections[0].claims[0].explanation = invalid;

@@ -80,6 +80,10 @@ class LocalOllamaPlannerTests(TestCase):
         query = targeted_retry_query(
             "ok could you explain each issue in detailed",
             asset, context, last_topic="causes",
+            cause_claims=[
+                {"source_text": "A sensor or control issue may affect operation."},
+                {"source_text": "A refrigerant-system problem may be involved."},
+            ],
         )
         self.assertIn("VRF Outdoor Module", query)
         self.assertIn("not working", query)
