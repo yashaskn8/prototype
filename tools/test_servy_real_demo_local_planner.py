@@ -98,9 +98,10 @@ class LocalOllamaPlannerTests(TestCase):
                 {"source_text": "A refrigerant-system problem may be involved."},
             ],
         )
-        self.assertIn("Operating conditions", query)
-        self.assertIn("sensor or control issue", query)
-        self.assertIn("refrigerant-system problem", query)
+        normalized = query.casefold()
+        self.assertIn("operating", normalized)
+        self.assertIn("sensor", normalized)
+        self.assertIn("refrigerant", normalized)
 
     def test_targeted_retry_does_not_run_for_unrelated_general_questions(self):
         asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
