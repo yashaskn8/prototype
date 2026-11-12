@@ -235,6 +235,29 @@ class FollowupDeduplicationTests(unittest.TestCase):
             "When did you first notice this symptom?",
         )
 
+    def test_planner_cannot_rephrase_an_already_asked_display_prompt(self):
+        plan = {
+            "intent": "observations",
+            "follow_up": "What can you see on the external display or indicator?",
+            "style": "direct",
+        }
+        result, _ = focus_answer(
+            contract(),
+            "What can I safely observe?",
+            plan=plan,
+            asked_followups=[
+                "Is a fault code or warning visible on the display?"
+            ],
+        )
+        self.assertNotEqual(
+            result["presentation"].get("follow_up_question"),
+            plan["follow_up"],
+        )
+        self.assertEqual(
+            result["presentation"].get("follow_up_question"),
+            "When did you first notice this symptom?",
+        )
+
     def test_display_prompt_remains_available_when_not_asked_before(self):
         self.assertEqual(
             _follow_up("next", "What should I do next?"),
