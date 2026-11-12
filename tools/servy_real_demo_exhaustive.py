@@ -135,6 +135,10 @@ def search_all_approved_documents(*, tenant, customer, asset, question,
         generic_text, re.I))
     if generic_failure and generic_cause_request and not specific_condition:
         from core.services.customer_answer import source_claims
+        # Reserve five query slots for the fault headings below. The initial
+        # dense pass can already contribute several cause snippets; those
+        # must not crowd out a section from the asset-wide cause overview.
+        variants = variants[:3]
         asset_label = " ".join(str(getattr(asset, "name", "") or "").split())[:90]
         seen_variants = {value.casefold() for value in variants}
         for chunk in candidates:
