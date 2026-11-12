@@ -347,10 +347,18 @@ DOCUMENTED_FAULT_CATEGORY_PATTERNS = (
 )
 
 
-def has_documented_fault_category(text):
-    """Whether a customer-authored turn explicitly names one fault category."""
+def documented_fault_categories(text):
+    """Return the explicitly named fault categories in one customer-authored turn."""
     value = str(text or "")
-    return any(pattern.search(value) for _label, pattern in DOCUMENTED_FAULT_CATEGORY_PATTERNS)
+    return tuple(
+        label for label, pattern in DOCUMENTED_FAULT_CATEGORY_PATTERNS
+        if pattern.search(value)
+    )
+
+
+def has_documented_fault_category(text):
+    """Whether a customer-authored turn explicitly names one or more fault categories."""
+    return bool(documented_fault_categories(text))
 
 
 SPECIFIC_EVIDENCE = {
