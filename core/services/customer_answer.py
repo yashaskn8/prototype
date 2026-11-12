@@ -400,7 +400,7 @@ def source_claims(text):
         elif line:
             clean = _clean_line(line)
             if 12 <= len(clean) <= 320 and len(clean.split()) >= 3:
-                is_cause = (cause_list and bool(re.match(r"(?:[-*•]+|\d+[.)])\s", line))) or bool(re.search(r"\b(?:may be caused by|possible cause|can cause|may cause|causing|leads? to|results? in)\b", clean, re.I))
+                is_cause = (cause_list and bool(re.match(r"(?:[-*•]+|\d+[.)])\s", line))) or bool(re.search(r"\b(?:may be caused by|(?:is|are|can be) caused by|possible cause|can cause|may cause|causing|leads? to|results? in)\b", clean, re.I))
                 if is_cause:
                     clean = re.sub(r"^Why:\s*", "", clean, flags=re.I)
                 yield clean, "possible_cause" if is_cause else "information", offset, offset + len(raw.rstrip("\r\n"))
@@ -584,9 +584,6 @@ def build_customer_answer(interaction, session, references, conversation_context
                     if _is_completed_check(text):
                         continue
                     target, kind = procedures, "customer_procedure"
-                elif (kind == "information" and _descriptive_cause(text)
-                      and re.search(r"\b(?:indicates?|means?|denotes?|occurs? when|is caused by)\b", text, re.I)):
-                    target = causes
                 elif kind == "information" and wants_facts:
                     # Customer-safe documented fact (for example a maintenance
                     # interval). It must itself answer the question: the

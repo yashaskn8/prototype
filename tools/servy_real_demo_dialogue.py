@@ -656,13 +656,18 @@ class _FocusPlan:
 
 
 def _claim_topic(claim, primary):
-    if claim.get("kind") == "possible_cause":
+    kind = claim.get("kind")
+    if kind == "possible_cause":
         return "causes"
-    if claim.get("kind") == "observation":
+    if kind == "observation":
         return "observations"
-    if claim.get("kind") == "customer_procedure":
+    if kind == "customer_procedure":
         return "next"
-    return primary
+    if kind in {"information", "document_fact"}:
+        # Informational claims belong to a factual/document section; they must
+        # never inherit a primary "causes" or "observations" topic.
+        return primary if primary in {"general", "documents", "meaning"} else "documents"
+    return primary if primary in TOPICS else "general"
 
 
 _GENERAL_WORDS = frozenset({
@@ -962,7 +967,9 @@ def _explicit_intent(question):
 
 def _match_kinds(topic):
     if topic == "causes":
-        return frozenset({"possible_cause", "information"})
+        # Only claims explicitly classified as causes may appear in a cause
+        # answer. General information, observations and warnings are separate.
+        return frozenset({"possible_cause"})
     if topic == "meaning":
         return frozenset({"information", "document_fact"})
     if topic == "documents":

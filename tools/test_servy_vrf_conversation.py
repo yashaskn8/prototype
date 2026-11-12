@@ -11,7 +11,8 @@ import json
 import re
 import unittest
 
-from tools.servy_real_demo_dialogue import CATEGORY_QUESTION
+from tools.servy_real_demo_dialogue import CATEGORY_QUESTION, _claim_topic, _match_kinds
+from core.services.customer_answer import source_claims
 from tools.test_servy_answer_stage import ASSETS, HAVE_DOCS, _chunks, _shown, converse
 
 VRF_TURNS = [
@@ -30,6 +31,29 @@ RESTRICTED = re.compile(
 
 
 @unittest.skipUnless(HAVE_DOCS, "real source documents are not present")
+class ClaimCategoryIsolationTests(unittest.TestCase):
+    def test_cause_topic_accepts_only_explicitly_classified_causes(self):
+        self.assertEqual(_match_kinds("causes"), frozenset({"possible_cause"}))
+
+    def test_information_and_document_facts_never_inherit_the_cause_topic(self):
+        self.assertEqual(_claim_topic({"kind": "information"}, "causes"), "documents")
+        self.assertEqual(_claim_topic({"kind": "document_fact"}, "causes"), "documents")
+        self.assertEqual(_claim_topic({"kind": "observation"}, "causes"), "observations")
+        self.assertEqual(_claim_topic({"kind": "customer_procedure"}, "causes"), "next")
+
+    def test_only_explicit_causal_language_classifies_plain_prose_as_a_cause(self):
+        claims = list(source_claims(
+            "The compressor is caused by an inverter fault.\n"
+            "The alarm indicates a condition requiring review.\n"
+            "This code means the equipment has entered a protected state.\n"
+            "The alarm occurs when communication is interrupted.\n"
+        ))
+        self.assertEqual(
+            [kind for _text, kind, _start, _end in claims],
+            ["possible_cause", "information", "information", "information"],
+        )
+
+
 class VrfConversationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
