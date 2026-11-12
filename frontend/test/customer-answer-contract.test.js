@@ -58,7 +58,7 @@ test('rejects informational claims placed under documented causes', () => {
 test('rejects causes, procedures, and observations placed under the wrong headings', () => {
   const cases = [
     ['Safe observations from the manual', 'possible_cause'],
-    ['Approved customer checks', 'observation'],
+    ['Approved customer checks', 'possible_cause'],
     ['What I could not verify', 'customer_procedure'],
     ['Evidence limitation', 'information'],
   ];
