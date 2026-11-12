@@ -326,8 +326,28 @@ TECHNICAL_SYMPTOMS = re.compile(
     r"leak(?:ing|age)?|dripping|"
     r"noise|noisy|vibration|vibrating|"
     r"not starting|not turning on|not working|"
-    r"low airflow|weak airflow|" + _START_STOP_SYMPTOM + r"|"
-    r"e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
+    r"low airflow|weak airflow|"
+    r"communication(?:\s+or\s+address(?:ing)?)?\s+fault|address(?:ing)?\s+fault|"
+    r"high[ -]?pressure|heat[ -]?exchange|low[ -]?pressure|capacity\s+fault|"
+    r"compressor(?:\s+or\s+inverter)?\s+fault|inverter\s+fault|"
+    r"fan(?:\s+or\s+temperature[- ]sensor)?\s+fault|temperature[- ]sensor\s+fault|"
+    + _START_STOP_SYMPTOM + r"|e[- ]?\d{1,3}|f[- ]?\d{1,3})\b", re.I,
+)
+
+# These are customer-selected fault categories, not verified diagnoses.
+# They are recognized only in customer-authored conversation turns so that
+# short follow-ups can remain scoped to the condition the customer selected.
+DOCUMENTED_FAULT_CATEGORY_PATTERNS = (
+    ("communication or addressing fault",
+     re.compile(r"\b(?:communication(?:\s+or\s+address(?:ing)?)?|address(?:ing)?)\s+fault\b", re.I)),
+    ("high-pressure or heat-exchange fault",
+     re.compile(r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b", re.I)),
+    ("low-pressure or capacity fault",
+     re.compile(r"\b(?:low[ -]?pressure|capacity)\b", re.I)),
+    ("compressor or inverter fault",
+     re.compile(r"\b(?:compressor|inverter)\b", re.I)),
+    ("fan or temperature-sensor fault",
+     re.compile(r"\b(?:fan|temperature[- ]sensor)\b", re.I)),
 )
 SPECIFIC_EVIDENCE = {
     "overheating": (
@@ -350,6 +370,10 @@ SPECIFIC_EVIDENCE = {
         re.compile(_START_STOP_SYMPTOM, re.I),
         re.compile(_START_STOP_SYMPTOM, re.I),
     ),
+    "communication or addressing fault": (
+        re.compile(r"\b(?:communication|address(?:ing)?)\b", re.I),
+        re.compile(r"\b(?:communication|address(?:ing)?)\b", re.I),
+    ),
     "low-pressure or capacity fault": (
         re.compile(r"\b(?:low[ -]?pressure|capacity[ -]?fault)\b", re.I),
         re.compile(r"\b(?:low[ -]?pressure|capacity[ -]?fault)\b", re.I),
@@ -357,6 +381,10 @@ SPECIFIC_EVIDENCE = {
     "high-pressure or heat-exchange fault": (
         re.compile(r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b", re.I),
         re.compile(r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b", re.I),
+    ),
+    "compressor or inverter fault": (
+        re.compile(r"\b(?:compressor|inverter)\b", re.I),
+        re.compile(r"\b(?:compressor|inverter)\b", re.I),
     ),
     "fan or temperature-sensor fault": (
         re.compile(r"\b(?:fan(?:\s+or\s+)?temperature[- ]sensor|"
@@ -707,6 +735,9 @@ _FOCUSED_SUBJECTS = (
     (r"\bcoil\w*\b", r"\bcoil\w*\b"),
     (r"\bfan\b", r"\bfan\w*\b"),
     (r"\bcompressor\w*\b", r"\bcompressor\w*\b"),
+    (r"\binverter\b", r"\binverter\b"),
+    (r"\b(?:communication|address(?:ing)?)\b",
+     r"\b(?:communication|address(?:ing)?)\b"),
     (r"\brefrigerant\b", r"\brefrigerant\b"),
     (r"\bthermostat\b", r"\bthermostat\b"),
     (r"\bsensor\b", r"\bsensor\w*\b"),
@@ -914,6 +945,56 @@ def question_topic(question, last_topic=None):
                          r"not working|weak airflow|leak|rattl|noise)\b", q)):
         return "causes"
     return "general"
+
+
+def contextualize_fault_category_followup(question, history=(), last_topic=None):
+    """Carry a customer's explicitly selected fault category into short follow-ups.
+
+    Only customer-authored history is inspected. The category remains a
+    suspected condition; this helper narrows retrieval and claim validation,
+    but never upgrades it to a confirmed diagnosis.
+    """
+    raw = " ".join(str(question or "").split())
+    if not raw or not is_contextual_followup(raw):
+        return raw
+    topic = question_topic(raw, last_topic)
+    normalized = _words(raw)
+    generic_requests = {
+        "causes": re.compile(
+            r"^(?:what (?:are )?(?:the )?(?:possible|documented|other|more)? ?causes?"
+            r"(?: (?:are )?documented)?|other causes|more causes)\\??$", re.I,
+        ),
+        "observations": re.compile(
+            r"^(?:what can i (?:safely )?(?:check|observe|report)|"
+            r"what should i (?:safely )?(?:check|observe|report))\\??$", re.I,
+        ),
+        "next": re.compile(
+            r"^(?:what (?:next|now|else)|what should i do(?: next)?|next step)\\??$", re.I,
+        ),
+    }
+    pattern = generic_requests.get(topic)
+    if pattern is None or not pattern.fullmatch(normalized):
+        return raw
+
+    # A more recent customer statement takes precedence. If that same turn
+    # names multiple fault categories, do not guess which one is intended.
+    for turn in reversed(list(history or [])[-8:]):
+        if not isinstance(turn, str):
+            continue
+        matched = [
+            label for label, condition in DOCUMENTED_FAULT_CATEGORY_PATTERNS
+            if condition.search(turn)
+        ]
+        if len(matched) > 1:
+            return raw
+        if len(matched) == 1:
+            condition = matched[0]
+            if topic == "causes":
+                return f"What possible causes are documented for the suspected {condition}?"
+            if topic == "observations":
+                return f"What can I safely observe or report for the suspected {condition}?"
+            return f"What should I do next for the suspected {condition}?"
+    return raw
 
 
 def expand_display_observation_query(question, retrieval_query=None):
