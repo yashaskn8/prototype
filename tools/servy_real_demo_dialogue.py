@@ -1268,6 +1268,13 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             kind, value = "display_detail", raw[:120]
             acknowledgement = "Thanks — I've recorded this display wording as customer-reported: " + raw[:120] + "."
             next_question = "When does that displayed code or warning appear?"
+    elif "which of these documented conditions matches what you observe" in prompt:
+        # Backward compatibility for signed chats created before the prompt was
+        # corrected. A customer who responds "no code" is still reporting an
+        # observation, not selecting or confirming an internal fault category.
+        if re.fullmatch(r"(?:no|no code|no fault code|no error code|no warning|no code or warning|nothing(?: is)? (?:shown|displayed|visible)|nothing on (?:the )?display)", answer):
+            kind, value = "display_status", "no visible code or warning"
+            acknowledgement = "Thanks — I've recorded that no fault code or warning is visible."
     elif "when did you first notice" in prompt:
         if re.search(r"\b(?:today|yesterday|last night|this morning|this afternoon|earlier today|recently|\d+\s*(?:minutes?|hours?|days?|weeks?)\s+ago)\b", answer):
             kind, value = "first_noticed", raw[:100]
@@ -1301,7 +1308,7 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             "acknowledgement": acknowledgement, "next_question": next_question}
 
 
-CATEGORY_QUESTION = "Which of these documented conditions matches what you observe?"
+CATEGORY_QUESTION = "Is a fault code or warning visible on the display?"
 NEEDS_SYMPTOM = "NEEDS_SYMPTOM_CLARIFICATION"
 
 
@@ -1309,9 +1316,10 @@ def _no_cause_reply(contract, asked_followups):
     """Honest reply when no documented cause matches the customer's wording.
 
     Names the conditions the approved manual does document causes for (its own
-    section headings) and asks which applies, once. A second request without
-    that information states the limitation plainly instead of repeating the
-    question. Returns (message, reason_code, asked_followups).
+    section headings), but asks for a customer-visible display observation.
+    Customers should not be asked to identify an internal diagnostic category.
+    A second request without useful new information states the limitation plainly.
+    Returns (message, reason_code, asked_followups).
     """
     asked = list(asked_followups)[-8:]
     sections = [s for s in contract.get("documented_cause_sections") or []
@@ -1330,7 +1338,8 @@ def _no_cause_reply(contract, asked_followups):
     asked = (asked + [CATEGORY_QUESTION])[-8:]
     return (
         "The approved manual does not list causes for the problem as you described it. "
-        "It documents possible causes only for these conditions: " + listed + ". "
+        "It documents possible causes only under these conditions: " + listed + ". "
+        "You do not need to identify an internal fault category. "
         + CATEGORY_QUESTION,
         NEEDS_SYMPTOM, asked,
     )

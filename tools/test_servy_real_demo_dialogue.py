@@ -287,6 +287,17 @@ class PendingFollowupReplyTests(unittest.TestCase):
             "Does the problem happen continuously or intermittently?",
         )
 
+    def test_legacy_category_prompt_accepts_no_code_as_a_customer_observation(self):
+        result = resolve_pending_followup_reply(
+            "No code.",
+            "Which of these documented conditions matches what you observe?",
+            topic="causes",
+        )
+        self.assertEqual(result["kind"], "display_status")
+        self.assertEqual(result["value"], "no visible code or warning")
+        self.assertEqual(result["next_question"],
+                         "Did the problem start suddenly or gradually?")
+
     def test_intermittently_is_customer_reported_not_a_diagnosis(self):
         result = resolve_pending_followup_reply(
             "intermittently", "Does the problem happen continuously or intermittently?",

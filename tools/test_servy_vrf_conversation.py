@@ -247,6 +247,40 @@ class VrfConversationTests(unittest.TestCase):
         self.assertEqual(results[4]["retrieval_attempts"], 0)
         self.assertIn("problem happens intermittently", results[4]["message"])
 
+    def test_generic_vrf_conversation_captures_no_code_then_sudden_and_intermittent(self):
+        # Reproduces the customer-visible failure: no manual-category selection
+        # is required before "no code" and "suddenly" can be captured.
+        results = converse("vrf", [
+            "What could be the possible reasons why my VRF outdoor module is not working?",
+            "No code.",
+            "Suddenly.",
+            "Intermittently.",
+        ])
+
+        first_message = results[0]["presentation"]["message"]
+        self.assertTrue(first_message.endswith(CATEGORY_QUESTION))
+        self.assertIn("You do not need to identify an internal fault category",
+                      first_message)
+        self.assertNotIn("Which of these documented conditions", first_message)
+
+        no_code = results[1]
+        self.assertEqual(no_code["response_type"], "CLARIFICATION")
+        self.assertEqual(no_code["retrieval_attempts"], 0)
+        self.assertIn("no fault code or warning is visible", no_code["message"])
+        self.assertIn("suddenly or gradually", no_code["clarification_question"])
+
+        sudden = results[2]
+        self.assertEqual(sudden["response_type"], "CLARIFICATION")
+        self.assertEqual(sudden["retrieval_attempts"], 0)
+        self.assertIn("problem started suddenly", sudden["message"])
+        self.assertIn("continuously or intermittently",
+                      sudden["clarification_question"])
+
+        intermittent = results[3]
+        self.assertEqual(intermittent["response_type"], "CLARIFICATION")
+        self.assertEqual(intermittent["retrieval_attempts"], 0)
+        self.assertIn("problem happens intermittently", intermittent["message"])
+
     def test_unsupported_fault_code_is_not_explained(self):
         (r,) = converse("vrf", ["The outdoor module shows fault code E-99. What does E-99 mean?"])
         self.assertEqual(r["response_type"], "INSUFFICIENT_EVIDENCE")
