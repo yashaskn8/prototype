@@ -144,7 +144,7 @@ class VrfConversationTests(unittest.TestCase):
         self.assertIn("lists these possibilities", results[1]["presentation"]["message"])
         followup = _shown(results[2])
         self.assertEqual(followup[0][3], "Duplicate/missing addresses or configuration mismatch.")
-        self.assertIn("no further explanation", results[2]["presentation"]["message"].lower())
+        self.assertIn("do not contain a separately citable explanation", results[2]["presentation"]["message"].lower())
         self.assertEqual(results[2]["evidence_state"], "PARTIAL")
 
     def test_unsupported_fault_code_is_not_explained(self):
