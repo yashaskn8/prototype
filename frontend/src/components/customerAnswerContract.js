@@ -133,9 +133,7 @@ export function validateCustomerPresentation(value) {
     for (const claim of section.claims) {
       if (!claim || (allowedKinds && !allowedKinds.has(claim.kind))
         || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
-        || (claim.explanation !== undefined && (typeof claim.explanation !== 'string'
-          || claim.explanation.trim().length < 35 || claim.explanation.length > 600
-          || /[\r\n]/.test(claim.explanation)))
+        || claim.explanation !== undefined
         || !Array.isArray(claim.evidence_ids) || claim.evidence_ids.some(id => !ids.has(id))
         || (focused && (!['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure', 'uncertainty', 'next_step'].includes(claim.kind)
           || (['uncertainty', 'next_step'].includes(claim.kind)
