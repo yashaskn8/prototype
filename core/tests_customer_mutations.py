@@ -105,6 +105,17 @@ class CustomerRagMutationTests(TestCase):
             # Independent source approval must still prevent dangerous customer actions.
             self.assertEqual(data_mut["customer_safe_actions"], [])
 
+    def test_hazard_warning_never_tells_customers_to_disconnect_main_power(self):
+        hazard, warning = check_for_safety_hazard(
+            "There are sparks and a burning smell coming from the equipment."
+        )
+        self.assertTrue(hazard)
+        self.assertIn("Move away from the equipment", warning)
+        self.assertIn("Do not touch the equipment", warning)
+        self.assertIn("authorized service technician", warning)
+        self.assertNotIn("disconnect main power", warning.casefold())
+        self.assertNotIn("turn off power", warning.casefold())
+
     def test_independent_hazard_detection_survives_endpoint_guard_mutation(self):
         """A second safety boundary must still catch hazards if one view guard is disabled."""
         self.client.force_login(self.user)
