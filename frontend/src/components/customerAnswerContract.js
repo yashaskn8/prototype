@@ -106,14 +106,33 @@ export function validateCustomerPresentation(value) {
   if (new Set(citations.map(s => s.id)).size !== citations.length) return invalid();
   const ids = new Set(citations.map(s => s.id));
   const kinds = new Set(['possible_cause', 'information', 'document_fact', 'observation', 'customer_procedure', 'uncertainty', 'next_step']);
+  // Defense in depth: even a server-side classification regression must not
+  // render a fact as a cause, an observation as a customer procedure, or a
+  // cause under an observation/limitation heading.
+  const kindsBySectionTitle = {
+    'What could be wrong?': new Set(['possible_cause', 'uncertainty']),
+    'What can I safely check or report?': new Set(['observation', 'customer_procedure', 'uncertainty']),
+    'What is still unknown?': new Set(['uncertainty']),
+    'What should I do next?': new Set(['next_step', 'uncertainty']),
+    'Documented possible causes': new Set(['possible_cause']),
+    'Safe observations from the manual': new Set(['observation']),
+    'Approved customer checks': new Set(['customer_procedure']),
+    'What I could not verify': new Set(['uncertainty']),
+    'Evidence limitation': new Set(['uncertainty']),
+    'What the manual says': new Set(['possible_cause', 'information', 'document_fact']),
+    'What the document says': new Set(['possible_cause', 'information', 'document_fact']),
+    'What the manual supports': new Set(['information', 'document_fact']),
+  };
   for (const [i, section] of value.sections.entries()) {
     const validTitle = focused
       ? focusedAnswerTitles.includes(section?.title)
       : (section?.title === answerTitles[i] || (i === 0 && section?.title === 'What the document says'));
     if (!section || section.number !== i + 1 || !validTitle || !Array.isArray(section.claims)
       || !section.claims.length || section.claims.length > 12) return invalid();
+    const allowedKinds = kindsBySectionTitle[section.title];
     for (const claim of section.claims) {
-      if (!claim || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
+      if (!claim || (allowedKinds && !allowedKinds.has(claim.kind))
+        || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
         || (claim.explanation !== undefined && (typeof claim.explanation !== 'string'
           || claim.explanation.trim().length < 35 || claim.explanation.length > 600
           || /[\r\n]/.test(claim.explanation)))
