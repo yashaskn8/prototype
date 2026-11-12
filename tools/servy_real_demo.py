@@ -565,7 +565,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             explanation_presentation["follow_up_question"] = None
             contract["presentation"] = explanation_presentation
             contract["summary"] = explanation_presentation["message"]
-            contract["answer"] = explanation_presentation["message"] + "\\n" + "\\n".join(
+            contract["answer"] = explanation_presentation["message"] + "\n" + "\n".join(
                 claim.get("explanation", claim.get("text", ""))
                 for claim in explanation_claims
             )
