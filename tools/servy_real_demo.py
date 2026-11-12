@@ -452,8 +452,14 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 and contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
             )
             if retry_for_missing_evidence or retry_for_deeper_explanation:
+                current_claims = (contract.get("presentation") or {}).get("supporting_claims", [])
+                cause_claims = [
+                    item for item in current_claims
+                    if isinstance(item, dict) and item.get("kind") in {"possible_cause", "information"}
+                ]
                 second_query = targeted_retry_query(
                     question, asset, context, last_topic=last_topic,
+                    cause_claims=cause_claims if retry_for_deeper_explanation else (),
                 )
                 if second_query and second_query != retrieval_query:
                     retried = ask_rag(
@@ -518,8 +524,20 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                         len(str(item.get("source_text", "")).split())
                                         for item in second_claims if isinstance(item, dict)
                                     )
+                                    first_claim_text = {
+                                        (item.get("kind"), str(item.get("source_text", "")).strip().casefold())
+                                        for item in first_claims if isinstance(item, dict)
+                                    }
+                                    second_claim_text = {
+                                        (item.get("kind"), str(item.get("source_text", "")).strip().casefold())
+                                        for item in second_claims if isinstance(item, dict)
+                                    }
+                                    # Accept a genuinely new source sentence even when it
+                                    # lives in the same document chunk. The old check only
+                                    # compared claim counts/new chunk IDs and discarded
+                                    # useful additional sentences from an existing chunk.
                                     use_retry = (
-                                        len(second_claims) > len(first_claims)
+                                        bool(second_claim_text - first_claim_text)
                                         or bool(second_sources - first_sources)
                                         and second_words > first_words
                                     )
