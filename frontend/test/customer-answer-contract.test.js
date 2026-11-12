@@ -59,6 +59,7 @@ test('rejects causes, procedures, and observations placed under the wrong headin
   const cases = [
     ['Safe observations from the manual', 'possible_cause'],
     ['Approved customer checks', 'possible_cause'],
+    ['Approved customer checks', 'next_step'],
     ['What I could not verify', 'customer_procedure'],
     ['Evidence limitation', 'information'],
   ];
