@@ -269,19 +269,28 @@ def _demo_query_context(asset, question, first, history):
         product_name=asset.product.name if asset.product else "",
     )
     from tools.servy_real_demo_dialogue import TECHNICAL_SYMPTOMS
-    # Preserve the signed chat for recap, but search the latest independently
-    # reported technical issue instead of mixing every past issue into it.
-    active_question = bool(
-        TECHNICAL_SYMPTOMS.search(question) or has_documented_fault_category(question)
+    # A new symptom starts a fresh issue. A selected manual fault category is
+    # a refinement of the active issue, not a replacement for the complaint.
+    active_question = (
+        bool(TECHNICAL_SYMPTOMS.search(question))
+        or (has_documented_fault_category(question)
+            and not is_contextual_followup(question))
     ) and not is_contextual_followup(question)
     active_index = 0
     if not active_question:
-        for index in range(len(history) - 1, -1, -1):
-            if ((TECHNICAL_SYMPTOMS.search(history[index])
-                 or has_documented_fault_category(history[index]))
-                    and not out_of_scope_response(history[index])):
-                active_index = index
-                break
+        symptom_indices = [
+            index for index, turn in enumerate(history)
+            if TECHNICAL_SYMPTOMS.search(turn) and not out_of_scope_response(turn)
+        ]
+        if symptom_indices:
+            active_index = symptom_indices[-1]
+        else:
+            category_indices = [
+                index for index, turn in enumerate(history)
+                if has_documented_fault_category(turn) and not out_of_scope_response(turn)
+            ]
+            if category_indices:
+                active_index = category_indices[-1]
     active_history = [] if active_question else history[active_index:]
     context.turn_count = len(active_history)
     context.original_complaint = (question if active_question else
