@@ -561,7 +561,10 @@ def _specific_symptom_supported(question, source_context, heading=""):
     if not requested:
         return True
     for label, evidence in requested:
-        candidate = heading if label in SECTION_SCOPED_FAULTS else source_context
+        candidate = (
+            (heading or source_context)
+            if label in SECTION_SCOPED_FAULTS else source_context
+        )
         if evidence.search(candidate or ""):
             return True
     return False
