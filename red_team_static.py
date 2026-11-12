@@ -33,8 +33,26 @@ application_text = "\n".join(
     p.read_text(encoding="utf-8", errors="ignore")
     for p in list((ROOT / "core").rglob("*.py")) + list((ROOT / "servy_rag").rglob("*.py"))
 )
-for forbidden in ["csrf_exempt", "mark_safe(", "eval(", "exec(", "shell=True", "os.system("]:
+for forbidden in ["csrf_exempt", "mark_safe(", "exec(", "shell=True", "os.system("]:
     check(f"forbidden:{forbidden}", forbidden not in application_text, "unsafe construct present")
+
+# Check eval as a Python call rather than a raw substring. A substring scan
+# falsely flags identifiers such as "retrieval(" because they end in "eval(".
+unsafe_eval_calls = []
+for source_path in list((ROOT / "core").rglob("*.py")) + list((ROOT / "servy_rag").rglob("*.py")):
+    try:
+        source_tree = ast.parse(source_path.read_text(encoding="utf-8", errors="ignore"))
+    except SyntaxError:
+        continue  # The syntax check above reports parse failures separately.
+    for node in ast.walk(source_tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = node.func
+        if (isinstance(called, ast.Name) and called.id == "eval") or (
+            isinstance(called, ast.Attribute) and called.attr == "eval"
+        ):
+            unsafe_eval_calls.append(f"{source_path.relative_to(ROOT)}:{node.lineno}")
+check("forbidden:eval(", not unsafe_eval_calls, ", ".join(unsafe_eval_calls) or "unsafe eval call not found")
 
 # 3) Media must not be exposed directly by Django development URLs.
 urls_text = (ROOT / "servy_rag" / "urls.py").read_text()
