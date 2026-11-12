@@ -30,7 +30,6 @@ RESTRICTED = re.compile(
     r"bypass|lockout|electrical measurements|inverter diagnostics", re.I)
 
 
-@unittest.skipUnless(HAVE_DOCS, "real source documents are not present")
 class ClaimCategoryIsolationTests(unittest.TestCase):
     def test_cause_topic_accepts_only_explicitly_classified_causes(self):
         self.assertEqual(_match_kinds("causes"), frozenset({"possible_cause"}))
@@ -54,6 +53,7 @@ class ClaimCategoryIsolationTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(HAVE_DOCS, "real source documents are not present")
 class VrfConversationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
