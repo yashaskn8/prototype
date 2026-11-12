@@ -8,8 +8,17 @@ context kept across turns, honest document-coverage status, and asset
 isolation. No database, network, model or ticket store is used.
 """
 import json
+import os
 import re
 import unittest
+
+# These tests import Django-backed answer services directly. Configure the
+# project before importing those modules when the test is run standalone.
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
+os.environ.setdefault("LOCALAPPDATA", "/tmp")
+
+import django
+django.setup()
 
 from tools.servy_real_demo_dialogue import CATEGORY_QUESTION, _claim_topic, _match_kinds
 from core.services.customer_answer import source_claims, _descriptive_cause
