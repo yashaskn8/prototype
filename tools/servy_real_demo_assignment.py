@@ -193,12 +193,9 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
             "The approved documentation states this cause only as cited below. "
             "It is a documented possibility, not a confirmed diagnosis."
         )
-        sections.append({"number": 2, "title": "Evidence limitation", "claims": [{
-            "text": ("The approved documents for this equipment contain no further "
-                     "explanation of this cause. I won't add technical detail they "
-                     "do not support."),
-            "kind": "uncertainty", "evidence_ids": [],
-        }]})
+        # Keep the evidence gap for internal evidence-state/ticket handling.
+        # Do not render a repetitive limitation paragraph in the customer answer.
+        presentation["cause_explanation_unavailable"] = True
     presentation.update({
         "view_mode": "focused", "sections": sections, "citations": kept_citations,
         "supporting_claims": kept, "customer_permitted_observations": [],
@@ -263,6 +260,10 @@ def limitation_texts(presentation):
             for claim in section.get("claims", []):
                 if isinstance(claim, dict) and isinstance(claim.get("text"), str):
                     out.append(_clean(claim["text"], 400))
+    if (presentation or {}).get("cause_explanation_unavailable") is True:
+        out.append(
+            "No additional separately citable explanation was found for the selected documented cause."
+        )
     return out
 
 
