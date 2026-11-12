@@ -1781,7 +1781,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     sectioned_observations = False
     for source_claim, citation, _fingerprint in collected:
         claim = dict(source_claim)
-        if generic_cause_overview and claim.get("kind") == "possible_cause":
+        if claim.get("kind") == "possible_cause" and (
+                generic_cause_overview or topic == "documents"):
             heading = re.sub(r"^\s*\d+[.)]\s*", "", str(citation.get("heading") or ""))
             heading = re.sub(r"^symptom\s*:\s*", "", heading, flags=re.I).strip()
             if heading:
@@ -1838,6 +1839,20 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             "documents": "The approved document states:",
             "general": "Verified manual information:",
         }[topic]
+    if topic == "documents":
+        documented_fault_heading = next((
+            re.sub(r"^\s*\d+[.)]\s*", "", str(citation.get("heading") or ""))
+            for claim, citation, _fp in collected
+            if claim.get("kind") == "possible_cause"
+            and re.search(r"\b(?:fault|symptom)\b", citation.get("heading") or "", re.I)
+        ), "")
+        if documented_fault_heading:
+            lead = (
+                "The approved manual lists the following under its "
+                + documented_fault_heading.capitalize()
+                + " section. This is a documented possibility, not confirmation "
+                  "that the condition is present."
+            )
     if sectioned_observations and topic in {"observations", "next"}:
         lead = ("The approved manual lists these observations under specific conditions. "
                 "It does not establish which condition applies to your equipment, and they "

@@ -171,7 +171,14 @@ class VrfConversationTests(unittest.TestCase):
             "Duplicate/missing addresses or configuration mismatch.",
             "Power loss to a connected unit or module."])
         self.assertEqual({r[4] for r in rows}, {"2. COMMUNICATION OR ADDRESSING FAULT"})
-        self.assertIn("lists these possibilities", results[1]["presentation"]["message"])
+        self.assertIn(
+            "lists the following under its Communication or addressing fault section",
+            results[1]["presentation"]["message"],
+        )
+        self.assertTrue(all(
+            claim["text"].startswith("Under Communication or addressing fault:")
+            for claim in results[1]["presentation"]["supporting_claims"]
+        ))
         followup = _shown(results[2])
         self.assertEqual(followup[0][3], "Duplicate/missing addresses or configuration mismatch.")
         self.assertIn(
