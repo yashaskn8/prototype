@@ -40,6 +40,9 @@ class FaultCategoryFollowupTests(unittest.TestCase):
             "I think it may be a communication or addressing fault. "
             "What causes are documented in the approved manual?"
         ))
+        self.assertTrue(is_contextual_followup(
+            "What should I do next if I suspect a communication or addressing fault?"
+        ))
 
     def test_generic_followups_keep_the_last_customer_selected_fault_category(self):
         cases = (
@@ -63,6 +66,7 @@ class FaultCategoryFollowupTests(unittest.TestCase):
             "What can I safely observe from outside the equipment "
             "without opening it or touching any components?"
         )
+        self.assertTrue(is_contextual_followup(question))
         contextualized = contextualize_fault_category_followup(
             question, self.HISTORY, last_topic="observations",
         )
