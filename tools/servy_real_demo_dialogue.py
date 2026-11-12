@@ -496,17 +496,17 @@ def _specific_symptom_supported(question, source_context):
     """
     q = _words(question)
     generic_failure = re.search(
-        r"\\b(?:not working|does(?:n'?t| not) work|won'?t work|"
-        r"isn'?t functioning|not functioning|stopped working|not operational)\\b",
+        r"\b(?:not working|does(?:n'?t| not) work|won'?t work|"
+        r"isn'?t functioning|not functioning|stopped working|not operational)\b",
         q, re.I,
     )
     explicit_condition = (
         any(query.search(q) for query, _evidence in SPECIFIC_EVIDENCE.values())
         or bool(symptom_concepts(q))
         or bool(re.search(
-            r"\\b(?:communication|address(?:ing)?|high[ -]?pressure|"
+            r"\b(?:communication|address(?:ing)?|high[ -]?pressure|"
             r"heat[ -]?exchange|low[ -]?pressure|capacity|compressor|"
-            r"inverter|fan|temperature[ -]?sensor|power (?:loss|failure|outage))\\b",
+            r"inverter|fan|temperature[ -]?sensor|power (?:loss|failure|outage))\b",
             q, re.I,
         ))
     )
