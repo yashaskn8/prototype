@@ -504,7 +504,17 @@ def is_contextual_followup(question):
     if not q or out_of_scope_response(q):
         return False
     if (has_documented_fault_category(q)
-            and re.search(r"\b(?:causes?|reasons?|documented|approved manual)\b", q)):
+            and re.search(
+                r"\b(?:causes?|reasons?|documented|approved manual|next step|what next)\b",
+                q,
+            )):
+        return True
+    if re.match(
+        r"\bwhat (?:can|could|should) i (?:safely )?(?:observe|check|look at|look for)\b",
+        q,
+    ):
+        return True
+    if re.match(r"\bwhat should i do next\b", q):
         return True
     if TECHNICAL_SYMPTOMS.search(q):
         return False
