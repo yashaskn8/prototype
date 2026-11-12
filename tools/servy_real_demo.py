@@ -43,7 +43,7 @@ from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, is_explanation_followup, focused_causal_query, requested_topics,
-    contextualize_fault_category_followup,
+    contextualize_fault_category_followup, has_documented_fault_category,
     is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response, expand_display_observation_query, fact_fingerprint,
 )
@@ -271,11 +271,15 @@ def _demo_query_context(asset, question, first, history):
     from tools.servy_real_demo_dialogue import TECHNICAL_SYMPTOMS
     # Preserve the signed chat for recap, but search the latest independently
     # reported technical issue instead of mixing every past issue into it.
-    active_question = bool(TECHNICAL_SYMPTOMS.search(question)) and not is_contextual_followup(question)
+    active_question = bool(
+        TECHNICAL_SYMPTOMS.search(question) or has_documented_fault_category(question)
+    ) and not is_contextual_followup(question)
     active_index = 0
     if not active_question:
         for index in range(len(history) - 1, -1, -1):
-            if TECHNICAL_SYMPTOMS.search(history[index]) and not out_of_scope_response(history[index]):
+            if ((TECHNICAL_SYMPTOMS.search(history[index])
+                 or has_documented_fault_category(history[index]))
+                    and not out_of_scope_response(history[index])):
                 active_index = index
                 break
     active_history = [] if active_question else history[active_index:]
@@ -713,7 +717,32 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     # source statements, without adding generated technical explanations.
     if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
             and last_topic == "causes" and is_explanation_followup(question)):
-        explanation_presentation = contract.get("presentation") or {}
+        explanation_presentation = dict(contract.get("presentation") or {})
+        retained_sections = []
+        hid_detail_limit = False
+        for section in explanation_presentation.get("sections", []):
+            title = section.get("title") if isinstance(section, dict) else None
+            claims = section.get("claims", []) if isinstance(section, dict) else []
+            limitation_text = " ".join(
+                str(claim.get("text", "")) for claim in claims if isinstance(claim, dict)
+            ).casefold()
+            is_redundant_detail_limit = (
+                title == "Evidence limitation"
+                and any(phrase in limitation_text for phrase in (
+                    "separately citable explanation",
+                    "do not contain a separately",
+                    "do not contain further explanation",
+                    "no further explanation",
+                    "no additional explanation",
+                ))
+            )
+            if is_redundant_detail_limit:
+                hid_detail_limit = True
+            else:
+                retained_sections.append(section)
+        if hid_detail_limit:
+            explanation_presentation["sections"] = retained_sections
+            explanation_presentation["cause_explanation_unavailable"] = True
         explanation_presentation["follow_up_question"] = None
         contract["presentation"] = explanation_presentation
 
