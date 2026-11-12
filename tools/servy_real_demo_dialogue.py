@@ -1264,12 +1264,12 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             kind, value = "display_status", "a code or warning is visible"
             acknowledgement = "Thanks — I've recorded that a code or warning is visible."
             next_question = "What exact code or warning text is displayed?"
-        elif re.search(r"\\b(?:e|f|err)[ -]?\\d{1,3}\\b|\\b(?:warning|alarm)\\b", raw, re.I):
+        elif re.search(r"\b(?:e|f|err)[ -]?\d{1,3}\b|\b(?:warning|alarm)\b", raw, re.I):
             kind, value = "display_detail", raw[:120]
             acknowledgement = "Thanks — I've recorded this display wording as customer-reported: " + raw[:120] + "."
             next_question = "When does that displayed code or warning appear?"
     elif "when did you first notice" in prompt:
-        if re.search(r"\\b(?:today|yesterday|last night|this morning|this afternoon|earlier today|recently|\\d+\\s*(?:minutes?|hours?|days?|weeks?)\\s+ago)\\b", answer):
+        if re.search(r"\b(?:today|yesterday|last night|this morning|this afternoon|earlier today|recently|\d+\s*(?:minutes?|hours?|days?|weeks?)\s+ago)\b", answer):
             kind, value = "first_noticed", raw[:100]
             acknowledgement = "Thanks — I've recorded when you first noticed it: " + raw[:100] + "."
     elif "when does that displayed code" in prompt or "when does the reported code" in prompt:
@@ -1282,7 +1282,7 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             kind, value = "code_persistence", answer
             acknowledgement = "Thanks — I've recorded whether the code remains visible each time: " + answer + "."
     elif "which indoor units are affected" in prompt:
-        if re.search(r"\\b(?:unit|units|all|both|one|two|three|four|five|\\d+)\\b", answer):
+        if re.search(r"\b(?:unit|units|all|both|one|two|three|four|five|\d+)\b", answer):
             kind, value = "affected_units", raw[:100]
             acknowledgement = "Thanks — I've recorded the affected units as customer-reported: " + raw[:100] + "."
     if not kind:
