@@ -701,51 +701,15 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                         and not is_explanation_followup(question)):
                     last_causes = listed_causes(contract.get("presentation")) or last_causes
 
-    # A requested explanation is generated only from the exact claims already
-    # selected by the asset-scoped evidence pipeline. The local model cannot
-    # create new claims, citations, diagnoses, or customer procedures.
+    # Free-form model paraphrases are disabled: an automatic validator cannot
+    # prove that new explanatory wording is entailed by a cited sentence.
+    # Follow-ups therefore retain exact cited claims and independently retrieved
+    # source statements, without adding generated technical explanations.
     if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
             and last_topic == "causes" and is_explanation_followup(question)):
         explanation_presentation = contract.get("presentation") or {}
-        # Free-form model paraphrases cannot be proven to entail the cited
-        # sentence. Keep exact source claims and retrieved evidence only.
-        explanations = {}
-        explanation_claims = [
-            claim for claim in explanation_presentation.get("supporting_claims", [])
-            if isinstance(claim, dict) and claim.get("kind") in {"possible_cause", "information"}
-        ]
-        if explanation_claims and len(explanations) == len(explanation_claims) and all(
-            claim.get("id") in explanations for claim in explanation_claims
-        ):
-            for claim in explanation_claims:
-                claim["explanation"] = explanations[claim["id"]]
-            for section in explanation_presentation.get("sections", []):
-                for claim in section.get("claims", []):
-                    if isinstance(claim, dict) and claim.get("id") in explanations:
-                        claim["explanation"] = explanations[claim["id"]]
-            explanation_presentation["sections"] = [
-                section for section in explanation_presentation.get("sections", [])
-                if section.get("title") != "Evidence limitation"
-            ]
-            for index, section in enumerate(explanation_presentation["sections"], start=1):
-                section["number"] = index
-            explanation_presentation["message"] = (
-                "Of course. Here is what each documented possibility means in plain language. "
-                "These are possibilities from the approved manual, not a confirmed diagnosis."
-            )
-            explanation_presentation["follow_up_question"] = None
-            contract["presentation"] = explanation_presentation
-            contract["summary"] = explanation_presentation["message"]
-            contract["answer"] = explanation_presentation["message"] + "\n" + "\n".join(
-                claim.get("explanation", claim.get("text", ""))
-                for claim in explanation_claims
-            )
-            local_explainer_used = True
-        else:
-            # Keep the exact source claims and explicit evidence limitation.
-            # Never replace a failed local generation with invented detail.
-            explanation_presentation["follow_up_question"] = None
-            contract["presentation"] = explanation_presentation
+        explanation_presentation["follow_up_question"] = None
+        contract["presentation"] = explanation_presentation
 
     from django.core import signing
     ticket_context = signing.dumps({
