@@ -43,6 +43,7 @@ from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, is_explanation_followup, focused_causal_query, requested_topics,
+    contextualize_fault_category_followup,
     is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response, expand_display_observation_query, fact_fingerprint,
 )
@@ -385,6 +386,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     if selected_cause:
         question = EXPLAIN_CAUSES_QUESTION
         last_topic = "causes"
+    answer_question = (
+        question if selected_cause else
+        contextualize_fault_category_followup(question, history, last_topic)
+    )
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     retrieval_query = expand_display_observation_query(question, retrieval_query)
     # A new, explicit equipment symptom starts a new evidence thread; retain
@@ -546,7 +551,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             )
             local_planner_used = plan is not None
             contract, dialogue = focus_answer(
-                contract, question, last_topic=last_topic,
+                contract, answer_question, last_topic=last_topic,
                 previous_facts=previous_facts, plan=plan,
                 history=history, asked_followups=asked_followups,
             )
@@ -576,7 +581,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 if selected_cause:
                     cause_claims = list(selected_claims)
                 second_query = targeted_retry_query(
-                    question, asset, context, last_topic=last_topic,
+                    answer_question, asset, context, last_topic=last_topic,
                     cause_claims=cause_claims if retry_for_deeper_explanation else (),
                 )
                 if second_query and second_query != retrieval_query:
@@ -604,7 +609,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                             second_interaction, None,
                             retried.get("references", []),
                             conversation_context=context if history else None,
-                            original_question=question,
+                            original_question=answer_question,
                         )
                         if isinstance(next_contract.get("presentation"), dict):
                             next_contract["presentation"]["document_coverage"] = retried.get("document_coverage")
@@ -619,7 +624,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                 last_topic=last_topic, contract=next_contract,
                             )
                             next_contract, next_dialogue = focus_answer(
-                                next_contract, question, last_topic=last_topic,
+                                next_contract, answer_question, last_topic=last_topic,
                                 previous_facts=previous_facts,
                                 plan=next_plan, history=history,
                                 asked_followups=asked_followups,
@@ -681,15 +686,14 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                     contract, _ = focus_on_cause(
                         contract, selected_cause, facts_before, fact_fingerprint)
                 elif contract.get("reason_code") in {None, "NO_RELEVANT_APPROVED_EVIDENCE"}:
-                    no_detail = (
-                        "The approved internal documentation does not contain any further "
-                        "explanation of that cause for this equipment. I won't add technical "
-                        "detail that the documents do not support."
-                    )
+                    # Keep the gap available to internal evidence/ticket handling,
+                    # but do not repeat an uncited explanation-limit paragraph to the customer.
                     contract = {
-                        **contract, "summary": no_detail, "answer": no_detail,
-                        "presentation": {**(contract.get("presentation") or {}),
-                                         "message": no_detail},
+                        **contract,
+                        "presentation": {
+                            **(contract.get("presentation") or {}),
+                            "cause_explanation_unavailable": True,
+                        },
                     }
             if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
                 conflict = code_conflict(contract.get("presentation"), asked_question)
