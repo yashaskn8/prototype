@@ -110,6 +110,24 @@ try {
     }
     if (-not (Test-LocalPort 5176)) { throw "Technician UI did not open port 5176. Inspect $frontendErr." }
 
+    # Exercise the browser-facing Vite proxy with the private technician code.
+    # A listening port alone does not prove that the ticket API is reachable.
+    $technicianCode = (Get-Content -LiteralPath $accessFile -Raw).Trim()
+    try {
+        $queueProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5176/tech-api/tickets/' -Headers @{ Authorization = "Technician $technicianCode" } -Method Get -UseBasicParsing -TimeoutSec 15
+        $queuePayload = $queueProbe.Content | ConvertFrom-Json
+        if ($queueProbe.StatusCode -ne 200 -or $null -eq $queuePayload -or $null -eq $queuePayload.PSObject.Properties['tickets']) {
+            throw 'The technician ticket queue response was empty or invalid.'
+        }
+        Write-Host ('Technician API check: PASS (' + @($queuePayload.tickets).Count + ' authorized tickets visible)') -ForegroundColor Green
+    } catch {
+        throw 'Technician API readiness failed through the browser-facing Vite proxy. Inspect the current backend and frontend error logs before the demo.'
+    } finally {
+        $technicianCode = $null
+        $queuePayload = $null
+        $queueProbe = $null
+    }
+
     Write-Host ''
     Write-Host 'Authorized technician instance is ready.' -ForegroundColor Green
     Write-Host 'Technician UI:  http://127.0.0.1:5176/'
