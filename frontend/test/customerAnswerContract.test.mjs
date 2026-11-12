@@ -125,3 +125,30 @@ test('red-team client URL gate rejects arbitrary query parameters, fragments and
   assert.equal(isTrustedSourceUrl('/demo-api/source/?citation=synthetic'), true);
   assert.equal(isTrustedSourceUrl('/api/customer-support/source/?citation=.compressed.token:signature'), true);
 });
+
+
+test('focused answers preserve a bounded plain-language explanation with its source claim', () => {
+  const p = fixture();
+  p.view_mode = 'focused';
+  p.sections = [{
+    number: 1, title: 'Documented possible causes',
+    claims: [{
+      ...p.sections[0].claims[0],
+      explanation: 'The manual lists this as one possible cause category, not a confirmed fault.',
+    }],
+  }];
+  p.citations[0].url = '/demo-api/source/?citation=synthetic';
+  const result = validateCustomerPresentation(p);
+  assert.equal(result.sections[0].claims[0].explanation,
+    p.sections[0].claims[0].explanation);
+  for (const invalid of [
+    '',
+    'x'.repeat(601),
+    'A short explanation.',
+    'First line.\\nSecond line.',
+  ]) {
+    const changed = structuredClone(p);
+    changed.sections[0].claims[0].explanation = invalid;
+    assert.equal(validateCustomerPresentation(changed), null);
+  }
+});
