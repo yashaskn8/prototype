@@ -58,11 +58,12 @@ class ClaimCategoryIsolationTests(unittest.TestCase):
             "Possible causes:\n"
             "- Communication cable damage or incorrect topology.\n"
             "- [ ] Look for oil residue or other evidence of a refrigerant leak.\n"
+            "- Visible oil residue may indicate a refrigerant leak.\\n"
             "- Inspect the internal wiring for damage.\n"
             "- Low refrigerant charge.\n"
         ))
         self.assertEqual([kind for _text, kind, _start, _end in claims], [
-            "possible_cause", "information", "information", "possible_cause",
+            "possible_cause", "information", "information", "information", "possible_cause",
         ])
         self.assertIn("Look for oil residue", claims[1][0])
         self.assertFalse(_descriptive_cause("[ ] Look for oil residue or evidence of a leak."))
