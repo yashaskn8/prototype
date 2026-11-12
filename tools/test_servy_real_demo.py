@@ -770,8 +770,8 @@ class RealDemoBoundaryTests(unittest.TestCase):
             60, 13, "What possible causes are documented?",
             history[0], history, last_topic="causes", thread_id=thread_id,
         )
-        with patch.dict("sys.modules", modules), \\
-             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \\
+        with patch.dict("sys.modules", modules), \
+             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
              patch.object(demo, "plan_turn", return_value=None), \\
              patch.object(demo, "search_all_approved_documents",
                           side_effect=RuntimeError("synthetic scan unavailable")):
