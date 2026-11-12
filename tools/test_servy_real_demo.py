@@ -772,7 +772,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
         )
         with patch.dict("sys.modules", modules), \
              patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
-             patch.object(demo, "plan_turn", return_value=None), \\
+             patch.object(demo, "plan_turn", return_value=None), \
              patch.object(demo, "search_all_approved_documents",
                           side_effect=RuntimeError("synthetic scan unavailable")):
             demo._answer(
