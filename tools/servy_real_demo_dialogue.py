@@ -962,14 +962,14 @@ def contextualize_fault_category_followup(question, history=(), last_topic=None)
     generic_requests = {
         "causes": re.compile(
             r"^(?:what (?:are )?(?:the )?(?:possible|documented|other|more)? ?causes?"
-            r"(?: (?:are )?documented)?|other causes|more causes)\\??$", re.I,
+            r"(?: (?:are )?documented)?|other causes|more causes)$", re.I,
         ),
         "observations": re.compile(
             r"^(?:what can i (?:safely )?(?:check|observe|report)|"
-            r"what should i (?:safely )?(?:check|observe|report))\\??$", re.I,
+            r"what should i (?:safely )?(?:check|observe|report))$", re.I,
         ),
         "next": re.compile(
-            r"^(?:what (?:next|now|else)|what should i do(?: next)?|next step)\\??$", re.I,
+            r"^(?:what (?:next|now|else)|what should i do(?: next)?|next step)$", re.I,
         ),
     }
     pattern = generic_requests.get(topic)
