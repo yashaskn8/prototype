@@ -86,6 +86,22 @@ class LocalOllamaPlannerTests(TestCase):
         self.assertIn("detailed documented causes explanation", query)
         self.assertIn("sensor control refrigerant system", query)
 
+    def test_detailed_cause_retry_includes_each_already_cited_cause(self):
+        asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
+        context = SimpleNamespace(original_complaint="The VRF outdoor module is not working.")
+        query = targeted_retry_query(
+            "Could you explain each issue in detail?",
+            asset, context, last_topic="causes",
+            cause_claims=[
+                {"source_text": "Operating conditions may affect outdoor-unit operation."},
+                {"source_text": "A sensor or control issue may affect operation."},
+                {"source_text": "A refrigerant-system problem may be involved."},
+            ],
+        )
+        self.assertIn("Operating conditions", query)
+        self.assertIn("sensor or control issue", query)
+        self.assertIn("refrigerant-system problem", query)
+
     def test_targeted_retry_does_not_run_for_unrelated_general_questions(self):
         asset = SimpleNamespace(name="VRF Outdoor Module", model_number="VRF-MODEL")
         context = SimpleNamespace(original_complaint="The VRF outdoor module is not working.")
