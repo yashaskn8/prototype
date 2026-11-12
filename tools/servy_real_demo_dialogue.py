@@ -282,11 +282,13 @@ def conversation_recap(question, history, *, original_complaint=None):
         normalized = clean.casefold().strip(" .!?")
         if not clean or "?" in clean:
             continue
-        if re.fullmatch(
-            r"(?:no|no code|no fault code|no error code|no warning|"
-            r"no code or warning|nothing on (?:the )?display)", normalized
+        if _already_reported_code_absence(clean):
+            # Keep the customer's exact wording, while marking it as a report.
+            item = clean[:140] + " (customer-reported)."
+        elif re.fullmatch(
+            r"(?:it\s+)?(?:still\s+)?(?:runs?|is running|continues? to run)", normalized
         ):
-            item = "No fault code or warning is visible (customer-reported)."
+            item = "The equipment is still running (customer-reported)."
         elif re.fullmatch(r"(?:suddenly|all of a sudden|it started suddenly)", normalized):
             onset_reported = True
             item = "The problem started suddenly (customer-reported)."
@@ -345,8 +347,8 @@ def conversation_recap(question, history, *, original_complaint=None):
         missing.append("which documented fault condition, if any, actually applies")
         lines.append("Still not established: " + "; ".join(missing) + ".")
     lines.append(
-        "The earlier manual citations list possible causes; they do not establish which one "
-        "is responsible for this equipment."
+        "The earlier manual citations list possible causes. They are not a verified diagnosis "
+        "and do not establish which one is responsible for this equipment."
     )
     lines.append(
         "What do you already observe from a safe distance: does the outdoor module appear "
@@ -1419,7 +1421,7 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             acknowledgement = "Thanks — I've recorded that the problem happens " + value + "."
     elif (("fault code" in prompt or "warning" in prompt or "indicator" in prompt)
           and ("display" in prompt or "visible" in prompt or "indicator" in prompt)):
-        if re.fullmatch(r"(?:no|no code|no fault code|no error code|no warning|no code or warning|nothing(?: is)? (?:shown|displayed|visible)|nothing on (?:the )?display)", answer):
+        if re.fullmatch(r"(?:no|no code|no fault code|no error code|no warning|no code or warning|no (?:fault |error )?codes? (?:(?:is|are) )?(?:displayed|shown|visible)|nothing(?: is)? (?:shown|displayed|visible)|nothing on (?:the )?display)", answer):
             kind, value = "display_status", "no visible code or warning"
             acknowledgement = "Thanks — I've recorded that no fault code or warning is visible."
         elif answer in {"yes", "yes there is", "yes a warning", "yes a code"}:
@@ -1434,7 +1436,7 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
         # Backward compatibility for signed chats created before the prompt was
         # corrected. A customer who responds "no code" is still reporting an
         # observation, not selecting or confirming an internal fault category.
-        if re.fullmatch(r"(?:no|no code|no fault code|no error code|no warning|no code or warning|nothing(?: is)? (?:shown|displayed|visible)|nothing on (?:the )?display)", answer):
+        if re.fullmatch(r"(?:no|no code|no fault code|no error code|no warning|no code or warning|no (?:fault |error )?codes? (?:(?:is|are) )?(?:displayed|shown|visible)|nothing(?: is)? (?:shown|displayed|visible)|nothing on (?:the )?display)", answer):
             kind, value = "display_status", "no visible code or warning"
             acknowledgement = "Thanks — I've recorded that no fault code or warning is visible."
     elif "when did you first notice" in prompt:

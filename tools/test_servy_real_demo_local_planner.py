@@ -9,7 +9,9 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from tools import servy_real_demo_local_planner as planner
-from tools.servy_real_demo_dialogue import focus_answer, conversation_recap
+from tools.servy_real_demo_dialogue import (
+    focus_answer, conversation_recap, resolve_pending_followup_reply,
+)
 from tools.test_servy_real_demo_dialogue import contract
 from tools.servy_real_demo_query_plan import targeted_retry_query
 from types import SimpleNamespace
@@ -232,8 +234,19 @@ class LocalOllamaPlannerTests(TestCase):
         history = ["AC is not cooling", "No code is displayed", "It still runs"]
         recap = conversation_recap("Summarize my issue", history)
         self.assertIn("AC is not cooling", recap)
-        self.assertIn("No code is displayed", recap)
+        self.assertIn("No code is displayed (customer-reported)", recap)
+        self.assertIn("still running (customer-reported)", recap)
         self.assertIn("not a verified diagnosis", recap)
         self.assertNotIn("refrigerant leak", recap)
         self.assertIsNone(conversation_recap("What causes it?", history))
         self.assertIsNone(conversation_recap("Summarize my issue", []))
+
+    def test_full_no_code_display_sentence_resolves_the_pending_prompt(self):
+        resolved = resolve_pending_followup_reply(
+            "No code is displayed",
+            "Is a fault code or warning visible on the display?",
+            topic="causes",
+        )
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["kind"], "display_status")
+        self.assertEqual(resolved["value"], "no visible code or warning")
