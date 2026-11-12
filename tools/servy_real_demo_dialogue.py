@@ -487,13 +487,31 @@ def is_contextual_followup(question):
 
 
 def _specific_symptom_supported(question, source_context):
-    """Allow a passage to support only the symptom it actually covers.
+    """Reject generic equipment-failure wording as if it named a fault.
 
-    A multi-symptom question may have evidence for one part and none for
-    another. Keep the matching claim; the response separately states which
-    requested symptoms remain unsupported.
+    "Not working" is a report of failure, not a specific symptom or fault
+    category. When the approved manual organizes causes under named
+    conditions, require the customer to identify one of those conditions
+    before any category-specific cause can be shown.
     """
     q = _words(question)
+    generic_failure = re.search(
+        r"\\b(?:not working|does(?:n'?t| not) work|won'?t work|"
+        r"isn'?t functioning|not functioning|stopped working|not operational)\\b",
+        q, re.I,
+    )
+    explicit_condition = (
+        any(query.search(q) for query, _evidence in SPECIFIC_EVIDENCE.values())
+        or bool(symptom_concepts(q))
+        or bool(re.search(
+            r"\\b(?:communication|address(?:ing)?|high[ -]?pressure|"
+            r"heat[ -]?exchange|low[ -]?pressure|capacity|compressor|"
+            r"inverter|fan|temperature[ -]?sensor|power (?:loss|failure|outage))\\b",
+            q, re.I,
+        ))
+    )
+    if generic_failure and not explicit_condition:
+        return False
     requested = [
         evidence for query, evidence in SPECIFIC_EVIDENCE.values()
         if query.search(q)
