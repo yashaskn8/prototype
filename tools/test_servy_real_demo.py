@@ -354,6 +354,27 @@ class RealDemoBoundaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             demo._load_demo_context(token + "tampered", 60, 13)
 
+    def test_signed_dialogue_state_remembers_previously_asked_questions(self):
+        token = demo._sign_demo_context(
+            60, 13, "What causes the issue?", "The VRF is not cooling.",
+            ["The VRF is not cooling."], last_topic="causes",
+            shown_facts=["a" * 64],
+            asked_followups=["Is a fault code or warning visible on the display?"],
+        )
+        topic, facts, asked = demo._load_demo_dialogue_state(token)
+        self.assertEqual(topic, "causes")
+        self.assertEqual(facts, ["a" * 64])
+        self.assertEqual(asked, ["Is a fault code or warning visible on the display?"])
+
+    def test_signed_dialogue_state_rejects_oversized_or_malformed_question_memory(self):
+        from django.core import signing
+        bad = signing.dumps({
+            "last_topic": "causes", "shown_facts": [],
+            "asked_followups": ["x" * 241],
+        }, salt=demo.DEMO_CONTEXT_SALT)
+        with self.assertRaises(ValueError):
+            demo._load_demo_dialogue_state(bad)
+
     def test_signed_continuation_cannot_be_replayed_in_another_chat(self):
         import uuid
         first_chat = "thread-" + str(uuid.uuid4())
