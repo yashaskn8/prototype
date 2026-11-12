@@ -558,6 +558,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 contract, answer_question, last_topic=last_topic,
                 previous_facts=previous_facts, plan=plan,
                 history=history, asked_followups=asked_followups,
+                allow_cause_information=bool(selected_cause),
             )
             last_topic = dialogue["topic"]
             previous_facts = dialogue["facts"]
@@ -632,6 +633,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                 previous_facts=previous_facts,
                                 plan=next_plan, history=history,
                                 asked_followups=asked_followups,
+                                allow_cause_information=bool(selected_cause),
                             )
                             if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
                                 use_retry = retry_for_missing_evidence
