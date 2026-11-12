@@ -775,6 +775,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
              patch.object(demo, "plan_turn", return_value=None), \
              patch.object(demo, "search_all_approved_documents",
                           side_effect=RuntimeError("synthetic scan unavailable")):
+             patch.object(demo, "find_open_ticket", return_value=None):
             demo._answer(
                 60, "What possible causes are documented?",
                 continuation=continuation, thread_id=thread_id,
