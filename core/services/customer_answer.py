@@ -115,6 +115,8 @@ _SCHEDULE_FACT = re.compile(
     re.I)
 _FACT_QUALIFIER = re.compile(
     r"\b(?:takes? precedence|planning intervals only|adjust intervals)\b", re.I)
+_CAUSE_EXPLANATION_REQUEST = re.compile(
+    r"\b(?:explain|elaborate|break down|describe in detail|more detail|in detail)\b", re.I)
 _CAUSE_QUESTION = re.compile(
     r"\b(?:causes?|reasons?|why|wrong|diagnos\w*|root cause|issues?|problems?|"
     r"malfunction\w*|not working|(?:isn'?t|doesn'?t|won'?t|stopped) work\w*)\b", re.I)
@@ -675,6 +677,10 @@ def build_customer_answer(interaction, session, references, conversation_context
     term_keys = match_keys(terms)
     asked_symptoms = symptom_concepts(raw_user_q) | symptom_concepts(question)
     wants_facts = not _CAUSE_QUESTION.search(raw_user_q) and not _CAUSE_QUESTION.search(question)
+    wants_cause_details = bool(
+        _CAUSE_EXPLANATION_REQUEST.search(raw_user_q)
+        or _CAUSE_EXPLANATION_REQUEST.search(question)
+    )
     asks_frequency = bool(_FREQUENCY_QUESTION.search(raw_user_q))
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
@@ -732,7 +738,7 @@ def build_customer_answer(interaction, session, references, conversation_context
                     if _is_completed_check(text):
                         continue
                     target, kind = procedures, "customer_procedure"
-                elif kind == "information" and wants_facts:
+                elif kind == "information" and (wants_facts or wants_cause_details):
                     # Customer-safe documented fact (for example a maintenance
                     # interval). It must itself answer the question: the
                     # sentence shares a question term, and sentence plus

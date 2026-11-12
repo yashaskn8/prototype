@@ -477,7 +477,13 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             "The previous answer listed " + str(reference["available"])
             + " documented cause(s). Which one should I explain?"
         )
-    recap = conversation_recap(question, history)
+    recap_history = [
+        item.get("text") for item in (getattr(context, "history_turns", None) or [])
+        if isinstance(item, dict) and isinstance(item.get("text"), str)
+    ]
+    recap = conversation_recap(
+        question, recap_history, original_complaint=context.original_complaint,
+    )
     off_topic = out_of_scope_response(question)
     suggestions = []
     local_planner_used = False
@@ -584,7 +590,9 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         # A multi-intent question draws causes and checks from different
         # passages, so it gets the same bounded wider set.
         multi_intent = len(requested_topics(question)) > 1
-        explanation_followup = last_topic == "causes" and is_explanation_followup(question)
+        explanation_followup = (
+            last_topic in {"causes", "documents"} and is_explanation_followup(question)
+        )
         selected_claims = [{"source_text": selected_cause}] if selected_cause else ()
         if selected_cause:
             # Search again for that cause, using the asset, model and complaint.
@@ -649,7 +657,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 contract, answer_question, last_topic=last_topic,
                 previous_facts=previous_facts, plan=plan,
                 history=history, asked_followups=asked_followups,
-                allow_cause_information=bool(selected_cause),
+                allow_cause_information=bool(selected_cause or explanation_followup),
             )
             last_topic = dialogue["topic"]
             previous_facts = dialogue["facts"]
@@ -724,7 +732,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                 previous_facts=previous_facts,
                                 plan=next_plan, history=history,
                                 asked_followups=asked_followups,
-                                allow_cause_information=bool(selected_cause),
+                                allow_cause_information=bool(selected_cause or explanation_followup),
                             )
                             if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
                                 use_retry = retry_for_missing_evidence
@@ -809,7 +817,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     # Follow-ups therefore retain exact cited claims and independently retrieved
     # source statements, without adding generated technical explanations.
     if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
-            and last_topic == "causes" and is_explanation_followup(question)):
+            and last_topic in {"causes", "documents"} and is_explanation_followup(question)):
         explanation_presentation = dict(contract.get("presentation") or {})
         sections = list(explanation_presentation.get("sections") or [])
         has_detail_limit = any(
@@ -831,17 +839,23 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             )
             for section in sections
         )
+        source_claims = explanation_presentation.get("supporting_claims") or []
+        has_explanatory_information = any(
+            isinstance(claim, dict) and claim.get("kind") == "information"
+            for claim in source_claims
+        )
         # A selected cause may be reduced by focus_on_cause() to its exact
-        # source sentence. Keep the missing-detail explanation visible.
-        if explanation_presentation.get("cause_explanation_unavailable") and not has_detail_limit:
+        # source sentence. Newly retrieved cause bullets are not themselves
+        # an explanation of those bullets.
+        if not has_explanatory_information and not has_detail_limit:
             sections.append({
                 "number": len(sections) + 1,
                 "title": "Evidence limitation",
                 "claims": [{
                     "text": (
-                        "The cited approved passages list this as a possible cause "
-                        "but do not contain a separately citable explanation of it. "
-                        "I won't infer technical details that the sources do not state."
+                        "The approved manual lists these as possible causes but does not "
+                        "provide separate explanations for each item. I won't infer technical "
+                        "details that the cited sources do not state."
                     ),
                     "kind": "uncertainty",
                     "evidence_ids": [],

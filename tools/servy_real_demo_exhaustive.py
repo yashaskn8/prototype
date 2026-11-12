@@ -136,10 +136,10 @@ def search_all_approved_documents(*, tenant, customer, asset, question,
         generic_text, re.I))
     if generic_failure and generic_cause_request and not specific_condition:
         from core.services.customer_answer import source_claims
-        # Reserve five query slots for the fault headings below. The initial
-        # dense pass can already contribute several cause snippets; those
-        # must not crowd out a section from the asset-wide cause overview.
-        variants = variants[:3]
+        # Keep the question and original complaint, reserve one query for
+        # each fault-bearing section, then spend remaining slots on retrieved
+        # cause phrases so focused follow-ups can find supporting detail too.
+        variants = variants[:2]
         asset_label = " ".join(str(getattr(asset, "name", "") or "").split())[:90]
         seen_variants = {value.casefold() for value in variants}
         for chunk in candidates:
@@ -150,6 +150,17 @@ def search_all_approved_documents(*, tenant, customer, asset, question,
             if not heading or not re.search(r"\b(?:fault|symptom)\b", heading, re.I):
                 continue
             variant = f"{asset_label} {heading} documented possible causes"
+            if variant.casefold() in seen_variants:
+                continue
+            variants.append(variant)
+            seen_variants.add(variant.casefold())
+            if len(variants) >= MAX_QUERY_VARIANTS:
+                break
+        for claim in list(cause_claims or [])[:8]:
+            source = claim.get("source_text", "") if isinstance(claim, dict) else claim
+            if not isinstance(source, str) or not source.strip():
+                continue
+            variant = " ".join(source.split())[:700]
             if variant.casefold() in seen_variants:
                 continue
             variants.append(variant)

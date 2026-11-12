@@ -5,7 +5,7 @@ import unittest
 from tools.servy_real_demo_dialogue import (
     conversational_turn, fact_fingerprint, focus_answer,
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
-    out_of_scope_response, focused_causal_query, wants_additional,
+    out_of_scope_response, focused_causal_query, wants_additional, conversation_recap,
     is_technician_handoff_request, build_technician_handoff, NO_EVIDENCE,
     contextualize_fault_category_followup, documented_fault_categories,
     resolve_pending_followup_reply, _follow_up,
@@ -128,6 +128,40 @@ class FaultCategoryFollowupTests(unittest.TestCase):
         )
         self.assertEqual(rejected["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(rejected["presentation"]["citations"], [])
+
+
+class ConversationRecapTests(unittest.TestCase):
+    def test_recap_uses_active_customer_reports_not_old_questions(self):
+        result = conversation_recap(
+            "Based on everything I have reported so far, summarize the issue and the evidence still needed.",
+            [
+                "What could cause a high-pressure or heat-exchange fault?",
+                "Can you identify the exact root cause from the information I have provided?",
+                "My VRF outdoor module is not working. What could be the possible reasons?",
+                "No code.",
+            ],
+            original_complaint=(
+                "My VRF outdoor module is not working. What could be the possible reasons?"
+            ),
+        )
+        self.assertIn("VRF outdoor module is not working", result)
+        self.assertIn("No fault code or warning is visible", result)
+        self.assertIn("exact visible behaviour", result)
+        self.assertNotIn("high-pressure or heat-exchange fault", result)
+        self.assertNotIn("Can you identify the exact root cause", result)
+
+    def test_exact_root_cause_request_answers_directly_without_guessing(self):
+        result = conversation_recap(
+            "Can you identify the exact root cause from the information I have provided?",
+            [
+                "My VRF outdoor module is not working. What could be the possible reasons?",
+                "No code.",
+            ],
+            original_complaint="My VRF outdoor module is not working.",
+        )
+        self.assertTrue(result.startswith("Not yet."))
+        self.assertIn("not enough to identify the exact root cause", result)
+        self.assertIn("safe distance", result)
 
 
 class VagueProblemClarificationTests(unittest.TestCase):

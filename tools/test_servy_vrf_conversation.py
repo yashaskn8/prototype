@@ -180,10 +180,31 @@ class VrfConversationTests(unittest.TestCase):
         )
         self.assertTrue(results[2]["presentation"]["cause_explanation_unavailable"])
         self.assertIn(
-            "do not contain a separately citable explanation",
+            "does not provide separate explanations for each item",
             json.dumps(results[2]["presentation"]).lower(),
         )
         self.assertEqual(results[2]["evidence_state"], "PARTIAL")
+
+    def test_explain_each_communication_cause_does_not_repeat_bullets_as_detail(self):
+        results = converse("vrf", [
+            "What causes are documented for a communication or addressing fault?",
+            "What does the approved manual actually say about communication-related faults?",
+            "Explain each documented cause of a communication or addressing fault in detail.",
+        ])
+        answer = results[2]["presentation"]
+        self.assertEqual(results[2]["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertIn(
+            "Evidence limitation",
+            [section["title"] for section in answer["sections"]],
+        )
+        self.assertIn(
+            "do not contain a separately citable explanation",
+            json.dumps(answer).lower(),
+        )
+        self.assertFalse(any(
+            claim.get("kind") == "information"
+            for claim in answer.get("supporting_claims", [])
+        ))
 
     def test_selected_communication_fault_stays_scoped_across_followups(self):
         results = converse("vrf", [

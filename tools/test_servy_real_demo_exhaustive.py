@@ -94,6 +94,10 @@ class ExhaustiveApprovedDocumentScanTests(unittest.TestCase):
             )
         queries = [call.kwargs["evidence_text"] for call in scoring.call_args_list]
         self.assertTrue(any("sensor" in query.casefold() for query in queries))
+        self.assertTrue(any(
+            "outdoor" in query.casefold() and "working" in query.casefold()
+            for query in queries
+        ))
         self.assertGreaterEqual(len(queries), 2)
 
     def test_generic_failure_overview_adds_each_fault_heading_to_scan_queries(self):

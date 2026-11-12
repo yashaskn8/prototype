@@ -233,28 +233,126 @@ def conversational_turn(text):
     return None
 
 
-def conversation_recap(question, history):
-    """Summarize only authenticated customer reports; never invent results."""
+def conversation_recap(question, history, *, original_complaint=None):
+    """Summarize customer-reported facts for the active issue, not old questions."""
     q = _words(question)
-    if not history or not re.search(
+    asks_summary = bool(re.search(
         r"\b(?:summari[sz]e|recap|what (?:have|did) i (?:told|tell|say)|"
         r"what do you (?:know|remember) about (?:my|the) (?:problem|issue)|"
         r"what have we discussed)\b", q
-    ):
+    ))
+    asks_root_cause = bool(re.search(
+        r"\b(?:exact|actual|specific)\s+(?:underlying\s+)?root cause\b"
+        r"|\bidentify\b.{0,50}\broot cause\b", q
+    ))
+    if not (asks_summary or asks_root_cause) or not history:
         return None
-    customer_reports = []
-    for message in [history[0], *history[-3:]]:
-        clean = " ".join(str(message or "").split())[:190]
-        if clean and clean not in customer_reports:
-            customer_reports.append(clean)
-    if not customer_reports:
+
+    def clean_issue_statement(value):
+        text = " ".join(str(value or "").split())
+        if not text:
+            return ""
+        # The original user turn often joins a factual complaint and a question.
+        # Keep only a declarative sentence that actually reports a symptom.
+        for sentence in re.split(r"(?<=[.!])\s+", text):
+            sentence = sentence.strip(" .")
+            if ("?" not in sentence and re.search(
+                r"\b(?:not working|does(?:n't| not) work|won't work|"
+                r"not cooling|not heating|weak airflow|water leak|leaking|"
+                r"unusual noise|vibrat\w*|shut(?:s)? down|stops? unexpectedly)\b",
+                sentence, re.I,
+            )):
+                return sentence[:220]
+        return ""
+
+    complaint = clean_issue_statement(original_complaint)
+    if not complaint:
+        for message in reversed(history):
+            complaint = clean_issue_statement(message)
+            if complaint:
+                break
+    if not complaint:
         return None
-    return (
-        "Here's what you've reported so far: "
-        + " | ".join(customer_reports[:4])
-        + ". These are your reports, not a verified diagnosis. "
-          "Tell me what has changed, or ask about a specific documented cause."
+
+    reported = []
+    onset_reported = False
+    frequency_reported = False
+    for message in history:
+        clean = " ".join(str(message or "").split())
+        normalized = clean.casefold().strip(" .!?")
+        if not clean or "?" in clean:
+            continue
+        if re.fullmatch(
+            r"(?:no|no code|no fault code|no error code|no warning|"
+            r"no code or warning|nothing on (?:the )?display)", normalized
+        ):
+            item = "No fault code or warning is visible (customer-reported)."
+        elif re.fullmatch(r"(?:suddenly|all of a sudden|it started suddenly)", normalized):
+            onset_reported = True
+            item = "The problem started suddenly (customer-reported)."
+        elif re.fullmatch(r"(?:gradually|over time|it started gradually)", normalized):
+            onset_reported = True
+            item = "The problem developed gradually (customer-reported)."
+        elif re.fullmatch(
+            r"(?:intermittently|occasionally|sometimes|on and off|only sometimes)", normalized
+        ):
+            frequency_reported = True
+            item = "The problem happens intermittently (customer-reported)."
+        elif re.fullmatch(
+            r"(?:continuously|constantly|all the time|every time|always)", normalized
+        ):
+            frequency_reported = True
+            item = "The problem happens continuously (customer-reported)."
+        elif re.search(
+            r"\b(?:since\s+\w+|yesterday|today|last night|this morning|"
+            r"\d+\s*(?:minutes?|hours?|days?|weeks?)\s+ago)\b", normalized
+        ):
+            onset_reported = True
+            item = "First noticed: " + clean[:140] + " (customer-reported)."
+        elif re.search(
+            r"\b(?:i think|i suspect|it may be|might be|could be)\b.{0,100}"
+            r"\b(?:communication|address(?:ing)?|high[ -]?pressure|low[ -]?pressure|"
+            r"compressor|inverter|fan|temperature[ -]?sensor)\b", normalized
+        ):
+            item = "A fault category was mentioned as a suspicion, not confirmed: " + clean[:150]
+        else:
+            continue
+        if item not in reported:
+            reported.append(item)
+
+    generic_failure = bool(re.search(
+        r"\b(?:not working|does(?:n't| not) work|won't work)\b", complaint, re.I
+    ))
+    lines = []
+    if asks_root_cause:
+        lines.append(
+            "Not yet. The information provided is not enough to identify the exact root cause."
+        )
+    else:
+        lines.append("Here's the issue summary from the customer reports:")
+    lines.append("Reported issue: " + complaint + ".")
+    lines.extend(reported[:4])
+    if generic_failure:
+        missing = []
+        missing.append(
+            "the exact visible behaviour (for example, whether the module appears inactive, "
+            "starts and stops, or runs while connected indoor units do not cool or heat)"
+        )
+        if not onset_reported:
+            missing.append("when the problem was first noticed")
+        if not frequency_reported:
+            missing.append("whether it happens continuously or intermittently")
+        missing.append("which documented fault condition, if any, actually applies")
+        lines.append("Still not established: " + "; ".join(missing) + ".")
+    lines.append(
+        "The earlier manual citations list possible causes; they do not establish which one "
+        "is responsible for this equipment."
     )
+    lines.append(
+        "What do you already observe from a safe distance: does the outdoor module appear "
+        "inactive, start and stop, or run while the connected indoor units do not cool or heat?"
+    )
+    return "\n".join(lines)
 
 
 
@@ -1774,8 +1872,10 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
 
     detail_limit = None
     if topic == "causes" and is_explanation_followup(question):
-        has_new_detail = any(row[2] not in shown for row in collected)
-        if not has_new_detail:
+        has_explanatory_information = any(
+            claim.get("kind") == "information" for claim, _citation, _fp in collected
+        )
+        if not has_explanatory_information:
             detail_limit = (
                 "The approved passages retrieved for this asset provide only the "
                 "cited high-level categories; they do not contain a separately "
