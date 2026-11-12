@@ -82,6 +82,22 @@ test('focused real-demo answer accepts one directly relevant cited section', () 
   assert.equal(result.citations.length, 1);
 });
 
+test('clarification keeps the exact pending follow-up visible', () => {
+  const p = fixture();
+  p.response_type = 'CLARIFICATION';
+  p.sections = [];
+  p.citations = [];
+  p.message = 'Thanks — I have recorded that no code is visible.';
+  p.clarification_question = 'Did the problem start suddenly or gradually?';
+  p.follow_up_question = p.clarification_question;
+  const result = validateCustomerPresentation(p);
+  assert.equal(result.message, p.message);
+  assert.equal(result.followUpQuestion, p.clarification_question);
+
+  delete p.follow_up_question;
+  assert.equal(validateCustomerPresentation(p).followUpQuestion, p.clarification_question);
+});
+
 test('focused answer rejects unsourced claims, invented headings and arbitrary URLs', () => {
   const p = fixture();
   p.view_mode = 'focused';

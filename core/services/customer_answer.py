@@ -118,6 +118,34 @@ _FACT_QUALIFIER = re.compile(
 _CAUSE_QUESTION = re.compile(
     r"\b(?:causes?|reasons?|why|wrong|diagnos\w*|root cause|issues?|problems?|"
     r"malfunction\w*|not working|(?:isn'?t|doesn'?t|won'?t|stopped) work\w*)\b", re.I)
+
+_GENERIC_FAILURE_QUERY = re.compile(
+    r"\b(?:not working|does(?:n'?t| not) work|won'?t work|"
+    r"isn'?t functioning|not functioning|stopped working|not operational)\b", re.I)
+_SPECIFIC_FAULT_QUERY = re.compile(
+    r"\b(?:not cooling|poor cooling|weak cooling|no cooling|"
+    r"not heating|no heating|weak airflow|low airflow|water leak\w*|"
+    r"leakage|rattl\w*|vibrat\w*|nois\w*|communication fault|"
+    r"address(?:ing)? fault|low[ -]?pressure|high[ -]?pressure|"
+    r"capacity fault|compressor fault|inverter fault|fan fault|"
+    r"temperature[- ]sensor fault|fault code|error code|alarm code)\b", re.I)
+_GENERIC_CAUSE_REQUEST = re.compile(
+    r"\b(?:possible\s+causes?|possible\s+reasons?|causes?|reasons?|"
+    r"issues?|problems?|why)\b", re.I)
+
+
+def is_generic_cause_overview(question):
+    """Identify a cause overview attached to a generic equipment failure.
+
+    This permits conditional source claims under their exact manual headings;
+    it does not turn a vague failure report into a fault-category diagnosis.
+    """
+    value = " ".join(str(question or "").split())
+    return bool(
+        _GENERIC_FAILURE_QUERY.search(value)
+        and _GENERIC_CAUSE_REQUEST.search(value)
+        and not _SPECIFIC_FAULT_QUERY.search(value)
+    )
 _RESTRICTED_LEVELS = frozenset({"PROHIBITED", "TECHNICIAN_ONLY"})
 _FREQUENCY_QUESTION = re.compile(
     r"\b(?:how (?:often|frequently|regularly|many times)|"
@@ -588,6 +616,33 @@ def build_customer_answer(interaction, session, references, conversation_context
         if fact_answer:
             return fact_answer
     sufficient = check_evidence_sufficiency(question, asset, candidates)
+    generic_cause_overview = (
+        is_generic_cause_overview(raw_user_q)
+        or is_generic_cause_overview(question)
+    )
+    evidence_chunks = list(sufficient.grounded_chunks or [])
+    if generic_cause_overview:
+        # A generic failure does not identify one symptom heading. For this
+        # explicit cause-overview request, include score-qualified, selected-
+        # asset, re-authorized chunks only when their own heading is a fault
+        # condition and their source contains a descriptive cause sentence.
+        from django.conf import settings as django_settings
+        minimum_score = float(getattr(django_settings, "SERVY_RAG_MIN_SCORE", 0.055))
+        seen_cause_chunks = {candidate.chunk.id for candidate in evidence_chunks}
+        for candidate in candidates:
+            if (candidate.chunk.id in seen_cause_chunks
+                    or candidate.score < minimum_score
+                    or not candidate.source_verified
+                    or not candidate.equipment_applicable
+                    or candidate.is_quarantined
+                    or not re.search(r"\b(?:fault|symptom)\b", candidate.heading or "", re.I)):
+                continue
+            if any(
+                kind == "possible_cause" and _descriptive_cause(text)
+                for text, kind, _start, _end in source_claims(candidate.text)
+            ):
+                evidence_chunks.append(candidate)
+                seen_cause_chunks.add(candidate.chunk.id)
     causes, observations, procedures, facts, citations = [], [], [], [], []
     terms = set(re.findall(r"[a-z0-9_-]{3,}", normalize_domain_terms(question).casefold())) - _STOPWORDS
     # One matching rule for every answer-stage check: folded word forms, plus
@@ -599,14 +654,20 @@ def build_customer_answer(interaction, session, references, conversation_context
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
     eligible = []
-    if sufficient and not wrong_model and not query_is_control_abuse(question):
-        for result in sufficient.grounded_chunks:
+    if evidence_chunks and (sufficient or generic_cause_overview) and not wrong_model and not query_is_control_abuse(question):
+        for result in evidence_chunks:
             for text, kind, start, end in source_claims(result.text):
                 words = set(re.findall(r"[a-z0-9_-]{3,}", text.casefold())) - _STOPWORDS
                 heading_words = set(re.findall(r"[a-z0-9_-]{3,}", (result.heading or "").casefold()))
                 sentence_overlap = term_keys & match_keys(words)
+                generic_section_cause = bool(
+                    generic_cause_overview
+                    and kind == "possible_cause"
+                    and re.search(r"\b(?:fault|symptom)\b", result.heading or "", re.I)
+                )
                 if (not sentence_overlap and not term_keys & match_keys(heading_words)
-                        and not heading_states_symptom(result.heading, asked_symptoms)):
+                        and not heading_states_symptom(result.heading, asked_symptoms)
+                        and not generic_section_cause):
                     continue
                 span_context = f"{result.heading or ''} {text}"
                 if codes and not codes.issubset(extract_error_codes(span_context)):
@@ -622,17 +683,22 @@ def build_customer_answer(interaction, session, references, conversation_context
                     # A descriptive cause list is information, never an action.
                     if not _descriptive_cause(text):
                         continue
-                    # A cause that shares no word with the question is
-                    # relevant only through its section. Sharing some heading
-                    # words is not enough ("server room temperature" is not
-                    # "uneven room temperatures"): the question must state the
-                    # symptom that heading names.
-                    if not sentence_overlap and not (
-                            heading_states_symptom(result.heading, asked_symptoms)
-                            or question_states_heading(
-                                f"{raw_user_q} {question}", result.heading)):
-                        continue
-                    target = causes
+                    if generic_section_cause:
+                        # The customer asked for a broad overview, not a
+                        # diagnosis. Preserve the source section as a condition.
+                        target = causes
+                    else:
+                        # A cause that shares no word with the question is
+                        # relevant only through its section. Sharing some heading
+                        # words is not enough ("server room temperature" is not
+                        # "uneven room temperatures"): the question must state the
+                        # symptom that heading names.
+                        if not sentence_overlap and not (
+                                heading_states_symptom(result.heading, asked_symptoms)
+                                or question_states_heading(
+                                    f"{raw_user_q} {question}", result.heading)):
+                            continue
+                        target = causes
                 elif level in ("INFORMATIONAL_OBSERVATION", "UNKNOWN_REQUIRES_REVIEW") and _noninvasive_observation(text):
                     if _is_completed_check(text):
                         continue
@@ -698,7 +764,7 @@ def build_customer_answer(interaction, session, references, conversation_context
                                             "text": text, "start": start, "end": end,
                                             "result": result})
         # Preserve up to four separately grounded claims per answer section.
-        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:10]
+        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:20 if generic_cause_overview else 10]
                   + fact_choice
                   + sorted(action_pool, key=lambda i: -_relevance(i))[:8])
         chosen.sort(key=lambda i: i["order"])
@@ -709,7 +775,10 @@ def build_customer_answer(interaction, session, references, conversation_context
             citation["id"] = f"s{len(citations)+1}"
             citations.append(citation)
             target.append({"id": f"c{len(citations)}", "text": ("Possible documented cause: " + text) if kind == "possible_cause" else text,
-                           "source_text": text, "kind": kind, "evidence_ids": [citation["id"]]})
+                           "source_text": text, "kind": kind, "evidence_ids": [citation["id"]],
+                           **({"source_heading": item["result"].heading,
+                               "source_document_title": item["result"].title}
+                              if kind == "possible_cause" else {})})
             if target is facts:
                 target[-1]["disclosure"] = (
                     "maintenance_schedule" if _SCHEDULE_FACT.match(text) else "descriptive")

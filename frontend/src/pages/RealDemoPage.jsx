@@ -495,7 +495,8 @@ export function RealDemoPage() {
                                 {({
                                   DIAGNOSTIC_GUIDANCE: 'Cited answer',
                                   TECHNICIAN_HANDOFF: 'Technician handoff',
-                                  CLARIFICATION: 'Quick question',
+                                  CLARIFICATION: message.data?.reason_code === 'CUSTOMER_REPORT_CAPTURED'
+                                    ? 'Customer detail captured' : 'Clarification',
                                   INSUFFICIENT_EVIDENCE: message.data?.reason_code === 'OUT_OF_SCOPE_QUERY'
                                     ? 'Outside manual scope' : 'More evidence needed',
                                   ESCALATION_REQUIRED: 'Safety notice',
@@ -540,16 +541,38 @@ export function RealDemoPage() {
                               presentation={message.data.presentation}
                               loadSource={url => call(url, token)}
                             /> : <p>{message.data?.message || 'No response is available.'}</p>}
+                            {message.data?.reason_code === 'CUSTOMER_REPORT_CAPTURED' && (
+                              <p className="real-demo-dialogue-meta">
+                                This is a conversation-state acknowledgement, not a new knowledge-base answer or a diagnosis. The next follow-up question is shown above.
+                              </p>
+                            )}
                             {message.data?.response_type === 'DIAGNOSTIC_GUIDANCE' && (
                               <details className="real-demo-dialogue-meta">
                                 <summary>How this answer was prepared</summary>
                                 <p>The technical statements are drawn from approved company sources.
-                                  {message.data.dialogue_planner === 'local-ollama-explainer'
-                                    ? ' A local language model rewrote the cited statements in plain language; the source claims and citations remained fixed.'
+                                  {message.data.engine === 'source-structured-extractive'
+                                    ? ' The displayed technical claims are extracted from authorized passages and linked to exact citations; a generative language model did not rewrite them.'
                                     : message.data.dialogue_planner === 'local-ollama-structured'
-                                      ? ' A local language model helped organize the conversation.'
-                                      : ' The response was organized without a generative language model.'}
+                                      ? ' A local language model helped select the order of source-backed claims and a pre-approved follow-up.'
+                                      : ' No generative language model rewrote the technical claims.'}
                                 </p>
+                                <p>
+                                  Retrieval: {message.data.retrieval_attempts ?? 0} pass(es)
+                                  {message.data.retrieval_backend ? ' via ' + message.data.retrieval_backend : ''}.
+                                  {' '}Reranking: {message.data.reranker_applied ? 'applied' : 'not applied'}.
+                                  {' '}Citation-backed passages shown: {message.data.presentation?.citations?.length ?? message.data.citations?.length ?? 0}.
+                                </p>
+                                {message.data.presentation?.document_coverage && (
+                                  <p>
+                                    Approved-document scan: {message.data.presentation.document_coverage.scan_completed === false
+                                      ? 'not completed; no complete-coverage claim is made.'
+                                      : (message.data.presentation.document_coverage.documents_searched ?? 0) + ' of ' +
+                                        (message.data.presentation.document_coverage.approved_documents ?? 0) +
+                                        ' approved documents; ' +
+                                        (message.data.presentation.document_coverage.passages_searched ?? 0) +
+                                        ' passages searched.'}
+                                  </p>
+                                )}
                               </details>
                             )}
                             {Array.isArray(message.data?.clarification_options)

@@ -95,7 +95,15 @@ export function validateCustomerPresentation(value) {
     const safeCitation = citation && typeof citation.url === 'string'
       && isTrustedSourceUrl(citation.url)
       && typeof citation.title === 'string' ? citation : null;
-    return { sections: [], citations: safeCitation ? [safeCitation] : [], hazard, message, onlineResearch, documentCoverage };
+    const followUp = value.response_type === 'CLARIFICATION'
+      ? (typeof value.follow_up_question === 'string' && value.follow_up_question.trim()
+        ? value.follow_up_question : value.clarification_question)
+      : null;
+    return {
+      sections: [], citations: safeCitation ? [safeCitation] : [], hazard, message,
+      followUpQuestion: typeof followUp === 'string' ? followUp.slice(0, 240) : null,
+      onlineResearch, documentCoverage,
+    };
   }
   const focused = value.view_mode === 'focused';
   if (!Array.isArray(value.sections) ||

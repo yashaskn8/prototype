@@ -114,6 +114,43 @@ def search_all_approved_documents(*, tenant, customer, asset, question,
         return {"references": [], "coverage": coverage}
 
     variants = _query_variants(question, original_complaint, cause_claims)
+    # A generic "not working / possible reasons" request does not identify a
+    # single fault heading. Add a bounded query for each cause-bearing section
+    # in this asset's approved source set.
+    generic_text = " ".join(str(value or "") for value in (question, original_complaint))
+    generic_failure = bool(re.search(
+        r"\b(?:not working|does(?:n'?t| not) work|won't work|"
+        r"isn't functioning|not functioning|stopped working|not operational)\b",
+        generic_text, re.I))
+    generic_cause_request = bool(re.search(
+        r"\b(?:possible\s+causes?|possible\s+reasons?|causes?|reasons?|"
+        r"issues?|problems?|why)\b", generic_text, re.I))
+    specific_condition = bool(re.search(
+        r"\b(?:not cooling|poor cooling|weak cooling|no cooling|"
+        r"not heating|no heating|weak airflow|low airflow|water leak\w*|"
+        r"leakage|rattl\w*|vibrat\w*|nois\w*|communication fault|"
+        r"address(?:ing)? fault|low[ -]?pressure|high[ -]?pressure|"
+        r"capacity fault|compressor fault|inverter fault|fan fault|"
+        r"temperature[- ]sensor fault|fault code|error code|alarm code)\b",
+        generic_text, re.I))
+    if generic_failure and generic_cause_request and not specific_condition:
+        from core.services.customer_answer import source_claims
+        asset_label = " ".join(str(getattr(asset, "name", "") or "").split())[:90]
+        seen_variants = {value.casefold() for value in variants}
+        for chunk in candidates:
+            if not any(kind == "possible_cause"
+                       for _text, kind, _start, _end in source_claims(chunk.text)):
+                continue
+            heading = " ".join(str(chunk.heading or "").split())[:100]
+            if not heading or not re.search(r"\b(?:fault|symptom)\b", heading, re.I):
+                continue
+            variant = f"{asset_label} {heading} documented possible causes"
+            if variant.casefold() in seen_variants:
+                continue
+            variants.append(variant)
+            seen_variants.add(variant.casefold())
+            if len(variants) >= MAX_QUERY_VARIANTS:
+                break
     if not variants:
         coverage["complete"] = False
         coverage["note"] = (

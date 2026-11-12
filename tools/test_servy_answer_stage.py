@@ -288,6 +288,28 @@ class ParaphraseTests(unittest.TestCase):
                 self.assertEqual(set(r.kinds), {"possible_cause"})
                 self.assertIn("not", r.message.casefold())   # possibility, not diagnosis
 
+    def test_generic_vrf_failure_returns_cited_causes_grouped_by_manual_heading(self):
+        r = ask(
+            "vrf",
+            "My VRF outdoor module is not working. What could be the possible reasons?",
+        )
+        self.assertEqual(r.type, "DIAGNOSTIC_GUIDANCE")
+        self.assertTrue(r.texts)
+        self.assertEqual(set(r.kinds), {"possible_cause"})
+        self.assertEqual(
+            {heading for _title, heading in r.cited},
+            {
+                "2. COMMUNICATION OR ADDRESSING FAULT",
+                "3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT",
+                "4. LOW-PRESSURE OR CAPACITY FAULT",
+                "5. COMPRESSOR OR INVERTER FAULT",
+                "6. FAN OR TEMPERATURE-SENSOR FAULT",
+            },
+        )
+        shown = r.raw["presentation"]["supporting_claims"]
+        self.assertTrue(all(claim["text"].startswith("Under ") for claim in shown))
+        self.assertIn("none is a confirmed diagnosis", r.message)
+
     def test_superficial_word_overlap_is_not_evidence(self):
         for asset, question in (
             ("split", "Why is the cold storage room on a different circuit?"),

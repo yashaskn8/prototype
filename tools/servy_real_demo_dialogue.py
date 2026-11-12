@@ -554,6 +554,26 @@ def is_contextual_followup(question):
     return False
 
 
+def is_generic_cause_overview(question):
+    """True only for a possible-cause request attached to a generic failure."""
+    q = _words(question)
+    return bool(
+        re.search(
+            r"\b(?:not working|does(?:n'?t| not) work|won't work|"
+            r"isn't functioning|not functioning|stopped working|not operational)\b", q)
+        and re.search(
+            r"\b(?:possible\s+causes?|possible\s+reasons?|causes?|reasons?|"
+            r"issues?|problems?|why)\b", q)
+        and not re.search(
+            r"\b(?:not cooling|poor cooling|weak cooling|no cooling|"
+            r"not heating|no heating|weak airflow|low airflow|water leak\w*|"
+            r"leakage|rattl\w*|vibrat\w*|nois\w*|communication fault|"
+            r"address(?:ing)? fault|low[ -]?pressure|high[ -]?pressure|"
+            r"capacity fault|compressor fault|inverter fault|fan fault|"
+            r"temperature[- ]sensor fault|fault code|error code|alarm code)\b", q)
+    )
+
+
 def _specific_symptom_supported(question, source_context, heading=""):
     """Require a named VRF fault to match the manual section being cited.
 
@@ -1400,6 +1420,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         topic = plan["intent"]
     topics = _requested_topics(question, topic)
     focus = _FocusPlan(question)
+    generic_cause_overview = topic == "causes" and is_generic_cause_overview(question)
     allowed = (frozenset().union(*(_match_kinds(item) for item in topics))
                if not off_topic else frozenset())
     if (topic == "causes" and is_explanation_followup(question)
@@ -1480,7 +1501,12 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         )
         # The document's own qualification of a schedule accompanies that
         # schedule entry; it is not required to name the asked component.
-        if not _is_schedule_qualifier(claim) and (
+        generic_section_cause = bool(
+            generic_cause_overview
+            and claim.get("kind") == "possible_cause"
+            and re.search(r"\b(?:fault|symptom)\b", citation.get("heading") or "", re.I)
+        )
+        if not _is_schedule_qualifier(claim) and not generic_section_cause and (
                 not _specific_symptom_supported(
                     focus.relevant, source_context, citation.get("heading") or "")
                 or not focus.accepts(claim, citation)):
@@ -1524,14 +1550,17 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
 
     # For a specific hypothesis ("could X explain Y?") rank the claim that
     # states X first; ties keep the authorized source order. Never filters.
-    claim_limit = sum(10 if item == "causes" else 4 for item in topics)
+    claim_limit = (20 if generic_cause_overview
+                   else sum(10 if item == "causes" else 4 for item in topics))
     if focus.hypothesis is not None:
         collected.sort(key=lambda row: -focus.relevance(row[0]))
     collected = collected[:claim_limit]
 
     # A local model may rank/deselect permitted source IDs but can never add
     # a claim absent from the server-authorized candidate collection.
-    if isinstance(plan, dict) and not (topic == "causes" and is_explanation_followup(question)):
+    if isinstance(plan, dict) and not (
+            topic == "causes" and (is_explanation_followup(question) or generic_cause_overview)
+    ):
         chosen = plan.get("claim_ids")
         if isinstance(chosen, list) and chosen:
             rank = {id_: index for index, id_ in enumerate(chosen) if isinstance(id_, str)}
@@ -1582,7 +1611,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     style = "direct"
     if isinstance(plan, dict):
         from tools.servy_real_demo_local_planner import FOLLOW_UPS, STYLES
-        if (not is_explanation_followup(question)
+        if (not generic_cause_overview
+                and not is_explanation_followup(question)
                 and plan.get("follow_up") in FOLLOW_UPS[topic]
                 and _words(plan["follow_up"]) not in {
                     _words(item) for item in asked_followups if isinstance(item, str)
@@ -1601,6 +1631,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     sectioned_observations = False
     for source_claim, citation, _fingerprint in collected:
         claim = dict(source_claim)
+        if generic_cause_overview and claim.get("kind") == "possible_cause":
+            heading = re.sub(r"^\s*\d+[.)]\s*", "", str(citation.get("heading") or ""))
+            heading = re.sub(r"^symptom\s*:\s*", "", heading, flags=re.I).strip()
+            if heading:
+                claim["text"] = "Under " + heading.capitalize() + ": " + claim["text"]
         if claim.get("kind") == "observation":
             claim["text"] = _focused_observation_text(
                 claim["source_text"], question,
@@ -1622,6 +1657,12 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     # Variation is limited to nontechnical connective language. No source
     # facts or customer-approved procedures can be generated by a model.
     lead = LEAD[topic]
+    if generic_cause_overview:
+        lead = (
+            "The approved manuals list these possible causes under their own fault-condition "
+            "headings. Because “not working” does not identify which condition applies, "
+            "each item is conditional; none is a confirmed diagnosis."
+        )
     # Vary only connective language. No model is allowed to invent a cause.
     if topic == "causes" and previous_facts and wants_additional(question):
         lead = "Here are additional documented possibilities, if any. None confirms a diagnosis."

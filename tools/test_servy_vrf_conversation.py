@@ -85,28 +85,30 @@ class VrfConversationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.first, cls.second, cls.third = converse("vrf", VRF_TURNS)
 
-    def test_turn_one_does_not_claim_causes_the_citations_do_not_establish(self):
+    def test_turn_one_returns_cited_conditional_causes_not_only_fault_headings(self):
         r = self.first
         presentation = r["presentation"]
-        self.assertEqual(r["response_type"], "INSUFFICIENT_EVIDENCE")
-        self.assertNotIn("lists these possibilities", presentation["message"])
-        self.assertEqual(presentation.get("supporting_claims"), [])
-        self.assertEqual(r["citations"], [])
+        self.assertEqual(r["response_type"], "DIAGNOSTIC_GUIDANCE")
+        claims = presentation.get("supporting_claims") or []
+        self.assertTrue(claims)
+        self.assertTrue(all(claim["kind"] == "possible_cause" for claim in claims))
+        self.assertTrue(r["citations"])
+        self.assertIn("none is a confirmed diagnosis", presentation["message"])
+        self.assertTrue(all(claim["text"].startswith("Under ") for claim in claims))
+        self.assertTrue(all(claim["evidence_ids"] for claim in claims))
         dump = json.dumps(presentation)
-        self.assertNotIn("qualified VRF/HVAC", dump)          # a warning is not a cause
+        self.assertNotIn("qualified VRF/HVAC", dump)
         self.assertNotIn("Exact alarm definitions", dump)
 
-    def test_turn_one_states_the_limit_and_asks_one_question_from_the_manual(self):
+    def test_turn_one_asks_for_a_customer_visible_observation_after_the_cited_overview(self):
         r = self.first
-        message = r["presentation"]["message"]
-        self.assertIn("does not list causes for the problem as you described it", message)
-        for condition in VRF_CONDITIONS:
-            self.assertIn(condition, message)
-        self.assertEqual(message.count("?"), 1)
-        self.assertTrue(message.endswith(CATEGORY_QUESTION))
-        self.assertEqual(r["reason_code"], "NEEDS_SYMPTOM_CLARIFICATION")
-        # A clarification is not yet an escalation; the ticket button remains.
-        self.assertIsNone(r["issue_assignment"])
+        presentation = r["presentation"]
+        self.assertIn("none is a confirmed diagnosis", presentation["message"])
+        self.assertEqual(
+            presentation.get("follow_up_question"),
+            "Is a fault code or warning visible on the display?",
+        )
+        self.assertNotIn("Which of these documented conditions", presentation["message"])
         self.assertTrue(r["ticket_context"])
 
     def test_listed_conditions_are_the_manual_cause_section_headings(self):
@@ -131,18 +133,17 @@ class VrfConversationTests(unittest.TestCase):
             self.assertIn(source, chunk.text)
             self.assertFalse(RESTRICTED.search(text), text)
 
-    def test_turn_three_keeps_context_and_does_not_repeat_the_question(self):
+    def test_turn_three_keeps_context_and_does_not_fall_back_to_a_category_picker(self):
         r = self.third
-        message = r["presentation"]["message"]
-        self.assertNotIn(CATEGORY_QUESTION, message)
-        self.assertNotIn("What are you actually observing", message)
-        self.assertIn("I won't guess a cause", message)
-        self.assertIn("Communication or addressing fault", message)
-        self.assertEqual(r["presentation"].get("supporting_claims"), [])
-        block = r["issue_assignment"]
-        self.assertEqual(block["status"], "AWAITING_CUSTOMER_CONFIRMATION")
-        self.assertIn("VRF Outdoor Module", block["description"])
-        self.assertIn("not working", block["description"])
+        self.assertNotIn("Which of these documented conditions", r["presentation"]["message"])
+        if r["response_type"] == "DIAGNOSTIC_GUIDANCE":
+            self.assertTrue(r["citations"])
+            self.assertTrue(any(
+                claim["kind"] == "possible_cause"
+                for claim in r["presentation"].get("supporting_claims", [])
+            ))
+        else:
+            self.assertEqual(r["presentation"].get("supporting_claims"), [])
 
     def test_exact_customer_wording_clarifies_then_answers_communication_causes(self):
         results = converse("vrf", [
@@ -151,15 +152,18 @@ class VrfConversationTests(unittest.TestCase):
             "Explain the second documented cause of the communication or addressing fault. What does the approved manual say, and what does it not establish?",
         ])
         first = results[0]
-        self.assertEqual(first["response_type"], "INSUFFICIENT_EVIDENCE")
-        self.assertEqual(first["citations"], [])
+        self.assertEqual(first["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertTrue(first["citations"])
         first_message = first["presentation"]["message"]
-        self.assertIn("does not list causes for the problem as you described it", first_message)
-        for condition in VRF_CONDITIONS:
-            self.assertIn(condition, first_message)
-        self.assertEqual(first_message.count("?"), 1)
-        self.assertTrue(first_message.endswith(CATEGORY_QUESTION))
-        self.assertIsNone(first["issue_assignment"])
+        self.assertIn("none is a confirmed diagnosis", first_message)
+        self.assertTrue(all(
+            claim["text"].startswith("Under ")
+            for claim in first["presentation"]["supporting_claims"]
+        ))
+        self.assertEqual(
+            first["presentation"]["follow_up_question"],
+            "Is a fault code or warning visible on the display?",
+        )
 
         rows = _shown(results[1])
         self.assertEqual([r[3] for r in rows], [
@@ -257,10 +261,15 @@ class VrfConversationTests(unittest.TestCase):
             "Intermittently.",
         ])
 
-        first_message = results[0]["presentation"]["message"]
-        self.assertTrue(first_message.endswith(CATEGORY_QUESTION))
-        self.assertIn("You do not need to identify an internal fault category",
-                      first_message)
+        first = results[0]
+        first_message = first["presentation"]["message"]
+        self.assertEqual(first["response_type"], "DIAGNOSTIC_GUIDANCE")
+        self.assertTrue(first["citations"])
+        self.assertIn("none is a confirmed diagnosis", first_message)
+        self.assertEqual(
+            first["presentation"]["follow_up_question"],
+            "Is a fault code or warning visible on the display?",
+        )
         self.assertNotIn("Which of these documented conditions", first_message)
 
         no_code = results[1]

@@ -96,6 +96,42 @@ class ExhaustiveApprovedDocumentScanTests(unittest.TestCase):
         self.assertTrue(any("sensor" in query.casefold() for query in queries))
         self.assertGreaterEqual(len(queries), 2)
 
+    def test_generic_failure_overview_adds_each_fault_heading_to_scan_queries(self):
+        tenant, customer, asset, docs, _ = self._fixture("VRF Outdoor Module")
+        headings = [
+            "2. COMMUNICATION OR ADDRESSING FAULT",
+            "3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT",
+            "4. LOW-PRESSURE OR CAPACITY FAULT",
+            "5. COMPRESSOR OR INVERTER FAULT",
+            "6. FAN OR TEMPERATURE-SENSOR FAULT",
+        ]
+        chunks = []
+        for index, heading in enumerate(headings):
+            document = docs[index % len(docs)]
+            chunks.append(SimpleNamespace(
+                id=2000 + index, document_id=document.id, tenant_id=tenant.id,
+                text="Possible causes:\n- Communication cable damage or incorrect topology.",
+                heading=heading, document=document, is_quarantined=False,
+            ))
+        with patch("core.services.knowledge_scope.get_applicable_knowledge_queryset",
+                   return_value=_DocumentQuery(docs)), \
+             patch("core.services.retriever._knowledge_candidates", return_value=chunks), \
+             patch("core.services.retriever._sparse_score_candidates", return_value=[]) as scoring, \
+             patch("core.services.retriever.get_serving_config", return_value=object()), \
+             patch("core.services.vectors.embed_text", side_effect=lambda _text: {"v": 1}), \
+             patch("core.services.identifiers.extract_identifiers", return_value=set()), \
+             patch("core.services.customer_isolation.is_verified_real_document", return_value=True), \
+             patch("core.services.content_safety.detect_document_prompt_injection", return_value=False):
+            scan.search_all_approved_documents(
+                tenant=tenant, customer=customer, asset=asset,
+                question="My VRF outdoor module is not working. What could be the possible reasons?",
+                original_complaint="My VRF outdoor module is not working. What could be the possible reasons?",
+            )
+        queries = [call.kwargs["evidence_text"].casefold() for call in scoring.call_args_list]
+        for heading in headings:
+            self.assertTrue(any(heading.casefold() in query for query in queries), heading)
+
+
     def test_approved_document_without_chunks_marks_coverage_incomplete(self):
         tenant, customer, asset, docs, chunks = self._fixture("VRF Outdoor Module")
         docs.append(SimpleNamespace(
