@@ -29,6 +29,7 @@ from tools.servy_real_demo_index_review import (
 )
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
+from tools.servy_real_demo_explainer import explain_claims
 from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
@@ -191,25 +192,30 @@ def _load_demo_context(token, asset_id, customer_id, thread_id=None):
 def _load_demo_dialogue_state(token):
     """Restore only server-signed, bounded UI dialogue preferences."""
     if not token:
-        return None, []
+        return None, [], []
     from django.core import signing
     state = signing.loads(token, salt=DEMO_CONTEXT_SALT, max_age=DEMO_CONTEXT_MAX_AGE)
     topic = state.get("last_topic")
     facts = state.get("shown_facts", [])
+    asked = state.get("asked_followups", [])
     if (topic not in TOPICS and topic is not None
             or not isinstance(facts, list)
             or len(facts) > 24
             or any(not isinstance(item, str)
                    or len(item) != 64
                    or any(ch not in "0123456789abcdef" for ch in item)
-                   for item in facts)):
+                   for item in facts)
+            or not isinstance(asked, list)
+            or len(asked) > 8
+            or any(not isinstance(item, str) or not item.strip() or len(item) > 240
+                   for item in asked)):
         raise ValueError("Invalid signed dialogue state")
-    return topic, facts
+    return topic, facts, asked
 
 
 def _sign_demo_context(asset_id, customer_id, question, first, history,
                        hazard=False, last_topic=None, shown_facts=None,
-                       thread_id=None):
+                       asked_followups=None, thread_id=None):
     from django.core import signing
     recent = (history + [question[:DEMO_CONTEXT_TEXT_LIMIT]])[-DEMO_CONTEXT_MAX_TURNS:]
     return signing.dumps({
@@ -221,6 +227,7 @@ def _sign_demo_context(asset_id, customer_id, question, first, history,
         "hazard": bool(hazard),
         "last_topic": last_topic if last_topic in TOPICS else None,
         "shown_facts": list(shown_facts or [])[-24:],
+        "asked_followups": list(asked_followups or [])[-8:],
     }, salt=DEMO_CONTEXT_SALT, compress=True)
 
 
@@ -286,7 +293,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         raise ValueError("Invalid conversation thread identity")
     original, history, earlier_hazard = _load_demo_context(
         continuation, asset_id, customer.id, thread_id=thread_id)
-    last_topic, previous_facts = _load_demo_dialogue_state(continuation)
+    last_topic, previous_facts, asked_followups = _load_demo_dialogue_state(continuation)
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     retrieval_query = expand_display_observation_query(question, retrieval_query)
     # A new, explicit equipment symptom starts a new evidence thread; retain
@@ -297,6 +304,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             and not out_of_scope_response(question)):
         previous_facts = []
         last_topic = None
+        asked_followups = []
     current_hazard, hazard_warning = check_for_safety_hazard(question)
     small_talk = conversational_turn(question)
     ambiguous_reply = (followup_clarification(question, history)
@@ -305,6 +313,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     off_topic = out_of_scope_response(question)
     suggestions = []
     local_planner_used = False
+    local_explainer_used = False
     retrieval_attempts = 0
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
@@ -424,10 +433,11 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             contract, dialogue = focus_answer(
                 contract, question, last_topic=last_topic,
                 previous_facts=previous_facts, plan=plan,
-                history=history,
+                history=history, asked_followups=asked_followups,
             )
             last_topic = dialogue["topic"]
             previous_facts = dialogue["facts"]
+            asked_followups = dialogue.get("asked_followups", asked_followups)
             suggestions = dialogue["suggestions"]
 
             # Conditional agentic retrieval: at most ONE additional query.
@@ -481,6 +491,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                 next_contract, question, last_topic=last_topic,
                                 previous_facts=previous_facts,
                                 plan=next_plan, history=history,
+                                asked_followups=asked_followups,
                             )
                             if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
                                 use_retry = retry_for_missing_evidence
@@ -518,7 +529,52 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                                     local_planner_used = next_plan is not None
                                     last_topic = next_dialogue["topic"]
                                     previous_facts = next_dialogue["facts"]
+                                    asked_followups = next_dialogue.get("asked_followups", asked_followups)
                                     suggestions = next_dialogue["suggestions"]
+
+    # A requested explanation is generated only from the exact claims already
+    # selected by the asset-scoped evidence pipeline. The local model cannot
+    # create new claims, citations, diagnoses, or customer procedures.
+    if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
+            and last_topic == "causes" and is_explanation_followup(question)):
+        explanation_presentation = contract.get("presentation") or {}
+        explanations = explain_claims(question, explanation_presentation)
+        explanation_claims = [
+            claim for claim in explanation_presentation.get("supporting_claims", [])
+            if isinstance(claim, dict) and claim.get("kind") in {"possible_cause", "information"}
+        ]
+        if explanation_claims and len(explanations) == len(explanation_claims) and all(
+            claim.get("id") in explanations for claim in explanation_claims
+        ):
+            for claim in explanation_claims:
+                claim["explanation"] = explanations[claim["id"]]
+            for section in explanation_presentation.get("sections", []):
+                for claim in section.get("claims", []):
+                    if isinstance(claim, dict) and claim.get("id") in explanations:
+                        claim["explanation"] = explanations[claim["id"]]
+            explanation_presentation["sections"] = [
+                section for section in explanation_presentation.get("sections", [])
+                if section.get("title") != "Evidence limitation"
+            ]
+            for index, section in enumerate(explanation_presentation["sections"], start=1):
+                section["number"] = index
+            explanation_presentation["message"] = (
+                "Of course. Here is what each documented possibility means in plain language. "
+                "These are possibilities from the approved manual, not a confirmed diagnosis."
+            )
+            explanation_presentation["follow_up_question"] = None
+            contract["presentation"] = explanation_presentation
+            contract["summary"] = explanation_presentation["message"]
+            contract["answer"] = explanation_presentation["message"] + "\\n" + "\\n".join(
+                claim.get("explanation", claim.get("text", ""))
+                for claim in explanation_claims
+            )
+            local_explainer_used = True
+        else:
+            # Keep the exact source claims and explicit evidence limitation.
+            # Never replace a failed local generation with invented detail.
+            explanation_presentation["follow_up_question"] = None
+            contract["presentation"] = explanation_presentation
 
     from django.core import signing
     ticket_context = signing.dumps({
@@ -562,11 +618,13 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         # continuation exactly unchanged, including its customer/asset scope.
         "continuation": continuation if off_topic is not None else _sign_demo_context(
             asset_id, customer.id, question, original, history, hazard=is_hazard,
-            last_topic=last_topic, shown_facts=previous_facts, thread_id=thread_id,
+            last_topic=last_topic, shown_facts=previous_facts,
+            asked_followups=asked_followups, thread_id=thread_id,
         ),
         "conversation_turn": len(history) + 1,
         "dialogue_planner": (
             "local-handoff-checklist" if contract.get("engine") == "local-dialogue-handoff"
+            else "local-ollama-explainer" if local_explainer_used
             else "local-ollama-structured" if local_planner_used
             else "deterministic-grounded"
         ),
