@@ -126,6 +126,7 @@ class ExhaustiveApprovedDocumentScanTests(unittest.TestCase):
                 tenant=tenant, customer=customer, asset=asset,
                 question="My VRF outdoor module is not working. What could be the possible reasons?",
                 original_complaint="My VRF outdoor module is not working. What could be the possible reasons?",
+                cause_claims=[{"source_text": "Retrieved possible cause " + str(i)} for i in range(8)],
             )
         queries = [call.kwargs["evidence_text"].casefold() for call in scoring.call_args_list]
         for heading in headings:
