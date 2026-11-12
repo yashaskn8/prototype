@@ -1,6 +1,18 @@
 # Reopen the existing localhost-only, read-only real-data demo.
 # No migrations, seeding, account creation, or company-data changes.
 param([switch]$Watch, [switch]$NoWatch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
+$environmentNames = @(
+    'LOCALAPPDATA', 'SERVY_LOCAL_TICKET_DB_PATH', 'SERVY_REAL_DEMO_MODE', 'DJANGO_DEBUG',
+    'SERVY_LLM_PROVIDER', 'SERVY_REAL_DEMO_DIALOGUE_MODE', 'SERVY_REAL_DEMO_CHAT_MODEL',
+    'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'SERVY_ALLOW_REMOTE_LLM',
+    'SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES', 'VITE_SERVY_REAL_DEMO'
+)
+$originalEnvironment = @{}
+foreach ($name in $environmentNames) {
+    $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+
+try {
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
@@ -216,10 +228,41 @@ if (!(Test-LocalPort 5175)) {
 
 Write-Output 'Real-data demo ready: http://127.0.0.1:5175/'
 Write-Output ('Enter the separate code from: ' + $accessFile)
+
+# Verify the browser-facing Vite proxy and the authenticated customer API, not
+# just open TCP ports. This also emits a safe HTTP 200 entry in the backend log.
+$demoToken = (Get-Content -LiteralPath $accessFile -Raw).Trim()
+try {
+    $inventoryProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/inventory/' -Headers @{ Authorization = "Demo $demoToken" } -Method Get -UseBasicParsing -TimeoutSec 30
+    $inventoryPayload = $inventoryProbe.Content | ConvertFrom-Json
+    if ($inventoryProbe.StatusCode -ne 200 -or @($inventoryPayload.assets).Count -lt 1) {
+        throw 'The authenticated inventory response was empty or invalid.'
+    }
+    Write-Output ('Customer RAG API check: PASS (' + @($inventoryPayload.assets).Count + ' authorized assets)')
+} catch {
+    throw 'Customer RAG API readiness failed through the browser-facing Vite proxy. Inspect startup.err and vite.err before the demo.'
+} finally {
+    $demoToken = $null
+    $inventoryPayload = $null
+    $inventoryProbe = $null
+}
 if (-not $NoWatch) {
     $availableLogs = @($activityLogPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     Write-Output ''
     Write-Output 'Live customer RAG logs: backend HTTP statuses and Vite development-server activity.'
     Write-Output 'Press Ctrl+C to close this log viewer only; the backend and frontend processes remain running.'
-    Get-Content -Path $availableLogs -Tail 15 -Wait
+    if ($availableLogs.Count -gt 0) {
+        $missingLogs = @($activityLogPaths | Where-Object { !(Test-Path -LiteralPath $_ -PathType Leaf) })
+        if ($missingLogs.Count -gt 0) {
+            Write-Warning ('No launcher-managed log file exists for: ' + ($missingLogs -join ', ') + '. A service reused from another terminal cannot have its stdout attached retroactively.')
+        }
+        Get-Content -Path $availableLogs -Tail 15 -Wait
+    } else {
+        Write-Warning 'No launcher-managed log files are available. The services may have been started outside this launcher; use -Restart only after confirming it is safe to restart the demo processes.'
+    }
+}
+} finally {
+    foreach ($name in $environmentNames) {
+        [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+    }
 }
