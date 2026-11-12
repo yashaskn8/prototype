@@ -416,8 +416,11 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
         warning = hazard_warning or (
-            "A previously reported safety hazard requires authorized service. "
-            "Do not operate or open the equipment."
+            "A previously reported safety concern still requires escalation. "
+            "Move away from the equipment and keep others clear. Do not touch the "
+            "equipment, controls, wiring or electrical switches. Do not open, operate, "
+            "reset or attempt to disconnect power. Follow the site's emergency procedure "
+            "and notify the site safety lead and an authorized service technician."
         )
         presentation = exception_presentation({
             "response_mode": "IMMEDIATE_SAFETY_ESCALATION",
