@@ -71,3 +71,22 @@ test('rejects causes, procedures, and observations placed under the wrong headin
     assert.equal(validateCustomerPresentation(presentation), null, title);
   }
 });
+
+test('accepts only customer-safe claim kinds in observation and check sections', () => {
+  for (const [title, kind] of [
+    ['Safe observations from the manual', 'observation'],
+    ['Safe observations from the manual', 'customer_procedure'],
+    ['Approved customer checks', 'observation'],
+    ['Approved customer checks', 'customer_procedure'],
+  ]) {
+    const presentation = mixedPresentation();
+    presentation.sections = [{
+      number: 1, title,
+      claims: [{
+        text: 'Synthetic customer-safe source statement.',
+        kind, evidence_ids: ['s1'],
+      }],
+    }];
+    assert.ok(validateCustomerPresentation(presentation), title + ' / ' + kind);
+  }
+});
