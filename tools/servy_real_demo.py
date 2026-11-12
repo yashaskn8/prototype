@@ -840,8 +840,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 "claims": [{
                     "text": (
                         "The cited approved passages list this as a possible cause "
-                        "but do not explain it further. I won't infer technical details "
-                        "that the sources do not state."
+                        "but do not contain a separately citable explanation of it. "
+                        "I won't infer technical details that the sources do not state."
                     ),
                     "kind": "uncertainty",
                     "evidence_ids": [],

@@ -146,6 +146,8 @@ def is_generic_cause_overview(question):
         and _GENERIC_CAUSE_REQUEST.search(value)
         and not _SPECIFIC_FAULT_QUERY.search(value)
     )
+
+
 def _is_cause_coverage_review(question):
     """Detect a source-support audit without inferring a prior equipment symptom."""
     value = " ".join(str(question or "").split()).casefold()
