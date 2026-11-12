@@ -383,7 +383,10 @@ SPECIFIC_EVIDENCE = {
         re.compile(_START_STOP_SYMPTOM, re.I),
     ),
     "communication or addressing fault": (
-        re.compile(r"\b(?:communication|address(?:ing)?)\b", re.I),
+        re.compile(
+            r"\b(?:communication(?:\s+or\s+address(?:ing)?)?|address(?:ing)?)\s+fault\b",
+            re.I,
+        ),
         re.compile(r"\b(?:communication|address(?:ing)?)\b", re.I),
     ),
     "low-pressure or capacity fault": (
@@ -395,12 +398,17 @@ SPECIFIC_EVIDENCE = {
         re.compile(r"\b(?:high[ -]?pressure|heat[ -]?exchange)\b", re.I),
     ),
     "compressor or inverter fault": (
-        re.compile(r"\b(?:compressor|inverter)\b", re.I),
+        re.compile(
+            r"\b(?:compressor|inverter)(?:\s+or\s+(?:compressor|inverter))?\s+fault\b",
+            re.I,
+        ),
         re.compile(r"\b(?:compressor|inverter)\b", re.I),
     ),
     "fan or temperature-sensor fault": (
-        re.compile(r"\b(?:fan(?:\s+or\s+)?temperature[- ]sensor|"
-                   r"temperature[- ]sensor|fan)\b", re.I),
+        re.compile(
+            r"\b(?:fan(?:\s+or\s+temperature[- ]sensor)?|temperature[- ]sensor)\s+fault\b",
+            re.I,
+        ),
         re.compile(r"\b(?:fan|temperature[- ]sensor)\b", re.I),
     ),
 }
