@@ -1038,6 +1038,20 @@ def _repeat_or_answered_followup(candidate, report):
     return False
 
 
+def _display_followup_already_asked(candidate, asked_followups):
+    """Avoid asking about the display twice using equivalent wording."""
+    if not re.search(r"\b(?:display|indicator)\b", str(candidate or ""), re.I):
+        return False
+    for previous in asked_followups or ():
+        if not isinstance(previous, str):
+            continue
+        if (re.search(r"\b(?:display|indicator)\b", previous, re.I)
+                and re.search(r"\b(?:fault|error|warning|alarm|code|visible|show|see)\b",
+                              previous, re.I)):
+            return True
+    return False
+
+
 def _follow_up(topic, question, history=(), asked_followups=()):
     """Choose one useful, safe question and never repeat an earlier prompt."""
     if is_explanation_followup(question):
@@ -1086,6 +1100,7 @@ def _follow_up(topic, question, history=(), asked_followups=()):
     asked = {_words(item) for item in asked_followups if isinstance(item, str)}
     for candidate in candidates:
         if (_words(candidate) not in asked
+                and not _display_followup_already_asked(candidate, asked_followups)
                 and not _repeat_or_answered_followup(candidate, reports)):
             return candidate
     return None

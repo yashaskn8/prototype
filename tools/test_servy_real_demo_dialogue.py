@@ -7,6 +7,7 @@ from tools.servy_real_demo_dialogue import (
     followup_clarification, vague_problem_clarification, question_topic, is_contextual_followup,
     out_of_scope_response, focused_causal_query, wants_additional,
     is_technician_handoff_request, build_technician_handoff, NO_EVIDENCE,
+    _follow_up,
 )
 
 
@@ -106,6 +107,21 @@ def contract():
             "authorized_user_actions": {"can_resolve": True, "can_escalate": True},
         },
     }
+
+
+class FollowupDeduplicationTests(unittest.TestCase):
+    def test_display_prompt_is_not_rephrased_after_code_warning_question(self):
+        asked = ["Is a fault code or warning visible on the display?"]
+        self.assertEqual(
+            _follow_up("next", "What should I do next?", asked_followups=asked),
+            "When did you first notice this symptom?",
+        )
+
+    def test_display_prompt_remains_available_when_not_asked_before(self):
+        self.assertEqual(
+            _follow_up("next", "What should I do next?"),
+            "What can you see on the external display or indicator?",
+        )
 
 
 class IntentFocusTests(unittest.TestCase):
