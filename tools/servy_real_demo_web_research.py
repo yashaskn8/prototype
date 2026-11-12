@@ -29,7 +29,7 @@ _PROCEDURAL = re.compile(
     r"clean(?:s|ed|ing)?|test(?:s|ed|ing)?|inspect(?:s|ed|ing)?|"
     r"disconnect(?:s|ed|ing)?|connect(?:s|ed|ing)?|"
     r"disassemble(?:s|d|ing)?|install(?:s|ed|ing)?|refill(?:s|ed|ing)?|"
-    r"top\s+up|refrigerant charge|voltage|pressure gauge)\b",
+    r"check(?:s|ed|ing)?|verify(?:s|ied|ing)?|top\s+up)\b",
     re.I,
 )
 _ALLOWED_SYMPTOM_TERMS = frozenset({
