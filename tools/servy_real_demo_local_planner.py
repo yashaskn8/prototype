@@ -37,7 +37,11 @@ FOLLOW_UPS = {
         "When did you first notice this symptom?",
         "Does the problem happen continuously or intermittently?",
     ),
-    "next": (),
+    "next": (
+        "What have you already tried, and what did you observe?",
+        "What changed after the previous check?",
+        "Is there a displayed code or warning?",
+    ),
     "meaning": (
         "When does the displayed code appear?",
         "Does that same code still appear?",

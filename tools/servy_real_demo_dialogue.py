@@ -1281,6 +1281,14 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
         if answer in {"yes", "yes it does", "no", "no it does not", "not always", "sometimes"}:
             kind, value = "code_persistence", answer
             acknowledgement = "Thanks — I've recorded whether the code remains visible each time: " + answer + "."
+    elif ("what have you already tried" in prompt
+          or "what changed after the previous check" in prompt):
+        if raw:
+            kind, value = "reported_action", raw[:180]
+            acknowledgement = (
+                "Thanks — I've recorded what you reported, without treating it as a verified "
+                "equipment condition: " + value + "."
+            )
     elif "which indoor units are affected" in prompt:
         if re.search(r"\b(?:unit|units|all|both|one|two|three|four|five|\d+)\b", answer):
             kind, value = "affected_units", raw[:100]

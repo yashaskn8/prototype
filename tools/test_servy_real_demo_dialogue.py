@@ -295,6 +295,15 @@ class PendingFollowupReplyTests(unittest.TestCase):
         self.assertEqual(result["kind"], "frequency")
         self.assertIn("problem happens intermittently", result["acknowledgement"])
 
+    def test_customer_reported_attempts_are_not_presented_as_verified_facts(self):
+        result = resolve_pending_followup_reply(
+            "I noted the display and wrote down the warning",
+            "What have you already tried, and what did you observe?",
+            topic="next",
+        )
+        self.assertEqual(result["kind"], "reported_action")
+        self.assertIn("without treating it as a verified", result["acknowledgement"])
+
     def test_unprompted_short_reply_is_ignored(self):
         self.assertIsNone(resolve_pending_followup_reply("suddenly", None))
         self.assertIsNone(resolve_pending_followup_reply(
