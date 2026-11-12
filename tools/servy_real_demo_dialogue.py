@@ -1001,7 +1001,10 @@ def contextualize_fault_category_followup(question, history=(), last_topic=None)
     customer-authored history is inspected, and the category remains suspected.
     """
     raw = " ".join(str(question or "").split())
-    if not raw or not is_contextual_followup(raw):
+    if (not raw or documented_fault_categories(raw)
+            or not is_contextual_followup(raw)):
+        # A category named in the current turn is authoritative; never append
+        # a different category from older conversation history.
         return raw
     topic = question_topic(raw, last_topic)
     normalized = _words(raw)
