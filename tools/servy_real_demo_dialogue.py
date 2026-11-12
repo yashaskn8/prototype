@@ -1237,7 +1237,7 @@ def _no_cause_reply(contract, asked_followups):
 
 
 def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan=None,
-                 history=(), asked_followups=()):
+                 history=(), asked_followups=(), allow_cause_information=False):
     """Keep only direct, valid, signed evidence matching the user's intent.
 
     The caller passes a trusted structured contract from build_customer_answer.
@@ -1282,7 +1282,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     focus = _FocusPlan(question)
     allowed = (frozenset().union(*(_match_kinds(item) for item in topics))
                if not off_topic else frozenset())
-    if topic == "causes" and is_explanation_followup(question) and not off_topic:
+    if (topic == "causes" and is_explanation_followup(question)
+            and allow_cause_information and not off_topic):
         allowed = allowed | frozenset({"information"})
     citations_by_id = {
         c.get("id"): c for c in original.get("citations", [])
@@ -1297,7 +1298,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             continue
         # A documented fact (schedule entry, descriptive statement) is not a
         # cause. It may answer a factual question, never a causes question.
-        if claim.get("disclosure") and not set(topics) & {"general", "documents", "meaning"}:
+        if claim.get("disclosure") and not (
+            set(topics) & {"general", "documents", "meaning"}
+            or (allow_cause_information and topic == "causes"
+                and claim.get("kind") == "information")
+        ):
             continue
         if (not isinstance(claim.get("text"), str)
             or not claim["text"].strip()
