@@ -392,6 +392,13 @@ SPECIFIC_EVIDENCE = {
         re.compile(r"\b(?:fan|temperature[- ]sensor)\b", re.I),
     ),
 }
+SECTION_SCOPED_FAULTS = frozenset({
+    "communication or addressing fault",
+    "low-pressure or capacity fault",
+    "high-pressure or heat-exchange fault",
+    "compressor or inverter fault",
+    "fan or temperature-sensor fault",
+})
 
 
 def out_of_scope_response(question):
@@ -514,13 +521,12 @@ def is_contextual_followup(question):
     return False
 
 
-def _specific_symptom_supported(question, source_context):
-    """Reject generic equipment-failure wording as if it named a fault.
+def _specific_symptom_supported(question, source_context, heading=""):
+    """Require a named VRF fault to match the manual section being cited.
 
-    "Not working" is a report of failure, not a specific symptom or fault
-    category. When the approved manual organizes causes under named
-    conditions, require the customer to identify one of those conditions
-    before any category-specific cause can be shown.
+    Generic "not working" wording is not a fault category. For fault categories
+    explicitly represented by titled manual sections, the heading itself must
+    match; a similarly worded claim under a different section is not enough.
     """
     q = _words(question)
     generic_failure = re.search(
@@ -528,8 +534,13 @@ def _specific_symptom_supported(question, source_context):
         r"isn'?t functioning|not functioning|stopped working|not operational)\b",
         q, re.I,
     )
+    requested = [
+        (label, evidence)
+        for label, (query, evidence) in SPECIFIC_EVIDENCE.items()
+        if query.search(q)
+    ]
     explicit_condition = (
-        any(query.search(q) for query, _evidence in SPECIFIC_EVIDENCE.values())
+        bool(requested)
         or bool(symptom_concepts(q))
         or bool(re.search(
             r"\b(?:communication|address(?:ing)?|high[ -]?pressure|"
@@ -540,13 +551,13 @@ def _specific_symptom_supported(question, source_context):
     )
     if generic_failure and not explicit_condition:
         return False
-    requested = [
-        evidence for query, evidence in SPECIFIC_EVIDENCE.values()
-        if query.search(q)
-    ]
-    return not requested or any(
-        evidence.search(source_context or "") for evidence in requested
-    )
+    if not requested:
+        return True
+    for label, evidence in requested:
+        candidate = heading if label in SECTION_SCOPED_FAULTS else source_context
+        if evidence.search(candidate or ""):
+            return True
+    return False
 
 
 def _requested_topics(question, primary):
@@ -1339,7 +1350,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         # The document's own qualification of a schedule accompanies that
         # schedule entry; it is not required to name the asked component.
         if not _is_schedule_qualifier(claim) and (
-                not _specific_symptom_supported(focus.relevant, source_context)
+                not _specific_symptom_supported(
+                    focus.relevant, source_context, citation.get("heading") or "")
                 or not focus.accepts(claim, citation)):
             continue
         if topic == "general" and not (
