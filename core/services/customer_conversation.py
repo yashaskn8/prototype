@@ -289,10 +289,14 @@ def process_customer_diagnostic_turn(
             facts = session.facts_snapshot or {}
             if facts.get("hazard"):
                 is_hazard = True
-                hazard_warning = facts.get("hazard_warning") or (
-                    "IMMEDIATE SAFETY RISK DETECTED: Symptoms previously reported indicate a hazardous condition. "
-                    "Disconnect main power immediately if safe. Do not operate equipment. "
-                    "An urgent technician service call should be dispatched."
+                # Do not replay an older persisted warning that may contain
+                # unsafe generic power-isolation advice from an earlier version.
+                hazard_warning = (
+                    "IMMEDIATE SAFETY RISK DETECTED: A previously reported safety concern still requires escalation. "
+                    "Move away from the equipment and keep others clear. Do not touch the equipment, controls, "
+                    "wiring or electrical switches. Do not open, operate, reset or attempt to disconnect power. "
+                    "Follow the site's emergency procedure and notify the site safety lead and an authorized "
+                    "service technician. Contact emergency responders if anyone is injured or there is immediate danger."
                 )
 
         if is_hazard:
