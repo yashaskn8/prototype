@@ -193,6 +193,17 @@ class EvidenceStateTests(unittest.TestCase):
 
 
 class CauseFollowUpTests(unittest.TestCase):
+    def test_ordinal_cause_state_excludes_informational_and_document_facts(self):
+        presentation = {"supporting_claims": [
+            {"kind": "possible_cause", "source_text": "Communication cable damage."},
+            {"kind": "information", "source_text": "Power loss was also reported."},
+            {"kind": "document_fact", "source_text": "The unit has multiple controllers."},
+        ]}
+        self.assertEqual(assignment.listed_causes(presentation), [
+            "Communication cable damage."
+        ])
+
+
     def test_second_cause_is_resolved_and_additional_internal_passage_is_retrieved(self):
         first, history = _cause_turn()
         detailed = _with_claim(contract(), "c6", DETAIL, "information", 6)
