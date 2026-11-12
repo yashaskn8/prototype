@@ -21,6 +21,12 @@ class FaultCategoryFollowupTests(unittest.TestCase):
         "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
     ]
 
+    def test_category_selection_with_causes_is_a_contextual_followup(self):
+        self.assertTrue(is_contextual_followup(
+            "I think it may be a communication or addressing fault. "
+            "What causes are documented in the approved manual?"
+        ))
+
     def test_generic_followups_keep_the_last_customer_selected_fault_category(self):
         cases = (
             ("What possible causes are documented?", "causes",
