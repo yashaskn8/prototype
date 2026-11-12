@@ -400,7 +400,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     # the signed customer history, but don't hide relevant facts just because
     # they were shown for an earlier and different problem.
     if (history and not context.is_followup
-            and TECHNICAL_SYMPTOMS.search(question)
+            and (TECHNICAL_SYMPTOMS.search(question)
+                 or has_documented_fault_category(question))
             and not out_of_scope_response(question)):
         previous_facts = []
         last_topic = None
@@ -534,7 +535,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             # history; do not reject it as a standalone vague first question.
             answer_question = (
                 retrieval_query if history and context.is_followup
-                and _question_guard(question) == "clarify" else question
+                and _question_guard(question) == "clarify" else answer_question
             )
             contract = build_customer_answer(
                 interaction, None, rag.get("references", []),
