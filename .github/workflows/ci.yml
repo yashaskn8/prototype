@@ -63,6 +63,9 @@ jobs:
       - name: Local Open-Weight Dialogue Planner Security Tests
         run: python -m unittest tools.test_servy_real_demo_local_planner -v
 
+      - name: Local Evidence-Bound Explanation Tests
+        run: python -m unittest tools.test_servy_real_demo_explainer -v
+
       - name: Real-data Demo Focused Conversation Tests
         run: python -m unittest tools.test_servy_real_demo_dialogue -v
 
