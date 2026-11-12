@@ -148,8 +148,9 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
             continue
         source = claim.get("source_text", "")
         if kind == "possible_cause" and _norm(source) == _norm(cause):
+            if not target:
+                target_heading = _norm(citation.get("heading", ""))
             target.append(claim)
-            target_heading = _norm(citation.get("heading", ""))
         elif (kind == "information" and target_heading
               and _norm(citation.get("heading", "")) == target_heading
               and _related(cause, source)
