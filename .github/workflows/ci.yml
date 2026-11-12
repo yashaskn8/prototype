@@ -75,6 +75,16 @@ jobs:
       - name: Real-data Demo Focused Conversation Tests
         run: python -m unittest tools.test_servy_real_demo_dialogue -v
 
+      - name: VRF Claim-Category and Checklist Leakage Regressions
+        run: python -m unittest tools.test_servy_vrf_conversation -v
+        env:
+          LOCALAPPDATA: /tmp
+
+      - name: Demo Issue Assignment and Cause Follow-up Tests
+        run: python -m unittest tools.test_servy_real_demo_assignment -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Three-Asset / Nine-Manual Retrieval Scope Regressions
         run: python -m unittest tools.test_servy_three_asset_rag -v
 
@@ -184,7 +194,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs
 
       - name: Test Private Technician Access-code Instance
         working-directory: frontend
