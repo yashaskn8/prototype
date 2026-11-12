@@ -412,7 +412,6 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     off_topic = out_of_scope_response(question)
     suggestions = []
     local_planner_used = False
-    local_explainer_used = False
     retrieval_attempts = 0
     is_hazard = current_hazard or earlier_hazard
     if is_hazard:
@@ -788,7 +787,6 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         "conversation_turn": len(history) + 1,
         "dialogue_planner": (
             "local-handoff-checklist" if contract.get("engine") == "local-dialogue-handoff"
-            else "local-ollama-explainer" if local_explainer_used
             else "local-ollama-structured" if local_planner_used
             else "deterministic-grounded"
         ),
