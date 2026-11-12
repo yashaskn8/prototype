@@ -124,11 +124,11 @@ def _related(cause, source_text):
 
 
 def focus_on_cause(contract, cause, shown_before, fingerprint):
-    """Restrict a validated explanation answer to one previously listed cause.
+    """Restrict an explanation to one cause and its separately labelled facts.
 
-    Keeps the exact cited cause sentence plus additional cited sentences that
-    share its technical terms and were not shown before. Nothing is reworded
-    or generated. Returns (contract, has_new_detail).
+    The selected cause must be an exact possible_cause claim. Only additional
+    information claims may be used as supporting detail; a different cause
+    can never be pulled into this answer merely because its wording overlaps.
     """
     presentation = dict(contract.get("presentation") or {})
     citations = {c.get("id"): c for c in presentation.get("citations", [])
@@ -136,24 +136,28 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
     shown = set(shown_before or ())
     target, extra = [], []
     for claim in presentation.get("supporting_claims", []):
-        if not isinstance(claim, dict) or claim.get("kind") not in CAUSE_DETAIL_KINDS:
+        if not isinstance(claim, dict):
+            continue
+        kind = claim.get("kind")
+        if kind not in CAUSE_DETAIL_KINDS:
             continue
         evidence = claim.get("evidence_ids") or []
         citation = citations.get(evidence[0]) if len(evidence) == 1 else None
         if citation is None:
             continue
         source = claim.get("source_text", "")
-        if _norm(source) == _norm(cause):
+        if kind == "possible_cause" and _norm(source) == _norm(cause):
             target.append(claim)
-        elif _related(cause, source) and fingerprint(claim, citation) not in shown:
+        elif (kind == "information" and _related(cause, source)
+              and fingerprint(claim, citation) not in shown):
             extra.append(claim)
     target, extra = target[:1], extra[:8]
     kept = target + extra
-    if not kept:
+    if not target:
         message = (
-            "The approved internal documentation does not contain any further "
-            "explanation of that cause for this equipment. I won't add technical "
-            "detail that the documents do not support."
+            "The approved internal documentation does not contain the exact "
+            "documented cause needed to explain that item. I won't substitute "
+            "a related statement or add technical detail the documents do not support."
         )
         return {
             **contract, "response_type": "INSUFFICIENT_EVIDENCE",
@@ -173,11 +177,16 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
     used = {claim["evidence_ids"][0] for claim in kept}
     kept_citations = [c for c in presentation.get("citations", [])
                       if isinstance(c, dict) and c.get("id") in used]
-    sections = [{"number": 1, "title": "Documented possible causes", "claims": kept}]
+    sections = [{
+        "number": 1, "title": "Documented possible causes", "claims": target,
+    }]
     if extra:
+        sections.append({
+            "number": 2, "title": "What the manual says", "claims": extra,
+        })
         message = (
-            "Here is what the approved documentation states about that cause. "
-            "It is a documented possibility, not a confirmed diagnosis."
+            "Here is the documented cause and related information found in the "
+            "approved documentation. The cause is a possibility, not a confirmed diagnosis."
         )
     else:
         message = (
@@ -202,7 +211,6 @@ def focus_on_cause(contract, cause, shown_before, fingerprint):
         "citations": kept_citations, "references": kept_citations,
         "customer_safe_actions": [], "can_resolve": False,
     }, bool(extra)
-
 
 def code_conflict(presentation, question):
     """A requested fault code described differently by two approved documents."""
