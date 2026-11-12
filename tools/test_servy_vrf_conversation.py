@@ -170,8 +170,61 @@ class VrfConversationTests(unittest.TestCase):
         self.assertIn("lists these possibilities", results[1]["presentation"]["message"])
         followup = _shown(results[2])
         self.assertEqual(followup[0][3], "Duplicate/missing addresses or configuration mismatch.")
-        self.assertIn("do not contain a separately citable explanation", results[2]["presentation"]["message"].lower())
+        self.assertNotIn(
+            "Evidence limitation",
+            [section["title"] for section in results[2]["presentation"]["sections"]],
+        )
+        self.assertTrue(results[2]["presentation"]["cause_explanation_unavailable"])
+        self.assertNotIn(
+            "contain no further explanation",
+            json.dumps(results[2]["presentation"]).lower(),
+        )
         self.assertEqual(results[2]["evidence_state"], "PARTIAL")
+
+    def test_selected_communication_fault_stays_scoped_across_followups(self):
+        results = converse("vrf", [
+            "What could be the possible reasons why my VRF outdoor module is not working?",
+            "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
+            "Explain the second documented cause of the communication or addressing fault. What does the manual say, and what does it not establish?",
+            "What can I safely observe?",
+            "What should I do next?",
+            "What possible causes are documented?",
+        ])
+
+        expected_causes = [
+            "Communication cable damage or incorrect topology.",
+            "Duplicate/missing addresses or configuration mismatch.",
+            "Power loss to a connected unit or module.",
+        ]
+        for index in (1, 5):
+            rows = _shown(results[index])
+            self.assertEqual([row[3] for row in rows], expected_causes)
+            self.assertEqual(
+                {row[4] for row in rows},
+                {"2. COMMUNICATION OR ADDRESSING FAULT"},
+            )
+            self.assertEqual({row[1] for row in rows}, {"possible_cause"})
+
+        for index in (3, 4):
+            rows = _shown(results[index])
+            self.assertTrue(rows)
+            self.assertTrue(all(
+                row[4] == "2. COMMUNICATION OR ADDRESSING FAULT" for row in rows
+            ))
+            self.assertTrue(all(
+                row[1] in {"observation", "customer_procedure", "next_step"}
+                for row in rows
+            ))
+
+        self.assertEqual(
+            _shown(results[2])[0][3],
+            "Duplicate/missing addresses or configuration mismatch.",
+        )
+        self.assertNotIn(
+            "Evidence limitation",
+            [section["title"] for section in results[2]["presentation"]["sections"]],
+        )
+        self.assertTrue(results[2]["presentation"]["cause_explanation_unavailable"])
 
     def test_unsupported_fault_code_is_not_explained(self):
         (r,) = converse("vrf", ["The outdoor module shows fault code E-99. What does E-99 mean?"])
