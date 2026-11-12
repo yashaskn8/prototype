@@ -1,4 +1,15 @@
 """Offline tests for exhaustive approved-document scanning."""
+import os
+
+# unittest.mock.patch("core.services....") imports the target module while
+# resolving the patch string. Initialize Django first so model imports are
+# valid when this standalone module runs under GitHub Actions.
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
+os.environ.setdefault("LOCALAPPDATA", "/tmp")
+
+import django
+django.setup()
+
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
