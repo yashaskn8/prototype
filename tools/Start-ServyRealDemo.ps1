@@ -246,6 +246,25 @@ try {
     $inventoryPayload = $null
     $inventoryProbe = $null
 }
+
+if ($NoLocalChat) {
+    Write-Warning 'Local conversational generation is disabled by -NoLocalChat. Servy will show only source-extractable answers.'
+} else {
+    try {
+        $ollama = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -Method Get -TimeoutSec 3
+        $modelName = if ($env:SERVY_REAL_DEMO_CHAT_MODEL) { $env:SERVY_REAL_DEMO_CHAT_MODEL } else { 'qwen2.5:3b' }
+        $modelReady = @($ollama.models | Where-Object { $_.name -eq $modelName }).Count -gt 0
+        if ($modelReady) {
+            Write-Output ('Local explanation model check: PASS (' + $modelName + ')')
+        } else {
+            Write-Warning ('Ollama is running, but model ' + $modelName + ' is not installed. Run: ollama pull ' + $modelName)
+            Write-Warning 'The demo will remain available, but detailed plain-language explanations will fall back to the cited source text.'
+        }
+    } catch {
+        Write-Warning 'Ollama is not reachable on localhost:11434. The demo will remain available, but generated plain-language explanations will be unavailable.'
+        Write-Warning 'Start Ollama and ensure qwen2.5:3b is installed before demonstrating detailed explanations.'
+    }
+}
 if (-not $NoWatch) {
     $availableLogs = @($activityLogPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     Write-Output ''
