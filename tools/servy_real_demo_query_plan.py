@@ -23,7 +23,7 @@ _COMPONENT = re.compile(
 _CODE = re.compile(r"\b(?:E|F|ERR)[- ]?\d{1,3}\b", re.I)
 
 
-def targeted_retry_query(question, asset, context, *, last_topic=None):
+def targeted_retry_query(question, asset, context, *, last_topic=None, cause_claims=()):
     """Generate one safe retrieval query or return None.
 
     The caller must enforce the same customer/asset permissions, source
@@ -68,10 +68,22 @@ def targeted_retry_query(question, asset, context, *, last_topic=None):
             "indicator operating mode visible status and visible air path",
         ]
     elif explanation_request:
+        cause_focus = []
+        for claim in list(cause_claims or [])[:4]:
+            if isinstance(claim, dict):
+                source = claim.get("source_text", "")
+            else:
+                source = claim
+            if not isinstance(source, str) or not source.strip():
+                continue
+            focused = retrieval_focus(source) or relevance_text(source)
+            if focused and not query_is_control_abuse(focused):
+                cause_focus.append(focused[:110])
         clauses = [
             asset_name, asset_model, issue,
-            "detailed documented causes explanation operating conditions sensor control "
-            "refrigerant system troubleshooting factors",
+            " ".join(cause_focus),
+            "detailed documented causes explanation, meaning, contributing conditions, "
+            "manual context and limitations",
         ]
     else:
         anchor = subject.group(0)
