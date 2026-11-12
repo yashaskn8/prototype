@@ -39,6 +39,7 @@ import os
 import sys
 import time
 import tracemalloc
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -54,10 +55,10 @@ django.setup()
 from django.conf import settings
 from core.models import Tenant, Asset, KnowledgeChunk, KnowledgeDocument
 from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
-from core.ml.evaluation import compute_metrics, check_chunk_boundaries
+from core.ml.evaluation import compute_metrics, check_chunk_boundaries, classify_answer_outcome
 from core.ml.benchmark_manifest import load_manifest, resolve_query_asset, ROLE_RELEVANCE
 from core.services.retriever import retrieve, _knowledge_candidates
-from core.services.llm import generate_answer, INSUFFICIENT_EVIDENCE_MESSAGE
+from core.services.llm import generate_answer
 from core.services.rag import ask_rag
 from core.services.customer_isolation import is_real_tenant
 
@@ -102,6 +103,79 @@ def _resolve_profile_for_tenant(model_family: str, tenant: Tenant) -> Optional[s
         # Fine-tuned checkpoint is specifically bound to the Skydream real corpus
         return "company-bge-ft" if (is_real and tenant.id == 9) else None
     return None
+
+
+def _serving_metric_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return retrieval, candidate-recall, abstention, and answer-label metrics.
+
+    Answer correctness is reported only for responses with a human-provided
+    ``answer_correctness_label``. Evidence support and abstention decisions are
+    separate measurements and are never presented as answer correctness.
+    """
+    metrics = compute_metrics(records, k_values=(1, 5, 10, 20))
+    expected_abstentions = [r for r in records if isinstance(r.get("expected_abstain"), bool)]
+    correct_abstentions = sum(
+        bool(r.get("observed_abstain")) == bool(r["expected_abstain"])
+        for r in expected_abstentions
+    )
+    expected_positive_abstentions = sum(bool(r["expected_abstain"]) for r in expected_abstentions)
+    observed_positive_abstentions = sum(bool(r.get("observed_abstain")) for r in expected_abstentions)
+    correct_positive_abstentions = sum(
+        bool(r["expected_abstain"]) and bool(r.get("observed_abstain"))
+        for r in expected_abstentions
+    )
+    answer_labels = [
+        r["answer_correctness_label"] for r in records
+        if isinstance(r.get("answer_correctness_label"), bool)
+    ]
+    response_types = Counter(r.get("answer_mode", "OTHER") for r in records)
+    metrics.update({
+        "n_queries_total": len(records),
+        "n_supported_queries": sum(r.get("expected_abstain") is False for r in records),
+        "n_expected_abstentions": sum(r.get("expected_abstain") is True for r in records),
+        "retrieval_denominator": metrics.get("n_queries_evaluated", 0),
+        "candidate_recall_denominator": metrics.get("candidate_recall_denominator", 0),
+        "abstention_correctness": {
+            "correct": correct_abstentions,
+            "denominator": len(expected_abstentions),
+            "accuracy": round(correct_abstentions / len(expected_abstentions), 4)
+            if expected_abstentions else None,
+            "true_positive_abstentions": correct_positive_abstentions,
+            "expected_abstentions": expected_positive_abstentions,
+            "observed_abstentions": observed_positive_abstentions,
+            "precision": round(correct_positive_abstentions / observed_positive_abstentions, 4)
+            if observed_positive_abstentions else None,
+            "recall": round(correct_positive_abstentions / expected_positive_abstentions, 4)
+            if expected_positive_abstentions else None,
+        },
+        "answer_correctness": {
+            "correct": sum(answer_labels),
+            "denominator": len(answer_labels),
+            "accuracy": round(sum(answer_labels) / len(answer_labels), 4)
+            if answer_labels else None,
+            "status": "HUMAN_LABELED" if answer_labels else "NOT_HUMAN_LABELED",
+        },
+        "response_type_counts": dict(sorted(response_types.items())),
+        "evidence_supported_answer_count": response_types.get("EVIDENCE_SUPPORTED", 0),
+    })
+    for k in (5, 10, 20):
+        metrics.setdefault(f"candidate_recall@{k}", None)
+    for k in (1, 5, 10):
+        metrics.setdefault(f"hit@{k}", None)
+    metrics.setdefault("mrr@10", None)
+    return metrics
+
+
+def _per_asset_metric_breakdown(
+    records_by_asset: Dict[str, List[Dict[str, Any]]],
+    asset_ids=(59, 60, 61),
+) -> Dict[str, Dict[str, Any]]:
+    """Report stable per-asset rows, including explicit zero-sample assets."""
+    keys = set(records_by_asset) | {str(asset_id) for asset_id in asset_ids}
+    return {
+        asset_id: _serving_metric_summary(records_by_asset.get(asset_id, []))
+        for asset_id in sorted(keys, key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else x))
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +422,7 @@ def evaluate_track_b_serving(
 
         eval_records = []
         category_records = {}
+        asset_records = defaultdict(list)
         per_query_rows = []
 
         unauthorized_tenant_queries = 0
@@ -384,15 +459,51 @@ def evaluate_track_b_serving(
             latency_ms = (time.perf_counter() - t0_q) * 1000
 
             retrieved_chunks = rag_res.get("retrieved", [])
-            answer_text = rag_res.get("answer", "")
             engine = rag_res.get("engine", "")
             references = rag_res.get("references", [])
-
-            is_direct = bool(engine != "policy-guard" and answer_text != INSUFFICIENT_EVIDENCE_MESSAGE)
-            answer_mode = "DIRECT_ANSWER" if is_direct else "ABSTAIN"
+            answer_outcome = classify_answer_outcome(rag_res)
+            answer_mode = answer_outcome["outcome"]
+            is_direct = answer_mode == "EVIDENCE_SUPPORTED"
             evidence_supported = is_direct
+            observed_abstain = bool(answer_outcome["observed_abstain"])
+            abstention_correct = observed_abstain == bool(is_abstain)
+            answer_correctness_label = c.get("answer_correctness_label")
+            if not isinstance(answer_correctness_label, bool):
+                answer_correctness_label = None
 
             ranked_cids = [rc.chunk_id for rc in retrieved_chunks if rc.chunk_id]
+            # Candidate recall is measured in a separate retrieval-only pass at
+            # depth 20. It records the authorized fused list before any rerank,
+            # while ask_rag above retains its original k_max and answer context.
+            # The second pass is evaluator-only and cannot change the answer.
+            candidate_ids = []
+            candidate_recall_evaluated = False
+            candidate_recall_error = None
+            if tenant is not None and engine != "policy-guard":
+                try:
+                    candidate_results = retrieve(
+                        tenant=tenant,
+                        question=q_text,
+                        asset=asset,
+                        customer=None,
+                        include_confidential=False,
+                        top_k=20,
+                        min_score=settings.SERVY_RAG_MIN_SCORE,
+                        include_past_resolutions=False,
+                        staff_mode=False,
+                        candidate_only=True,
+                    )
+                    candidate_ids = list(
+                        getattr(candidate_results, "pre_rerank_candidate_chunk_ids", [])
+                    )
+                    candidate_recall_evaluated = True
+                except Exception as exc:
+                    # Candidate instrumentation is diagnostic; preserve the
+                    # ordinary serving result and expose only the error class.
+                    candidate_recall_error = type(exc).__name__
+
+            metric_asset_id = getattr(asset, "id", None) or c.get("asset_id")
+            metric_asset_id = str(metric_asset_id) if metric_asset_id is not None else "unresolved"
             # Phase 6 (Operation 16.0): Separate retrieval from abstention metrics.
             # Retrieval metrics (Hit@K, MRR, nDCG) use the actual ranked chunk IDs
             # from the retriever, regardless of whether answer generation abstained.
@@ -402,15 +513,22 @@ def evaluate_track_b_serving(
 
             rec = {
                 "query_id": qid,
+                "asset_id": metric_asset_id,
                 "ranked_chunk_ids": ranked_cids,  # Always the actual retrieval results
+                "candidate_chunk_ids": candidate_ids,
+                "candidate_recall_evaluated": candidate_recall_evaluated,
+                "candidate_recall_error": candidate_recall_error,
                 "relevant_chunk_ids": list(rel_ids),
                 "latency_ms": latency_ms,
                 "is_unsupported": is_abstain,
-                # Separate abstention tracking
+                "expected_abstain": bool(is_abstain),
+                "observed_abstain": observed_abstain,
                 "answer_mode": answer_mode,
-                "generation_abstained": not is_direct,
+                "generation_abstained": observed_abstain,
+                "answer_correctness_label": answer_correctness_label,
             }
             eval_records.append(rec)
+            asset_records[metric_asset_id].append(rec)
 
             # Per-query diagnostic accounting
             first_rel_rank = None
@@ -469,8 +587,12 @@ def evaluate_track_b_serving(
                 "primary_evaluation_role": c.get("primary_evaluation_role"),
                 "equipment": equip_name,
                 "expected_abstain": is_abstain,
+                "asset_id": metric_asset_id,
                 "positive_chunk_ids": list(rel_ids),
                 "retrieved_chunk_ids": ranked_cids[:5],
+                "pre_rerank_candidate_chunk_ids": candidate_ids[:20],
+                "candidate_recall_evaluated": candidate_recall_evaluated,
+                "candidate_recall_error": candidate_recall_error,
                 "first_relevant_rank": first_rel_rank,
                 "top_score": round(top_chunk.score, 4) if top_chunk else None,
                 "top_fusion_score": round(top_chunk.fusion_score, 6) if top_chunk and top_chunk.fusion_score else None,
@@ -479,8 +601,11 @@ def evaluate_track_b_serving(
                 "answer_mode": answer_mode,
                 "evidence_support": evidence_supported,
                 "cited_chunk_ids": cited_cids,
+                "observed_abstain": observed_abstain,
+                "abstention_correct": abstention_correct,
+                "answer_correctness_label": answer_correctness_label,
                 "passed_relevance": bool(first_rel_rank == 1) if not is_abstain else None,
-                "passed_abstention": bool(len(ranked_cids) == 0 or not evidence_supported) if is_abstain else None,
+                "passed_abstention": abstention_correct,
             }
             per_query_rows.append(pq_row)
 
@@ -492,7 +617,7 @@ def evaluate_track_b_serving(
     current_mem, peak_mem = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
-    overall = compute_metrics(eval_records)
+    overall = _serving_metric_summary(eval_records)
     overall["track"] = "TRACK_B_CUSTOMER_SERVING"
     overall["pipeline_mode"] = pipeline_mode
     overall["load_time_ms"] = round(load_time_ms, 2)
@@ -506,6 +631,10 @@ def evaluate_track_b_serving(
     overall["wrong_asset_retrieval_rate"] = round(wrong_asset_queries / denom, 4)
     overall["wrong_equipment_citation_rate"] = round(wrong_citation_queries / denom, 4)
     overall["wrong_equipment_action_rate"] = round(wrong_action_queries / denom, 4)
+
+    # Keep stable rows for the three source assets even if a dataset has no
+    # reviewed examples for one of them; zero-sample metrics remain null.
+    overall["per_asset_breakdown"] = _per_asset_metric_breakdown(asset_records)
 
     # Authenticated Cross-Tenant Attack Verification
     tenant_attacks = [c for c in cases if c["category"] == "tenant_isolation_attack"]
@@ -536,7 +665,7 @@ def evaluate_track_b_serving(
 
     cat_breakdown = {}
     for cat, recs in category_records.items():
-        cat_metrics = compute_metrics(recs)
+        cat_metrics = _serving_metric_summary(recs)
         n_rel = sum(1 for r in recs if not r.get("is_unsupported"))
         n_abs = sum(1 for r in recs if r.get("is_unsupported"))
         entry = {
@@ -548,6 +677,14 @@ def evaluate_track_b_serving(
             "hit@10": cat_metrics.get("hit@10"),
             "mrr@10": cat_metrics.get("mrr@10"),
             "ndcg@10": cat_metrics.get("ndcg@10"),
+            "candidate_recall@5": cat_metrics.get("candidate_recall@5"),
+            "candidate_recall@10": cat_metrics.get("candidate_recall@10"),
+            "candidate_recall@20": cat_metrics.get("candidate_recall@20"),
+            "retrieval_denominator": cat_metrics.get("retrieval_denominator"),
+            "candidate_recall_denominator": cat_metrics.get("candidate_recall_denominator"),
+            "abstention_correctness": cat_metrics.get("abstention_correctness"),
+            "answer_correctness": cat_metrics.get("answer_correctness"),
+            "response_type_counts": cat_metrics.get("response_type_counts"),
         }
         if "abstention_accuracy" in cat_metrics:
             entry["abstention_accuracy"] = cat_metrics["abstention_accuracy"]

@@ -75,6 +75,7 @@ def ask_rag(
             "retrieval_backend": "policy-guard",
             "reranker_applied": False,
             "reranker_model": None,
+            "pre_rerank_candidate_chunk_ids": [],
         }
 
     from .customer_isolation import get_customer_data_mode, is_real_tenant
@@ -88,6 +89,7 @@ def ask_rag(
             "retrieved": [], "retrieved_candidates": [], "context_passages": [],
             "claim_supporting_passages": [], "cited_passages": [],
             "retrieval_backend": "none", "reranker_applied": False, "reranker_model": None,
+            "pre_rerank_candidate_chunk_ids": [],
         }
 
     include_past_resolutions = bool(staff_mode and service_call)
@@ -166,6 +168,9 @@ def ask_rag(
         "retrieval_backend": getattr(results, "retrieval_backend", "fallback"),
         "reranker_applied": getattr(results, "reranker_applied", False),
         "reranker_model": getattr(results, "reranker_model", None),
+        "pre_rerank_candidate_chunk_ids": list(
+            getattr(results, "pre_rerank_candidate_chunk_ids", []) or []
+        ),
         "retrieved_candidates": all_retrieved_candidates,
         "context_passages": context_passages,
         "claim_supporting_passages": [] if is_abstention else claim_supporting_passages,

@@ -63,12 +63,19 @@ class RetrievedChunk:
 
 
 class RetrievedResultList(list):
-    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False, reranker_model=None, experimental_section_rerank_applied=False):
+    def __init__(self, items=(), retrieval_backend="semantic", reranker_applied=False, reranker_model=None, experimental_section_rerank_applied=False, pre_rerank_candidate_chunk_ids=()):
         super().__init__(items)
         self.retrieval_backend = retrieval_backend
         self.reranker_applied = reranker_applied
         self.reranker_model = reranker_model if reranker_applied else None
         self.experimental_section_rerank_applied = bool(experimental_section_rerank_applied)
+        # Keep the request-time candidate trace immutable internally. The
+        # property returns a fresh list so callers cannot mutate stored state.
+        self._pre_rerank_candidate_chunk_ids = tuple(pre_rerank_candidate_chunk_ids or ())
+
+    @property
+    def pre_rerank_candidate_chunk_ids(self):
+        return list(self._pre_rerank_candidate_chunk_ids)
 
 
 def is_authorized_candidate(
@@ -1045,6 +1052,7 @@ def retrieve(
     service_call=None,
     include_past_resolutions=True,
     staff_mode=False,
+    candidate_only=False,
 ) -> List[RetrievedChunk]:
     # Construct retrieval query dynamically using database records
     query_parts = []
@@ -1222,6 +1230,27 @@ def retrieve(
         )
     ]
 
+    # Capture the ordered, authorized knowledge-document candidates before any
+    # conditional swap or learned/experimental reranking can change their order.
+    pre_rerank_candidate_chunk_ids = tuple(
+        r.chunk_id
+        for r in results
+        if r.source_kind == "knowledge_document"
+        and r.chunk_id is not None
+        and r.document_id in allowed_doc_ids
+        and r.chunk_id in allowed_chunks_by_id
+    )
+
+    if candidate_only:
+        return RetrievedResultList(
+            results,
+            retrieval_backend=retrieval_backend,
+            reranker_applied=False,
+            reranker_model=None,
+            experimental_section_rerank_applied=False,
+            pre_rerank_candidate_chunk_ids=pre_rerank_candidate_chunk_ids,
+        )
+
     logger.info(
         "retrieval_backend = %s (retrieved %d knowledge chunks, "
         "dense=%d, sparse=%d)",
@@ -1386,4 +1415,5 @@ def retrieve(
             None,
         ),
         experimental_section_rerank_applied=experimental_section_rerank_applied,
+        pre_rerank_candidate_chunk_ids=pre_rerank_candidate_chunk_ids,
     )
