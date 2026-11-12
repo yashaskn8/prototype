@@ -44,6 +44,7 @@ from tools.servy_real_demo_dialogue import (
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, is_explanation_followup, focused_causal_query, requested_topics,
     contextualize_fault_category_followup, has_documented_fault_category,
+    documented_fault_categories,
     is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response, expand_display_observation_query, fact_fingerprint,
 )
@@ -389,6 +390,20 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         continuation, asset_id, customer.id, thread_id=thread_id)
     last_topic, previous_facts, asked_followups = _load_demo_dialogue_state(continuation)
     last_causes = _load_demo_cause_state(continuation)
+    # Ordinal references belong to the most recently selected fault category.
+    # Switching categories invalidates the old list so "second cause" cannot
+    # silently refer to a different VRF section.
+    current_categories = documented_fault_categories(question)
+    previous_categories = ()
+    for prior_turn in reversed(history[-8:]):
+        previous_categories = documented_fault_categories(prior_turn)
+        if previous_categories:
+            break
+    if current_categories and previous_categories and current_categories != previous_categories:
+        last_causes = []
+        previous_facts = []
+        last_topic = None
+        asked_followups = []
     # "Explain the second cause" refers to the signed cause list of the
     # previous answer. The customer's own wording is kept for the signed
     # history, hazard check and ticket binding; the dialogue layer receives
