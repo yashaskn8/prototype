@@ -975,34 +975,60 @@ def _repeat_or_answered_followup(candidate, report):
     return False
 
 
-def _follow_up(topic, question, history=()):
-    """Choose one safe, contextual observation; do not repeat known questions.
-
-    The customer's reports are unverified, but can prevent us asking the
-    same thing repeatedly. These questions never authorize physical work.
-    """
+def _follow_up(topic, question, history=(), asked_followups=()):
+    """Choose one useful, safe question and never repeat an earlier prompt."""
+    if is_explanation_followup(question):
+        return None
     reports = " ".join(
         [str(t)[:220] for t in list(history or [])[-6:] if isinstance(t, str)]
         + [question or ""]
     )
     if topic == "causes":
         if _already_reported_code_absence(reports):
-            return "Does this issue happen constantly, or only at certain times?"
-        if _error_codes(reports):
-            return "When does that displayed code appear?"
-        return "Is a fault code or warning visible on the display?"
-    if topic in {"observations", "next"}:
-        if _already_reported_code_absence(reports):
-            return "When did you first notice this symptom?"
-        return "What can you see on the external display or indicator?"
-    if topic == "meaning":
-        return "Does the reported code appear consistently or intermittently?"
-    if topic == "general":
-        return "Which specific symptom or displayed code should I focus on?"
+            candidates = (
+                "When did you first notice this symptom?",
+                "Does the problem happen continuously or intermittently?",
+                "Does it happen at particular times or under particular conditions?",
+            )
+        elif _error_codes(reports):
+            candidates = (
+                "When does that displayed code appear?",
+                "Does the same code remain visible each time?",
+                "Did the problem start suddenly or gradually?",
+            )
+        else:
+            candidates = (
+                "Is a fault code or warning visible on the display?",
+                "Did the problem start suddenly or gradually?",
+                "Does the problem happen continuously or intermittently?",
+            )
+    elif topic in {"observations", "next"}:
+        candidates = (
+            "What can you see on the external display or indicator?",
+            "When did you first notice this symptom?",
+            "Does the problem happen continuously or intermittently?",
+        )
+    elif topic == "meaning":
+        candidates = (
+            "When does the reported code appear?",
+            "Does the same code remain visible each time?",
+        )
+    elif topic == "general":
+        candidates = (
+            "Which specific symptom or displayed code should I focus on?",
+            "When did you first notice the problem?",
+        )
+    else:
+        return None
+    asked = {_words(item) for item in asked_followups if isinstance(item, str)}
+    for candidate in candidates:
+        if (_words(candidate) not in asked
+                and not _repeat_or_answered_followup(candidate, reports)):
+            return candidate
     return None
 
 def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan=None,
-                 history=()):
+                 history=(), asked_followups=()):
     """Keep only direct, valid, signed evidence matching the user's intent.
 
     The caller passes a trusted structured contract from build_customer_answer.
@@ -1028,7 +1054,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                 **contract, "summary": message, "answer": message,
                 "presentation": {**presentation, "message": message},
             }, {"topic": last_topic if preserve_topic else topic,
-                "facts": list(previous_facts)[:24], "suggestions": []}
+                "facts": list(previous_facts)[:24], "suggestions": [],
+                "asked_followups": list(asked_followups)[-8:]}
         return contract, {"topic": last_topic, "facts": list(previous_facts)[:24],
                           "suggestions": []}
     original = contract.get("presentation") or {}
@@ -1191,13 +1218,17 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             or (bool(previous_facts) and is_contextual_followup(question))
         )
         return revised, {"topic": last_topic if preserve_topic and last_topic in TOPICS else topic,
-                         "facts": list(previous_facts)[:24], "suggestions": []}
+                         "facts": list(previous_facts)[:24], "suggestions": [],
+                         "asked_followups": list(asked_followups)[-8:]}
 
-    follow_up = _follow_up(topic, question, history)
+    follow_up = _follow_up(topic, question, history, asked_followups)
     style = "direct"
     if isinstance(plan, dict):
         from tools.servy_real_demo_local_planner import FOLLOW_UPS, STYLES
         if (plan.get("follow_up") in FOLLOW_UPS[topic]
+                and _words(plan["follow_up"]) not in {
+                    _words(item) for item in asked_followups if isinstance(item, str)
+                }
                 and not _repeat_or_answered_followup(
                     plan["follow_up"], " ".join([*history[-6:], question])
                 )):
@@ -1341,4 +1372,9 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         "documents": ["What possible causes are documented?"],
         "general": ["What possible causes are documented?", "What can I safely observe?"],
     }[topic]
-    return response, {"topic": topic, "facts": next_facts, "suggestions": suggestions}
+    next_asked = list(asked_followups)[-8:]
+    if follow_up:
+        next_asked.append(follow_up)
+        next_asked = next_asked[-8:]
+    return response, {"topic": topic, "facts": next_facts,
+                      "suggestions": suggestions, "asked_followups": next_asked}
