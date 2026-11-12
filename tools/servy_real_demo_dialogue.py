@@ -1189,9 +1189,9 @@ def _follow_up(topic, question, history=(), asked_followups=()):
     if topic == "causes":
         if _already_reported_code_absence(reports):
             candidates = (
-                "When did you first notice this symptom?",
+                "Did the problem start suddenly or gradually?",
                 "Does the problem happen continuously or intermittently?",
-                "Does it happen at particular times or under particular conditions?",
+                "When did you first notice this symptom?",
             )
         elif _error_codes(reports):
             candidates = (
@@ -1230,6 +1230,68 @@ def _follow_up(topic, question, history=(), asked_followups=()):
                 and not _repeat_or_answered_followup(candidate, reports)):
             return candidate
     return None
+
+
+def resolve_pending_followup_reply(question, pending_question, *, topic=None,
+                                   history=(), asked_followups=()):
+    """Resolve short replies only against the exact signed prompt awaiting a response."""
+    raw = " ".join(str(question or "").split())
+    prompt, answer = _words(pending_question), _words(raw)
+    if not raw or not prompt or len(raw) > 180 or "?" in raw or len(answer.split()) > 12:
+        return None
+    kind = value = acknowledgement = None
+    next_question = None
+    if "suddenly or gradually" in prompt:
+        if re.fullmatch(r"(?:it (?:started|began) )?(?:suddenly|all of a sudden)", answer):
+            kind, value = "onset", "suddenly"
+        elif re.fullmatch(r"(?:it (?:started|began) )?(?:gradually|over time)", answer):
+            kind, value = "onset", "gradually"
+        if kind:
+            acknowledgement = "Thanks — I've recorded that the problem started " + value + "."
+    elif "continuously or intermittently" in prompt or "every time or only sometimes" in prompt:
+        if re.fullmatch(r"(?:continuously|constantly|all the time|every time|always)", answer):
+            kind, value = "frequency", "continuously"
+        elif re.fullmatch(r"(?:intermittently|occasionally|sometimes|on and off|only sometimes)", answer):
+            kind, value = "frequency", "intermittently"
+        if kind:
+            acknowledgement = "Thanks — I've recorded that the problem happens " + value + "."
+    elif (("fault code" in prompt or "warning" in prompt or "indicator" in prompt)
+          and ("display" in prompt or "visible" in prompt or "indicator" in prompt)):
+        if re.fullmatch(r"(?:no|no code|no fault code|no error code|no warning|no code or warning|nothing(?: is)? (?:shown|displayed|visible)|nothing on (?:the )?display)", answer):
+            kind, value = "display_status", "no visible code or warning"
+            acknowledgement = "Thanks — I've recorded that no fault code or warning is visible."
+        elif answer in {"yes", "yes there is", "yes a warning", "yes a code"}:
+            kind, value = "display_status", "a code or warning is visible"
+            acknowledgement = "Thanks — I've recorded that a code or warning is visible."
+            next_question = "What exact code or warning text is displayed?"
+        elif re.search(r"\\b(?:e|f|err)[ -]?\\d{1,3}\\b|\\b(?:warning|alarm)\\b", raw, re.I):
+            kind, value = "display_detail", raw[:120]
+            acknowledgement = "Thanks — I've recorded this display wording as customer-reported: " + raw[:120] + "."
+            next_question = "When does that displayed code or warning appear?"
+    elif "when did you first notice" in prompt:
+        if re.search(r"\\b(?:today|yesterday|last night|this morning|this afternoon|earlier today|recently|\\d+\\s*(?:minutes?|hours?|days?|weeks?)\\s+ago)\\b", answer):
+            kind, value = "first_noticed", raw[:100]
+            acknowledgement = "Thanks — I've recorded when you first noticed it: " + raw[:100] + "."
+    elif "when does that displayed code" in prompt or "when does the reported code" in prompt:
+        if raw and len(answer.split()) <= 8:
+            kind, value = "code_timing", raw[:100]
+            acknowledgement = "Thanks — I've recorded when the displayed code appears: " + raw[:100] + "."
+            next_question = "Does the same code remain visible each time?"
+    elif "same code remain visible each time" in prompt:
+        if answer in {"yes", "yes it does", "no", "no it does not", "not always", "sometimes"}:
+            kind, value = "code_persistence", answer
+            acknowledgement = "Thanks — I've recorded whether the code remains visible each time: " + answer + "."
+    elif "which indoor units are affected" in prompt:
+        if re.search(r"\\b(?:unit|units|all|both|one|two|three|four|five|\\d+)\\b", answer):
+            kind, value = "affected_units", raw[:100]
+            acknowledgement = "Thanks — I've recorded the affected units as customer-reported: " + raw[:100] + "."
+    if not kind:
+        return None
+    if next_question is None:
+        next_question = _follow_up(topic if topic in TOPICS else "causes", raw, history, asked_followups)
+    return {"kind": kind, "value": value,
+            "acknowledgement": acknowledgement, "next_question": next_question}
+
 
 CATEGORY_QUESTION = "Which of these documented conditions matches what you observe?"
 NEEDS_SYMPTOM = "NEEDS_SYMPTOM_CLARIFICATION"

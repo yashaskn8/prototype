@@ -226,6 +226,27 @@ class VrfConversationTests(unittest.TestCase):
         )
         self.assertTrue(results[2]["presentation"]["cause_explanation_unavailable"])
 
+
+    def test_short_followup_answers_are_acknowledged_without_rag_retrieval(self):
+        results = converse("vrf", [
+            "What could be the possible reasons why my VRF outdoor module is not working?",
+            "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
+            "no code",
+            "suddenly",
+            "intermittently",
+        ])
+        self.assertEqual(results[2]["response_type"], "CLARIFICATION")
+        self.assertEqual(results[2]["retrieval_attempts"], 0)
+        self.assertIn("suddenly or gradually", results[2]["clarification_question"])
+        self.assertEqual(results[3]["response_type"], "CLARIFICATION")
+        self.assertEqual(results[3]["retrieval_attempts"], 0)
+        self.assertIn("problem started suddenly", results[3]["message"])
+        self.assertIn("continuously or intermittently",
+                      results[3]["clarification_question"])
+        self.assertEqual(results[4]["response_type"], "CLARIFICATION")
+        self.assertEqual(results[4]["retrieval_attempts"], 0)
+        self.assertIn("problem happens intermittently", results[4]["message"])
+
     def test_unsupported_fault_code_is_not_explained(self):
         (r,) = converse("vrf", ["The outdoor module shows fault code E-99. What does E-99 mean?"])
         self.assertEqual(r["response_type"], "INSUFFICIENT_EVIDENCE")

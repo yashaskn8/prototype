@@ -366,6 +366,21 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertEqual(facts, ["a" * 64])
         self.assertEqual(asked, ["Is a fault code or warning visible on the display?"])
 
+    def test_signed_pending_followup_is_round_tripped_and_bounded(self):
+        pending = "Did the problem start suddenly or gradually?"
+        token = demo._sign_demo_context(
+            60, 13, "What are the possible causes?", "The VRF is not working.",
+            ["The VRF is not working."], last_topic="causes",
+            pending_followup=pending,
+        )
+        self.assertEqual(demo._load_demo_pending_followup(token), pending)
+        from django.core import signing
+        invalid = signing.dumps(
+            {"pending_followup": "x" * 241}, salt=demo.DEMO_CONTEXT_SALT,
+        )
+        with self.assertRaises(ValueError):
+            demo._load_demo_pending_followup(invalid)
+
     def test_signed_dialogue_state_rejects_oversized_or_malformed_question_memory(self):
         from django.core import signing
         bad = signing.dumps({

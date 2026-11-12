@@ -44,7 +44,7 @@ from tools.servy_real_demo_dialogue import (
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
     is_contextual_followup, is_explanation_followup, focused_causal_query, requested_topics,
     contextualize_fault_category_followup, has_documented_fault_category,
-    documented_fault_categories,
+    documented_fault_categories, resolve_pending_followup_reply, CATEGORY_QUESTION,
     is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response, expand_display_observation_query, fact_fingerprint,
 )
@@ -53,7 +53,7 @@ PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
 ASSET_SCOPE = {59: 14, 60: 13, 61: 14}
 DEMO_USER_ID = -27360
-MAX_BODY = 12000
+MAX_BODY = 20000
 MAX_LOCAL_TICKET_BODY = 26 * 1024 * 1024
 MAX_LOCAL_TICKET_DESCRIPTION = 100_000
 MAX_LOCAL_TICKET_UPLOAD = 25 * 1024 * 1024
@@ -61,7 +61,7 @@ MAX_LOCAL_TICKET_UPLOAD = 25 * 1024 * 1024
 # lives in the browser; the real-data demo never writes conversation records.
 DEMO_CONTEXT_SALT = "servy-real-demo-conversation-v1"
 DEMO_CONTEXT_MAX_AGE = 7200
-DEMO_CONTEXT_MAX_TURNS = 6
+DEMO_CONTEXT_MAX_TURNS = 10
 DEMO_CONTEXT_TEXT_LIMIT = 650
 LOGGED_ROUTES = frozenset({"/demo-api/inventory/", "/demo-api/source/",
     "/demo-api/query/", "/demo-api/tickets/preview/",
@@ -172,7 +172,7 @@ def _load_demo_context(token, asset_id, customer_id, thread_id=None):
     """Read only a server-signed continuation for this exact asset/customer."""
     if token is None or token == "":
         return "", [], False
-    if not isinstance(token, str) or len(token) > 10000:
+    if not isinstance(token, str) or len(token) > 16000:
         raise ValueError("Invalid conversation continuation")
     from django.core import signing
     try:
@@ -235,11 +235,30 @@ def _load_demo_cause_state(token):
     return list(causes)
 
 
+def _load_demo_pending_followup(token):
+    """Load the exact pending question from the signed continuation."""
+    if not token:
+        return None
+    from django.core import signing
+    state = signing.loads(token, salt=DEMO_CONTEXT_SALT, max_age=DEMO_CONTEXT_MAX_AGE)
+    pending = state.get("pending_followup")
+    if pending is None:
+        return None
+    if not isinstance(pending, str) or not pending.strip() or len(pending) > 240:
+        raise ValueError("Invalid signed pending follow-up")
+    return pending
+
+
 def _sign_demo_context(asset_id, customer_id, question, first, history,
                        hazard=False, last_topic=None, shown_facts=None,
-                       asked_followups=None, thread_id=None, last_causes=None):
+                       asked_followups=None, thread_id=None, last_causes=None,
+                       pending_followup=None):
     from django.core import signing
     recent = (history + [question[:DEMO_CONTEXT_TEXT_LIMIT]])[-DEMO_CONTEXT_MAX_TURNS:]
+    if (pending_followup is not None
+            and (not isinstance(pending_followup, str)
+                 or not pending_followup.strip() or len(pending_followup) > 240)):
+        raise ValueError("Invalid pending follow-up")
     return signing.dumps({
         "asset": asset_id,
         "customer": customer_id,
@@ -252,6 +271,7 @@ def _sign_demo_context(asset_id, customer_id, question, first, history,
         "asked_followups": list(asked_followups or [])[-8:],
         **({"last_causes": list(last_causes)}
            if last_causes and valid_cause_state(last_causes) else {}),
+        "pending_followup": pending_followup,
     }, salt=DEMO_CONTEXT_SALT, compress=True)
 
 
@@ -390,6 +410,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         continuation, asset_id, customer.id, thread_id=thread_id)
     last_topic, previous_facts, asked_followups = _load_demo_dialogue_state(continuation)
     last_causes = _load_demo_cause_state(continuation)
+    pending_followup = _load_demo_pending_followup(continuation)
     # Ordinal references belong to the most recently selected fault category.
     # Switching categories invalidates the old list so "second cause" cannot
     # silently refer to a different VRF section.
@@ -404,6 +425,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         previous_facts = []
         last_topic = None
         asked_followups = []
+        pending_followup = None
     # "Explain the second cause" refers to the signed cause list of the
     # previous answer. The customer's own wording is kept for the signed
     # history, hazard check and ticket binding; the dialogue layer receives
@@ -439,6 +461,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         last_topic = None
         asked_followups = []
         last_causes = []
+        pending_followup = None
     facts_before = list(previous_facts)
     conflict = None
     current_hazard, hazard_warning = check_for_safety_hazard(asked_question)
@@ -456,6 +479,11 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     local_planner_used = False
     retrieval_attempts = 0
     is_hazard = current_hazard or earlier_hazard
+    pending_reply = None if is_hazard else resolve_pending_followup_reply(
+        asked_question, pending_followup, topic=last_topic,
+        history=history, asked_followups=asked_followups,
+    )
+    pending_followup_next = None
     if is_hazard:
         warning = hazard_warning or (
             "A previously reported safety concern still requires escalation. "
@@ -487,6 +515,32 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                     "presentation": presentation,
                     "reason_code": "OUT_OF_SCOPE_QUERY",
                     "engine": "dialogue-scope-guard"}
+        rag = {"retrieval_backend": "not-required",
+               "reranker_applied": False, "reranker_model": None}
+    elif off_topic is None and pending_reply is not None:
+        # The customer is answering the exact prior prompt. Capture it as
+        # customer-reported context; do not run RAG or present a diagnosis.
+        pending_followup_next = pending_reply["next_question"]
+        if pending_followup_next:
+            asked_followups = (list(asked_followups) + [pending_followup_next])[-8:]
+        acknowledgement = pending_reply["acknowledgement"]
+        presentation = exception_presentation({
+            "response_type": "CLARIFICATION",
+            "clarification_question": pending_followup_next,
+            "asset": {"id": asset.id, "name": asset.name,
+                      "model_number": asset.model_number},
+            "summary": acknowledgement,
+            "can_escalate": True,
+        })
+        presentation["message"] = acknowledgement
+        presentation["follow_up_question"] = pending_followup_next
+        presentation["clarification_question"] = pending_followup_next
+        contract = {
+            "response_type": "CLARIFICATION",
+            "presentation": presentation,
+            "reason_code": "CUSTOMER_REPORT_CAPTURED",
+            "engine": "signed-pending-followup",
+        }
         rag = {"retrieval_backend": "not-required",
                "reranker_applied": False, "reranker_model": None}
     elif is_technician_handoff_request(question):
@@ -793,6 +847,11 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                if isinstance(presentation, dict) else contract.get("message", ""))
     clarification_question = None
     clarification_options = []
+    if contract.get("reason_code") == "CUSTOMER_REPORT_CAPTURED":
+        clarification_question = (
+            presentation.get("clarification_question")
+            if isinstance(presentation, dict) else None
+        )
     if response_type == "INSUFFICIENT_EVIDENCE" and not history:
         vague, clarifying, options = check_for_vague_complaint(question, asset)
         if vague or _question_guard(question) == "clarify":
@@ -826,6 +885,16 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     # available; the form is opened only once the question cannot be answered.
     if contract.get("reason_code") == "NEEDS_SYMPTOM_CLARIFICATION":
         state = None
+    if pending_followup_next is None and isinstance(presentation, dict):
+        candidate_pending = presentation.get("follow_up_question")
+        if isinstance(candidate_pending, str) and candidate_pending.strip():
+            pending_followup_next = candidate_pending
+    if (pending_followup_next is None
+            and contract.get("reason_code") == "NEEDS_SYMPTOM_CLARIFICATION"):
+        pending_followup_next = CATEGORY_QUESTION
+    if (pending_followup_next is None and isinstance(clarification_question, str)
+            and clarification_question.strip()):
+        pending_followup_next = clarification_question
     if state in {PARTIAL, INSUFFICIENT}:
         assignment = issue_assignment(
             state=state, question=asked_question, conflict=conflict,
@@ -853,7 +922,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             asset_id, customer.id, asked_question, original, history, hazard=is_hazard,
             last_topic=last_topic, shown_facts=previous_facts,
             asked_followups=asked_followups, thread_id=thread_id,
-            last_causes=last_causes,
+            last_causes=last_causes, pending_followup=pending_followup_next,
         ),
         "conversation_turn": len(history) + 1,
         "dialogue_planner": (

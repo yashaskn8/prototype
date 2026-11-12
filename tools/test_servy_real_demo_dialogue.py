@@ -8,7 +8,7 @@ from tools.servy_real_demo_dialogue import (
     out_of_scope_response, focused_causal_query, wants_additional,
     is_technician_handoff_request, build_technician_handoff, NO_EVIDENCE,
     contextualize_fault_category_followup, documented_fault_categories,
-    _follow_up,
+    resolve_pending_followup_reply, _follow_up,
 )
 
 
@@ -263,6 +263,45 @@ class FollowupDeduplicationTests(unittest.TestCase):
             _follow_up("next", "What should I do next?"),
             "What can you see on the external display or indicator?",
         )
+
+
+class PendingFollowupReplyTests(unittest.TestCase):
+    def test_no_code_then_suddenly_is_a_valid_two_step_customer_report(self):
+        no_code = resolve_pending_followup_reply(
+            "no code", "Is a fault code or warning visible on the display?",
+            topic="causes",
+        )
+        self.assertEqual(no_code["kind"], "display_status")
+        self.assertEqual(no_code["next_question"], "Did the problem start suddenly or gradually?")
+        sudden = resolve_pending_followup_reply(
+            "suddenly", no_code["next_question"], topic="causes",
+            asked_followups=[
+                "Is a fault code or warning visible on the display?",
+                "Did the problem start suddenly or gradually?",
+            ],
+        )
+        self.assertEqual(sudden["kind"], "onset")
+        self.assertIn("problem started suddenly", sudden["acknowledgement"])
+        self.assertEqual(
+            sudden["next_question"],
+            "Does the problem happen continuously or intermittently?",
+        )
+
+    def test_intermittently_is_customer_reported_not_a_diagnosis(self):
+        result = resolve_pending_followup_reply(
+            "intermittently", "Does the problem happen continuously or intermittently?",
+            topic="causes",
+        )
+        self.assertEqual(result["kind"], "frequency")
+        self.assertIn("problem happens intermittently", result["acknowledgement"])
+
+    def test_unprompted_short_reply_is_ignored(self):
+        self.assertIsNone(resolve_pending_followup_reply("suddenly", None))
+        self.assertIsNone(resolve_pending_followup_reply(
+            "suddenly", "Is a fault code or warning visible on the display?",
+        ))
+
+
 
 
 class IntentFocusTests(unittest.TestCase):

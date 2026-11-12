@@ -28,20 +28,16 @@ INTENTS = ("causes", "observations", "next", "meaning", "documents", "general")
 STYLES = ("direct", "friendly", "brief")
 FOLLOW_UPS = {
     "causes": (
-        "Is there a code or warning on the display?",
+        "Is a fault code or warning visible on the display?",
         "Did the problem start suddenly or gradually?",
         "Does the problem happen continuously or intermittently?",
     ),
     "observations": (
-        "What can you see on the external display or indicator?",
-        "Is there a warning or unusual sound?",
-        "Does the issue happen every time or only sometimes?",
+        "Is a fault code or warning visible on the display?",
+        "When did you first notice this symptom?",
+        "Does the problem happen continuously or intermittently?",
     ),
-    "next": (
-        "What have you already tried, and what did you observe?",
-        "What changed after the previous check?",
-        "Is there a displayed code or warning?",
-    ),
+    "next": (),
     "meaning": (
         "When does the displayed code appear?",
         "Does that same code still appear?",
