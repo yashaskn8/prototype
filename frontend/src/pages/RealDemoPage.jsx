@@ -381,20 +381,8 @@ export function RealDemoPage() {
     finally { setBusy(false); }
   }
 
-  // Insufficient internal evidence invokes the existing ticket workflow once
-  // per answer. The customer still completes and submits the form.
-  const promptedAssignment = useRef(new Set());
-  const startTicketRef = useRef(null);
-  useEffect(() => { startTicketRef.current = startTicket; });
-  useEffect(() => {
-    const latest = messages.at(-1);
-    if (latest?.role !== 'assistant' || !pendingAssignment(latest.data)
-      || !latest.data.ticket_context || answeredQuestion === ''
-      || promptedAssignment.current.has(latest.id)
-      || ticketDraft || ticketConfirmation) return;
-    promptedAssignment.current.add(latest.id);
-    startTicketRef.current();
-  }, [messages, answeredQuestion, ticketDraft, ticketConfirmation]);
+  // Ticket creation is deliberately user-initiated. An answer that needs
+  // technician help may show the optional action, but never opens the form.
 
   const asset = assets?.find(item => String(item.id) === assetId);
   return <div className="app-container real-demo-shell">
