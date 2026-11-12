@@ -65,11 +65,8 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
       {data.sections.map(section => <section className="customer-answer-point" key={section.number}>
         {!data.focused && <h3><span aria-hidden="true">{section.number}</span>{section.title}</h3>}
         {section.claims.map((claim, index) => <div className="customer-answer-claim" key={claim.id || index}>
-          {claim.explanation && <p className="customer-answer-explanation">
-            <strong>In plain language: </strong>{claim.explanation}
-          </p>}
           <p className="customer-answer-source-claim">
-            {claim.explanation ? <><strong>Manual statement: </strong>{claim.text}</> : claim.text}
+            {claim.text}
           {[...new Set(claim.evidence_ids)].map(id => {
             const citation = data.citations.find(s => s.id === id);
             const number = data.citations.indexOf(citation) + 1;
