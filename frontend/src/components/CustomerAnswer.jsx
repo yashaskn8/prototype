@@ -82,7 +82,9 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
         </div>)}
       </section>)}
     </div>}
-    {data.documentCoverage && <div className={\`customer-answer-document-coverage \${data.documentCoverage.complete ? 'is-complete' : 'is-incomplete'}\`}>
+    {data.documentCoverage && <div className={data.documentCoverage.complete
+      ? "customer-answer-document-coverage is-complete"
+      : "customer-answer-document-coverage is-incomplete"}>
       <strong>{data.documentCoverage.complete ? 'Approved document review' : 'Document review limitation'}</strong>
       <p>{data.documentCoverage.note}</p>
       <small>{data.documentCoverage.documentsSearched} documents searched · {data.documentCoverage.approvedDocuments} approved in scope · {data.documentCoverage.passagesSearched} passages reviewed</small>
@@ -96,7 +98,7 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
         {source.snippets.map((snippet, index) => <blockquote key={index}>{snippet}</blockquote>)}
       </article>)}
     </section>}
-    {data.followUpQuestion && <p className="customer-answer-followup">{data.followUpQuestion}</p>
+    {data.followUpQuestion && <p className="customer-answer-followup">{data.followUpQuestion}</p>}
     {!!data.sections.length && Array.isArray(presentation.customer_authorized_actions)
       && presentation.customer_authorized_actions.length > 0
       && <button type="button" className="btn btn-secondary" onClick={() => setUnable(true)}>I cannot perform a check</button>}
