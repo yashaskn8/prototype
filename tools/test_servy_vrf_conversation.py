@@ -118,10 +118,23 @@ class VrfConversationTests(unittest.TestCase):
         self.assertIn("VRF Outdoor Module", block["description"])
         self.assertIn("not working", block["description"])
 
-    def test_answering_the_clarification_returns_the_documented_causes(self):
-        results = converse("vrf", [VRF_TURNS[0],
-                                   "It is a communication fault. What are the causes?",
-                                   "Explain the second cause."])
+    def test_exact_customer_wording_clarifies_then_answers_communication_causes(self):
+        results = converse("vrf", [
+            "What could be the possible reasons why my VRF outdoor module is not working?",
+            "I think it may be a communication or addressing fault. What causes are documented in the approved manual?",
+            "Explain the second documented cause of the communication or addressing fault. What does the approved manual say, and what does it not establish?",
+        ])
+        first = results[0]
+        self.assertEqual(first["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(first["citations"], [])
+        first_message = first["presentation"]["message"]
+        self.assertIn("does not list causes for the problem as you described it", first_message)
+        for condition in VRF_CONDITIONS:
+            self.assertIn(condition, first_message)
+        self.assertEqual(first_message.count("?"), 1)
+        self.assertTrue(first_message.endswith(CATEGORY_QUESTION))
+        self.assertIsNone(first["issue_assignment"])
+
         rows = _shown(results[1])
         self.assertEqual([r[3] for r in rows], [
             "Communication cable damage or incorrect topology.",
@@ -131,6 +144,7 @@ class VrfConversationTests(unittest.TestCase):
         self.assertIn("lists these possibilities", results[1]["presentation"]["message"])
         followup = _shown(results[2])
         self.assertEqual(followup[0][3], "Duplicate/missing addresses or configuration mismatch.")
+        self.assertIn("no further explanation", results[2]["presentation"]["message"].lower())
         self.assertEqual(results[2]["evidence_state"], "PARTIAL")
 
     def test_unsupported_fault_code_is_not_explained(self):
