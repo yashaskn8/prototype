@@ -399,7 +399,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         previous_categories = documented_fault_categories(prior_turn)
         if previous_categories:
             break
-    if current_categories and previous_categories and current_categories != previous_categories:
+    if current_categories and current_categories != previous_categories:
         last_causes = []
         previous_facts = []
         last_topic = None
