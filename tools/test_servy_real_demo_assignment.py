@@ -263,6 +263,38 @@ class CauseFollowUpTests(unittest.TestCase):
                       block["description"])
         self.assertIn("Explain the second cause", block["unanswered_question"])
 
+    def test_no_evidence_retry_does_not_restore_the_hidden_customer_limitation_block(self):
+        first, _ = _cause_turn()
+        insufficient = {
+            "response_type": "INSUFFICIENT_EVIDENCE",
+            "reason_code": "NO_RELEVANT_APPROVED_EVIDENCE",
+            "engine": "source-structured-extractive",
+            "summary": "The available documentation does not establish a further explanation.",
+            "answer": "The available documentation does not establish a further explanation.",
+            "citations": [],
+            "presentation": {
+                "schema_version": "customer-answer-v1",
+                "response_type": "INSUFFICIENT_EVIDENCE",
+                "equipment": {"id": 60, "name": "Synthetic Split AC"},
+                "sections": [],
+                "citations": [],
+                "supporting_claims": [],
+                "message": "The available documentation does not establish a further explanation.",
+            },
+        }
+        result, _, _ = _run(
+            "Explain the second cause in more detail",
+            [insufficient, insufficient],
+            continuation=first["continuation"],
+        )
+        self.assertTrue(result["presentation"]["cause_explanation_unavailable"])
+        self.assertNotIn(
+            "The approved internal documentation does not contain any further explanation",
+            json.dumps(result["presentation"]),
+        )
+        self.assertEqual(result["evidence_state"], "INSUFFICIENT")
+        self.assertTrue(result["issue_assignment"]["required"])
+
     def test_explain_each_without_new_passages_hides_limitation_and_escalates(self):
         first, _ = _cause_turn()
         with patch.object(demo, "explain_claims",
