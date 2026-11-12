@@ -707,10 +707,9 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
             and last_topic == "causes" and is_explanation_followup(question)):
         explanation_presentation = contract.get("presentation") or {}
-        # With no additional approved passage, rewording the same sentences
-        # would only look like more detail. Keep the stated limitation instead.
-        explanations = ({} if limitation_texts(explanation_presentation)
-                        else explain_claims(question, explanation_presentation))
+        # Free-form model paraphrases cannot be proven to entail the cited
+        # sentence. Keep exact source claims and retrieved evidence only.
+        explanations = {}
         explanation_claims = [
             claim for claim in explanation_presentation.get("supporting_claims", [])
             if isinstance(claim, dict) and claim.get("kind") in {"possible_cause", "information"}
