@@ -69,7 +69,15 @@ def targeted_retry_query(question, asset, context, *, last_topic=None, cause_cla
         ]
     elif explanation_request:
         cause_focus = []
-        for claim in list(cause_claims or [])[:4]:
+        cause_terms = []
+        stop_words = {
+            "the", "and", "or", "a", "an", "is", "are", "be", "been",
+            "may", "might", "could", "can", "to", "of", "for", "by",
+            "when", "if", "this", "that", "it", "as", "with", "from",
+            "affect", "affects", "involved", "issue", "problem", "operation",
+            "operating", "possible", "cause", "causes", "documented",
+        }
+        for claim in list(cause_claims or [])[:8]:
             if isinstance(claim, dict):
                 source = claim.get("source_text", "")
             else:
@@ -79,9 +87,17 @@ def targeted_retry_query(question, asset, context, *, last_topic=None, cause_cla
             focused = retrieval_focus(source) or relevance_text(source)
             if focused and not query_is_control_abuse(focused):
                 cause_focus.append(focused[:110])
+            # Include a compact lexical form as well as the complete source
+            # phrase. Hyphenated equipment terms are split for BM25 matching.
+            tokens = re.findall(r"[a-z0-9]+", source.casefold())
+            cause_terms.extend(
+                token for token in tokens if len(token) >= 3 and token not in stop_words
+            )
+        normalized_cause_terms = " ".join(dict.fromkeys(cause_terms))[:180]
         clauses = [
             asset_name, asset_model, issue,
             " ".join(cause_focus),
+            normalized_cause_terms,
             "detailed documented causes explanation, meaning, contributing conditions, "
             "manual context and limitations",
         ]
