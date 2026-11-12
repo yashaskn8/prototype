@@ -8,6 +8,19 @@ from __future__ import annotations
 import re
 
 
+# These prompts explicitly ask for safety guidance, but the relevant restriction
+# may live inside a symptom/diagnostic passage rather than a section titled
+# "Safety". Section-heading labels alone must not override evidence ranking.
+_SAFETY_FOCUSED_QUERY = re.compile(
+    r"\\b(?:safety|hazards?|prohibited\\s+actions?)\\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_safety_focused_query(query_text: str) -> bool:
+    return bool(_SAFETY_FOCUSED_QUERY.search(str(query_text or "")))
+
+
 _INTENT_PATTERNS = {
     "safety": (
         r"\bsafety\b", r"\bhazard", r"\bppe\b", r"\block\s*out\b",
@@ -115,7 +128,15 @@ def experimental_evidence_section_rerank(results: list, query_text: str, top_k: 
         candidate_intents = _candidate_intents(item)
         adjustment = 0.0
         reason = "evidence_rank_only"
-        if query_intents and candidate_intents:
+        if _is_safety_focused_query(query_text):
+            # Safety wording is frequently embedded in symptom-specific passages
+            # (e.g. "do not chip ice" or "do not reset a tripping breaker").
+            # A generic heading called "Safety" must not outrank that evidence
+            # merely because the user's question contains the word "safety".
+            # Retain the evidence-aware rank, but neutralize section-only bias.
+            adjustment = 0.0
+            reason = "safety_query_section_neutral"
+        elif query_intents and candidate_intents:
             overlap = set(query_intents).intersection(candidate_intents)
             if overlap:
                 coverage = len(overlap) / len(query_intents)

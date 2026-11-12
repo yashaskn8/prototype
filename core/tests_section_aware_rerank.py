@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.conf import settings
 from django.test import SimpleTestCase
@@ -109,3 +110,65 @@ class SectionAwareRankingTests(SimpleTestCase):
         self.assertIn("Section: Pressure measurement", rendered)
         self.assertIn("Document type: Measurements", rendered)
         self.assertIn("Measure discharge pressure", rendered)
+
+
+    def test_safety_queries_do_not_promote_generic_safety_heading_over_specific_evidence(self):
+        scenarios = [
+            (
+                "For ice on coil or pipe, which safety precautions or prohibited actions apply?",
+                "5. SYMPTOM: ICE ON COIL OR PIPE",
+                "Stop cooling operation. Do not chip ice with sharp tools.",
+            ),
+            (
+                "For a unit that does not start, which safety precautions apply?",
+                "2. SYMPTOM: UNIT DOES NOT START",
+                "Do not repeatedly reset a tripping breaker. Electrical checks require a qualified person.",
+            ),
+            (
+                "For acceptance criteria, which safety limitations or prohibited actions apply?",
+                "6. ACCEPTANCE CRITERIA",
+                "No active critical fault is present and safety interlocks work.",
+            ),
+            (
+                "For poor cooling, which safety precautions or limitations apply?",
+                "5. SYMPTOM: POOR COOLING",
+                "Do not infer refrigerant charge from temperature alone.",
+            ),
+        ]
+
+        with patch(
+            "core.ml.technical_retrieval.evidence_aware_rerank",
+            side_effect=lambda results, *args, **kwargs: results,
+        ):
+            for index, (query, specific_heading, specific_text) in enumerate(scenarios, 1):
+                with self.subTest(query=query):
+                    specific = make_candidate(
+                        index * 10,
+                        "Troubleshooting Manual",
+                        specific_heading,
+                        "Troubleshooting",
+                        specific_text,
+                    )
+                    generic_safety = make_candidate(
+                        index * 10 + 1,
+                        "Installation Manual",
+                        "2. SAFETY",
+                        "Installation",
+                        "Only qualified personnel may work. Isolate power and use PPE.",
+                    )
+
+                    ranked = experimental_evidence_section_rerank(
+                        [specific, generic_safety], query, top_k=2
+                    )
+
+                    self.assertEqual(ranked[0].chunk_id, specific.chunk_id)
+                    self.assertEqual(
+                        ranked[0].section_rerank_reason,
+                        "safety_query_section_neutral",
+                    )
+                    self.assertEqual(ranked[0].section_rerank_adjustment, 0.0)
+                    self.assertEqual(
+                        ranked[1].section_rerank_reason,
+                        "safety_query_section_neutral",
+                    )
+                    self.assertEqual(ranked[1].section_rerank_adjustment, 0.0)
