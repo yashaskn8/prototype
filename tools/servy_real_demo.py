@@ -418,8 +418,16 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         question if selected_cause else
         contextualize_fault_category_followup(question, history, last_topic)
     )
+    category_scoped_followup = answer_question != question
     context, retrieval_query = _demo_query_context(asset, question, original, history)
     retrieval_query = expand_display_observation_query(question, retrieval_query)
+    if category_scoped_followup and answer_question.casefold() not in retrieval_query.casefold():
+        # The customer selected this manual category in an earlier turn.
+        # Carry that exact suspected category into retrieval ranking as well
+        # as answer validation; it remains a suspicion, not a diagnosis.
+        retrieval_query = (
+            retrieval_query + "; selected manual category: " + answer_question
+        )[:450]
     # A new, explicit equipment symptom starts a new evidence thread; retain
     # the signed customer history, but don't hide relevant facts just because
     # they were shown for an earlier and different problem.
