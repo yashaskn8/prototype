@@ -1057,7 +1057,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                 "facts": list(previous_facts)[:24], "suggestions": [],
                 "asked_followups": list(asked_followups)[-8:]}
         return contract, {"topic": last_topic, "facts": list(previous_facts)[:24],
-                          "suggestions": []}
+                          "suggestions": [], "asked_followups": list(asked_followups)[-8:]}
     original = contract.get("presentation") or {}
     off_topic = out_of_scope_response(question)
     topic = question_topic(question, last_topic)
@@ -1225,7 +1225,8 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     style = "direct"
     if isinstance(plan, dict):
         from tools.servy_real_demo_local_planner import FOLLOW_UPS, STYLES
-        if (plan.get("follow_up") in FOLLOW_UPS[topic]
+        if (not is_explanation_followup(question)
+                and plan.get("follow_up") in FOLLOW_UPS[topic]
                 and _words(plan["follow_up"]) not in {
                     _words(item) for item in asked_followups if isinstance(item, str)
                 }
