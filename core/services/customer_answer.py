@@ -47,12 +47,39 @@ def _noninvasive_observation(text):
             and (not instrument_reading or bool(visible_readout)))
 
 
-def _descriptive_cause(text):
-    # Nouns such as "low refrigerant charge" describe causes. Imperatives and
-    # compound directives remain excluded, even inside a manual's cause list.
-    directive = r"(?:" + PHYSICAL_OPERATION.pattern + r"|(?:check|confirm|inspect|verify|observe|read|report)\b)"
-    return not re.search(r"(?:^|[.;:]\s*|\b(?:must|should|please|then|and|need to|try to|you can)\s+)" + directive, text, re.I)
+# Cause lists sometimes contain checklist bullets. Treat a sentence as a
+# cause only when it describes a condition, not when it tells the reader to
+# inspect, record, operate or alter equipment.
+_CAUSE_DIRECTIVE_VERBS = (
+    r"(?:do not|don't|never|always|please|check|confirm|inspect|verify|observe|"
+    r"read|report|record|note|look(?:\s+(?:for|at))?|monitor|collect|capture|"
+    r"document|ensure|make sure|open|remove|replace|disconnect|connect|reconnect|"
+    r"bypass|charge|adjust|measure|probe|touch|strip|clean|wipe|rinse|flush|"
+    r"restart|reset|press|turn|disassemble|dismantle|repair|test|rotate|spin|"
+    r"tighten|loosen|lubricate|drain|fill|insert|unlock|energize|switch|plug|"
+    r"solder|heat|manipulate|pour|mix|wash|pull|push|use|refer|follow|escalate|"
+    r"stop|isolate|attach|create|review|perform|position|compare|pressure[- ]test|"
+    r"link|select|allow|apply|provide)\b"
+)
+_CAUSE_DIRECTIVE_START = re.compile(
+    r"^(?:" + _CAUSE_DIRECTIVE_VERBS + r")|"
+    r"(?:[.;:]\s+)(?:" + _CAUSE_DIRECTIVE_VERBS + r")",
+    re.I,
+)
+_CAUSE_MODAL_DIRECTIVE = re.compile(
+    r"\b(?:must|should|need to|try to|you can|you should)\s+"
+    r"(?:not\s+)?(?:" + _CAUSE_DIRECTIVE_VERBS + r")",
+    re.I,
+)
 
+
+def _descriptive_cause(text):
+    """Reject instructions/checklist items while retaining cause noun phrases."""
+    clean = " ".join(_clean_line(text).split())
+    return bool(clean) and not (
+        _CAUSE_DIRECTIVE_START.search(clean)
+        or _CAUSE_MODAL_DIRECTIVE.search(clean)
+    )
 
 _IMPERATIVE_START = re.compile(
     r"^(?:\[\s?[xX ]?\]\s*)?(?:do not|don't|never|always|please|"
@@ -382,7 +409,8 @@ def source_chunk(*, tenant, customer, asset, document_id, chunk_id):
 
 def _clean_line(line):
     clean = re.sub(r"^\s*(?:[-*•]+|\d+[.)])\s+", "", line).strip()
-    clean = clean.replace("**", "").replace("__", "").replace("`", "")
+    clean = re.sub(r"^\s*\[\s?[xX ]\s?\]\s*", "", clean)
+    clean = clean.replace("**", "").replace("__", "").replace(chr(96), "")
     return re.sub(r"(?<!\w)[*_]([^*_]+)[*_](?!\w)", r"\1", clean)
 
 
@@ -400,7 +428,15 @@ def source_claims(text):
         elif line:
             clean = _clean_line(line)
             if 12 <= len(clean) <= 320 and len(clean.split()) >= 3:
-                is_cause = (cause_list and bool(re.match(r"(?:[-*•]+|\d+[.)])\s", line))) or bool(re.search(r"\b(?:may be caused by|(?:is|are|can be) caused by|possible cause|can cause|may cause|causing|leads? to|results? in)\b", clean, re.I))
+                is_cause = (
+                    (cause_list and bool(re.match(r"(?:[-*•]+|\d+[.)])\s", line))
+                     and _descriptive_cause(clean))
+                    or (bool(re.search(
+                        r"\b(?:may be caused by|(?:is|are|can be) caused by|possible cause|"
+                        r"can cause|may cause|causing|leads? to|results? in)\b",
+                        clean, re.I,
+                    )) and _descriptive_cause(clean))
+                )
                 if is_cause:
                     clean = re.sub(r"^Why:\s*", "", clean, flags=re.I)
                 yield clean, "possible_cause" if is_cause else "information", offset, offset + len(raw.rstrip("\r\n"))
