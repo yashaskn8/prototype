@@ -58,7 +58,7 @@ class ClaimCategoryIsolationTests(unittest.TestCase):
             "Possible causes:\n"
             "- Communication cable damage or incorrect topology.\n"
             "- [ ] Look for oil residue or other evidence of a refrigerant leak.\n"
-            "- Visible oil residue may indicate a refrigerant leak.\\n"
+            "- Visible oil residue may indicate a refrigerant leak.\n"
             "- Inspect the internal wiring for damage.\n"
             "- Low refrigerant charge.\n"
         ))
