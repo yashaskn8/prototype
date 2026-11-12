@@ -502,7 +502,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         ) else 5
         rag = ask_rag(
             tenant=tenant, customer=customer, asset=asset, question=retrieval_query,
-            original_question=question, conversation_context=context if history else None,
+            original_question=answer_question, conversation_context=context if history else None,
             staff_mode=False, include_confidential=False, service_call=None,
             top_k=retrieval_top_k,
         )
