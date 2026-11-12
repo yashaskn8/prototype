@@ -47,18 +47,33 @@ def _noninvasive_observation(text):
             and (not instrument_reading or bool(visible_readout)))
 
 
-# Cause lists sometimes contain checklist bullets. Treat a sentence as a
-# cause only when it describes a condition, not when it tells the reader to
-# inspect, record, operate or alter equipment.
+# Cause lists sometimes contain checklist bullets or observation prompts.
+# Treat a sentence as a cause only when it describes a condition, not when it
+# tells the reader to inspect, record, operate or report an observation.
 _CAUSE_DIRECTIVE_VERBS = (
-    r"(?:do not|don't|never|always|please|check|confirm|inspect|verify|observe|"
-    r"read|report|record|note|look(?:\s+(?:for|at))?|monitor|collect|capture|"
-    r"document|ensure|make sure|open|remove|replace|disconnect|connect|reconnect|"
-    r"bypass|charge|adjust|measure|probe|touch|strip|clean|wipe|rinse|flush|"
-    r"restart|reset|press|turn|disassemble|dismantle|repair|test|rotate|spin|"
-    r"tighten|loosen|lubricate|drain|fill|insert|unlock|energize|switch|plug|"
-    r"solder|heat|manipulate|pour|mix|wash|pull|push|use|refer|follow|escalate|"
-    r"stop|isolate|attach|create|review|perform|position|compare|pressure[- ]test|"
+    r"(?:do not|don't|never|always|please|"
+    r"check(?:s|ed|ing)?|confirm(?:s|ed|ing)?|inspect(?:s|ed|ing)?|"
+    r"verify(?:s|ied|ing)?|observe(?:s|d|ing)?|read(?:s|ing)?|"
+    r"report(?:s|ed|ing)?|record(?:s|ed|ing)?|note(?:s|d|ing)?|"
+    r"look(?:s|ed|ing)?(?:\s+(?:for|at))?|monitor(?:s|ed|ing)?|"
+    r"collect(?:s|ed|ing)?|capture(?:s|d|ing)?|document(?:s|ed|ing)?|"
+    r"ensure|make sure|open(?:s|ed|ing)?|remove(?:s|d|ing)?|"
+    r"replace(?:s|d|ing)?|disconnect(?:s|ed|ing)?|connect(?:s|ed|ing)?|"
+    r"reconnect(?:s|ed|ing)?|bypass(?:es|ed|ing)?|charge(?:s|d|ing)?|"
+    r"adjust(?:s|ed|ing)?|measure(?:s|d|ing)?|probe(?:s|d|ing)?|"
+    r"touch(?:es|ed|ing)?|strip(?:s|ped|ping)?|clean(?:s|ed|ing)?|"
+    r"wipe(?:s|d|ing)?|rinse(?:s|d|ing)?|flush(?:es|ed|ing)?|"
+    r"restart(?:s|ed|ing)?|reset(?:s|ted|ting)?|press(?:es|ed|ing)?|"
+    r"turn(?:s|ed|ing)?|disassemble(?:s|d|ing)?|dismantle(?:s|d|ing)?|"
+    r"repair(?:s|ed|ing)?|test(?:s|ed|ing)?|rotate(?:s|d|ing)?|spin(?:s|ning)?|"
+    r"tighten(?:s|ed|ing)?|loosen(?:s|ed|ing)?|lubricate(?:s|d|ing)?|"
+    r"drain(?:s|ed|ing)?|fill(?:s|ed|ing)?|insert(?:s|ed|ing)?|"
+    r"unlock(?:s|ed|ing)?|energize(?:s|d|ing)?|switch(?:es|ed|ing)?|"
+    r"plug(?:s|ged|ging)?|solder(?:s|ed|ing)?|heat(?:s|ed|ing)?|"
+    r"manipulate(?:s|d|ing)?|pour(?:s|ed|ing)?|mix(?:es|ed|ing)?|"
+    r"wash(?:es|ed|ing)?|pull(?:s|ed|ing)?|push(?:es|ed|ing)?|"
+    r"use|refer(?:s|red|ring)?|follow(?:s|ed|ing)?|escalate|stop|"
+    r"isolate|attach|create|review|perform|position|compare|pressure[- ]test|"
     r"link|select|allow|apply|provide)\b"
 )
 _CAUSE_DIRECTIVE_START = re.compile(
@@ -71,16 +86,21 @@ _CAUSE_MODAL_DIRECTIVE = re.compile(
     r"(?:not\s+)?(?:" + _CAUSE_DIRECTIVE_VERBS + r")",
     re.I,
 )
+_CAUSE_OBSERVATION_CUE = re.compile(
+    r"\b(?:evidence of|signs? of|indications? of|look(?:ing)? for|"
+    r"check(?:ing)? for|observe|report|record|note|monitor)\b",
+    re.I,
+)
 
 
 def _descriptive_cause(text):
-    """Reject instructions/checklist items while retaining cause noun phrases."""
+    """Reject instructions and observation cues while retaining cause nouns."""
     clean = " ".join(_clean_line(text).split())
     return bool(clean) and not (
         _CAUSE_DIRECTIVE_START.search(clean)
         or _CAUSE_MODAL_DIRECTIVE.search(clean)
+        or _CAUSE_OBSERVATION_CUE.search(clean)
     )
-
 _IMPERATIVE_START = re.compile(
     r"^(?:\[\s?[xX ]?\]\s*)?(?:do not|don't|never|always|please|"
     + PHYSICAL_OPERATION.pattern[len(r"\b(?:"):-len(r")\b")] + r"|"
