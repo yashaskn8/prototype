@@ -55,11 +55,11 @@ class ClaimCategoryIsolationTests(unittest.TestCase):
 
     def test_checklist_and_observation_bullets_inside_cause_lists_are_not_causes(self):
         claims = list(source_claims(
-            "Possible causes:\\n"
-            "- Communication cable damage or incorrect topology.\\n"
-            "- [ ] Look for oil residue or other evidence of a refrigerant leak.\\n"
-            "- Inspect the internal wiring for damage.\\n"
-            "- Low refrigerant charge.\\n"
+            "Possible causes:\n"
+            "- Communication cable damage or incorrect topology.\n"
+            "- [ ] Look for oil residue or other evidence of a refrigerant leak.\n"
+            "- Inspect the internal wiring for damage.\n"
+            "- Low refrigerant charge.\n"
         ))
         self.assertEqual([kind for _text, kind, _start, _end in claims], [
             "possible_cause", "information", "information", "possible_cause",
