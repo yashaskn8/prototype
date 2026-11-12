@@ -66,6 +66,12 @@ jobs:
       - name: Local Evidence-Bound Explanation Tests
         run: python -m unittest tools.test_servy_real_demo_explainer -v
 
+      - name: Exhaustive Approved-Document Scan Tests
+        run: python -m unittest tools.test_servy_real_demo_exhaustive -v
+
+      - name: Exact-Model Manufacturer Web Research Safety Tests
+        run: python -m unittest tools.test_servy_real_demo_web_research -v
+
       - name: Real-data Demo Focused Conversation Tests
         run: python -m unittest tools.test_servy_real_demo_dialogue -v
 
@@ -178,7 +184,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs test/demoThreadState.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs
 
       - name: Test Private Technician Access-code Instance
         working-directory: frontend

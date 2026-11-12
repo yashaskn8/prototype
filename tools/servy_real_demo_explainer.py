@@ -17,9 +17,9 @@ import requests
 
 ENDPOINT = "http://127.0.0.1:11434/api/chat"
 DEFAULT_MODEL = "qwen2.5:3b"
-MAX_PROMPT_BYTES = 12000
-MAX_RESPONSE_BYTES = 16000
-MAX_CLAIMS = 4
+MAX_PROMPT_BYTES = 24000
+MAX_RESPONSE_BYTES = 24000
+MAX_CLAIMS = 10
 MAX_EXPLANATION_CHARS = 600
 
 SYSTEM_PROMPT = (
@@ -197,7 +197,7 @@ def explain_claims(question: str, presentation: dict) -> dict:
                 "format": schema,
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0, "num_predict": 500},
+                "options": {"temperature": 0, "num_predict": 1500},
             },
             timeout=(0.5, 18),
             allow_redirects=False,

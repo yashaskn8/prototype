@@ -126,3 +126,56 @@ retrieval regressions also exercise the three approved asset IDs (59, 60 and
 61). These fixtures prove that the code path is shared and scoped; they do not
 prove that every real manual contains enough detail for every requested
 explanation. Each real source citation still requires a live authorized review.
+
+
+## Complete approved-document review and supplementary web research
+
+The customer demo performs the normal dense/hybrid ranked retrieval and a
+separate exhaustive sparse pass across every customer-visible,
+provenance-verified, searchable chunk in the selected asset's canonical
+asset/customer scope. The scan checks the current issue, signed original
+complaint, and previously cited cause phrases. Matching passages are
+deduplicated and kept document-diverse. The normal customer answer builder
+still reauthorizes each source chunk before a claim or citation is shown.
+
+The UI reports how many approved documents and passages were searched. If
+an approved document has no searchable chunks, a safe scan limit is exceeded,
+or the scan fails, the UI marks coverage incomplete instead of claiming
+every document was reviewed.
+
+Supplementary online search is a separate, optional source channel. An
+operator must configure these local environment settings:
+
+- SERVY_BRAVE_SEARCH_API_KEY: the provider API key, stored only in the local
+  environment or deployment secret store.
+- SERVY_WEB_RESEARCH_ALLOWED_DOMAINS: comma-separated official manufacturer
+  domains approved by the operator for the selected brand.
+
+The search query contains only the public manufacturer name, exact asset
+model, a small allowlisted symptom vocabulary, and an exact fault code when
+one is reported. It does not send customer identity, asset code, serial
+number, company documents, manual passages, or the raw conversation.
+Returned sources must use HTTPS, belong to the configured manufacturer
+domain allowlist, and contain the selected asset's exact model. When a fault
+code is reported, accepted snippets must contain that exact code and no
+other fault code. Snippets containing customer repair or physical-procedure
+language are excluded.
+
+External excerpts are labelled "Supplementary online information — not
+company-approved". They are never inserted into approved manual claims,
+manual citations, the company source viewer, customer action lists, or the
+local source-bound explainer. They cannot override an approved manual,
+confirm a diagnosis, or authorize a repair. Missing credentials, missing
+manufacturer/model identity, provider errors, and non-matching results fail
+closed with an explicit status.
+
+Offline CI coverage:
+- python -m unittest tools.test_servy_real_demo_exhaustive -v
+- python -m unittest tools.test_servy_real_demo_web_research -v
+- frontend/test/onlineResearchContract.test.mjs
+
+Example PowerShell configuration (replace the domain with the verified
+official domain; never commit the API key):
+
+    $env:SERVY_BRAVE_SEARCH_API_KEY = "<your key>"
+    $env:SERVY_WEB_RESEARCH_ALLOWED_DOMAINS = "<official-manufacturer-domain>"

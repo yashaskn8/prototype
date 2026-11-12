@@ -1172,14 +1172,14 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
 
     # For a specific hypothesis ("could X explain Y?") rank the claim that
     # states X first; ties keep the authorized source order. Never filters.
-    claim_limit = sum(4 if item == "causes" else 3 for item in topics)
+    claim_limit = sum(10 if item == "causes" else 4 for item in topics)
     if focus.hypothesis is not None:
         collected.sort(key=lambda row: -focus.relevance(row[0]))
     collected = collected[:claim_limit]
 
     # A local model may rank/deselect permitted source IDs but can never add
     # a claim absent from the server-authorized candidate collection.
-    if isinstance(plan, dict):
+    if isinstance(plan, dict) and not (topic == "causes" and is_explanation_followup(question)):
         chosen = plan.get("claim_ids")
         if isinstance(chosen, list) and chosen:
             rank = {id_: index for index, id_ in enumerate(chosen) if isinstance(id_, str)}

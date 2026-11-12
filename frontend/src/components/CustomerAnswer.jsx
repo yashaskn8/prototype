@@ -82,7 +82,21 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
         </div>)}
       </section>)}
     </div>}
-    {data.followUpQuestion && <p className="customer-answer-followup">{data.followUpQuestion}</p>}
+    {data.documentCoverage && <div className={\`customer-answer-document-coverage \${data.documentCoverage.complete ? 'is-complete' : 'is-incomplete'}\`}>
+      <strong>{data.documentCoverage.complete ? 'Approved document review' : 'Document review limitation'}</strong>
+      <p>{data.documentCoverage.note}</p>
+      <small>{data.documentCoverage.documentsSearched} documents searched · {data.documentCoverage.approvedDocuments} approved in scope · {data.documentCoverage.passagesSearched} passages reviewed</small>
+    </div>}
+    {data.onlineResearch && <section className="customer-answer-online" aria-label="Supplementary online information">
+      <h3>{data.onlineResearch.label}</h3>
+      <p className="customer-answer-online-note">{data.onlineResearch.note}</p>
+      {data.onlineResearch.sources.map(source => <article className="customer-answer-online-source" key={source.url}>
+        <div><a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a>
+          <span>{source.hostname}{source.age ? ' · ' + source.age : ''}</span></div>
+        {source.snippets.map((snippet, index) => <blockquote key={index}>{snippet}</blockquote>)}
+      </article>)}
+    </section>}
+    {data.followUpQuestion && <p className="customer-answer-followup">{data.followUpQuestion}</p>
     {!!data.sections.length && Array.isArray(presentation.customer_authorized_actions)
       && presentation.customer_authorized_actions.length > 0
       && <button type="button" className="btn btn-secondary" onClick={() => setUnable(true)}>I cannot perform a check</button>}

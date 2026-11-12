@@ -4,6 +4,7 @@ This process has its own credential and identity, separate from the customer
 portal and the synthetic tester. It never writes operational records.
 """
 import hashlib
+import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from http import HTTPStatus
 import json
@@ -31,6 +32,8 @@ from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
 from tools.servy_real_demo_explainer import explain_claims
 from tools.servy_real_demo_query_plan import targeted_retry_query
+from tools.servy_real_demo_exhaustive import search_all_approved_documents
+from tools.servy_real_demo_web_research import search_model_matched_sources
 from tools.servy_real_demo_dialogue import (
     TOPICS, TECHNICAL_SYMPTOMS, conversational_turn, conversation_recap,
     followup_clarification, vague_problem_clarification, focus_answer, is_component_followup,
@@ -276,6 +279,59 @@ def _demo_query_context(asset, question, first, history):
     return context, contextual_question or question
 
 
+def _attach_full_scope_scan(rag, *, tenant, customer, asset, question,
+                            original_complaint="", cause_claims=()):
+    """Merge exhaustive approved-source references with ordinary ranked RAG."""
+    if not isinstance(rag, dict) or rag.get("engine") == "policy-guard":
+        return rag
+    try:
+        scan = search_all_approved_documents(
+            tenant=tenant, customer=customer, asset=asset, question=question,
+            original_complaint=original_complaint, cause_claims=cause_claims,
+        )
+        merged, positions = [], {}
+        for reference in list(rag.get("references") or []) + list(scan.get("references") or []):
+            if not isinstance(reference, dict):
+                continue
+            document_id, chunk_id = reference.get("document_id"), reference.get("chunk_id")
+            if type(document_id) is not int or type(chunk_id) is not int:
+                continue
+            try:
+                score = float(reference.get("score", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(score):
+                continue
+            key = (document_id, chunk_id)
+            if key in positions:
+                merged[positions[key]]["score"] = max(merged[positions[key]]["score"], score)
+            else:
+                positions[key] = len(merged)
+                merged.append({"document_id": document_id, "chunk_id": chunk_id, "score": score})
+        rag["references"] = merged
+        rag["document_coverage"] = scan.get("coverage", {
+            "complete": False, "scope": "selected-asset-approved-documents",
+            "documents_searched": 0, "approved_documents": 0,
+            "documents_without_searchable_chunks": 0, "passages_searched": 0,
+            "documents_with_matches": 0, "matching_passages": 0,
+            "references_in_answer_pool": 0, "document_titles": [],
+            "note": "The complete approved-document scan could not be verified.",
+        })
+    except Exception:
+        rag["document_coverage"] = {
+            "complete": False, "scope": "selected-asset-approved-documents",
+            "documents_searched": 0, "approved_documents": 0,
+            "documents_without_searchable_chunks": 0, "passages_searched": 0,
+            "documents_with_matches": 0, "matching_passages": 0,
+            "references_in_answer_pool": 0, "document_titles": [],
+            "note": (
+                "The complete approved-document scan did not finish. "
+                "This answer uses only ordinary verified retrieval results."
+            ),
+        }
+    return rag
+
+
 def _answer(asset_id, question, continuation=None, thread_id=None):
     if ASSET_SCOPE.get(asset_id) is None:
         return {"response_type": "INSUFFICIENT_EVIDENCE", "message":
@@ -393,6 +449,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             staff_mode=False, include_confidential=False, service_call=None,
             top_k=retrieval_top_k,
         )
+        rag = _attach_full_scope_scan(
+            rag, tenant=tenant, customer=customer, asset=asset,
+            question=retrieval_query, original_complaint=context.original_complaint,
+        )
         retrieval_attempts = 1
         if rag.get("engine") == "policy-guard":
             presentation = exception_presentation({
@@ -420,6 +480,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 original_question=answer_question,
             )
             presentation = contract["presentation"]
+            if isinstance(presentation, dict):
+                presentation["document_coverage"] = rag.get("document_coverage")
             for citation in presentation.get("citations", []):
                 citation["url"] = citation["url"].replace(
                     "/api/customer-support/source/", "/demo-api/source/", 1
@@ -469,6 +531,11 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                         staff_mode=False, include_confidential=False,
                         service_call=None, top_k=8,
                     )
+                    retried = _attach_full_scope_scan(
+                        retried, tenant=tenant, customer=customer, asset=asset,
+                        question=second_query, original_complaint=context.original_complaint,
+                        cause_claims=cause_claims if retry_for_deeper_explanation else (),
+                    )
                     retrieval_attempts = 2
                     if retried.get("engine") != "policy-guard":
                         # Build the citation contract afresh. The second pass
@@ -483,6 +550,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                             conversation_context=context if history else None,
                             original_question=question,
                         )
+                        if isinstance(next_contract.get("presentation"), dict):
+                            next_contract["presentation"]["document_coverage"] = retried.get("document_coverage")
                         if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
                             for citation in next_contract["presentation"].get("citations", []):
                                 citation["url"] = citation["url"].replace(
@@ -625,6 +694,12 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number},
                 "can_escalate": True,
             })
+    if (isinstance(presentation, dict) and not is_hazard and off_topic is None
+            and contract.get("engine") != "policy-guard"
+            and response_type not in {"POLICY_VIOLATION", "ESCALATION_REQUIRED", "TECHNICIAN_HANDOFF"}):
+        presentation["online_research"] = search_model_matched_sources(
+            asset, retrieval_query or question, original_question=question,
+        )
     return {
         "response_type": response_type, "reason_code": contract.get("reason_code"),
         "message": message, "presentation": presentation,

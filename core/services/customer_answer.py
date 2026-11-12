@@ -450,7 +450,7 @@ def build_customer_answer(interaction, session, references, conversation_context
     raw_user_q = original_question or question
     candidates = []
     seen = set()
-    for ref in (references or [])[:30]:
+    for ref in (references or [])[:300]:
         if not isinstance(ref, dict):
             continue
         try:
@@ -541,8 +541,8 @@ def build_customer_answer(interaction, session, references, conversation_context
         cause_pool = [i for i in unique if i["target"] is causes]
         action_pool = [i for i in unique if i["target"] is not causes]
         # Preserve up to four separately grounded claims per answer section.
-        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:4]
-                  + sorted(action_pool, key=lambda i: -_relevance(i))[:4])
+        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:10]
+                  + sorted(action_pool, key=lambda i: -_relevance(i))[:8])
         chosen.sort(key=lambda i: i["order"])
         for item in chosen:
             target, kind, text = item["target"], item["kind"], item["text"]

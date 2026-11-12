@@ -16,3 +16,55 @@
 .customer-answer-source blockquote { margin: 1rem 0; white-space: pre-wrap; border-inline-start: 3px solid #4338ca; padding-inline-start: 1rem; }
 .customer-answer-hazard { background: #fff1f2; color: #881337; padding: 1rem; border: 2px solid #be123c; margin-bottom: 1rem; }
 @media(max-width: 480px) { .customer-answer-source { padding: 1rem; } }
+
+
+.customer-answer-document-coverage,
+.customer-answer-online {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--bs-border-color, #d8dee8);
+  border-radius: 0.75rem;
+  background: var(--bs-tertiary-bg, #f8fafc);
+}
+.customer-answer-document-coverage p,
+.customer-answer-online-note {
+  margin: 0.35rem 0 0;
+  color: var(--bs-secondary-color, #586174);
+}
+.customer-answer-document-coverage small {
+  display: block;
+  margin-top: 0.45rem;
+  color: var(--bs-secondary-color, #586174);
+}
+.customer-answer-document-coverage.is-incomplete {
+  border-color: #b7791f;
+}
+.customer-answer-online h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+.customer-answer-online-source {
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--bs-border-color, #d8dee8);
+}
+.customer-answer-online-source > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.7rem;
+}
+.customer-answer-online-source a {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.customer-answer-online-source span {
+  color: var(--bs-secondary-color, #586174);
+  font-size: 0.82rem;
+}
+.customer-answer-online-source blockquote {
+  margin: 0.65rem 0 0;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--bs-border-color, #d8dee8);
+  overflow-wrap: anywhere;
+}

@@ -17,8 +17,67 @@ export function isTrustedSourceUrl(url) {
     && /^\/(?:api\/customer-support|demo-api)\/source\/\?citation=[A-Za-z0-9._:-]{8,8192}$/.test(url);
 }
 
+function validatedOnlineResearch(value) {
+  if (!value || typeof value !== 'object') return null;
+  const statuses = new Set(['available', 'not_configured', 'model_identity_incomplete',
+    'asset_model_mismatch', 'not_applicable', 'no_exact_match', 'unavailable']);
+  if (!statuses.has(value.status)) return null;
+  const sources = [];
+  if (value.status === 'available' && Array.isArray(value.sources)) {
+    for (const source of value.sources.slice(0, 5)) {
+      if (!source || typeof source.url !== 'string' || source.url.length > 2048) continue;
+      let parsed;
+      try { parsed = new URL(source.url); } catch { continue; }
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+        || !parsed.hostname || source.hostname !== parsed.hostname.toLowerCase()) continue;
+      if (!['exact_model', 'exact_model_and_fault_code'].includes(source.match_basis)
+        || !Array.isArray(source.snippets)) continue;
+      const snippets = source.snippets.slice(0, 3)
+        .filter(item => typeof item === 'string' && item.trim().length > 20 && item.length <= 1200);
+      if (!snippets.length) continue;
+      sources.push({
+        title: typeof source.title === 'string' ? source.title.slice(0, 220) : parsed.hostname,
+        url: source.url,
+        hostname: parsed.hostname.toLowerCase(),
+        age: typeof source.age === 'string' ? source.age.slice(0, 100) : '',
+        matchBasis: source.match_basis,
+        snippets,
+      });
+    }
+  }
+  return {
+    status: value.status,
+    label: 'Supplementary online information — not company-approved',
+    note: typeof value.note === 'string' ? value.note.slice(0, 700) : '',
+    sources,
+  };
+}
+
+function validatedDocumentCoverage(value) {
+  if (!value || typeof value !== 'object') return null;
+  const count = key => Number.isInteger(value[key]) && value[key] >= 0 ? value[key] : null;
+  const searched = count('documents_searched');
+  const approved = count('approved_documents');
+  const missing = count('documents_without_searchable_chunks');
+  const passages = count('passages_searched');
+  if (searched === null || approved === null || missing === null || passages === null
+    || typeof value.complete !== 'boolean') return null;
+  const complete = value.complete && searched === approved && missing === 0;
+  return {
+    complete,
+    documentsSearched: searched,
+    approvedDocuments: approved,
+    documentsWithoutSearchableChunks: missing,
+    passagesSearched: passages,
+    documentsWithMatches: count('documents_with_matches') ?? 0,
+    note: typeof value.note === 'string' ? value.note.slice(0, 700) : '',
+  };
+}
+
 export function validateCustomerPresentation(value) {
   if (!value || value.schema_version !== 'customer-answer-v1') return null;
+  const onlineResearch = validatedOnlineResearch(value.online_research);
+  const documentCoverage = validatedDocumentCoverage(value.document_coverage);
   const hazard = value.hazard?.severity === 'immediate' && typeof value.hazard.message === 'string'
     ? { severity: 'immediate', message: value.hazard.message.slice(0, 1200) } : null;
   const invalid = () => hazard ? { sections: [], citations: [], hazard, message: 'Additional guidance is unavailable. Please seek technician assistance.' } : null;
@@ -33,7 +92,7 @@ export function validateCustomerPresentation(value) {
     const safeCitation = citation && typeof citation.url === 'string'
       && isTrustedSourceUrl(citation.url)
       && typeof citation.title === 'string' ? citation : null;
-    return { sections: [], citations: safeCitation ? [safeCitation] : [], hazard, message };
+    return { sections: [], citations: safeCitation ? [safeCitation] : [], hazard, message, onlineResearch, documentCoverage };
   }
   const focused = value.view_mode === 'focused';
   if (!Array.isArray(value.sections) ||
@@ -49,7 +108,7 @@ export function validateCustomerPresentation(value) {
       ? focusedAnswerTitles.includes(section?.title)
       : (section?.title === answerTitles[i] || (i === 0 && section?.title === 'What the document says'));
     if (!section || section.number !== i + 1 || !validTitle || !Array.isArray(section.claims)
-      || !section.claims.length || section.claims.length > 4) return invalid();
+      || !section.claims.length || section.claims.length > 12) return invalid();
     for (const claim of section.claims) {
       if (!claim || typeof claim.text !== 'string' || !claim.text.trim() || claim.text.length > 1000 || !kinds.has(claim.kind)
         || (claim.explanation !== undefined && (typeof claim.explanation !== 'string'
@@ -72,5 +131,7 @@ export function validateCustomerPresentation(value) {
     message: focused && typeof value.message === 'string' ? value.message.slice(0, 450) : '',
     followUpQuestion: focused && typeof value.follow_up_question === 'string'
       ? value.follow_up_question.slice(0, 240) : null,
+    onlineResearch,
+    documentCoverage,
   };
 }
