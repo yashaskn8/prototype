@@ -1494,6 +1494,9 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
                 and _words(plan["follow_up"]) not in {
                     _words(item) for item in asked_followups if isinstance(item, str)
                 }
+                and not _display_followup_already_asked(
+                    plan["follow_up"], asked_followups,
+                )
                 and not _repeat_or_answered_followup(
                     plan["follow_up"], " ".join([*history[-6:], question])
                 )):
