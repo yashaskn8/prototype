@@ -12,7 +12,7 @@ import re
 import unittest
 
 from tools.servy_real_demo_dialogue import CATEGORY_QUESTION, _claim_topic, _match_kinds
-from core.services.customer_answer import source_claims
+from core.services.customer_answer import source_claims, _descriptive_cause
 from tools.test_servy_answer_stage import ASSETS, HAVE_DOCS, _chunks, _shown, converse
 
 VRF_TURNS = [
@@ -52,6 +52,22 @@ class ClaimCategoryIsolationTests(unittest.TestCase):
             ["possible_cause", "information", "information", "information"],
         )
 
+
+    def test_checklist_and_observation_bullets_inside_cause_lists_are_not_causes(self):
+        claims = list(source_claims(
+            "Possible causes:\\n"
+            "- Communication cable damage or incorrect topology.\\n"
+            "- [ ] Look for oil residue or other evidence of a refrigerant leak.\\n"
+            "- Inspect the internal wiring for damage.\\n"
+            "- Low refrigerant charge.\\n"
+        ))
+        self.assertEqual([kind for _text, kind, _start, _end in claims], [
+            "possible_cause", "information", "information", "possible_cause",
+        ])
+        self.assertIn("Look for oil residue", claims[1][0])
+        self.assertFalse(_descriptive_cause("[ ] Look for oil residue or evidence of a leak."))
+        self.assertFalse(_descriptive_cause("Inspect the internal wiring for damage."))
+        self.assertTrue(_descriptive_cause("Low refrigerant charge."))
 
 @unittest.skipUnless(HAVE_DOCS, "real source documents are not present")
 class VrfConversationTests(unittest.TestCase):
