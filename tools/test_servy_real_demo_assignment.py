@@ -223,6 +223,21 @@ class CauseFollowUpTests(unittest.TestCase):
         self.assertIn("cooling", query.casefold())
         self.assertLessEqual(ask_rag.call_count, 2)
 
+    def test_model_generated_explanations_are_not_used(self):
+        first, _ = _cause_turn()
+        detailed = _with_claim(contract(), "c6", DETAIL, "information", 6)
+        with patch.object(demo, "explain_claims",
+                          side_effect=AssertionError("unverifiable paraphrase must not run")):
+            result, _, _ = _run(
+                "Explain the second cause in more detail", [detailed, detailed],
+                continuation=first["continuation"])
+        self.assertEqual(
+            [claim["source_text"] for claim in _claims(result)],
+            ["Blocked external clearance.", DETAIL],
+        )
+        self.assertTrue(all("explanation" not in claim
+                            for claim in result["presentation"]["supporting_claims"]))
+
     def test_no_additional_explanation_escalates_instead_of_rewording(self):
         first, _ = _cause_turn()
         with patch.object(demo, "explain_claims",
