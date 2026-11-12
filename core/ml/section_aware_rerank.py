@@ -12,7 +12,7 @@ import re
 # may live inside a symptom/diagnostic passage rather than a section titled
 # "Safety". Section-heading labels alone must not override evidence ranking.
 _SAFETY_FOCUSED_QUERY = re.compile(
-    r"\\b(?:safety|hazards?|prohibited\\s+actions?)\\b",
+    r"\b(?:safety|hazards?|prohibited\s+actions?)\b",
     flags=re.IGNORECASE,
 )
 
