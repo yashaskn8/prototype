@@ -22,10 +22,14 @@ _EXPLICIT_MODEL = re.compile(
     r"([A-Za-z0-9][A-Za-z0-9._/-]{2,})\b", re.I,
 )
 _PROCEDURAL = re.compile(
-    r"\b(?:open\w*|remov\w*|replac\w*|repair\w*|reset\w*|restart\w*|adjust\w*|"
-    r"measur\w*|prob\w*|wir\w*|bypass\w*|charg\w*|clean\w*|test\w*|inspect\w*|"
-    r"disconnect\w*|connect\w*|operat\w*|servic\w*|disassembl\w*|install\w*|"
-    r"refill\w*|top\s+up|refrigerant charge|voltage|pressure gauge)\b",
+    r"\b(?:open(?:s|ed|ing)?|remove(?:s|d|ing)?|replace(?:s|d|ing)?|"
+    r"repair(?:s|ed|ing)?|reset(?:s|ting)?|restart(?:s|ed|ing)?|"
+    r"adjust(?:s|ed|ing)?|measure(?:s|d|ing)?|probe(?:s|d|ing)?|"
+    r"wire(?:s|d|ing)?|bypass(?:es|ed|ing)?|charge(?:s|d|ing)?|"
+    r"clean(?:s|ed|ing)?|test(?:s|ed|ing)?|inspect(?:s|ed|ing)?|"
+    r"disconnect(?:s|ed|ing)?|connect(?:s|ed|ing)?|"
+    r"disassemble(?:s|d|ing)?|install(?:s|ed|ing)?|refill(?:s|ed|ing)?|"
+    r"top\s+up|refrigerant charge|voltage|pressure gauge)\b",
     re.I,
 )
 _ALLOWED_SYMPTOM_TERMS = frozenset({
