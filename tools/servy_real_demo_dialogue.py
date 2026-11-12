@@ -985,11 +985,10 @@ def question_topic(question, last_topic=None):
 
 
 def contextualize_fault_category_followup(question, history=(), last_topic=None):
-    """Carry a customer's explicitly selected fault category into short follow-ups.
+    """Carry the selected suspected fault category into concise or expanded follow-ups.
 
-    Only customer-authored history is inspected. The category remains a
-    suspected condition; this helper narrows retrieval and claim validation,
-    but never upgrades it to a confirmed diagnosis.
+    Keep the customer's complete wording, including safety constraints. Only
+    customer-authored history is inspected, and the category remains suspected.
     """
     raw = " ".join(str(question or "").split())
     if not raw or not is_contextual_followup(raw):
@@ -999,18 +998,18 @@ def contextualize_fault_category_followup(question, history=(), last_topic=None)
     generic_requests = {
         "causes": re.compile(
             r"^(?:what (?:are )?(?:the )?(?:possible|documented|other|more)? ?causes?"
-            r"(?: (?:are )?documented)?|other causes|more causes)$", re.I,
+            r"(?: (?:are )?documented)?|other causes|more causes)\\b", re.I,
         ),
         "observations": re.compile(
             r"^(?:what can i (?:safely )?(?:check|observe|report)|"
-            r"what should i (?:safely )?(?:check|observe|report))$", re.I,
+            r"what should i (?:safely )?(?:check|observe|report))\\b", re.I,
         ),
         "next": re.compile(
-            r"^(?:what (?:next|now|else)|what should i do(?: next)?|next step)$", re.I,
+            r"^(?:what (?:next|now|else)|what should i do(?: next)?|next step)\\b", re.I,
         ),
     }
     pattern = generic_requests.get(topic)
-    if pattern is None or not pattern.fullmatch(normalized):
+    if pattern is None or not pattern.match(normalized):
         return raw
 
     # A more recent customer statement takes precedence. If that same turn
@@ -1026,11 +1025,7 @@ def contextualize_fault_category_followup(question, history=(), last_topic=None)
             return raw
         if len(matched) == 1:
             condition = matched[0]
-            if topic == "causes":
-                return f"What possible causes are documented for the suspected {condition}?"
-            if topic == "observations":
-                return f"What can I safely observe or report for the suspected {condition}?"
-            return f"What should I do next for the suspected {condition}?"
+            return f"{raw} (for the suspected {condition})"
     return raw
 
 
