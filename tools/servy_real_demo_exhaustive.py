@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 
 MAX_APPROVED_CHUNKS = 3000
 MAX_QUERY_VARIANTS = 10

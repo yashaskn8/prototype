@@ -52,7 +52,7 @@ def _chunks(prefixes, first_document_id):
 
 
 def ask(asset_key, question, *, last_topic=None, previous_facts=(), extra_chunks=None,
-        denied=()):
+        denied=(), conversation_context=None, history=()):
     """Run the real answer stage for one customer question."""
     name, asset_id, prefixes = ASSETS[asset_key]
     chunks = _chunks(prefixes, asset_id * 10)
@@ -74,13 +74,18 @@ def ask(asset_key, question, *, last_topic=None, previous_facts=(), extra_chunks
     references = [{"document_id": c.document_id, "chunk_id": c.id, "score": 0.9}
                   for c in chunks.values()]
     with patch.object(ca, "source_chunk", side_effect=source_chunk):
-        contract = ca.build_customer_answer(interaction, None, references,
-                                            original_question=question)
+        contract = ca.build_customer_answer(
+            interaction, None, references,
+            conversation_context=conversation_context,
+            original_question=question,
+        )
     for citation in contract["presentation"].get("citations", []):
         citation["url"] = citation["url"].replace(
             "/api/customer-support/source/", "/demo-api/source/", 1)
-    focused, state = focus_answer(contract, question, last_topic=last_topic,
-                                  previous_facts=previous_facts)
+    focused, state = focus_answer(
+        contract, question, last_topic=last_topic,
+        previous_facts=previous_facts, history=history,
+    )
     presentation = focused["presentation"]
     citations = {c["id"]: c for c in presentation.get("citations", [])}
     claims = [c for c in presentation.get("supporting_claims", [])]
@@ -308,6 +313,38 @@ class ParaphraseTests(unittest.TestCase):
         )
         shown = r.raw["presentation"]["supporting_claims"]
         self.assertTrue(all(claim["text"].startswith("Under ") for claim in shown))
+        self.assertIn("none is a confirmed diagnosis", r.message)
+
+    def test_supported_vs_unestablished_followup_reuses_prior_generic_failure_scope(self):
+        original = (
+            "My VRF outdoor module is not working. What could be the possible reasons?"
+        )
+        context = SimpleNamespace(
+            original_complaint=original,
+            completed_checks=[],
+            reported_symptoms=[],
+            history_turns=[],
+            is_followup=True,
+        )
+        r = ask(
+            "vrf",
+            "Which possible causes are supported by the manual, and which cannot be established?",
+            last_topic="causes",
+            conversation_context=context,
+            history=[original],
+        )
+        self.assertEqual(r.type, "DIAGNOSTIC_GUIDANCE")
+        self.assertEqual(set(r.kinds), {"possible_cause"})
+        self.assertEqual(
+            {heading for _title, heading in r.cited},
+            {
+                "2. COMMUNICATION OR ADDRESSING FAULT",
+                "3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT",
+                "4. LOW-PRESSURE OR CAPACITY FAULT",
+                "5. COMPRESSOR OR INVERTER FAULT",
+                "6. FAN OR TEMPERATURE-SENSOR FAULT",
+            },
+        )
         self.assertIn("none is a confirmed diagnosis", r.message)
 
     def test_superficial_word_overlap_is_not_evidence(self):

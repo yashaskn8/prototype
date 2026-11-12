@@ -574,6 +574,25 @@ def is_generic_cause_overview(question):
     )
 
 
+def is_cause_coverage_review(question, history=()):
+    """Recognize a supported-vs-unestablished audit of a prior generic failure."""
+    q = _words(question)
+    asks_causes = bool(re.search(r"\b(?:causes?|reasons?|possibilities)\b", q))
+    asks_source_support = bool(
+        re.search(r"\b(?:supported|documented|listed|backed)\b", q)
+        and re.search(r"\b(?:manual|approved|documentation|document|source)\b", q)
+    )
+    asks_limit = bool(re.search(
+        r"\b(?:cannot|can not|can't|could not|couldn't|not)\b"
+        r".{0,70}\b(?:establish\w*|confirm\w*|determin\w*|"
+        r"verif\w*|identif\w*|appl\w*)\b", q
+    ))
+    prior_generic_failure = any(
+        is_generic_cause_overview(turn) for turn in (history or [])
+    )
+    return asks_causes and asks_source_support and asks_limit and prior_generic_failure
+
+
 def _specific_symptom_supported(question, source_context, heading=""):
     """Require a named VRF fault to match the manual section being cited.
 
@@ -1209,9 +1228,8 @@ def _follow_up(topic, question, history=(), asked_followups=()):
     if topic == "causes":
         if _already_reported_code_absence(reports):
             # A one-line "no code" is an answer to the display prompt, so move
-            # directly to onset. If no-code is older history and the customer
-            # is now asking a new causes question, ask when they first noticed
-            # the problem instead of repeating the onset-choice prompt.
+            # directly to onset. Once onset is known, ask about frequency
+            # before requesting a date so a short answer is not misrouted.
             if _already_reported_code_absence(question):
                 candidates = (
                     "Did the problem start suddenly or gradually?",
@@ -1219,11 +1237,25 @@ def _follow_up(topic, question, history=(), asked_followups=()):
                     "When did you first notice this symptom?",
                 )
             else:
-                candidates = (
-                    "When did you first notice this symptom?",
-                    "Did the problem start suddenly or gradually?",
-                    "Does the problem happen continuously or intermittently?",
-                )
+                onset_reported = bool(re.search(r"\b(?:suddenly|gradually)\b", reports, re.I))
+                frequency_reported = bool(re.search(
+                    r"\b(?:intermittently|occasionally|sometimes|on and off|"
+                    r"continuously|constantly|all the time|every time|always)\b",
+                    reports, re.I,
+                ))
+                if onset_reported and not frequency_reported:
+                    candidates = (
+                        "Does the problem happen continuously or intermittently?",
+                        "When did you first notice this symptom?",
+                    )
+                elif frequency_reported:
+                    candidates = ("When did you first notice this symptom?",)
+                else:
+                    candidates = (
+                        "When did you first notice this symptom?",
+                        "Did the problem start suddenly or gradually?",
+                        "Does the problem happen continuously or intermittently?",
+                    )
         elif _error_codes(reports):
             candidates = (
                 "When does that displayed code appear?",
@@ -1279,6 +1311,7 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             kind, value = "onset", "gradually"
         if kind:
             acknowledgement = "Thanks — I've recorded that the problem started " + value + "."
+            next_question = "Does the problem happen continuously or intermittently?"
     elif "continuously or intermittently" in prompt or "every time or only sometimes" in prompt:
         if re.fullmatch(r"(?:continuously|constantly|all the time|every time|always)", answer):
             kind, value = "frequency", "continuously"
@@ -1307,7 +1340,20 @@ def resolve_pending_followup_reply(question, pending_question, *, topic=None,
             kind, value = "display_status", "no visible code or warning"
             acknowledgement = "Thanks — I've recorded that no fault code or warning is visible."
     elif "when did you first notice" in prompt:
-        if re.search(r"\b(?:today|yesterday|last night|this morning|this afternoon|earlier today|recently|\d+\s*(?:minutes?|hours?|days?|weeks?)\s+ago)\b", answer):
+        if re.fullmatch(
+            r"(?:intermittently|occasionally|sometimes|on and off|only sometimes|"
+            r"continuously|constantly|all the time|every time|always)", answer
+        ):
+            kind = "frequency"
+            value = ("intermittently" if answer in {
+                "intermittently", "occasionally", "sometimes", "on and off", "only sometimes"
+            } else "continuously")
+            acknowledgement = "Thanks — I've recorded that the problem happens " + value + "."
+            next_question = (
+                "When did you first notice this symptom (for example, today, "
+                "yesterday, or a few days ago)?"
+            )
+        elif re.search(r"\b(?:today|yesterday|last night|this morning|this afternoon|earlier today|recently|\d+\s*(?:minutes?|hours?|days?|weeks?)\s+ago)\b", answer):
             kind, value = "first_noticed", raw[:100]
             acknowledgement = "Thanks — I've recorded when you first noticed it: " + raw[:100] + "."
     elif "when does that displayed code" in prompt or "when does the reported code" in prompt:
@@ -1420,7 +1466,13 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         topic = plan["intent"]
     topics = _requested_topics(question, topic)
     focus = _FocusPlan(question)
-    generic_cause_overview = topic == "causes" and is_generic_cause_overview(question)
+    generic_cause_overview = (
+        topic == "causes"
+        and (
+            is_generic_cause_overview(question)
+            or is_cause_coverage_review(question, history)
+        )
+    )
     allowed = (frozenset().union(*(_match_kinds(item) for item in topics))
                if not off_topic else frozenset())
     if (topic == "causes" and is_explanation_followup(question)

@@ -174,13 +174,13 @@ class VrfConversationTests(unittest.TestCase):
         self.assertIn("lists these possibilities", results[1]["presentation"]["message"])
         followup = _shown(results[2])
         self.assertEqual(followup[0][3], "Duplicate/missing addresses or configuration mismatch.")
-        self.assertNotIn(
+        self.assertIn(
             "Evidence limitation",
             [section["title"] for section in results[2]["presentation"]["sections"]],
         )
         self.assertTrue(results[2]["presentation"]["cause_explanation_unavailable"])
-        self.assertNotIn(
-            "contain no further explanation",
+        self.assertIn(
+            "do not contain a separately citable explanation",
             json.dumps(results[2]["presentation"]).lower(),
         )
         self.assertEqual(results[2]["evidence_state"], "PARTIAL")
@@ -224,7 +224,7 @@ class VrfConversationTests(unittest.TestCase):
             _shown(results[2])[0][3],
             "Duplicate/missing addresses or configuration mismatch.",
         )
-        self.assertNotIn(
+        self.assertIn(
             "Evidence limitation",
             [section["title"] for section in results[2]["presentation"]["sections"]],
         )

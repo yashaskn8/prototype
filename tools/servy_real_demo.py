@@ -4,6 +4,7 @@ This process has its own credential and identity, separate from the customer
 portal and the synthetic tester. It never writes operational records.
 """
 import hashlib
+import logging
 import math
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from http import HTTPStatus
@@ -63,6 +64,8 @@ DEMO_CONTEXT_SALT = "servy-real-demo-conversation-v1"
 DEMO_CONTEXT_MAX_AGE = 7200
 DEMO_CONTEXT_MAX_TURNS = 10
 DEMO_CONTEXT_TEXT_LIMIT = 650
+logger = logging.getLogger(__name__)
+
 LOGGED_ROUTES = frozenset({"/demo-api/inventory/", "/demo-api/source/",
     "/demo-api/query/", "/demo-api/tickets/preview/",
     "/demo-api/tickets/create-local/"})
@@ -373,6 +376,7 @@ def _attach_full_scope_scan(rag, *, tenant, customer, asset, question,
             "scan_completed": False,
         })
     except Exception:
+        logger.exception("Approved-document scan failed for asset_id=%s", asset.id)
         rag["document_coverage"] = {
             "complete": False, "scope": "selected-asset-approved-documents",
             "documents_searched": 0, "approved_documents": 0,
@@ -807,30 +811,45 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     if (contract.get("response_type") == "DIAGNOSTIC_GUIDANCE"
             and last_topic == "causes" and is_explanation_followup(question)):
         explanation_presentation = dict(contract.get("presentation") or {})
-        retained_sections = []
-        hid_detail_limit = False
-        for section in explanation_presentation.get("sections", []):
-            title = section.get("title") if isinstance(section, dict) else None
-            claims = section.get("claims", []) if isinstance(section, dict) else []
-            limitation_text = " ".join(
-                str(claim.get("text", "")) for claim in claims if isinstance(claim, dict)
-            ).casefold()
-            is_redundant_detail_limit = (
-                title == "Evidence limitation"
-                and any(phrase in limitation_text for phrase in (
+        sections = list(explanation_presentation.get("sections") or [])
+        has_detail_limit = any(
+            isinstance(section, dict)
+            and section.get("title") == "Evidence limitation"
+            and any(
+                phrase in " ".join(
+                    str(claim.get("text", ""))
+                    for claim in section.get("claims", [])
+                    if isinstance(claim, dict)
+                ).casefold()
+                for phrase in (
                     "separately citable explanation",
                     "do not contain a separately",
                     "do not contain further explanation",
                     "no further explanation",
                     "no additional explanation",
-                ))
+                )
             )
-            if is_redundant_detail_limit:
-                hid_detail_limit = True
-            else:
-                retained_sections.append(section)
-        if hid_detail_limit:
-            explanation_presentation["sections"] = retained_sections
+            for section in sections
+        )
+        # A selected cause may be reduced by focus_on_cause() to its exact
+        # source sentence. Keep the missing-detail explanation visible.
+        if explanation_presentation.get("cause_explanation_unavailable") and not has_detail_limit:
+            sections.append({
+                "number": len(sections) + 1,
+                "title": "Evidence limitation",
+                "claims": [{
+                    "text": (
+                        "The cited approved passages list this as a possible cause "
+                        "but do not explain it further. I won't infer technical details "
+                        "that the sources do not state."
+                    ),
+                    "kind": "uncertainty",
+                    "evidence_ids": [],
+                }],
+            })
+            explanation_presentation["sections"] = sections
+            has_detail_limit = True
+        if has_detail_limit:
             explanation_presentation["cause_explanation_unavailable"] = True
         explanation_presentation["follow_up_question"] = None
         contract["presentation"] = explanation_presentation

@@ -146,6 +146,22 @@ def is_generic_cause_overview(question):
         and _GENERIC_CAUSE_REQUEST.search(value)
         and not _SPECIFIC_FAULT_QUERY.search(value)
     )
+def _is_cause_coverage_review(question):
+    """Detect a source-support audit without inferring a prior equipment symptom."""
+    value = " ".join(str(question or "").split()).casefold()
+    asks_causes = bool(re.search(r"\b(?:causes?|reasons?|possibilities)\b", value))
+    asks_support = bool(
+        re.search(r"\b(?:supported|documented|listed|backed)\b", value)
+        and re.search(r"\b(?:manual|approved|documentation|document|source)\b", value)
+    )
+    asks_limit = bool(re.search(
+        r"\b(?:cannot|can not|can't|could not|couldn't|not)\b"
+        r".{0,70}\b(?:establish\w*|confirm\w*|determin\w*|"
+        r"verif\w*|identif\w*|appl\w*)\b", value
+    ))
+    return asks_causes and asks_support and asks_limit
+
+
 _RESTRICTED_LEVELS = frozenset({"PROHIBITED", "TECHNICIAN_ONLY"})
 _FREQUENCY_QUESTION = re.compile(
     r"\b(?:how (?:often|frequently|regularly|many times)|"
@@ -619,6 +635,13 @@ def build_customer_answer(interaction, session, references, conversation_context
     generic_cause_overview = (
         is_generic_cause_overview(raw_user_q)
         or is_generic_cause_overview(question)
+        or (
+            conversation_context is not None
+            and is_generic_cause_overview(
+                getattr(conversation_context, "original_complaint", "")
+            )
+            and _is_cause_coverage_review(raw_user_q or question)
+        )
     )
     evidence_chunks = list(sufficient.grounded_chunks or [])
     if generic_cause_overview:

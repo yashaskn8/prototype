@@ -275,6 +275,10 @@ class PendingFollowupReplyTests(unittest.TestCase):
         self.assertEqual(no_code["next_question"], "Did the problem start suddenly or gradually?")
         sudden = resolve_pending_followup_reply(
             "suddenly", no_code["next_question"], topic="causes",
+            history=[
+                "What could be the possible reasons why my VRF outdoor module is not working?",
+                "No code.",
+            ],
             asked_followups=[
                 "Is a fault code or warning visible on the display?",
                 "Did the problem start suddenly or gradually?",
@@ -305,6 +309,34 @@ class PendingFollowupReplyTests(unittest.TestCase):
         )
         self.assertEqual(result["kind"], "frequency")
         self.assertIn("problem happens intermittently", result["acknowledgement"])
+
+    def test_frequency_given_while_date_is_pending_is_captured_and_date_is_reasked(self):
+        result = resolve_pending_followup_reply(
+            "Intermittently.",
+            "When did you first notice this symptom?",
+            topic="causes",
+        )
+        self.assertEqual(result["kind"], "frequency")
+        self.assertEqual(result["value"], "intermittently")
+        self.assertIn("problem happens intermittently", result["acknowledgement"])
+        self.assertIn("When did you first notice", result["next_question"])
+
+    def test_onset_history_prioritizes_frequency_before_first_noticed_date(self):
+        self.assertEqual(
+            _follow_up(
+                "causes",
+                "Suddenly.",
+                history=[
+                    "My VRF outdoor module is not working. What could be the possible reasons?",
+                    "No code.",
+                ],
+                asked_followups=[
+                    "Is a fault code or warning visible on the display?",
+                    "Did the problem start suddenly or gradually?",
+                ],
+            ),
+            "Does the problem happen continuously or intermittently?",
+        )
 
     def test_customer_reported_attempts_are_not_presented_as_verified_facts(self):
         result = resolve_pending_followup_reply(
