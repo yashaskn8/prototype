@@ -425,6 +425,14 @@ class BreakthroughRedTeamTests(TestCase):
             tenant=self.tenant_a, customer=self.cust_a1, site=self.site_a1,
             asset=self.asset_a1, created_by=self.user_a1, title="Emergency breakdown on line 1"
         )
+        # A ticket requires an actual customer-reported issue, but this regression
+        # specifically verifies that escalation can create the first interaction.
+        CustomerMessage.objects.create(
+            tenant=self.tenant_a,
+            conversation=conv,
+            sender_role="customer",
+            message_text="Emergency breakdown on line 1",
+        )
         self.assertEqual(CustomerInteraction.objects.filter(conversation=conv).count(), 0)
 
         url_esc = reverse("api_customer_conversation_ticket", args=[conv.conversation_uuid])
