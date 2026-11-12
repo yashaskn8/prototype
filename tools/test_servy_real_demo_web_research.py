@@ -83,6 +83,12 @@ class ManufacturerWebResearchTests(unittest.TestCase):
         )
         self.assertEqual(exact["status"], "available")
 
+    def test_operating_explanations_and_service_manual_references_are_preserved(self):
+        result = self._call(snippets=[
+            "The service manual for model VRF-OUT-60 explains this operating status."
+        ])
+        self.assertEqual(result["status"], "available")
+
     def test_repair_and_physical_procedure_snippets_are_excluded(self):
         result = self._call(snippets=[
             "For model VRF-OUT-60, remove the panel and test the voltage."
