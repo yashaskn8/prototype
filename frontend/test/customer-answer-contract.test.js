@@ -47,3 +47,27 @@ test('rejects evidence citations attached to an uncertainty-only section', () =>
   presentation.sections[1].claims[0].evidence_ids = ['s1'];
   assert.equal(validateCustomerPresentation(presentation), null);
 });
+
+
+test('rejects informational claims placed under documented causes', () => {
+  const presentation = mixedPresentation();
+  presentation.sections[0].claims[0].kind = 'information';
+  assert.equal(validateCustomerPresentation(presentation), null);
+});
+
+test('rejects causes, procedures, and observations placed under the wrong headings', () => {
+  const cases = [
+    ['Safe observations from the manual', 'possible_cause'],
+    ['Approved customer checks', 'observation'],
+    ['What I could not verify', 'customer_procedure'],
+    ['Evidence limitation', 'information'],
+  ];
+  for (const [title, kind] of cases) {
+    const presentation = mixedPresentation();
+    presentation.sections = [{
+      number: 1, title,
+      claims: [{ text: 'Misclassified source claim.', kind, evidence_ids: ['s1'] }],
+    }];
+    assert.equal(validateCustomerPresentation(presentation), null, title);
+  }
+});
