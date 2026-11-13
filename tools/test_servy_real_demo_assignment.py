@@ -77,9 +77,37 @@ def _run(question, contracts, *, continuation=None, thread_id=None, asset=None,
         "core.services.rag": rag_mod,
     }
     tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=customer_id)
+    # These are offline contract tests. Unless a test explicitly replaces
+    # the exhaustive scan, provide an empty deterministic scan result rather
+    # than importing Django models or opening the real company database.
+    scan_context = (
+        nullcontext()
+        if isinstance(demo.search_all_approved_documents, Mock)
+        else patch.object(
+            demo,
+            "search_all_approved_documents",
+            return_value={
+                "references": [],
+                "coverage": {
+                    "complete": True,
+                    "scan_completed": True,
+                    "scope": "synthetic-selected-asset-approved-documents",
+                    "documents_searched": 0,
+                    "approved_documents": 0,
+                    "documents_without_searchable_chunks": 0,
+                    "passages_searched": 0,
+                    "documents_with_matches": 0,
+                    "matching_passages": 0,
+                    "references_in_answer_pool": 0,
+                    "document_titles": [],
+                },
+            },
+        )
+    )
     with patch.dict("sys.modules", modules), \
             patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
-            patch.object(demo, "plan_turn", return_value=None):
+            patch.object(demo, "plan_turn", return_value=None), \
+            scan_context:
         result = demo._answer(asset.id, question, continuation=continuation,
                               thread_id=thread_id)
     return result, rag_mod.ask_rag, answer_mod.build_customer_answer
