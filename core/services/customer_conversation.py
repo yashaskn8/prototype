@@ -342,6 +342,11 @@ def process_customer_diagnostic_turn(
                 "Evidence validation and citation assembly skipped for safety response",
                 "skipped",
             )
+            emit_execution_event(
+                "customer_qwen_generation",
+                "Local Qwen generation skipped for safety escalation",
+                "skipped",
+            )
             with transaction.atomic():
                 user_msg = CustomerMessage.objects.create(
                     tenant=tenant,
@@ -470,6 +475,11 @@ def process_customer_diagnostic_turn(
             emit_execution_event(
                 "customer_evidence_validation",
                 "Evidence validation and citation assembly skipped for clarification response",
+                "skipped",
+            )
+            emit_execution_event(
+                "customer_qwen_generation",
+                "Local Qwen generation skipped until the customer clarifies the symptom",
                 "skipped",
             )
             with transaction.atomic():
