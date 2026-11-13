@@ -15,6 +15,8 @@ import re
 import secrets
 import sys
 import time
+from queue import Empty, Full, Queue
+from threading import Event, Thread
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -48,6 +50,7 @@ from tools.servy_real_demo_dialogue import (
     is_technician_handoff_request, build_technician_handoff,
     out_of_scope_response, expand_display_observation_query, fact_fingerprint,
 )
+from core.services.rag_execution_log import bind_execution_log, execution_stage, emit_execution_event
 
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
@@ -117,7 +120,7 @@ DEMO_CONTEXT_TEXT_LIMIT = 650
 logger = logging.getLogger(__name__)
 
 LOGGED_ROUTES = frozenset({"/demo-api/health/", "/demo-api/inventory/", "/demo-api/source/",
-    "/demo-api/query/", "/demo-api/tickets/preview/",
+    "/demo-api/query/", "/demo-api/query-stream/", "/demo-api/tickets/preview/",
     "/demo-api/tickets/create-local/"})
 
 
@@ -1397,6 +1400,104 @@ class Handler(BaseHTTPRequestHandler):
                 and host in ("127.0.0.1", "localhost")
                 and secrets.compare_digest(supplied, "Demo " + self.token))
 
+    def _send_rag_stream(self, work):
+        """Stream real execution events from one already-authenticated query."""
+        events = Queue(maxsize=128)
+        disconnected = Event()
+        finished = object()
+
+        def publish(event_name, payload):
+            if disconnected.is_set():
+                return
+            item = (event_name, payload)
+            try:
+                events.put_nowait(item)
+            except Full:
+                try:
+                    events.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    events.put_nowait(item)
+                except Full:
+                    return
+
+        def run_query():
+            try:
+                with bind_execution_log(lambda event: publish("log", event)):
+                    result = work()
+                publish("result", result)
+            except ValueError:
+                publish("error", {
+                    "detail": "Conversation context is invalid or equipment access changed. Start a new chat."
+                })
+            except Exception as exc:
+                request_id = secrets.token_hex(6)
+                logger.exception(
+                    "Read-only demo stream failed request_id=%s error_type=%s",
+                    request_id, type(exc).__name__,
+                )
+                publish("error", {
+                    "detail": "Read-only demo request failed",
+                    "request_id": request_id,
+                })
+            finally:
+                if not disconnected.is_set():
+                    try:
+                        events.put_nowait(finished)
+                    except Full:
+                        try:
+                            events.get_nowait()
+                        except Empty:
+                            pass
+                        try:
+                            events.put_nowait(finished)
+                        except Full:
+                            pass
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform, private")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        try:
+            self.wfile.write(b": servy-rag-stream\\n\\n")
+            self.wfile.flush()
+            Thread(target=run_query, name="servy-customer-rag-stream", daemon=True).start()
+            while True:
+                try:
+                    item = events.get(timeout=12)
+                except Empty:
+                    self.wfile.write(b": keep-alive\\n\\n")
+                    self.wfile.flush()
+                    continue
+                if item is finished:
+                    break
+                event_name, payload = item
+                frame = (
+                    "event: " + event_name + "\\n"
+                    + "data: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    + "\\n\\n"
+                )
+                self.wfile.write(frame.encode("utf-8"))
+                self.wfile.flush()
+                if event_name in {"result", "error"}:
+                    break
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            disconnected.set()
+        finally:
+            disconnected.set()
+            # Local request log contains only route, outcome and elapsed time.
+            elapsed = int((time.perf_counter() - self._request_started) * 1000)
+            print(
+                f"{time.strftime('%H:%M:%S')} HTTP 200 RAG stream | "
+                f"POST /demo-api/query-stream/ source=browser "
+                f"client={self.client_address[0]} auth=ok {elapsed}ms",
+                flush=True,
+            )
+
     def do_GET(self):
         self._request_started = time.perf_counter()
         authorized = self._authorized()
@@ -1435,12 +1536,12 @@ class Handler(BaseHTTPRequestHandler):
         if not authorized:
             return self._send(401, {"detail": "Demo identity required"})
         path = urlsplit(self.path).path
-        if path not in ("/demo-api/query/", "/demo-api/tickets/preview/",
-                        "/demo-api/tickets/create-local/"):
+        if path not in ("/demo-api/query/", "/demo-api/query-stream/",
+                        "/demo-api/tickets/preview/", "/demo-api/tickets/create-local/"):
             return self._send(404, {"detail": "Not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            max_length = (MAX_BODY if path == "/demo-api/query/" else
+            max_length = (MAX_BODY if path in {"/demo-api/query/", "/demo-api/query-stream/"} else
                           MAX_LOCAL_TICKET_BODY if path == "/demo-api/tickets/create-local/" else 9000)
             if length < 1 or length > max_length:
                 return self._send(400, {"detail": "Invalid request size"})
@@ -1467,7 +1568,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw)
             if not isinstance(body, dict):
                 return self._send(400, {"detail": "Invalid request"})
-            if path != "/demo-api/query/":
+            if path not in {"/demo-api/query/", "/demo-api/query-stream/"}:
                 try:
                     with read_only_database():
                         fields = _ticket_fields(body)
@@ -1486,13 +1587,20 @@ class Handler(BaseHTTPRequestHandler):
                    (not isinstance(thread_id, str)
                     or not re.fullmatch(r"thread-[a-z0-9-]{8,90}", thread_id))):
                 return self._send(400, {"detail": "Select equipment and enter a question (maximum 4000 characters)"})
-            with read_only_database():
-                if thread_id is None:
-                    result = _answer(asset_id, question.strip(), continuation=continuation)
-                else:
-                    result = _answer(asset_id, question.strip(), continuation=continuation,
-                                     thread_id=thread_id)
-            return self._send(200, result)
+            def execute_customer_query():
+                with read_only_database():
+                    if thread_id is None:
+                        return _answer(
+                            asset_id, question.strip(), continuation=continuation
+                        )
+                    return _answer(
+                        asset_id, question.strip(), continuation=continuation,
+                        thread_id=thread_id,
+                    )
+
+            if path == "/demo-api/query-stream/":
+                return self._send_rag_stream(execute_customer_query)
+            return self._send(200, execute_customer_query())
         except ValueError:
             return self._send(400, {"detail": "Conversation context is invalid or equipment access changed. Start a new chat."})
         except Exception:
