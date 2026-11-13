@@ -63,6 +63,9 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   useEffect(() => {
     aiStreamAbortRef.current?.abort();
     aiStreamAbortRef.current = null;
+    setSubmittingQuery(false);
+    setAiResult(null);
+    setAiError(null);
     setAiExecutionLogs([]);
   }, [assetId]);
 
