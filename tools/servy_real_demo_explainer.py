@@ -110,7 +110,18 @@ def _validate_explanations(raw, candidates):
         explanation_tokens = set(_TOKEN.findall(explanation.casefold()))
         # A wording model may add neutral grammar, but substantive vocabulary
         # must occur in the authorized source passage.
-        if explanation_tokens - context_tokens - _SAFE_GLUE:
+        unsupported_tokens = explanation_tokens - context_tokens - _SAFE_GLUE
+        if "confirm" in unsupported_tokens and re.search(
+            r"\\b(?:does not|do not|did not|doesn't|can't)\\b"
+            r"[^.!?;]{0,120}\\b(?:or\\s+)?confirm\\b",
+            explanation,
+            re.I,
+        ):
+            # Permit a narrowly scoped negative statement such as
+            # "does not identify ... or confirm". A positive "confirms"
+            # remains unsupported and is rejected by the vocabulary gate.
+            unsupported_tokens.discard("confirm")
+        if unsupported_tokens:
             return None
         if (_CUSTOMER_DIRECTIVE.search(explanation)
                 or _CERTAINTY.search(explanation)):
