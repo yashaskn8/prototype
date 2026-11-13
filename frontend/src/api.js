@@ -1,3 +1,5 @@
+import { consumeRagEventStream } from './components/ragExecutionStream';
+
 // API client with automated CSRF handling and credential management
 
 let cachedCsrfToken = null;
@@ -92,6 +94,16 @@ export const api = {
     const resData = await res.json().catch(() => ({}));
     if (!res.ok) throw { status: res.status, ...resData };
     return resData;
+  },
+
+  async streamPost(endpoint, data, onLog, options = {}) {
+    const res = await request(endpoint, {
+      method: 'POST',
+      body: data,
+      headers: { Accept: 'text/event-stream' },
+      signal: options.signal,
+    });
+    return consumeRagEventStream(res, onLog);
   },
 
   async delete(endpoint) {
