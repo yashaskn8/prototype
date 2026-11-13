@@ -1026,7 +1026,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                     heading = heading.strip() if isinstance(heading, str) else ""
                     source_context_by_claim[ident] = (
                         "Section heading: " + heading
-                        + "\\nExact approved source statement: " + source_text
+                        + "\nExact approved source statement: " + source_text
                     )
                 except Exception as exc:
                     # A missing/revoked/out-of-scope source means no generation
