@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Bot, BookOpen, Building2, FilePlus2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2, X } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
 import { AssistantTypingIndicator } from '../components/AssistantTypingIndicator';
-import { RAGExecutionLog } from '../components/RAGExecutionLog';
 import { consumeRagEventStream, mergeRagExecutionEvent } from '../components/ragExecutionStream';
 import {
   EMPTY_ASSISTANT_RESPONSE,
@@ -579,19 +578,9 @@ export function RealDemoPage() {
                       {message.role === 'user' ? <div className="real-demo-chat-user-text">{message.text}</div>
                         : message.pending ? <>
                             <AssistantTypingIndicator />
-                            <RAGExecutionLog
-                              events={message.executionLogs || []}
-                              running
-                              title="Customer RAG execution log"
-                            />
                           </>
                           : message.errorMessage ? <>
                             <p className="servy-chat-error" role="alert">{message.errorMessage}</p>
-                            <RAGExecutionLog
-                              events={message.executionLogs || []}
-                              running={false}
-                              title="Customer RAG execution log"
-                            />
                           </> : <>
                             <div className="real-demo-chat-answer-heading">
                               <strong>Servy</strong>
@@ -609,11 +598,6 @@ export function RealDemoPage() {
                                 })[message.data?.response_type] || 'Response'}
                               </span>
                             </div>
-                            <RAGExecutionLog
-                              events={message.executionLogs || []}
-                              running={false}
-                              title="Customer RAG execution log"
-                            />
                             {message.data?.response_type === 'TECHNICIAN_HANDOFF'
                               && message.data?.handoff ? (
                                 <section className="real-demo-handoff" aria-label="Technician handoff checklist">
@@ -880,14 +864,8 @@ export function RealDemoPage() {
             </section>
           </div>}
           {ticketConfirmation && <div className="real-demo-ticket-confirmation" role="status">
-            <strong>Ticket {ticketConfirmation.ticket.id} {ticketConfirmation.duplicate ? 'already exists' : 'created'}</strong><span>{ticketConfirmation.detail}</span>
-            <dl>{ticketConfirmation.ticket.assetName && <div><dt>Equipment</dt><dd>{ticketConfirmation.ticket.assetName} ({ticketConfirmation.ticket.assetCode})</dd></div>}
-              {ticketConfirmation.ticket.complaintType && <div><dt>Complaint Type</dt><dd>{ticketConfirmation.ticket.complaintType}</dd></div>}
-              <div><dt>Status</dt><dd>{ticketConfirmation.ticket.status}</dd></div></dl>
-            <a className="btn btn-secondary" href="http://127.0.0.1:5176/" target="_blank" rel="noreferrer">
-              Open private technician portal
-            </a>
-            <small>Technicians use their separate code from technician_access.txt.</small>
+            <strong>{ticketConfirmation.duplicate ? 'Ticket already exists' : 'Ticket created'}</strong>
+            <span>{ticketConfirmation.ticket.id}</span>
           </div>}
         </>}
         {error && !ticketDraft && <p className="real-demo-error" role="alert">{error}</p>}
