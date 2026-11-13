@@ -30,6 +30,23 @@ class CustomerAnswerGuardTests(unittest.TestCase):
             return build_customer_answer(self.interaction(question), None,
                                          [{"document_id": 4, "chunk_id": 5, "score": 0.8}])
 
+    def test_causal_can_open_windows_question_is_not_a_permission_request(self):
+        question = (
+            "Can open doors, open windows, or excessive room heat load "
+            "cause my Split AC to cool poorly?"
+        )
+        self.assertIsNone(_question_guard(question))
+
+    def test_direct_open_panel_permission_uses_guard_without_crashing(self):
+        answer = self.answer(
+            "Should I open the electrical panel?",
+            "Possible causes:\n- Electrical supply issue or inverter fault.",
+        )
+        self.assertEqual(answer["response_type"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(answer["engine"], "customer-question-guard")
+        self.assertIn("cannot approve", answer["answer"].casefold())
+        self.assertEqual(answer["citations"], [])
+
     def test_repeated_breaker_reset_cites_prohibition_not_a_possible_cause(self):
         answer = self.answer("Breaker trips again. Should I keep resetting it?",
                              "Do not repeatedly reset a tripping breaker.\nPossible causes:\n- Breaker or protective device tripped.")

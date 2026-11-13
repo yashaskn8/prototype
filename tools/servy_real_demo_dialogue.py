@@ -1095,7 +1095,8 @@ def question_topic(question, last_topic=None):
         return "meaning"
     if re.search(
         r"\b(?:causes?|reasons?|why|what (?:could|might) be wrong|diagnos\w*|root cause)\b|"
-        r"\b(?:could|might|may)\b.{0,100}\b(?:cause|explain|account for|lead to|result in)\b",
+        r"\b(?:can|could|might|may|does|do|will)\b.{0,100}\b"
+        r"(?:cause|explain|account for|affect|impact|reduce|impair|lead to|result in)\b",
         q,
     ):
         return "causes"

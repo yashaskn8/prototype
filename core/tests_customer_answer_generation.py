@@ -184,6 +184,27 @@ class CustomerClaimTextValidationTests(TestCase):
         changed["paraphrases"].append(dict(changed["paraphrases"][0]))
         self.assertEqual(generation._validate_response(changed, candidate), {})
 
+    def test_valid_claim_survives_an_invalid_sibling_paraphrase(self):
+        candidates = [
+            {"id": "c1", "kind": "possible_cause",
+             "source_text": "A blocked filter may reduce airflow."},
+            {"id": "c2", "kind": "possible_cause",
+             "source_text": "Blocked outdoor clearance may reduce cooling."},
+        ]
+        raw = {"paraphrases": [
+            {"claim_id": "c1", "display_text": _good_text(),
+             "source_quote": "A blocked filter may reduce airflow."},
+            {"claim_id": "c2",
+             "display_text": (
+                 "Blocked outdoor clearance may reduce cooling and damage the compressor."
+             ),
+             "source_quote": "Blocked outdoor clearance may reduce cooling."},
+        ]}
+        self.assertEqual(
+            generation._validate_response(raw, candidates),
+            {"c1": _good_text()},
+        )
+
     def test_document_fact_and_customer_procedure_claims_are_not_rephrased(self):
         presentation = _presentation()
         presentation["supporting_claims"][0]["kind"] = "document_fact"

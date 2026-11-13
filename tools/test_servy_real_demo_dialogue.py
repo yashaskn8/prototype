@@ -1424,5 +1424,16 @@ class TechnicianHandoffTests(unittest.TestCase):
         self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
 
 
+class CausalQuestionRoutingTests(unittest.TestCase):
+    def test_can_affect_wording_is_routed_to_documented_causes(self):
+        self.assertEqual(
+            question_topic(
+                "Can restricted airflow or blocked outdoor unit clearance "
+                "affect the cooling performance?"
+            ),
+            "causes",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

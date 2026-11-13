@@ -223,7 +223,18 @@ def _question_guard(question):
     """Require a direct answer for permission, proof, or exact-spec questions."""
     from .retriever import normalize_domain_terms
     lower = normalize_domain_terms(question).casefold()
-    permission = re.search(r"\b(?:can|may|should|shud|shall|could|allowed|permitted|acceptable|okay|safe)\b", lower)
+    # A modal verb and an action word are not enough to establish a
+    # request for permission. "Can open windows cause poor cooling?" is a
+    # causal question, not a request to operate equipment. Require an explicit
+    # actor or an explicit "safe/allowed to" construction.
+    permission = re.search(
+        r"\b(?:can|may|should|shud|shall|could)\s+"
+        r"(?:(?:i|we|you|staff|technician|operator|customer)\b|"
+        r"(?:the|a)\s+(?:staff|technician|operator|customer)\b)"
+        r"|\b(?:am i|are we|is it)\s+(?:allowed|permitted|safe|okay|acceptable)\s+to\b"
+        r"|\b(?:allowed|permitted|acceptable)\s+to\b",
+        lower,
+    )
     physical = re.search(
         r"\b(?:bypas\w*|defeat|bridge|resett?\w*|clear(?:ing)? (?:the )?fault|"
         r"open|probe|wire|measure|chip|adjust|vent|charg\w*|top up|spray|fix|repair|"
@@ -349,7 +360,9 @@ def _guarded_customer_response(interaction, session, candidates, guard):
             "stop_conditions": [], "expected_result": "",
             "clarification_question": message if clarification else None,
             "can_resolve": False, "can_escalate": True,
-            "engine": "source-structured-qwen" if used_qwen else "source-structured-extractive"}
+            # This branch is a deterministic policy boundary. It does not
+            # invoke Qwen and must not reference the generation-path flag.
+            "engine": "customer-question-guard"}
 
 
 def _document_fact_family(question):

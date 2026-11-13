@@ -248,26 +248,29 @@ def _validate_response(raw, candidates) -> dict:
     if not isinstance(raw, dict) or set(raw) != {"paraphrases"}:
         return {}
     rows = raw.get("paraphrases")
-    if not isinstance(rows, list) or len(rows) != len(candidates):
+    if not isinstance(rows, list) or not 1 <= len(rows) <= len(candidates):
         return {}
     expected = {item["id"]: item for item in candidates}
-    output = {}
+    output, seen = {}, set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != {"claim_id", "display_text", "source_quote"}:
             return {}
         ident = row.get("claim_id")
-        if ident not in expected or ident in output:
+        if ident not in expected or ident in seen:
             return {}
+        seen.add(ident)
         candidate = expected[ident]
-        if row.get("source_quote") != candidate["source_text"]:
-            return {}
         display = row.get("display_text")
-        if not isinstance(display, str) or not _validate_paraphrase(
-            candidate["source_text"], display, candidate["kind"]
-        ):
-            return {}
+        # Validate each claim independently. One invalid paraphrase must not
+        # discard other claims that independently preserve their exact source.
+        if (row.get("source_quote") != candidate["source_text"]
+                or not isinstance(display, str)
+                or not _validate_paraphrase(
+                    candidate["source_text"], display, candidate["kind"]
+                )):
+            continue
         output[ident] = display.strip()
-    return output if set(output) == set(expected) else {}
+    return output
 
 
 def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
@@ -310,7 +313,7 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
             "type": "object",
             "properties": {
                 "paraphrases": {
-                    "type": "array", "minItems": len(candidates),
+                    "type": "array", "minItems": 1,
                     "maxItems": len(candidates),
                     "items": {
                         "type": "object",
