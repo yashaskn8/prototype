@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from threading import Thread
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from core.api_views import EngineerCopilotQueryStreamView, EngineerCopilotQueryView
+from core.api_views import (
+    CustomerConversationMessagesStreamView,
+    CustomerSupportQueryStreamView,
+    EngineerCopilotQueryStreamView,
+    EngineerCopilotQueryView,
+)
 
 from core.services.rag_event_stream import rag_execution_stream
 from core.services.rag_execution_log import (
@@ -165,3 +171,127 @@ class TechnicianCopilotStreamAccessTests(SimpleTestCase):
         self.assertIn("technician_ticket_authorization", body)
         self.assertIn("confidential_scope", body)
         self.assertIn('"answer":"synthetic technician recommendation"', body)
+
+
+class CustomerRAGStreamAccessTests(SimpleTestCase):
+    def test_customer_first_turn_stream_rejects_anonymous_requests_before_work(self):
+        request = APIRequestFactory().post(
+            "/api/customer-support/query-stream/",
+            {"site_id": 10, "asset_id": 59, "question": "synthetic question"},
+            format="json",
+        )
+        with patch.object(
+            CustomerSupportQueryStreamView,
+            "_prepare",
+            side_effect=AssertionError("anonymous customer requests must not prepare RAG work"),
+        ):
+            response = CustomerSupportQueryStreamView.as_view()(request)
+        self.assertEqual(response.status_code, 403)
+
+    def test_authenticated_customer_first_turn_stream_forwards_real_stage_events(self):
+        request = APIRequestFactory().post(
+            "/api/customer-support/query-stream/",
+            {"site_id": 10, "asset_id": 59, "question": "synthetic question"},
+            format="json",
+        )
+        user = User(username="customer-stream-test", is_active=True)
+        force_authenticate(request, user=user)
+
+        def execute(_prepared):
+            with execution_stage(
+                "customer_safety_screening",
+                "Checking customer-reported conditions",
+            ):
+                emit_execution_event(
+                    "customer_safety_outcome",
+                    "No safety escalation condition detected",
+                    "info",
+                )
+            return {"response_type": "DIAGNOSTIC_GUIDANCE", "answer": "synthetic customer answer"}
+
+        with (
+            patch.object(CustomerSupportQueryStreamView, "throttle_classes", []),
+            patch.object(
+                CustomerSupportQueryStreamView,
+                "_prepare",
+                return_value=(None, {"asset_id": 59, "customer_id": 14}),
+            ),
+            patch.object(CustomerSupportQueryStreamView, "_execute", staticmethod(execute)),
+        ):
+            response = CustomerSupportQueryStreamView.as_view()(request)
+            body = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/event-stream; charset=utf-8")
+        self.assertIn("event: log", body)
+        self.assertIn("customer_safety_screening", body)
+        self.assertIn('"status":"started"', body)
+        self.assertIn('"status":"completed"', body)
+        self.assertIn('"answer":"synthetic customer answer"', body)
+
+    def test_customer_conversation_followup_stream_rejects_anonymous_requests(self):
+        conversation_uuid = uuid4()
+        request = APIRequestFactory().post(
+            f"/api/customer-support/conversations/{conversation_uuid}/messages-stream/",
+            {"message": "synthetic follow-up"},
+            format="json",
+        )
+        with patch.object(
+            CustomerConversationMessagesStreamView,
+            "_prepare_post",
+            side_effect=AssertionError("anonymous follow-ups must not prepare RAG work"),
+        ):
+            response = CustomerConversationMessagesStreamView.as_view()(
+                request, conversation_uuid=conversation_uuid
+            )
+        self.assertEqual(response.status_code, 403)
+
+    def test_authenticated_customer_conversation_followup_stream_forwards_result(self):
+        conversation_uuid = uuid4()
+        request = APIRequestFactory().post(
+            f"/api/customer-support/conversations/{conversation_uuid}/messages-stream/",
+            {"message": "synthetic follow-up"},
+            format="json",
+        )
+        user = User(username="customer-followup-stream-test", is_active=True)
+        force_authenticate(request, user=user)
+
+        def execute(_prepared):
+            with execution_stage(
+                "customer_conversation_context",
+                "Reconstructing authorized conversation context",
+            ):
+                emit_execution_event(
+                    "customer_context_summary", "Conversation context summary",
+                    "info", metrics={"candidate_count": 2},
+                )
+            return {
+                "user_message": {"sender_role": "customer", "message_text": "synthetic"},
+                "assistant_message": {"sender_role": "assistant", "message_text": "synthetic"},
+                "contract": {"response_type": "DIAGNOSTIC_GUIDANCE"},
+            }
+
+        with (
+            patch.object(CustomerConversationMessagesStreamView, "throttle_classes", []),
+            patch.object(
+                CustomerConversationMessagesStreamView,
+                "_prepare_post",
+                return_value=(None, {"conversation_uuid": str(conversation_uuid)}),
+            ),
+            patch.object(
+                CustomerConversationMessagesStreamView,
+                "_execute_post",
+                staticmethod(execute),
+            ),
+        ):
+            response = CustomerConversationMessagesStreamView.as_view()(
+                request, conversation_uuid=conversation_uuid
+            )
+            body = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/event-stream; charset=utf-8")
+        self.assertIn("customer_conversation_context", body)
+        self.assertIn('"candidate_count":2', body)
+        self.assertIn("event: result", body)
+        self.assertIn('"response_type":"DIAGNOSTIC_GUIDANCE"', body)
