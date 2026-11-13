@@ -679,6 +679,8 @@ class CustomerSupportQueryView(APIView):
         """Run the customer turn after revalidating its tenant/customer/asset binding."""
         from django.contrib.auth import get_user_model
 
+        from core.services.rag_execution_log import execution_stage, emit_execution_event
+
         with execution_stage(
             "customer_request_authorization",
             "Revalidating customer membership, tenant, site and equipment access",
@@ -2745,6 +2747,8 @@ class CustomerConversationMessagesView(APIView):
     def _execute_post(prepared):
         """Revalidate conversation ownership and execute one customer follow-up turn."""
         from django.contrib.auth import get_user_model
+
+        from core.services.rag_execution_log import execution_stage, emit_execution_event
 
         with execution_stage(
             "customer_conversation_authorization",
