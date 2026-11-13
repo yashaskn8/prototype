@@ -332,6 +332,16 @@ def process_customer_diagnostic_turn(
 
 
         if is_hazard:
+            emit_execution_event(
+                "customer_rag_execution",
+                "Manual retrieval skipped because safety escalation takes precedence",
+                "skipped",
+            )
+            emit_execution_event(
+                "customer_evidence_validation",
+                "Evidence validation and citation assembly skipped for safety response",
+                "skipped",
+            )
             with transaction.atomic():
                 user_msg = CustomerMessage.objects.create(
                     tenant=tenant,
@@ -452,6 +462,16 @@ def process_customer_diagnostic_turn(
                 "info",
             )
         if is_vague and not clean_clarification:
+            emit_execution_event(
+                "customer_rag_execution",
+                "Manual retrieval skipped until the customer clarifies the symptom",
+                "skipped",
+            )
+            emit_execution_event(
+                "customer_evidence_validation",
+                "Evidence validation and citation assembly skipped for clarification response",
+                "skipped",
+            )
             with transaction.atomic():
                 user_msg = CustomerMessage.objects.create(
                     tenant=tenant,
