@@ -99,6 +99,11 @@ jobs:
         env:
           LOCALAPPDATA: /tmp
 
+      - name: Qwen Source Validation and Customer Terminal Log Tests
+        run: python -m unittest tools.test_servy_qwen_validation_and_logging -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Manual Statement Sentence Disclosure Tests
         run: python -m unittest tools.test_servy_manual_statement_sentences -v
         env:

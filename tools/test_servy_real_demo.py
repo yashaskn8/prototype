@@ -26,11 +26,27 @@ if not settings.configured:
     settings.configure(SECRET_KEY="synthetic-test-signing-key")
 
 
+def _require_fresh_source_authorization(answer_mod):
+    """Mirror the real module's citation-reauthorization surface, failing closed.
+
+    The customer path reauthorizes each cited passage through
+    ``source_chunk`` before any Qwen explanation. These isolated fakes have no
+    database, so the resolver refuses instead of pretending a synthetic
+    citation is authorized; no explanation is generated from it.
+    """
+    answer_mod._clean_line = lambda value: str(value).strip()
+    answer_mod.source_chunk = Mock(
+        side_effect=ValueError("synthetic fixture has no authorized source resolver")
+    )
+    return answer_mod
+
+
 def _fake_demo_answer_modules():
     answer = ModuleType("core.services.customer_answer")
     answer._question_guard = Mock(return_value=None)
     answer.build_customer_answer = Mock()
     answer.exception_presentation = Mock()
+    _require_fresh_source_authorization(answer)
     diagnostic = ModuleType("core.services.customer_diagnostic")
     diagnostic.check_for_safety_hazard = Mock(return_value=(False, ""))
     diagnostic.check_for_vague_complaint = Mock(return_value=(False, "", []))
@@ -839,6 +855,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
         customer = SimpleNamespace(id=13)
         tenant = SimpleNamespace(id=273)
         answer_mod = ModuleType("core.services.customer_answer")
+        _require_fresh_source_authorization(answer_mod)
         answer_mod._question_guard = Mock(return_value=None)
         answer_mod.build_customer_answer = Mock(
             side_effect=AssertionError("Technical evidence should not be searched")
@@ -988,6 +1005,8 @@ class RealDemoBoundaryTests(unittest.TestCase):
         approved = [first, second]
 
         answer_mod = ModuleType("core.services.customer_answer")
+
+        _require_fresh_source_authorization(answer_mod)
         answer_mod._question_guard = Mock(return_value=None)
         answer_mod.build_customer_answer = Mock(side_effect=approved)
         answer_mod.exception_presentation = Mock(
@@ -1048,6 +1067,8 @@ class RealDemoBoundaryTests(unittest.TestCase):
         approved = [first, second]
 
         answer_mod = ModuleType("core.services.customer_answer")
+
+        _require_fresh_source_authorization(answer_mod)
         answer_mod._question_guard = Mock(return_value=None)
         answer_mod.build_customer_answer = Mock(side_effect=approved)
         answer_mod.exception_presentation = Mock(
@@ -1142,6 +1163,8 @@ class RealDemoBoundaryTests(unittest.TestCase):
                 })
 
                 answer_mod = ModuleType("core.services.customer_answer")
+
+                _require_fresh_source_authorization(answer_mod)
                 answer_mod._question_guard = Mock(return_value=None)
                 answer_mod.build_customer_answer = Mock(side_effect=[first, second])
                 answer_mod.exception_presentation = Mock(
@@ -1209,6 +1232,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
         )
         tenant, customer = SimpleNamespace(id=273), SimpleNamespace(id=13)
         answer_mod = ModuleType("core.services.customer_answer")
+        _require_fresh_source_authorization(answer_mod)
         answer_mod._question_guard = Mock(return_value=None)
         answer_mod.build_customer_answer = Mock(side_effect=[contract(), contract()])
         answer_mod.exception_presentation = Mock(

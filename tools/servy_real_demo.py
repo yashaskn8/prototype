@@ -16,7 +16,7 @@ import secrets
 import sys
 import time
 from queue import Empty, Full, Queue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -1453,6 +1453,34 @@ def _parse_local_ticket_request(content_type, raw):
     return body, attachments
 
 
+_TERMINAL_LOCK = Lock()
+
+
+def _terminal_line(text):
+    """Write one complete line to the backend terminal.
+
+    The HTTP thread and the RAG worker thread both log. A single locked write
+    of the text plus its newline keeps their lines from running together.
+    """
+    line = str(text).replace("\r", " ").replace("\n", " ") + "\n"
+    with _TERMINAL_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def _log_rag_request_accepted(route):
+    """One line per authenticated, validated customer query; no customer data.
+
+    Returns a short random reference that also tags this request's errors.
+    """
+    reference = secrets.token_hex(4)
+    _terminal_line(
+        f"{time.strftime('%H:%M:%S')} RAG_REQUEST_ACCEPTED request={reference} "
+        f"route={route} mode={'stream' if route.endswith('query-stream/') else 'json'}"
+    )
+    return reference
+
+
 class Handler(BaseHTTPRequestHandler):
     token = ""
 
@@ -1500,10 +1528,9 @@ class Handler(BaseHTTPRequestHandler):
             phrase = HTTPStatus(status).phrase
         except ValueError:
             phrase = "Unknown status"
-        print(
+        _terminal_line(
             f"{time.strftime('%H:%M:%S')} HTTP {status} {phrase} | "
-            f"{self.command} {route} source={source} client={client} auth={auth_state}{elapsed}",
-            flush=True,
+            f"{self.command} {route} source={source} client={client} auth={auth_state}{elapsed}"
         )
 
     def _authorized(self):
@@ -1550,26 +1577,15 @@ class Handler(BaseHTTPRequestHandler):
         def run_query():
             try:
                 def publish_execution_event(event):
-                    # One sanitized stage line in the customer terminal. Never
-                    # print questions, prompts, source passages, tokens or IDs.
-                    if isinstance(event, dict):
+                    # Stage events go to the browser stream only. The terminal
+                    # gets one RAG_REQUEST_ACCEPTED line per query, not one
+                    # line per stage; a failed stage is still printed.
+                    if isinstance(event, dict) and event.get("status") == "failed":
                         stage = re.sub(r"[^A-Za-z0-9_.-]", "", str(event.get("stage", "unknown")))[:80]
-                        status = str(event.get("status", "info"))[:20]
-                        duration = event.get("duration_ms")
-                        metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
-                        safe_keys = (
-                            "retrieved_count", "supported_count", "citation_count",
-                            "answer_engine", "model_provider", "generation_status",
-                        )
-                        details = " ".join(
-                            f"{key}={str(metrics[key])[:80]}"
-                            for key in safe_keys if key in metrics
-                        )
-                        timing = f" duration_ms={duration}" if isinstance(duration, (int, float)) else ""
-                        print(
-                            f"{time.strftime('%H:%M:%S')} RAG_STAGE stage={stage} status={status}{timing}"
-                            + (f" {details}" if details else ""),
-                            flush=True,
+                        error = re.sub(r"[^A-Za-z0-9_.-]", "", str(event.get("error_type", "")))[:80]
+                        _terminal_line(
+                            f"{time.strftime('%H:%M:%S')} RAG_STAGE_FAILED stage={stage}"
+                            + (f" error_type={error}" if error else "")
                         )
                     publish("log", event)
 
@@ -1630,11 +1646,10 @@ class Handler(BaseHTTPRequestHandler):
             disconnected.set()
             # Local request log contains only route, outcome and elapsed time.
             elapsed = int((time.perf_counter() - self._request_started) * 1000)
-            print(
+            _terminal_line(
                 f"{time.strftime('%H:%M:%S')} HTTP 200 RAG stream | "
                 f"POST /demo-api/query-stream/ source=browser "
-                f"client={self.client_address[0]} auth=ok {elapsed}ms",
-                flush=True,
+                f"client={self.client_address[0]} auth=ok {elapsed}ms"
             )
 
     def do_GET(self):
@@ -1737,6 +1752,8 @@ class Handler(BaseHTTPRequestHandler):
                         thread_id=thread_id,
                     )
 
+            # The query is authenticated and its body validated: log it once.
+            _log_rag_request_accepted(path)
             if path == "/demo-api/query-stream/":
                 return self._send_rag_stream(execute_customer_query)
             return self._send(200, execute_customer_query())

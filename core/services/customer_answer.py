@@ -763,7 +763,11 @@ def build_customer_answer(
                         if not sentence_overlap and not (
                                 heading_states_symptom(result.heading, asked_symptoms)
                                 or question_states_heading(
-                                    f"{raw_user_q} {question}", result.heading)):
+                                    # Customers misspell; judge the typo-normalized
+                                # wording too ("icce on coyl" names ice on a coil).
+                                f"{raw_user_q} {question} "
+                                f"{normalize_domain_terms(raw_user_q)} "
+                                f"{normalize_domain_terms(question)}", result.heading)):
                             continue
                         target = causes
                 elif level in ("INFORMATIONAL_OBSERVATION", "UNKNOWN_REQUIRES_REVIEW") and _noninvasive_observation(text):

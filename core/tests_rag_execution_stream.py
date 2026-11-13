@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from threading import Thread
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from django.contrib.auth.models import User
@@ -203,7 +204,7 @@ class TechnicianWorkerReauthorizationTests(SimpleTestCase):
 
         prepared = self._prepared()
         tenant = SimpleNamespace(pk=273, id=273)
-        user = SimpleNamespace(pk=7, is_active=True, is_superuser=False)
+        user = SimpleNamespace(pk=7, id=7, is_active=True, is_superuser=False)
         membership_query = Mock()
         membership_query.first.return_value = None
 
@@ -232,7 +233,7 @@ class TechnicianWorkerReauthorizationTests(SimpleTestCase):
         prepared = self._prepared()
         tenant = SimpleNamespace(pk=273, id=273)
         customer = SimpleNamespace(id=14)
-        user = SimpleNamespace(pk=7, is_active=True, is_superuser=False)
+        user = SimpleNamespace(pk=7, id=7, is_active=True, is_superuser=False)
         membership = SimpleNamespace(
             role="technician",
             can_view_confidential=False,
