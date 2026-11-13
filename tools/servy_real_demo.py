@@ -31,7 +31,6 @@ from tools.servy_real_demo_index_review import (
 )
 from tools.servy_real_demo_source_rebuild import rebuild_isolated_bge_index
 from tools.servy_real_demo_local_planner import plan_turn
-from tools.servy_real_demo_explainer import explain_claims
 from tools.servy_real_demo_query_plan import targeted_retry_query
 from tools.servy_real_demo_exhaustive import search_all_approved_documents
 from tools.servy_real_demo_assignment import (
