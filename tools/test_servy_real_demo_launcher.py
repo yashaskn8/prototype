@@ -23,7 +23,8 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
         for required in (
             "http://127.0.0.1:11434/api/chat",
             "http://127.0.0.1:11434/api/tags",
-            "Ollama is not reachable",
+            "Qwen is enabled but local Ollama is not reachable",
+            "Qwen is enabled but qwen3.5:2b-q4_K_M is not installed",
             "exact source wording",
             "SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'",
             "SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'",
