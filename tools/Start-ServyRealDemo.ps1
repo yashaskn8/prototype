@@ -279,18 +279,14 @@ try {
 }
 
 if (-not $NoWatch) {
-    $availableLogs = @($activityLogPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     Write-Output ''
-    Write-Output 'Live customer RAG logs: backend HTTP statuses and Vite development-server activity.'
+    Write-Output 'Live customer RAG events: pipeline stages, Qwen generation outcome and request status.'
+    Write-Output 'Private stderr and Vite logs remain in the demo log folder for troubleshooting.'
     Write-Output 'Press Ctrl+C to close this log viewer only; the backend and frontend processes remain running.'
-    if ($availableLogs.Count -gt 0) {
-        $missingLogs = @($activityLogPaths | Where-Object { !(Test-Path -LiteralPath $_ -PathType Leaf) })
-        if ($missingLogs.Count -gt 0) {
-            Write-Warning ('No launcher-managed log file exists for: ' + ($missingLogs -join ', ') + '. A service reused from another terminal cannot have its stdout attached retroactively.')
-        }
-        Get-Content -Path $availableLogs -Tail 15 -Wait
+    if (Test-Path -LiteralPath $backendOutLog -PathType Leaf) {
+        Get-Content -LiteralPath $backendOutLog -Tail 25 -Wait
     } else {
-        Write-Warning 'No launcher-managed log files are available. The services may have been started outside this launcher; use -Restart only after confirming it is safe to restart the demo processes.'
+        Write-Warning "Customer RAG backend log is not available at: $backendOutLog"
     }
 }
 } finally {
