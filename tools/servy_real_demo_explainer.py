@@ -41,22 +41,22 @@ _SYSTEM_PROMPT = (
 )
 
 _ACTIONS = re.compile(
-    r"\\b(?:open|remove|replace|repair|reset|restart|adjust|measure|probe|wire|"
+    r"\b(?:open|remove|replace|repair|reset|restart|adjust|measure|probe|wire|"
     r"bypass|charge|clean|test|inspect|disconnect|connect|operate|service|"
-    r"disassemble|install|refill|top up)\\b", re.I,
+    r"disassemble|install|refill|top up)\b", re.I,
 )
 _CERTAINTY = re.compile(
-    r"\\b(?:definitely|confirmed fault|proves that|is caused by|the cause is|"
-    r"this means the .* is faulty)\\b", re.I,
+    r"\b(?:definitely|confirmed fault|proves that|is caused by|the cause is|"
+    r"this means the .* is faulty)\b", re.I,
 )
 _CUSTOMER_DIRECTIVE = re.compile(
-    r"\\b(?:you|customer|operator)\\s+(?:should|must|need to|can)\\b|"
-    r"\\b(?:try|attempt to|make sure you|be sure to)\\b|"
-    r"(?:^|[.!?:;]\\s+)(?:please\\s+)?(?:inspect|check|open|remove|replace|"
+    r"\b(?:you|customer|operator)\s+(?:should|must|need to|can)\b|"
+    r"\b(?:try|attempt to|make sure you|be sure to)\b|"
+    r"(?:^|[.!?:;]\s+)(?:please\s+)?(?:inspect|check|open|remove|replace|"
     r"reset|restart|adjust|measure|disconnect|connect|press|turn|switch|"
-    r"clean|test|repair)\\b", re.I,
+    r"clean|test|repair)\b", re.I,
 )
-_NUMBER_OR_CODE = re.compile(r"\\b(?:\\d+(?:\\.\\d+)?|(?:E|F|ERR)[- ]?\\d{1,3})\\b", re.I)
+_NUMBER_OR_CODE = re.compile(r"\b(?:\d+(?:\.\d+)?|(?:E|F|ERR)[- ]?\d{1,3})\b", re.I)
 _TOKEN = re.compile(r"[a-z0-9]+", re.I)
 _SAFE_GLUE = frozenset("""
 a an the and or but if when while before after during this that these those
@@ -99,7 +99,7 @@ def _validate_explanations(raw, candidates):
         if (ident not in expected or ident in result
                 or not isinstance(explanation, str)
                 or not 35 <= len(explanation.strip()) <= MAX_EXPLANATION_CHARS
-                or "\\n" in explanation or "\\r" in explanation
+                or "\n" in explanation or "\r" in explanation
                 or not isinstance(row["source_quote"], str)
                 or row["source_quote"] != expected[ident]["source_text"]):
             return None
@@ -132,18 +132,18 @@ def _validate_explanations(raw, candidates):
             "airflow", "drain", "control board", "inverter", "capacitor",
             "contactor", "heat exchanger", "pipe", "leak",
         ):
-            if re.search(r"\\b" + re.escape(term) + r"\\b", explanation_lower) and not re.search(
-                r"\\b" + re.escape(term) + r"\\b", source_lower
+            if re.search(r"\b" + re.escape(term) + r"\b", explanation_lower) and not re.search(
+                r"\b" + re.escape(term) + r"\b", source_lower
             ):
                 return None
         if candidate["kind"] == "possible_cause" and not re.search(
-            r"\\b(?:may|might|could|possible|possibility|potential|listed|category|"
-            r"does not confirm|not confirmed)\\b", explanation, re.I
+            r"\b(?:may|might|could|possible|possibility|potential|listed|category|"
+            r"does not confirm|not confirmed)\b", explanation, re.I
         ):
             return None
         # Carry an explicit source negation into the explanation.
-        if re.search(r"\\b(?:not|no|never|without|cannot|can't|doesn't|isn't|won't)\\b", source, re.I) and not re.search(
-            r"\\b(?:not|no|never|without|cannot|can't|doesn't|isn't|won't)\\b", explanation, re.I
+        if re.search(r"\b(?:not|no|never|without|cannot|can't|doesn't|isn't|won't)\b", source, re.I) and not re.search(
+            r"\b(?:not|no|never|without|cannot|can't|doesn't|isn't|won't)\b", explanation, re.I
         ):
             return None
         result[ident] = explanation.strip()
@@ -203,7 +203,7 @@ def explain_claims_with_status(
         if isinstance(item, dict) and isinstance(item.get("id"), str)
         and isinstance(item.get("url"), str)
         and re.fullmatch(
-            r"/demo-api/source/\\?citation=[A-Za-z0-9._:-]{8,8192}", item["url"]
+            r"/demo-api/source/\?citation=[A-Za-z0-9._:-]{8,8192}", item["url"]
         )
         and type(item.get("document_id")) is int
         and type(item.get("chunk_id")) is int
@@ -216,7 +216,7 @@ def explain_claims_with_status(
         evidence = claim.get("evidence_ids")
         source = claim.get("source_text")
         if (not isinstance(claim.get("id"), str)
-                or not re.fullmatch(r"c\\d{1,3}", claim["id"])
+                or not re.fullmatch(r"c\d{1,3}", claim["id"])
                 or not isinstance(source, str) or not source.strip()
                 or len(source) > 1200 or not isinstance(evidence, list)
                 or len(evidence) != 1 or evidence[0] not in citations):
