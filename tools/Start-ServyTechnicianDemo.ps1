@@ -153,10 +153,9 @@ try {
 }
 
 if (-not $NoWatch) {
-    $activityLogs = @($backendOut, $backendErr, $frontendOut, $frontendErr) |
-        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
     Write-Host ''
-    Write-Host 'Live technician logs: HTTP request statuses and Vite development-server activity.'
+    Write-Host 'Live technician events: ticket arrivals, ticket reads/updates and authorization failures.'
+    Write-Host 'Routine successful queue polls are suppressed to avoid repeated duplicate-looking lines.'
     Write-Host 'Press Ctrl+C to close this log viewer only; the technician backend and UI remain running.'
-    Get-Content -Path $activityLogs -Tail 15 -Wait
+    Get-Content -LiteralPath $backendOut -Tail 20 -Wait
 }
