@@ -77,6 +77,12 @@ class ClaimCategoryIsolationTests(unittest.TestCase):
         self.assertIn("Look for oil residue", claims[1][0])
         self.assertFalse(_descriptive_cause("[ ] Look for oil residue or evidence of a leak."))
         self.assertFalse(_descriptive_cause("Inspect the internal wiring for damage."))
+        # A visible residue that may indicate an underlying leak is an
+        # observation clue, not itself a documented causal mechanism.
+        self.assertFalse(_descriptive_cause("Visible oil residue may indicate a refrigerant leak."))
+        # Do not regress: a visible obstruction explicitly stated to cause
+        # poor cooling remains a causal claim.
+        self.assertTrue(_descriptive_cause("Visible grille obstruction may cause weak cooling."))
         self.assertTrue(_descriptive_cause("Low refrigerant charge."))
 
 @unittest.skipUnless(HAVE_DOCS, "real source documents are not present")
