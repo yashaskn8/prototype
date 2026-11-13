@@ -978,11 +978,36 @@ def build_customer_answer(
         "technician_only_warnings": [] if procedures else ["Physical procedures require separate customer approval or an authorized technician."],
         "known_limitations": ["No physical inspection or confirmed diagnosis."],
         "authorized_user_actions": {"can_resolve": can_resolve, "can_escalate": True}}
-    from .customer_answer_generation import apply_customer_answer_generation
-    used_qwen = (
-        apply_customer_answer_generation(presentation, raw_user_q or question)
-        if normal and generate_with_local_model else False
-    )
+    from .customer_answer_generation import apply_customer_answer_generation_with_status
+    from .rag_execution_log import execution_stage, emit_execution_event
+
+    if normal and generate_with_local_model:
+        with execution_stage(
+            "customer_qwen_generation",
+            "Applying optional local Qwen wording to approved, cited claims",
+        ):
+            qwen_generation = apply_customer_answer_generation_with_status(
+                presentation, raw_user_q or question
+            )
+        used_qwen = qwen_generation.get("applied_claims", 0) > 0
+        emit_execution_event(
+            "customer_qwen_outcome",
+            "Customer answer wording generation outcome",
+            "info",
+            metrics={
+                "model_provider": qwen_generation.get("provider") or "disabled",
+                "generation_status": qwen_generation.get("status") or "unknown",
+                "candidate_count": qwen_generation.get("eligible_claims", 0),
+                "supported_count": qwen_generation.get("accepted_claims", 0),
+            },
+        )
+    else:
+        used_qwen = False
+        emit_execution_event(
+            "customer_qwen_generation",
+            "Local Qwen wording is not enabled for this answer; retaining approved source text",
+            "skipped",
+        )
     answer = "\n\n".join(f"{s['number']}. {s['title']}\n" + " ".join(c["text"] for c in s["claims"]) for s in sections) if normal else message
     actions = [{"action_id": c["id"], "action": c["text"], "safety_classification": "INFORMATIONAL_OBSERVATION" if c["kind"] == "observation" else "CUSTOMER_APPROVED",
                 "document_id": next(s["document_id"] for s in citations if s["id"] == c["evidence_ids"][0]),
