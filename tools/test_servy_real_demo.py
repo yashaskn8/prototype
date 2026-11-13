@@ -148,6 +148,37 @@ class RealDemoBoundaryTests(unittest.TestCase):
         handler.client_address = ("10.0.0.2", 12345)
         self.assertFalse(handler._authorized())
 
+    def test_health_route_is_authenticated_and_does_not_query_inventory_or_database(self):
+        handler = object.__new__(demo.Handler)
+        handler.token = "synthetic-health-token"
+        handler.path = "/demo-api/health/"
+        handler.headers = {
+            "Host": "127.0.0.1:8002",
+            "Authorization": "Demo synthetic-health-token",
+        }
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.command = "GET"
+        handler._send = lambda status, value: (status, value)
+        with patch.object(demo, "read_only_database",
+                          side_effect=AssertionError("health must not open MySQL")):
+            status, payload = handler.do_GET()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"status": "ok", "service": "servy-real-demo"})
+
+    def test_health_route_rejects_missing_demo_identity_before_any_database_access(self):
+        handler = object.__new__(demo.Handler)
+        handler.token = "synthetic-health-token"
+        handler.path = "/demo-api/health/"
+        handler.headers = {"Host": "127.0.0.1:8002"}
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.command = "GET"
+        handler._send = lambda status, value: (status, value)
+        with patch.object(demo, "read_only_database",
+                          side_effect=AssertionError("unauthorized request must not open MySQL")):
+            status, payload = handler.do_GET()
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["detail"], "Demo identity required")
+
     def test_ticket_preview_uses_signed_question_and_approved_customer_asset(self):
         question = "Synthetic test question?"
         token = signing.dumps({"asset": 60, "customer": 13,

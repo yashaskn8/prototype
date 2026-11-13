@@ -252,21 +252,21 @@ Write-Output ('Enter the separate code from: ' + $accessFile)
 # just open TCP ports. This also emits a safe HTTP 200 entry in the backend log.
 $demoToken = (Get-Content -LiteralPath $accessFile -Raw).Trim()
 try {
-    $inventoryProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/inventory/' -Headers @{
+    $healthProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/health/' -Headers @{
         Authorization = "Demo $demoToken"
         'X-Servy-Request-Source' = 'launcher-readiness'
     } -Method Get -UseBasicParsing -TimeoutSec 30
-    $inventoryPayload = $inventoryProbe.Content | ConvertFrom-Json
-    if ($inventoryProbe.StatusCode -ne 200 -or @($inventoryPayload.assets).Count -lt 1) {
-        throw 'The authenticated inventory response was empty or invalid.'
+    $healthPayload = $healthProbe.Content | ConvertFrom-Json
+    if ($healthProbe.StatusCode -ne 200 -or $healthPayload.status -ne 'ok') {
+        throw 'The authenticated demo health check failed.'
     }
-    Write-Output ('Customer RAG API check: PASS (' + @($inventoryPayload.assets).Count + ' authorized assets)')
+    Write-Output 'Customer RAG API check: PASS (authenticated health endpoint; no inventory query)'
 } catch {
     throw 'Customer RAG API readiness failed through the browser-facing Vite proxy. Inspect startup.err and vite.err before the demo.'
 } finally {
     $demoToken = $null
-    $inventoryPayload = $null
-    $inventoryProbe = $null
+    $healthPayload = $null
+    $healthProbe = $null
 }
 
 if (-not $NoWatch) {

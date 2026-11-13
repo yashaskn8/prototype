@@ -69,7 +69,7 @@ DEMO_CONTEXT_MAX_TURNS = 10
 DEMO_CONTEXT_TEXT_LIMIT = 650
 logger = logging.getLogger(__name__)
 
-LOGGED_ROUTES = frozenset({"/demo-api/inventory/", "/demo-api/source/",
+LOGGED_ROUTES = frozenset({"/demo-api/health/", "/demo-api/inventory/", "/demo-api/source/",
     "/demo-api/query/", "/demo-api/tickets/preview/",
     "/demo-api/tickets/create-local/"})
 
@@ -1250,6 +1250,10 @@ class Handler(BaseHTTPRequestHandler):
         if not authorized:
             return self._send(401, {"detail": "Demo identity required"})
         path = urlsplit(self.path)
+        # A minimal authenticated readiness check. It deliberately avoids
+        # inventory, company-database and RAG access.
+        if path.path == "/demo-api/health/":
+            return self._send(200, {"status": "ok", "service": "servy-real-demo"})
         try:
             with read_only_database():
                 if path.path == "/demo-api/inventory/":
