@@ -1549,7 +1549,31 @@ class Handler(BaseHTTPRequestHandler):
 
         def run_query():
             try:
-                with bind_execution_log(lambda event: publish("log", event)):
+                def publish_execution_event(event):
+                    # One sanitized stage line in the customer terminal. Never
+                    # print questions, prompts, source passages, tokens or IDs.
+                    if isinstance(event, dict):
+                        stage = re.sub(r"[^A-Za-z0-9_.-]", "", str(event.get("stage", "unknown")))[:80]
+                        status = str(event.get("status", "info"))[:20]
+                        duration = event.get("duration_ms")
+                        metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
+                        safe_keys = (
+                            "retrieved_count", "supported_count", "citation_count",
+                            "answer_engine", "model_provider", "generation_status",
+                        )
+                        details = " ".join(
+                            f"{key}={str(metrics[key])[:80]}"
+                            for key in safe_keys if key in metrics
+                        )
+                        timing = f" duration_ms={duration}" if isinstance(duration, (int, float)) else ""
+                        print(
+                            f"{time.strftime('%H:%M:%S')} RAG_STAGE stage={stage} status={status}{timing}"
+                            + (f" {details}" if details else ""),
+                            flush=True,
+                        )
+                    publish("log", event)
+
+                with bind_execution_log(publish_execution_event):
                     emit_execution_event(
                         "customer_request_validation",
                         "Authenticated customer request accepted",
