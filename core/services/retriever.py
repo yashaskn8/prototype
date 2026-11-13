@@ -412,10 +412,6 @@ DOMAIN_TYPO_MAP = {
     "deflecton": "deflection",
     "compresser": "compressor",
     "coyl": "coil",
-    # Customer phrasing often uses the gerund while the approved passage uses
-    # the base verb ("ice forming" -> "ice ... form"). Keep this correction
-    # retrieval-only; the original transcript and displayed question are preserved.
-    "forming": "form",
 }
 
 
@@ -430,6 +426,14 @@ def normalize_domain_terms(text: str) -> str:
     for w in words:
         clean = w.strip(".,!?:;\"'()[]{}")
         clean_lower = clean.lower()
+        if clean_lower == "forming" and corrected:
+            # "Ice forming on the coil" is commonly phrased as "ice formation"
+            # in troubleshooting headings. Apply only after ice/frost; a general
+            # gerund such as "noise forming" must remain unchanged.
+            previous = corrected[-1].strip(".,!?:;\"'()[]{}").casefold()
+            if previous in {"ice", "frost"}:
+                corrected.append(w.replace(clean, "formation"))
+                continue
         if clean_lower in DOMAIN_TYPO_MAP:
             replacement = DOMAIN_TYPO_MAP[clean_lower]
             corrected.append(w.replace(clean, replacement))
