@@ -965,16 +965,28 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         contract["presentation"] = explanation_presentation
 
     # Generate customer-facing wording only after deterministic dialogue focus
-    # has filtered claims and revalidated their exact source bindings.
-    qwen_used = False
+    # has filtered claims and revalidated their exact source bindings. Preserve
+    # the reason for every extractive fallback in the response and live logs.
+    answer_generation = {
+        "status": "not_applicable",
+        "provider": "disabled",
+        "model": None,
+        "attempted": False,
+        "eligible_claims": 0,
+        "accepted_claims": 0,
+        "applied_claims": 0,
+        "error_type": None,
+    }
     if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
-        from core.services.customer_answer_generation import apply_customer_answer_generation
+        from core.services.customer_answer_generation import (
+            apply_customer_answer_generation_with_status,
+        )
         final_presentation = contract.get("presentation")
         if isinstance(final_presentation, dict):
-            qwen_used = apply_customer_answer_generation(
+            answer_generation = apply_customer_answer_generation_with_status(
                 final_presentation, answer_question
             )
-    if qwen_used:
+    if answer_generation.get("applied_claims", 0) > 0:
         contract["engine"] = "source-structured-qwen"
 
     from django.core import signing
@@ -1082,6 +1094,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         "reranker_applied": rag.get("reranker_applied"),
         "reranker_model": rag.get("reranker_model"),
         "engine": contract.get("engine"),
+        "answer_generation": answer_generation,
     }
 
 
