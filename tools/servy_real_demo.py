@@ -1052,79 +1052,115 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         )
         final_presentation = contract.get("presentation")
         if isinstance(final_presentation, dict):
-            citation_by_id = {
-                item.get("id"): item
-                for item in final_presentation.get("citations", []) or []
-                if isinstance(item, dict) and isinstance(item.get("id"), str)
-            }
-            source_context_by_claim = {}
-            source_cache = {}
-            for claim in final_presentation.get("supporting_claims", []) or []:
-                if not isinstance(claim, dict):
-                    continue
-                ident = claim.get("id")
-                source_text = claim.get("source_text")
-                evidence_ids = claim.get("evidence_ids")
-                if (not isinstance(ident, str) or not isinstance(source_text, str)
-                        or not isinstance(evidence_ids, list) or len(evidence_ids) != 1):
-                    continue
-                citation = citation_by_id.get(evidence_ids[0])
-                if not isinstance(citation, dict):
-                    continue
-                try:
-                    source_key = (
-                        int(citation["document_id"]), int(citation["chunk_id"])
-                    )
-                    if source_key not in source_cache:
-                        source_cache[source_key] = source_chunk(
-                            tenant=tenant, customer=customer, asset=asset,
-                            document_id=source_key[0], chunk_id=source_key[1],
-                        )
-                    authorized_chunk = source_cache[source_key]
-                    source_sentence = " ".join(source_text.split()).casefold()
-                    source_lines = {
-                        " ".join(_clean_line(line).split()).casefold()
-                        for line in authorized_chunk.text.splitlines()
-                        if _clean_line(line)
-                    }
-                    if source_sentence not in source_lines:
-                        continue
-                    heading = citation.get("heading")
-                    heading = heading.strip() if isinstance(heading, str) else ""
-                    source_context_by_claim[ident] = (
-                        "Section heading: " + heading
-                        + "\nExact approved source statement: " + source_text
-                    )
-                except Exception as exc:
-                    # A missing/revoked/out-of-scope source means no generation
-                    # for that claim; it never falls back to an uncited prompt.
-                    logger.info(
-                        "Qwen source statement unavailable for claim=%s (%s)",
-                        ident, type(exc).__name__,
-                    )
             with execution_stage(
-                "customer_qwen_generation",
-                "Generating source-constrained customer answer wording",
+                "customer_citation_authorization",
+                "Reauthorizing cited manual passages for this customer and asset",
             ):
+                citation_by_id = {
+                    item.get("id"): item
+                    for item in final_presentation.get("citations", []) or []
+                    if isinstance(item, dict) and isinstance(item.get("id"), str)
+                }
+                source_context_by_claim = {}
+                source_cache = {}
+                for claim in final_presentation.get("supporting_claims", []) or []:
+                    if not isinstance(claim, dict):
+                        continue
+                    ident = claim.get("id")
+                    source_text = claim.get("source_text")
+                    evidence_ids = claim.get("evidence_ids")
+                    if (not isinstance(ident, str) or not isinstance(source_text, str)
+                            or not isinstance(evidence_ids, list) or len(evidence_ids) != 1):
+                        continue
+                    citation = citation_by_id.get(evidence_ids[0])
+                    if not isinstance(citation, dict):
+                        continue
+                    try:
+                        source_key = (
+                            int(citation["document_id"]), int(citation["chunk_id"])
+                        )
+                        if source_key not in source_cache:
+                            source_cache[source_key] = source_chunk(
+                                tenant=tenant, customer=customer, asset=asset,
+                                document_id=source_key[0], chunk_id=source_key[1],
+                            )
+                        authorized_chunk = source_cache[source_key]
+                        source_sentence = " ".join(source_text.split()).casefold()
+                        source_lines = {
+                            " ".join(_clean_line(line).split()).casefold()
+                            for line in authorized_chunk.text.splitlines()
+                            if _clean_line(line)
+                        }
+                        if source_sentence not in source_lines:
+                            continue
+                        heading = citation.get("heading")
+                        heading = heading.strip() if isinstance(heading, str) else ""
+                        source_context_by_claim[ident] = (
+                            "Section heading: " + heading
+                            + "\nExact approved source statement: " + source_text
+                        )
+                    except Exception as exc:
+                        # A missing/revoked/out-of-scope source means no generation
+                        # for that claim; it never falls back to an uncited prompt.
+                        logger.info(
+                            "Qwen source statement unavailable for claim=%s (%s)",
+                            ident, type(exc).__name__,
+                        )
+
+            emit_execution_event(
+                "customer_citation_summary",
+                "Reauthorized source passages",
+                "info",
+                metrics={
+                    "candidate_count": len(source_cache),
+                    "supported_count": len(source_context_by_claim),
+                },
+            )
+            generation_enabled = (
+                os.environ.get("SERVY_CUSTOMER_ANSWER_GENERATION") == "ollama"
+            )
+            if generation_enabled:
+                with execution_stage(
+                    "customer_qwen_generation",
+                    "Generating source-constrained customer answer wording with local Qwen",
+                ):
+                    generation_result = explain_claims_with_status(
+                        answer_question,
+                        final_presentation,
+                        source_context_by_claim=source_context_by_claim,
+                        enabled=True,
+                        model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
+                        require_source_context=True,
+                    )
+                    applied_claims = apply_customer_explanations(
+                        final_presentation, generation_result["explanations"]
+                    )
+                    answer_generation = dict(generation_result["generation"])
+                    answer_generation["applied_claims"] = applied_claims
+            else:
+                emit_execution_event(
+                    "customer_qwen_generation",
+                    "Local Qwen wording is disabled; retaining source-exact answer text",
+                    "skipped",
+                )
                 generation_result = explain_claims_with_status(
                     answer_question,
                     final_presentation,
                     source_context_by_claim=source_context_by_claim,
-                    enabled=os.environ.get("SERVY_CUSTOMER_ANSWER_GENERATION") == "ollama",
+                    enabled=False,
                     model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
                     require_source_context=True,
                 )
-                applied_claims = apply_customer_explanations(
-                    final_presentation, generation_result["explanations"]
-                )
+                applied_claims = 0
                 answer_generation = dict(generation_result["generation"])
-                answer_generation["applied_claims"] = applied_claims
+                answer_generation["applied_claims"] = 0
             emit_execution_event(
                 "customer_qwen_summary",
                 "Customer answer generation outcome",
                 "info",
                 metrics={
                     "model_provider": answer_generation.get("provider") or "disabled",
+                    "generation_status": answer_generation.get("status") or "unknown",
                     "supported_count": answer_generation.get("accepted_claims", 0),
                 },
             )
