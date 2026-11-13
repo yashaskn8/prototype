@@ -49,6 +49,78 @@ def _raw(text=None, source=None):
     }]}
 
 
+class CustomerGenerationStartupValidationTests(TestCase):
+    @override_settings(
+        SERVY_CUSTOMER_ANSWER_GENERATION="ollama",
+        SERVY_CUSTOMER_GENERATION_URL="http://127.0.0.1:11434/api/chat",
+        SERVY_CUSTOMER_GENERATION_MODEL="qwen3.5:2b-q4_K_M",
+        SERVY_CUSTOMER_GENERATION_TIMEOUT=45,
+        SERVY_CUSTOMER_GENERATION_MAX_CLAIMS=6,
+        SERVY_ALLOW_REMOTE_LLM=False,
+    )
+    def test_valid_quantized_qwen_tag_and_installed_local_model_pass(self):
+        client = Mock()
+        response = Mock()
+        response.status_code = 200
+        response.content = b'{"models":[{"name":"qwen3.5:2b-q4_K_M"}]}'
+        response.json.return_value = {"models": [{"name": "qwen3.5:2b-q4_K_M"}]}
+        client.get.return_value = response
+        with patch("core.services.customer_answer_generation.requests.Session", return_value=client):
+            config = generation.validate_customer_generation_configuration(check_runtime=True)
+        self.assertEqual(config["provider"], "ollama")
+        self.assertEqual(config["model"], "qwen3.5:2b-q4_K_M")
+        self.assertTrue(config["model_ready"])
+        self.assertFalse(client.trust_env)
+        args, kwargs = client.get.call_args
+        self.assertEqual(args, ("http://127.0.0.1:11434/api/tags",))
+        self.assertFalse(kwargs["allow_redirects"])
+        client.close.assert_called_once_with()
+
+    @override_settings(
+        SERVY_CUSTOMER_ANSWER_GENERATION="ollama",
+        SERVY_CUSTOMER_GENERATION_URL="https://example.com/api/chat",
+        SERVY_ALLOW_REMOTE_LLM=False,
+    )
+    def test_remote_customer_qwen_endpoint_fails_startup_validation(self):
+        with self.assertRaisesRegex(RuntimeError, "loopback Ollama endpoint"):
+            generation.validate_customer_generation_configuration(check_runtime=True)
+
+    @override_settings(
+        SERVY_CUSTOMER_ANSWER_GENERATION="ollama",
+        SERVY_CUSTOMER_GENERATION_URL="http://127.0.0.1:11434/api/chat",
+        SERVY_CUSTOMER_GENERATION_MODEL="qwen3.5:2b-q4_K_M",
+        SERVY_ALLOW_REMOTE_LLM=True,
+    )
+    def test_remote_llm_flag_fails_startup_validation(self):
+        with self.assertRaisesRegex(RuntimeError, "remote model access"):
+            generation.validate_customer_generation_configuration()
+
+    @override_settings(
+        SERVY_CUSTOMER_ANSWER_GENERATION="ollama",
+        SERVY_CUSTOMER_GENERATION_URL="http://127.0.0.1:11434/api/chat",
+        SERVY_CUSTOMER_GENERATION_MODEL="qwen3.5:2b-q4_K_M",
+        SERVY_ALLOW_REMOTE_LLM=False,
+    )
+    def test_requested_model_missing_from_ollama_fails_startup_validation(self):
+        client = Mock()
+        response = Mock()
+        response.status_code = 200
+        response.content = b'{"models":[]}'
+        response.json.return_value = {"models": []}
+        client.get.return_value = response
+        with patch("core.services.customer_answer_generation.requests.Session", return_value=client):
+            with self.assertRaisesRegex(RuntimeError, "not installed"):
+                generation.validate_customer_generation_configuration(check_runtime=True)
+        client.close.assert_called_once_with()
+
+    @override_settings(SERVY_CUSTOMER_ANSWER_GENERATION="disabled")
+    def test_extract_only_mode_does_not_require_or_probe_ollama(self):
+        with patch("core.services.customer_answer_generation.requests.Session") as session:
+            config = generation.validate_customer_generation_configuration(check_runtime=True)
+        self.assertEqual(config, {"enabled": False, "provider": "disabled"})
+        session.assert_not_called()
+
+
 class CustomerClaimTextValidationTests(TestCase):
     def test_safe_paraphrase_preserves_all_source_terms_and_uncertainty(self):
         item = _presentation()["supporting_claims"][0]
