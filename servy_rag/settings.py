@@ -288,6 +288,17 @@ SERVY_USE_EXPERIMENTAL_RAG = os.getenv("SERVY_USE_EXPERIMENTAL_RAG", "0") == "1"
 # Default to the evaluated BGE-small profile, using the separate company BGE
 # collection for real tenants. Verify the local model and index on each host.
 SERVY_SERVING_EMBEDDING_PROFILE = os.getenv("SERVY_SERVING_EMBEDDING_PROFILE", "bge-small").strip().lower()
+# Retrieval mode actually served. It was previously never declared here, so
+# SERVY_RETRIEVAL_MODE in the environment was ignored and serving silently
+# reported "hybrid". An unknown value is a configuration error, not a default.
+SERVY_RETRIEVAL_MODES = ("hybrid", "sparse_only", "dense_only")
+SERVY_RETRIEVAL_MODE = os.getenv("SERVY_RETRIEVAL_MODE", "hybrid").strip().lower()
+if SERVY_RETRIEVAL_MODE not in SERVY_RETRIEVAL_MODES:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "SERVY_RETRIEVAL_MODE must be one of " + ", ".join(SERVY_RETRIEVAL_MODES)
+        + f"; got {SERVY_RETRIEVAL_MODE!r}."
+    )
 # Verified from Hugging Face API on 2026-10-14 (BAAI/bge-small-en-v1.5, MIT).
 SERVY_BGE_SMALL_REVISION = os.getenv("SERVY_BGE_SMALL_REVISION", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a")
 SERVY_EMBEDDING_DEVICE = os.getenv("SERVY_EMBEDDING_DEVICE", "cpu")

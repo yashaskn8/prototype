@@ -104,6 +104,11 @@ jobs:
         env:
           LOCALAPPDATA: /tmp
 
+      - name: Misspelled and Multi-part Customer Question Tests
+        run: python -m unittest tools.test_servy_typo_and_multipart -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Manual Statement Sentence Disclosure Tests
         run: python -m unittest tools.test_servy_manual_statement_sentences -v
         env:
@@ -161,7 +166,7 @@ jobs:
         run: python manage.py check_rag_serving
 
       - name: RAG Serving Gate and Local Generator Unit Tests
-        run: python manage.py test core.tests_rag_serving_gate core.tests_serving_truth core.tests_customer_answer_generation -v 2
+        run: python manage.py test core.tests_rag_serving_gate core.tests_serving_truth core.tests_serving_configuration core.tests_customer_answer_generation -v 2
 
       - name: Three-Asset / Nine-Manual V5 Retrieval Regressions
         run: python manage.py test core.tests_three_asset_retrieval -v 2

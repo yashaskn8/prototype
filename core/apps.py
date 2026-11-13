@@ -1,4 +1,3 @@
-import threading
 from django.apps import AppConfig
 
 
@@ -16,12 +15,8 @@ class CoreConfig(AppConfig):
             from core.ml.reranker import require_verified_v5_reranker
             require_verified_v5_reranker()
 
-        # Pre-warm the embedding model in background thread so the first RAG query has 0s cold start
-        def _warmup():
-            try:
-                from core.services.chroma_store import get_sentence_transformer
-                get_sentence_transformer()
-            except Exception:
-                pass
-
-        threading.Thread(target=_warmup, daemon=True).start()
+        # No embedding model is loaded here. Active serving uses the verified
+        # local BGE profile, loaded on first use by core.ml.embeddings. The old
+        # unconditional warm-up loaded the legacy MiniLM model in every Django
+        # process (management commands and tests included) and could attempt a
+        # network download; the legacy MiniLM path still loads it on demand.

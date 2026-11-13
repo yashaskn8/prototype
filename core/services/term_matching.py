@@ -140,3 +140,151 @@ def question_states_heading(question: str, heading: str) -> bool:
         return bool(keys) and _heading_matches_symptom(heading or "", keys, str(question or ""))
     except Exception:
         return False
+
+
+DOMAIN_TYPO_MAP = {
+    "indor": "indoor",
+    "leeking": "leaking",
+    "watter": "water",
+    "milkk": "milk",
+    "temprature": "temperature",
+    "riseing": "rising",
+    "abov": "above",
+    "voltcure": "voltcore",
+    "invrter": "inverter",
+    "falt": "fault",
+    "pllet": "pallet",
+    "hydralic": "hydraulic",
+    "cavtation": "cavitation",
+    "ductible": "ductable",
+    "wek": "weak",
+    "airflo": "airflow",
+    "whistlng": "whistling",
+    "noys": "noise",
+    "outdor": "outdoor",
+    "unti": "unit",
+    "presure": "pressure",
+    "faault": "fault",
+    "capcity": "capacity",
+    "preshure": "pressure",
+    "capcityy": "capacity",
+    "hlep": "help",
+    "comuncation": "communication",
+    "errer": "error",
+    "contrler": "controller",
+    "splitt": "split",
+    "icce": "ice",
+    "coolng": "cooling",
+    "pip": "pipe",
+    "viberation": "vibration",
+    "deflecton": "deflection",
+    "compresser": "compressor",
+    "coyl": "coil",
+    "wat": "what",
+    "shud": "should",
+}
+
+# Correctly spelled words customers use when asking about HVAC equipment and its
+# manuals. A misspelling is corrected only toward one of these (see
+# _correct_spelling). The list is generic vocabulary: it adds no technical fact.
+_SPELLING_LEXICON = frozenset("""
+what which when where why how does should could would will there their these those
+this that with from about after before because between often every each always
+never sometimes properly normally problem problems issue issues reason reasons
+cause causes caused causing possible possibly explain explained detail details
+first second third fourth fifth other others another documented document manual
+manuals guide checklist technician qualified customer service serviced servicing
+maintenance maintain inspection inspect inspected inspecting interval intervals
+schedule monthly quarterly annually yearly weekly daily months weeks years hours
+running runs started starting start stopped stopping working work works turned
+install installed installation commissioning commissioned acceptance criteria
+cooling cool colder cooler warm warmer heating heat hotter cold freezing frost
+airflow flow weak strong uneven rooms room temperature temperatures pressure
+water leakage leaking leaks drain drains drainage condensate dripping
+noise noisy loud vibration vibrating rattling humming buzzing
+filter filters clean cleaned cleaning dirty blocked blocking clogged restricted
+coil coils compressor condenser evaporator refrigerant sensor sensors thermostat
+remote controller control setting settings setpoint fan fans blower motor
+bearing bearings panel panels damper dampers duct ducts ducting grille outlets
+outdoor indoor unit units module modules system equipment display alarm alarms
+fault faults error errors code codes communication communicating connection
+connected addressing address addresses power supply breaker tripping tripped
+voltage current electrical wiring insulation clearance mounting support supports
+installed level leveled load loads heavy light lights indicator flashing blinking
+inverter capacity operation operating conditions design ambient outside inside
+indicate indicates indicated indicating mean means meant meaning describe describes
+require requires required include includes included provide provides provided
+cover covers covered perform performed check checked checking happen happens
+""".split())
+
+
+def _edit_distance_at_most(a, b, limit):
+    """Optimal string alignment distance between a and b, or limit+1 if larger."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    previous2, previous = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        current = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            if (previous2 is not None and i > 1 and j > 1
+                    and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]):
+                current[j] = min(current[j], previous2[j - 2] + 1)     # transposition
+        if min(current) > limit:
+            return limit + 1
+        previous2, previous = previous, current
+    return previous[-1]
+
+
+def _correct_spelling(word):
+    """Correct an unknown alphabetic word to one unambiguous known word.
+
+    Only plain alphabetic words of four or more letters are considered, so
+    fault codes, numbers and model identifiers never change. The correction
+    keeps the first letter and is exactly one edit away (a transposition counts
+    as one); if no candidate, or more than one equally close candidate,
+    exists the word is left unchanged.
+    """
+    if len(word) < 4 or not word.isalpha() or word in _SPELLING_LEXICON:
+        return None
+    limit = 1
+    best, best_distance, tied = None, limit + 1, False
+    for candidate in _SPELLING_LEXICON:
+        if candidate[0] != word[0] or abs(len(candidate) - len(word)) > limit:
+            continue
+        distance = _edit_distance_at_most(word, candidate, limit)
+        if distance < best_distance:
+            best, best_distance, tied = candidate, distance, False
+        elif distance == best_distance:
+            tied = True
+    return best if best is not None and not tied else None
+
+
+def normalize_domain_terms(text: str) -> str:
+    """Bounded domain-aware typo normalizer for customer equipment complaints.
+    Preserves alphanumeric technical identifiers and fault codes exactly.
+    """
+    if not text:
+        return ""
+    words = text.split()
+    corrected = []
+    for w in words:
+        clean = w.strip(".,!?:;\"'()[]{}")
+        clean_lower = clean.lower()
+        if clean_lower == "forming" and corrected:
+            # "Ice forming on the coil" is commonly phrased as "ice formation"
+            # in troubleshooting headings. Apply only after ice/frost; a general
+            # gerund such as "noise forming" must remain unchanged.
+            previous = corrected[-1].strip(".,!?:;\"'()[]{}").casefold()
+            if previous in {"ice", "frost"}:
+                corrected.append(w.replace(clean, "formation"))
+                continue
+        if clean_lower in DOMAIN_TYPO_MAP:
+            replacement = DOMAIN_TYPO_MAP[clean_lower]
+            corrected.append(w.replace(clean, replacement))
+        elif (replacement := _correct_spelling(clean_lower)) is not None:
+            corrected.append(w.replace(clean, replacement))
+        else:
+            corrected.append(w)
+    return " ".join(corrected)

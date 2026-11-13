@@ -183,6 +183,43 @@ CASES = [
         heading="SAFETY",
         include=["Installation must be performed by qualified HVAC and electrical technicians"])]),
     ("176-5", 61, 176, [turn("How do I change the fan speed setting?", SAFE)]),
+    # ---- realistic misspellings (each answer is in the named manual) --------
+    ("168-T", 59, 168, [turn("my ac is runing but not coolng properly, what cuases this?", ANSWER,
+        doc=168, heading="POOR COOLING", include=["Dirty filter or coil"])]),
+    ("169-T", 59, 169, [turn("how ofen shuld the filtres be cleened?", ANSWER, doc=169,
+        heading="MAINTENANCE INTERVALS", include=["Quarterly: clean filters"])]),
+    ("171-T", 60, 171, [turn("wat causes a comunication or adressing fault?", ANSWER, doc=171,
+        heading="COMMUNICATION OR ADDRESSING FAULT",
+        include=["Communication cable damage or incorrect topology"])]),
+    ("174-T", 61, 174, [turn("why is the airflo so weak from the ducts?", ANSWER, doc=174,
+        heading="WEAK AIRFLOW", include=["Dirty or incorrectly installed filters"])]),
+    ("175-T", 61, 175, [turn("wat shud be done evry 6 months?", ANSWER, doc=175,
+        heading="SUGGESTED INTERVALS",
+        include=["Every 6 months: document airflow, static pressure, temperature split"])]),
+    # ---- multi-part questions needing two passages ---------------------------
+    ("168-M", 59, 168, [turn("What can cause poor cooling, and what can cause water leakage?",
+        ANSWER, doc=168, heading="POOR COOLING",
+        include=["Dirty filter or coil", "Blocked or incorrectly routed condensate drain"])]),
+    ("171-M", 60, 171, [turn("What causes a high-pressure fault and what causes a low-pressure fault?",
+        ANSWER, doc=171, heading="HIGH-PRESSURE",
+        include=["Blocked airflow, dirty coil, fan issue, or operating conditions outside design",
+                 "Operating conditions, sensor/control issue, or refrigerant-system problem"])]),
+    ("174-M", 61, 174, [turn("What causes weak airflow, and what causes uneven room temperatures?",
+        ANSWER, doc=174, heading="WEAK AIRFLOW",
+        include=["Dirty or incorrectly installed filters",
+                 "Air balancing problem, duct leakage, closed dampers, or uneven heat load"])]),
+    # ---- follow-ups that depend on the previous turn ---------------------------
+    ("174-F", 61, 174, [
+        turn("What are the possible causes of weak airflow?", ANSWER, doc=174,
+             heading="WEAK AIRFLOW", include=["Dirty or incorrectly installed filters"]),
+        turn("Explain the third cause.", ANSWER, doc=174, heading="WEAK AIRFLOW",
+             include=["Dirty coil, fan issue, closed damper, or duct restriction"],
+             exclude=["Blocked return grille or supply outlets"])]),
+    ("168-F", 59, 168, [
+        turn("What can cause water leakage?", ANSWER, doc=168, heading="WATER LEAKAGE",
+             include=["Blocked or incorrectly routed condensate drain"]),
+        turn("What about ice on the coil?", ANSWER, doc=168, heading="ICE ON COIL",
+             include=["Restricted airflow, sensor issue, or refrigerant-system problem"])]),
 ]
 
 

@@ -375,72 +375,12 @@ def _get_dense_gate():
 SPARSE_RELEVANCE_GATE = _get_sparse_gate()
 DENSE_RELEVANCE_GATE = _get_dense_gate()
 
-DOMAIN_TYPO_MAP = {
-    "indor": "indoor",
-    "leeking": "leaking",
-    "watter": "water",
-    "milkk": "milk",
-    "temprature": "temperature",
-    "riseing": "rising",
-    "abov": "above",
-    "voltcure": "voltcore",
-    "invrter": "inverter",
-    "falt": "fault",
-    "pllet": "pallet",
-    "hydralic": "hydraulic",
-    "cavtation": "cavitation",
-    "ductible": "ductable",
-    "wek": "weak",
-    "airflo": "airflow",
-    "whistlng": "whistling",
-    "noys": "noise",
-    "outdor": "outdoor",
-    "unti": "unit",
-    "presure": "pressure",
-    "faault": "fault",
-    "capcity": "capacity",
-    "preshure": "pressure",
-    "capcityy": "capacity",
-    "hlep": "help",
-    "comuncation": "communication",
-    "errer": "error",
-    "contrler": "controller",
-    "splitt": "split",
-    "icce": "ice",
-    "coolng": "cooling",
-    "pip": "pipe",
-    "viberation": "vibration",
-    "deflecton": "deflection",
-    "compresser": "compressor",
-    "coyl": "coil",
-}
-
-
-def normalize_domain_terms(text: str) -> str:
-    """Bounded domain-aware typo normalizer for customer equipment complaints.
-    Preserves alphanumeric technical identifiers and fault codes exactly.
-    """
-    if not text:
-        return ""
-    words = text.split()
-    corrected = []
-    for w in words:
-        clean = w.strip(".,!?:;\"'()[]{}")
-        clean_lower = clean.lower()
-        if clean_lower == "forming" and corrected:
-            # "Ice forming on the coil" is commonly phrased as "ice formation"
-            # in troubleshooting headings. Apply only after ice/frost; a general
-            # gerund such as "noise forming" must remain unchanged.
-            previous = corrected[-1].strip(".,!?:;\"'()[]{}").casefold()
-            if previous in {"ice", "frost"}:
-                corrected.append(w.replace(clean, "formation"))
-                continue
-        if clean_lower in DOMAIN_TYPO_MAP:
-            replacement = DOMAIN_TYPO_MAP[clean_lower]
-            corrected.append(w.replace(clean, replacement))
-        else:
-            corrected.append(w)
-    return " ".join(corrected)
+# Spelling normalization is dependency-free and shared with the dialogue
+# layer, which must not import this module (it loads Django models).
+from .term_matching import (  # noqa: E402,F401  (re-exported)
+    DOMAIN_TYPO_MAP, _SPELLING_LEXICON, _correct_spelling, _edit_distance_at_most,
+    normalize_domain_terms,
+)
 
 # RRF constant (standard value)
 RRF_K = 60

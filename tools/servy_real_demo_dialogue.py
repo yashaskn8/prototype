@@ -1540,6 +1540,11 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     Revalidate referenced claims and retain only used citations. Never show
     uncertainty boilerplate as if it came from a manual.
     """
+    # Intent and relevance are judged on the customer's wording with spelling
+    # corrected; codes, numbers and identifiers are never altered.
+    if isinstance(question, str):
+        from core.services.term_matching import normalize_domain_terms
+        question = normalize_domain_terms(question)
     if contract.get("response_type") != "DIAGNOSTIC_GUIDANCE":
         # Rewrite ONLY the known generic no-evidence fallback. Preserve
         # policy refusals, safety escalations, revoked-document explanations
@@ -1601,6 +1606,25 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         c.get("id"): c for c in original.get("citations", [])
         if isinstance(c, dict) and isinstance(c.get("id"), str)
     }
+    # "What causes A, and what causes B?" asks about two documented
+    # conditions at once. Every cause would otherwise have to mention both
+    # named subjects, so each part was dropped. When the question joins
+    # conditions and itself names two or more of the cited fault sections,
+    # keep exactly the causes listed under the sections it names.
+    named_cause_sections = set()
+    if topic == "causes" and re.search(r"\band\b|,", question or ""):
+        from core.services.term_matching import normalize_domain_terms
+        normalized_question = f"{question} {normalize_domain_terms(question or '')}"
+        for claim in original.get("supporting_claims", []):
+            if not isinstance(claim, dict) or claim.get("kind") != "possible_cause":
+                continue
+            evidence = claim.get("evidence_ids") or []
+            heading = str((citations_by_id.get(evidence[0]) or {}).get("heading") or "") \
+                if len(evidence) == 1 else ""
+            if heading and (question_states_heading(normalized_question, heading)
+                            or heading_states_symptom(heading, symptom_concepts(question))):
+                named_cause_sections.add(heading)
+    multi_part_causes = len(named_cause_sections) >= 2
     collected = []
     shown = set(previous_facts)
     seen = set()
@@ -1677,7 +1701,10 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             and claim.get("kind") == "possible_cause"
             and re.search(r"\b(?:fault|symptom)\b", citation.get("heading") or "", re.I)
         )
-        if not _is_schedule_qualifier(claim) and not generic_section_cause and (
+        if multi_part_causes and claim.get("kind") == "possible_cause":
+            if str(citation.get("heading") or "") not in named_cause_sections:
+                continue
+        elif not _is_schedule_qualifier(claim) and not generic_section_cause and (
                 not _specific_symptom_supported(
                     focus.relevant, source_context, citation.get("heading") or "")
                 or not focus.accepts(claim, citation)):

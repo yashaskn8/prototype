@@ -711,13 +711,16 @@ def build_customer_answer(
     # One matching rule for every answer-stage check: folded word forms, plus
     # a symptom paraphrase only where the section heading names that symptom.
     term_keys = match_keys(terms)
-    asked_symptoms = symptom_concepts(raw_user_q) | symptom_concepts(question)
-    wants_facts = not _CAUSE_QUESTION.search(raw_user_q) and not _CAUSE_QUESTION.search(question)
+    # Classify the customer's intent from their words with spelling corrected
+    # ("what cuases this", "how ofen") as well as from the raw text.
+    intent_text = f"{raw_user_q} {normalize_domain_terms(raw_user_q)} {normalize_domain_terms(question)}"
+    asked_symptoms = symptom_concepts(intent_text) | symptom_concepts(question)
+    wants_facts = not _CAUSE_QUESTION.search(intent_text) and not _CAUSE_QUESTION.search(question)
     wants_cause_details = bool(
         _CAUSE_EXPLANATION_REQUEST.search(raw_user_q)
         or _CAUSE_EXPLANATION_REQUEST.search(question)
     )
-    asks_frequency = bool(_FREQUENCY_QUESTION.search(raw_user_q))
+    asks_frequency = bool(_FREQUENCY_QUESTION.search(intent_text))
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
     eligible = []
