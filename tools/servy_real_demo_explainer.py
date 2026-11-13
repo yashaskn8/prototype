@@ -335,8 +335,13 @@ def explain_claims(question: str, presentation: dict) -> dict:
     return explain_claims_with_status(question, presentation)["explanations"]
 
 
-def apply_customer_explanations(presentation: dict, explanations: dict) -> int:
-    """Append Qwen wording to display text while preserving exact source/citation fields."""
+def apply_customer_explanations(
+    presentation: dict,
+    explanations: dict,
+    *,
+    context_citations_by_claim: dict | None = None,
+) -> int:
+    """Append Qwen wording and attach full-passage citations used as context."""
     if not isinstance(presentation, dict) or not isinstance(explanations, dict):
         return 0
     groups = [presentation.get("supporting_claims", []) or []]
@@ -344,6 +349,28 @@ def apply_customer_explanations(presentation: dict, explanations: dict) -> int:
         section.get("claims", []) for section in presentation.get("sections", []) or []
         if isinstance(section, dict)
     )
+    added_citations = set()
+    for group in groups:
+        for claim in group:
+            if not isinstance(claim, dict):
+                continue
+            ident = claim.get("id")
+            explanation = explanations.get(ident)
+            if (not isinstance(ident, str) or not isinstance(explanation, str)
+                    or not explanation.strip()):
+                continue
+            full_citation = (context_citations_by_claim or {}).get(ident)
+            if isinstance(full_citation, dict):
+                citation_id = full_citation.get("id")
+                if isinstance(citation_id, str):
+                    evidence_ids = claim.get("evidence_ids")
+                    if not isinstance(evidence_ids, list):
+                        evidence_ids = []
+                    if citation_id not in evidence_ids:
+                        claim["evidence_ids"] = list(evidence_ids) + [citation_id]
+                    if citation_id not in added_citations:
+                        presentation.setdefault("citations", []).append(full_citation)
+                        added_citations.add(citation_id)
     changed = 0
     seen = set()
     for group in groups:
@@ -356,9 +383,8 @@ def apply_customer_explanations(presentation: dict, explanations: dict) -> int:
                     or not explanation.strip() or id(claim) in seen):
                 continue
             original = str(claim.get("text") or "").strip()
-            if explanation.strip() in original:
-                continue
-            claim["text"] = (original + " Explanation: " + explanation.strip()).strip()
+            if explanation.strip() not in original:
+                claim["text"] = (original + " Explanation: " + explanation.strip()).strip()
             seen.add(id(claim))
             changed += 1
     return changed
