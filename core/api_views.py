@@ -987,31 +987,65 @@ class EngineerCopilotQueryView(APIView):
 
     @staticmethod
     def _execute(prepared):
-        """Execute Copilot after rechecking ticket scope in the worker."""
+        """Execute Copilot only after fresh worker-thread identity and ticket authorization."""
+        from django.contrib.auth import get_user_model
         from core.services.rag_execution_log import execution_stage, emit_execution_event
 
-        ctx = prepared["ctx"]
-        tenant = prepared["tenant"]
-        call = prepared["call"]
-        question = prepared["question"]
-        include_confidential = prepared["include_confidential"]
-
-        # The event stream starts only after normal view authentication and
-        # ticket lookup succeeded. Re-query in the worker so an assignment or
-        # tenant-scope change between preparation and execution fails closed.
+        initial_ctx = prepared["ctx"]
+        role = initial_ctx["role"]
         with execution_stage(
-            "technician_ticket_authorization",
-            "Revalidating technician ticket and tenant access",
+            "technician_membership_authorization",
+            "Reloading active user, tenant membership and staff permissions",
         ):
-            calls_qs = (
-                authorized_service_calls(ctx)
-                if ctx["role"] == "technician"
-                else ServiceCall.objects.filter(tenant=tenant)
+            tenant = Tenant.objects.get(
+                pk=prepared["tenant"].pk,
+                is_active=True,
             )
-            call = calls_qs.select_related(
-                "asset", "customer", "site"
-            ).get(pk=call.pk)
+            user = get_user_model().objects.get(
+                pk=initial_ctx["user"].pk,
+                is_active=True,
+            )
+            if user.is_superuser:
+                if role != "superuser":
+                    raise PermissionDenied("Engineer Copilot access changed.")
+                membership = None
+                staff_profile = None
+                can_view_confidential = True
+                customer = None
+            else:
+                membership = TenantMembership.objects.filter(
+                    user=user,
+                    tenant=tenant,
+                    is_active=True,
+                ).first()
+                if not membership or membership.role != role:
+                    raise PermissionDenied("Engineer Copilot access changed.")
+                staff_profile = StaffProfile.objects.filter(
+                    user=user,
+                    tenant=tenant,
+                    is_active=True,
+                ).select_related("branch", "zone").first()
+                if role == "technician" and (
+                    not staff_profile
+                    or not staff_profile.is_active
+                    or staff_profile.role != "technician"
+                    or staff_profile.tenant_id != tenant.id
+                    or staff_profile.user_id != user.id
+                ):
+                    raise PermissionDenied("Technician assignment scope is no longer active.")
+                can_view_confidential = bool(membership.can_view_confidential)
+                customer = membership.customer if role in CUSTOMER_ROLES else None
 
+        fresh_ctx = {
+            "user": user,
+            "membership": membership,
+            "tenant": tenant,
+            "role": role,
+            "customer": customer,
+            "staff_profile": staff_profile,
+            "can_view_confidential": can_view_confidential,
+        }
+        include_confidential = can_view_confidential
         emit_execution_event(
             "technician_confidential_scope",
             "Confidential document access",
@@ -1023,9 +1057,34 @@ class EngineerCopilotQueryView(APIView):
             },
         )
 
+        with execution_stage(
+            "technician_ticket_authorization",
+            "Revalidating ticket assignment and tenant access",
+        ):
+            calls_qs = (
+                authorized_service_calls(fresh_ctx)
+                if role == "technician"
+                else ServiceCall.objects.filter(tenant=tenant)
+            )
+            try:
+                call = calls_qs.select_related(
+                    "asset", "customer", "site"
+                ).get(pk=prepared["call"].pk)
+            except ServiceCall.DoesNotExist:
+                raise PermissionDenied(
+                    "Service call is no longer available in the authorized scope."
+                ) from None
+
+        emit_execution_event(
+            "technician_ticket_scope_summary",
+            "Technician ticket access is authorized",
+            "info",
+            metrics={"confidential_scope": "permitted" if include_confidential else "restricted"},
+        )
+
         rag_res = ask_rag(
             tenant=tenant,
-            question=question,
+            question=prepared["question"],
             asset=call.asset,
             customer=call.customer,
             include_confidential=include_confidential,
@@ -1033,34 +1092,27 @@ class EngineerCopilotQueryView(APIView):
             staff_mode=True,
         )
 
-        retrieved_list = rag_res.get("retrieved", [])
-        retrieval_backend = getattr(retrieved_list, "retrieval_backend", "fallback")
-
         with execution_stage(
             "technician_past_case_enrichment",
             "Resolving authorized historical case references",
         ):
             past_res_call_ids = [
-                r.get("service_call_id")
-                for r in rag_res.get("references", [])
-                if r.get("source_kind") == "past_resolution"
-                and r.get("service_call_id")
+                ref.get("service_call_id")
+                for ref in rag_res.get("references", [])
+                if ref.get("source_kind") == "past_resolution"
+                and ref.get("service_call_id")
             ]
-            sc_map = {
-                sc.id: sc
-                for sc in ServiceCall.objects.filter(
-                    tenant=tenant, id__in=past_res_call_ids
-                )
-            }
+            service_calls = ServiceCall.objects.filter(
+                tenant=tenant,
+                id__in=past_res_call_ids,
+            )
+            call_map = {item.id: item for item in service_calls}
             past_resolutions = []
             for ref in rag_res.get("references", []):
                 if ref.get("source_kind") != "past_resolution":
                     continue
-                service_call = sc_map.get(ref.get("service_call_id"))
-                servy_id = (
-                    service_call.servy_id
-                    if service_call else ref.get("service_call_id")
-                )
+                service_call = call_map.get(ref.get("service_call_id"))
+                servy_id = service_call.servy_id if service_call else ref.get("service_call_id")
                 complaint_type = (
                     service_call.complaint_type
                     if service_call and service_call.complaint_type
@@ -1089,12 +1141,13 @@ class EngineerCopilotQueryView(APIView):
             metrics={"past_case_count": len(past_resolutions)},
         )
 
+        retrievals = rag_res.get("retrieved", [])
         recovery_passport = None
         with execution_stage(
             "technician_recommendation_assembly",
             "Assembling recommendation and ticket context",
         ):
-            if hasattr(call, "recovery_passport") and call.recovery_passport:
+            if getattr(call, "recovery_passport", None):
                 passport = call.recovery_passport
                 recovery_passport = {
                     "id": passport.id,
@@ -1109,7 +1162,7 @@ class EngineerCopilotQueryView(APIView):
                 "references": rag_res["references"],
                 "past_resolutions": past_resolutions,
                 "engine": rag_res["engine"],
-                "retrieval_backend": retrieval_backend,
+                "retrieval_backend": getattr(retrievals, "retrieval_backend", "fallback"),
                 "reranker_applied": rag_res.get("reranker_applied", False),
                 "reranker_model": rag_res.get("reranker_model"),
                 "recovery_passport": recovery_passport,
