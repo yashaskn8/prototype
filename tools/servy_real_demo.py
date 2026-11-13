@@ -964,9 +964,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         explanation_presentation["follow_up_question"] = None
         contract["presentation"] = explanation_presentation
 
-    # Generate customer-facing wording only after deterministic dialogue focus
-    # has filtered claims and revalidated their exact source bindings. Preserve
-    # the reason for every extractive fallback in the response and live logs.
+    # Qwen is the customer-facing RAG answer writer, not an optional
+    # after-the-fact paraphraser. Give it only complete source chunks that are
+    # reauthorized against the selected tenant/customer/asset and already
+    # cited by the deterministic answer contract.
     answer_generation = {
         "status": "not_applicable",
         "provider": "disabled",
@@ -978,16 +979,69 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         "error_type": None,
     }
     if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
-        from core.services.customer_answer_generation import (
-            apply_customer_answer_generation_with_status,
+        from core.services.customer_answer import source_chunk
+        from tools.servy_real_demo_explainer import (
+            apply_customer_explanations,
+            explain_claims_with_status,
         )
         final_presentation = contract.get("presentation")
         if isinstance(final_presentation, dict):
-            answer_generation = apply_customer_answer_generation_with_status(
-                final_presentation, answer_question
+            citation_by_id = {
+                item.get("id"): item
+                for item in final_presentation.get("citations", []) or []
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            source_context_by_claim = {}
+            source_cache = {}
+            for claim in final_presentation.get("supporting_claims", []) or []:
+                if not isinstance(claim, dict):
+                    continue
+                ident = claim.get("id")
+                evidence_ids = claim.get("evidence_ids")
+                if (not isinstance(ident, str) or not isinstance(evidence_ids, list)
+                        or len(evidence_ids) != 1):
+                    continue
+                citation = citation_by_id.get(evidence_ids[0])
+                if not isinstance(citation, dict):
+                    continue
+                try:
+                    source_key = (
+                        int(citation["document_id"]), int(citation["chunk_id"])
+                    )
+                    if source_key not in source_cache:
+                        authorized_chunk = source_chunk(
+                            tenant=tenant, customer=customer, asset=asset,
+                            document_id=source_key[0], chunk_id=source_key[1],
+                        )
+                        source_cache[source_key] = (
+                            authorized_chunk.text
+                            if isinstance(authorized_chunk.text, str) else ""
+                        )
+                    full_source = source_cache[source_key]
+                    if full_source.strip():
+                        source_context_by_claim[ident] = full_source
+                except Exception as exc:
+                    # A missing/revoked/out-of-scope source means no generation
+                    # for that claim; it never falls back to an uncited prompt.
+                    logger.info(
+                        "Qwen source context unavailable for claim=%s (%s)",
+                        ident, type(exc).__name__,
+                    )
+            generation_result = explain_claims_with_status(
+                answer_question,
+                final_presentation,
+                source_context_by_claim=source_context_by_claim,
+                enabled=os.environ.get("SERVY_CUSTOMER_ANSWER_GENERATION") == "ollama",
+                model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
+                require_source_context=True,
             )
+            applied_claims = apply_customer_explanations(
+                final_presentation, generation_result["explanations"]
+            )
+            answer_generation = dict(generation_result["generation"])
+            answer_generation["applied_claims"] = applied_claims
     if answer_generation.get("applied_claims", 0) > 0:
-        contract["engine"] = "source-structured-qwen"
+        contract["engine"] = "source-grounded-qwen"
 
     from django.core import signing
     ticket_context = signing.dumps({
