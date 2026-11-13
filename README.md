@@ -17,7 +17,7 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
 - Knowledge Base upload flow with tags, document type, customer, product, asset, confidentiality and RAG enable/disable.
 - Local document parsing for text/Markdown, PDF, DOCX and CSV.
 - Local chunk indexing and vector synchronization.
-- Optional local text generation: legacy Ollama support and a loopback llama.cpp Qwen provider for staff-mode RAG. Extractive answers remain the fallback; the authorized customer demo stays source-structured and does not require a chat server.
+- Local text generation: staff-mode RAG supports legacy Ollama and a loopback llama.cpp Qwen provider. The authorized real-data customer demo can optionally use local Ollama Qwen to reword only already-approved, citation-bound information and possible-cause claims after deterministic retrieval and dialogue filtering. Procedures, observations, citations and source bindings remain unchanged; rejected or unavailable output falls back to exact approved source wording. Remote model endpoints remain disabled.
 - Call Register XLSX export and XLSX import with safety bounds.
 - Demo seed volume matching the screenshots: **51 assets, 26 projects, 118 KB items, 532 inventory rows, 7,665 calls**.
 - Two high-quality initial RAG domains: **Milk Analyzer** and **Aerolift**.
@@ -52,7 +52,7 @@ Examples include `HTTP 200 OK | POST /demo-api/query/` and
 question text, access codes, signed source tokens and response bodies. Press Ctrl+C to close only
 the log viewer; the launched servers remain running. Use `-NoWatch` to return to the prompt instead.
 
-Open http://127.0.0.1:5175/ and enter the existing customer RAG access code. The launcher now
+Open http://127.0.0.1:5175/ and enter the existing customer RAG access code. By default, the launcher enables the optional local `qwen3.5:2b-q4_K_M` wording postprocessor when Ollama is reachable. It receives only approved claim text, keeps the deterministic citation/evidence contract authoritative, and falls back to exact source wording if output is invalid or the model is unavailable. Use `-NoLocalChat` to disable it. The general RAG answer engine remains extractive; Qwen does not replace BGE-small retrieval or V5 reranking. The launcher also
 automatically uses a guarded, disposable BGE rebuild from verified approved documents only when
 the frozen Chroma bytes differ. It does not repair/write production Chroma or write company MySQL
 records. The first guarded rebuild can take up to four minutes.
