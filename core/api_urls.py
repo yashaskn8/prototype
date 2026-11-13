@@ -47,6 +47,7 @@ urlpatterns = [
 
     # Workflow 2: Engineer Copilot (Post-ticket)
     path("engineer-copilot/query/", api_views.EngineerCopilotQueryView.as_view(), name="api_engineer_copilot_query"),
+    path("engineer-copilot/query-stream/", api_views.EngineerCopilotQueryStreamView.as_view(), name="api_engineer_copilot_query_stream"),
 
     # Sites & Assets
     path("sites/<int:site_id>/assets/", api_views.SitesAssetsView.as_view(), name="api_sites_assets"),
