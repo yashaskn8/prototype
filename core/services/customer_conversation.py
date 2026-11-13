@@ -607,19 +607,24 @@ def process_customer_diagnostic_turn(
                     original_question=turn_text,
                 )
             presentation = contract.get("presentation") or {}
+            with execution_stage(
+                "customer_citation_assembly",
+                "Assembling source references for the customer answer",
+            ):
+                assembled_citations = (
+                    presentation.get("citations", [])
+                    or contract.get("citations", [])
+                    or rag_res.get("references", [])
+                    or []
+                )
+                supported_claims = presentation.get("supporting_claims", []) or []
             emit_execution_event(
                 "customer_evidence_summary",
                 "Customer answer evidence summary",
                 "info",
                 metrics={
-                    "supported_count": len(
-                        presentation.get("supporting_claims", []) or []
-                    ),
-                    "citation_count": len(
-                        presentation.get("citations", []) or
-                        contract.get("citations", []) or
-                        rag_res.get("references", []) or []
-                    ),
+                    "supported_count": len(supported_claims),
+                    "citation_count": len(assembled_citations),
                 },
             )
             if session:
