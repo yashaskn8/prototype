@@ -28,8 +28,10 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(page, /downloadAttachment/);
   assert.match(page, /window\.setInterval\(refreshQueue, 8000\)/);
   assert.match(page, /queue refreshes automatically/i);
-  assert.match(customerPage, /http:\/\/127\.0\.0\.1:5176\//);
-  assert.match(customerPage, /technician_access\.txt/);
+  assert.doesNotMatch(customerPage, /http:\/\/127\.0\.0\.1:5176\//);
+  assert.doesNotMatch(customerPage, /technician_access\.txt/);
+  assert.doesNotMatch(customerPage, /RAGExecutionLog|Customer RAG execution log/);
+  assert.match(customerPage, /Ticket created/);
   assert.match(launcher, /technician_access\.txt/);
   assert.match(launcher, /VITE_SERVY_TECH_DEMO/);
   assert.match(launcher, /No customer RAG ticket workspace exists yet/);
