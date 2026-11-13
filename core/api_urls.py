@@ -28,6 +28,7 @@ urlpatterns = [
     # Workflow 1: Customer AI Support (Pre-ticket)
     path("customer-support/context/", api_views.CustomerSupportContextView.as_view(), name="api_customer_support_context"),
     path("customer-support/query/", api_views.CustomerSupportQueryView.as_view(), name="api_customer_support_query"),
+    path("customer-support/query-stream/", api_views.CustomerSupportQueryStreamView.as_view(), name="api_customer_support_query_stream"),
     path("customer-support/interactions/<int:pk>/resolve/", api_views.CustomerSupportResolveView.as_view(), name="api_customer_support_resolve"),
     path("customer-support/interactions/<int:pk>/escalate/", api_views.CustomerSupportEscalateView.as_view(), name="api_customer_support_escalate"),
 
@@ -35,6 +36,7 @@ urlpatterns = [
     path("customer-support/conversations/", api_views.CustomerConversationsListView.as_view(), name="api_customer_conversations"),
     path("customer-support/conversations/<uuid:conversation_uuid>/", api_views.CustomerConversationDetailView.as_view(), name="api_customer_conversation_detail"),
     path("customer-support/conversations/<uuid:conversation_uuid>/messages/", api_views.CustomerConversationMessagesView.as_view(), name="api_customer_conversation_messages"),
+    path("customer-support/conversations/<uuid:conversation_uuid>/messages-stream/", api_views.CustomerConversationMessagesStreamView.as_view(), name="api_customer_conversation_messages_stream"),
     path("customer-support/conversations/<uuid:conversation_uuid>/ticket/", api_views.CustomerConversationTicketView.as_view(), name="api_customer_conversation_ticket"),
     path("customer-support/tickets/", api_views.CustomerTicketsListView.as_view(), name="api_customer_tickets"),
     path("customer-support/tickets/<int:pk>/", api_views.CustomerTicketDetailView.as_view(), name="api_customer_ticket_detail"),
