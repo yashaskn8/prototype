@@ -845,27 +845,82 @@ class EngineerCopilotQueryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [EngineerRAGThrottle]
 
-    def post(self, request):
+    def _prepare(self, request):
         ctx = require_api_context(request)
         role = ctx["role"]
         if role not in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
-            return Response({"detail": "Engineer Copilot is restricted to service staff."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"detail": "Engineer Copilot is restricted to service staff."},
+                status=status.HTTP_403_FORBIDDEN,
+            ), None
 
         tenant = ctx["tenant"]
         call_id = request.data.get("call_id") or request.data.get("service_call_id")
         question = (request.data.get("question") or request.data.get("query") or "").strip()
-
         if not call_id or not question:
-            return Response({"detail": "Service call ID and question are required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Service call ID and question are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
 
-        calls_qs = authorized_service_calls(ctx) if role == "technician" else ServiceCall.objects.filter(tenant=tenant)
+        calls_qs = (
+            authorized_service_calls(ctx)
+            if role == "technician"
+            else ServiceCall.objects.filter(tenant=tenant)
+        )
         try:
             call = calls_qs.select_related("asset", "customer", "site").get(id=call_id)
         except ServiceCall.DoesNotExist:
-            return Response({"detail": "Service call not found in this tenant."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Service call not found in this tenant."},
+                status=status.HTTP_404_NOT_FOUND,
+            ), None
 
-        # Respect can_view_confidential permission flag
-        include_confidential = ctx["can_view_confidential"]
+        return None, {
+            "ctx": ctx,
+            "tenant": tenant,
+            "call": call,
+            "question": question,
+            "include_confidential": bool(ctx["can_view_confidential"]),
+        }
+
+    @staticmethod
+    def _execute(prepared):
+        """Execute Copilot after rechecking ticket scope in the worker."""
+        from core.services.rag_execution_log import execution_stage, emit_execution_event
+
+        ctx = prepared["ctx"]
+        tenant = prepared["tenant"]
+        call = prepared["call"]
+        question = prepared["question"]
+        include_confidential = prepared["include_confidential"]
+
+        # The event stream starts only after normal view authentication and
+        # ticket lookup succeeded. Re-query in the worker so an assignment or
+        # tenant-scope change between preparation and execution fails closed.
+        with execution_stage(
+            "technician_ticket_authorization",
+            "Revalidating technician ticket and tenant access",
+        ):
+            calls_qs = (
+                authorized_service_calls(ctx)
+                if ctx["role"] == "technician"
+                else ServiceCall.objects.filter(tenant=tenant)
+            )
+            call = calls_qs.select_related(
+                "asset", "customer", "site"
+            ).get(pk=call.pk)
+
+        emit_execution_event(
+            "technician_confidential_scope",
+            "Confidential document access",
+            "info",
+            metrics={
+                "confidential_scope": (
+                    "permitted" if include_confidential else "restricted"
+                ),
+            },
+        )
 
         rag_res = ask_rag(
             tenant=tenant,
@@ -880,55 +935,108 @@ class EngineerCopilotQueryView(APIView):
         retrieved_list = rag_res.get("retrieved", [])
         retrieval_backend = getattr(retrieved_list, "retrieval_backend", "fallback")
 
-        # Enrich past resolution references with full ServiceCall details
-        past_res_call_ids = [
-            r.get("service_call_id")
-            for r in rag_res.get("references", [])
-            if r.get("source_kind") == "past_resolution" and r.get("service_call_id")
-        ]
-        sc_map = {
-            sc.id: sc
-            for sc in ServiceCall.objects.filter(tenant=tenant, id__in=past_res_call_ids)
-        }
-        past_resolutions = []
-        for r in rag_res.get("references", []):
-            if r.get("source_kind") == "past_resolution":
-                sc = sc_map.get(r.get("service_call_id"))
-                servy_id = sc.servy_id if sc else r.get("service_call_id")
-                complaint_type = sc.complaint_type if sc and sc.complaint_type else (r.get("heading") or "Past Service Call")
-                resolution_text = (sc.resolution_text or sc.technician_notes or "Resolved according to standard technical procedures.") if sc else "Resolved according to standard technical procedures."
+        with execution_stage(
+            "technician_past_case_enrichment",
+            "Resolving authorized historical case references",
+        ):
+            past_res_call_ids = [
+                r.get("service_call_id")
+                for r in rag_res.get("references", [])
+                if r.get("source_kind") == "past_resolution"
+                and r.get("service_call_id")
+            ]
+            sc_map = {
+                sc.id: sc
+                for sc in ServiceCall.objects.filter(
+                    tenant=tenant, id__in=past_res_call_ids
+                )
+            }
+            past_resolutions = []
+            for ref in rag_res.get("references", []):
+                if ref.get("source_kind") != "past_resolution":
+                    continue
+                service_call = sc_map.get(ref.get("service_call_id"))
+                servy_id = (
+                    service_call.servy_id
+                    if service_call else ref.get("service_call_id")
+                )
+                complaint_type = (
+                    service_call.complaint_type
+                    if service_call and service_call.complaint_type
+                    else (ref.get("heading") or "Past Service Call")
+                )
+                resolution_text = (
+                    (service_call.resolution_text or service_call.technician_notes
+                     or "Resolved according to standard technical procedures.")
+                    if service_call
+                    else "Resolved according to standard technical procedures."
+                )
                 past_resolutions.append({
-                    "service_call_id": r.get("service_call_id"),
+                    "service_call_id": ref.get("service_call_id"),
                     "servy_id": servy_id,
                     "complaint_type": complaint_type,
                     "resolution_text": resolution_text,
-                    "title": r.get("title"),
-                    "reference": r.get("reference"),
-                    "doc_type": r.get("doc_type"),
-                    "score": r.get("score"),
+                    "title": ref.get("title"),
+                    "reference": ref.get("reference"),
+                    "doc_type": ref.get("doc_type"),
+                    "score": ref.get("score"),
                 })
+        emit_execution_event(
+            "technician_past_case_summary",
+            "Authorized historical cases",
+            "info",
+            metrics={"past_case_count": len(past_resolutions)},
+        )
 
         recovery_passport = None
-        if hasattr(call, "recovery_passport") and call.recovery_passport:
-            rp = call.recovery_passport
-            recovery_passport = {
-                "id": rp.id,
-                "structured_data": rp.structured_data,
-                "do_not_repeat_items": rp.do_not_repeat_items,
-                "evidence_completeness": rp.evidence_completeness,
-                "created_at": rp.created_at,
+        with execution_stage(
+            "technician_recommendation_assembly",
+            "Assembling recommendation and ticket context",
+        ):
+            if hasattr(call, "recovery_passport") and call.recovery_passport:
+                passport = call.recovery_passport
+                recovery_passport = {
+                    "id": passport.id,
+                    "structured_data": passport.structured_data,
+                    "do_not_repeat_items": passport.do_not_repeat_items,
+                    "evidence_completeness": passport.evidence_completeness,
+                    "created_at": passport.created_at,
+                }
+
+            return {
+                "answer": rag_res["answer"],
+                "references": rag_res["references"],
+                "past_resolutions": past_resolutions,
+                "engine": rag_res["engine"],
+                "retrieval_backend": retrieval_backend,
+                "reranker_applied": rag_res.get("reranker_applied", False),
+                "reranker_model": rag_res.get("reranker_model"),
+                "recovery_passport": recovery_passport,
             }
 
-        return Response({
-            "answer": rag_res["answer"],
-            "references": rag_res["references"],
-            "past_resolutions": past_resolutions,
-            "engine": rag_res["engine"],
-            "retrieval_backend": retrieval_backend,
-            "reranker_applied": rag_res.get("reranker_applied", False),
-            "reranker_model": rag_res.get("reranker_model"),
-            "recovery_passport": recovery_passport,
-        })
+    def post(self, request):
+        error, prepared = self._prepare(request)
+        if error is not None:
+            return error
+        try:
+            return Response(self._execute(prepared))
+        except ServiceCall.DoesNotExist:
+            return Response(
+                {"detail": "Service call not found in this tenant."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+
+class EngineerCopilotQueryStreamView(EngineerCopilotQueryView):
+    """Same authenticated Copilot contract, with live request-scoped SSE events."""
+
+    def post(self, request):
+        error, prepared = self._prepare(request)
+        if error is not None:
+            return error
+        from core.services.rag_event_stream import rag_execution_stream
+
+        return rag_execution_stream(lambda: self._execute(prepared))
 
 
 # ----------------------------------------------------------------------
