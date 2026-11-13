@@ -588,14 +588,28 @@ export function RealDemoPage() {
                               <details className="real-demo-dialogue-meta">
                                 <summary>How this answer was prepared</summary>
                                 <p>The technical statements are drawn from approved company sources.
-                                  {message.data.engine === 'source-structured-qwen'
-                                    ? ' Local Qwen helped phrase only already-approved factual and possible-cause claims. Their exact source sentences and citations are retained; customer procedures and observations remain source-exact.'
-                                    : message.data.engine === 'source-structured-extractive'
-                                      ? ' The displayed technical claims are extracted from authorized passages and linked to exact citations; a generative language model did not rewrite them.'
-                                      : message.data.dialogue_planner === 'local-ollama-structured'
-                                        ? ' A local language model helped select the order of source-backed claims and a pre-approved follow-up.'
-                                        : ' No generative language model rewrote the technical claims.'}
+                                  {message.data.engine === 'source-grounded-qwen'
+                                    ? ' Local Qwen generated plain-language explanations using complete, reauthorized approved-manual passages. Original claim sentences remain intact, and each generated explanation links to both its sentence citation and the full source-passage citation. Output that fails source validation falls back to the extractive answer.'
+                                    : message.data.engine === 'source-structured-qwen'
+                                      ? ' Local Qwen helped phrase already-approved factual and possible-cause claims. Their exact source sentences and citations are retained; customer procedures and observations remain source-exact.'
+                                      : message.data.engine === 'source-structured-extractive'
+                                        ? ' The displayed technical claims are extracted from authorized passages and linked to exact citations; a generative language model did not rewrite them.'
+                                        : message.data.dialogue_planner === 'local-ollama-structured'
+                                          ? ' A local language model helped select the order of source-backed claims and a pre-approved follow-up.'
+                                          : ' No generative language model rewrote the technical claims.'}
                                 </p>
+                                {message.data.answer_generation && (
+                                  <p>
+                                    Qwen answer generation: {message.data.answer_generation.status}.
+                                    {message.data.answer_generation.model
+                                      ? ' Model: ' + message.data.answer_generation.model + '.'
+                                      : ''}
+                                    {' '}Explanations applied: {message.data.answer_generation.applied_claims ?? 0}.
+                                    {message.data.answer_generation.error_type
+                                      ? ' Error type: ' + message.data.answer_generation.error_type + '.'
+                                      : ''}
+                                  </p>
+                                )}
                                 <p>
                                   Retrieval: {message.data.retrieval_attempts ?? 0} pass(es)
                                   {message.data.retrieval_backend ? ' via ' + message.data.retrieval_backend : ''}.
