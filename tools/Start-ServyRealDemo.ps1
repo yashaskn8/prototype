@@ -162,17 +162,16 @@ if ($NoLocalChat) {
     Write-Output 'Customer answers: local Qwen wording enabled; exact-source fallback retained.'
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
-        $qwenReady = @($qwenTags.models | Where-Object {
-            $_.name -eq 'qwen3.5:2b-q4_K_M'
-        }).Count -gt 0
-        if ($qwenReady) {
-            Write-Output 'Qwen model check: PASS (qwen3.5:2b-q4_K_M present locally).'
-        } else {
-            Write-Warning 'Qwen model is not listed by Ollama; Servy will retain exact source wording until it is available.'
-        }
     } catch {
-        Write-Warning 'Ollama is not reachable; Servy will use exact source wording. Start Ollama and restart the demo to enable Qwen.'
+        throw 'Qwen is enabled but local Ollama is not reachable. Start Ollama, then rerun this launcher; use -NoLocalChat only when intentionally selecting extractive-only mode.'
     }
+    $qwenReady = @($qwenTags.models | Where-Object {
+        $_.name -eq 'qwen3.5:2b-q4_K_M'
+    }).Count -gt 0
+    if (!$qwenReady) {
+        throw 'Qwen is enabled but qwen3.5:2b-q4_K_M is not installed. Run: ollama pull qwen3.5:2b-q4_K_M'
+    }
+    Write-Output 'Qwen model check: PASS (qwen3.5:2b-q4_K_M present locally).'
 }
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
