@@ -20,3 +20,8 @@ Files prefixed with `op21_`, `op22_`, `op23_`, `op25_`–`op28_`, `servy_v4_`, `
 ## Cleanup rule
 
 Do not delete or move a tool based only on its age or filename. Check imports, CI workflow references, README/launcher invocations, tests, model/data artifact paths and whether the script is the only reproducible audit for a prior result. Keep active launchers, tests and serving/evaluation dependencies in place.
+
+
+## Archived documentation
+
+Historical reports, experiment runbooks, access notes and prompts formerly shown beside executable scripts are preserved under [`docs/archive/tools/`](../docs/archive/tools/). They were moved as documentation only; Python modules, test modules and launchers were not moved.

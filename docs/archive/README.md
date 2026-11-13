@@ -80,3 +80,18 @@ This directory preserves historical engineering reports and evaluation snapshots
 The two unused root-level synthetic utilities removed in the cleanup are still recoverable from Git history:
 - `scratch_run_smoke_training.py`: isolated synthetic-only BGE training smoke test; explicitly marked ineligible for production.
 - `seed_kb_all_assets.py`: legacy broad synthetic knowledge-base seeder for the former Starlly Tester dataset; not referenced by current entry points, CI or README.
+
+
+## Archived tools-directory documents and prompts
+
+These records were moved out of the operational `tools/` listing. They remain available for reproducibility and historical context; they are not part of runtime imports or CI execution.
+
+- [COLAB_QUESTION_BANK_REVIEW.md](COLAB_QUESTION_BANK_REVIEW.md) — archived from `tools/COLAB_QUESTION_BANK_REVIEW.md`
+- [SERVY_CANDIDATE_RECOVERY.md](SERVY_CANDIDATE_RECOVERY.md) — archived from `tools/SERVY_CANDIDATE_RECOVERY.md`
+- [SERVY_CHECKPOINT_AUDIT.md](SERVY_CHECKPOINT_AUDIT.md) — archived from `tools/SERVY_CHECKPOINT_AUDIT.md`
+- [SERVY_LIVE100.md](SERVY_LIVE100.md) — archived from `tools/SERVY_LIVE100.md`
+- [SERVY_READONLY_EVAL_ACCESS.md](SERVY_READONLY_EVAL_ACCESS.md) — archived from `tools/SERVY_READONLY_EVAL_ACCESS.md`
+- [SERVY_V4_AUDIT_FINDINGS.md](SERVY_V4_AUDIT_FINDINGS.md) — archived from `tools/SERVY_V4_AUDIT_FINDINGS.md`
+- [SERVY_V4_COLAB_RUNBOOK.md](SERVY_V4_COLAB_RUNBOOK.md) — archived from `tools/SERVY_V4_COLAB_RUNBOOK.md`
+- [SERVY_V4_TRAINING_READINESS.md](SERVY_V4_TRAINING_READINESS.md) — archived from `tools/SERVY_V4_TRAINING_READINESS.md`
+- [op27_full_prompt.md](op27_full_prompt.md) — archived from `tools/op27_full_prompt.md`
