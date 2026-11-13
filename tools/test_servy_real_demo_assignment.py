@@ -37,6 +37,24 @@ def _asset(asset_id=60, model="AC-60"):
     )
 
 
+def _disabled_customer_generation(*_args, **kwargs):
+    """Synthetic demo tests keep Qwen disabled while preserving status metadata."""
+    if kwargs.get("enabled") is not False:
+        raise AssertionError("customer demo tests must not invoke Qwen generation")
+    return {
+        "explanations": {},
+        "generation": {
+            "status": "disabled",
+            "provider": "disabled",
+            "model": None,
+            "attempted": False,
+            "eligible_claims": 0,
+            "accepted_claims": 0,
+            "error_type": None,
+        },
+    }
+
+
 def _with_claim(base, claim_id, text, kind, index, document_id=3):
     result = copy.deepcopy(base)
     presentation = result["presentation"]
@@ -304,8 +322,10 @@ class CauseFollowUpTests(unittest.TestCase):
     def test_model_generated_explanations_are_not_used(self):
         first, _ = _cause_turn()
         detailed = _with_claim(contract(), "c6", DETAIL, "information", 6)
-        with patch.object(demo, "explain_claims",
-                          side_effect=AssertionError("unverifiable paraphrase must not run")):
+        with patch(
+            "tools.servy_real_demo_explainer.explain_claims_with_status",
+            side_effect=_disabled_customer_generation,
+        ), patch.dict(os.environ, {"SERVY_CUSTOMER_ANSWER_GENERATION": "disabled"}):
             result, _, _ = _run(
                 "Explain the second cause in more detail", [detailed, detailed],
                 continuation=first["continuation"])
@@ -318,8 +338,10 @@ class CauseFollowUpTests(unittest.TestCase):
 
     def test_no_additional_explanation_escalates_instead_of_rewording(self):
         first, _ = _cause_turn()
-        with patch.object(demo, "explain_claims",
-                          side_effect=AssertionError("no rewording")):
+        with patch(
+            "tools.servy_real_demo_explainer.explain_claims_with_status",
+            side_effect=_disabled_customer_generation,
+        ), patch.dict(os.environ, {"SERVY_CUSTOMER_ANSWER_GENERATION": "disabled"}):
             result, _, _ = _run(
                 "Explain the second cause in more detail", [contract(), contract()],
                 continuation=first["continuation"])
@@ -379,8 +401,10 @@ class CauseFollowUpTests(unittest.TestCase):
 
     def test_explain_each_without_new_passages_hides_limitation_and_escalates(self):
         first, _ = _cause_turn()
-        with patch.object(demo, "explain_claims",
-                          side_effect=AssertionError("no rewording")):
+        with patch(
+            "tools.servy_real_demo_explainer.explain_claims_with_status",
+            side_effect=_disabled_customer_generation,
+        ), patch.dict(os.environ, {"SERVY_CUSTOMER_ANSWER_GENERATION": "disabled"}):
             result, _, _ = _run("Explain each of those causes in detail",
                                 [contract(), contract()],
                                 continuation=first["continuation"])
