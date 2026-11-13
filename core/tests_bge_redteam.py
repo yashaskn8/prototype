@@ -385,7 +385,13 @@ class BgeRedTeamScenariosTests(TestCase):
 
     # Scenario 16: Scanned PDF without extractable text (REPAIRED: real PDF fixture & OCR-required status)
     def test_scenario_16_scanned_pdf_empty_text(self):
+        import tempfile
         from pypdf import PdfWriter
+        media = tempfile.TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        media_override = override_settings(MEDIA_ROOT=media.name)
+        media_override.enable()
+        self.addCleanup(media_override.disable)
         buf = io.BytesIO()
         writer = PdfWriter()
         writer.add_blank_page(width=612, height=792)

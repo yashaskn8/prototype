@@ -59,7 +59,7 @@ test('both customer chat screens render the shared bubble before their request r
     assert.match(source, /createAssistantTypingMessage\(/);
     assert.match(source, /AssistantTypingIndicator \/>/);
   }
-  assert.match(demo, /setMessages\(previous => \[\.\.\.previous,[\s\S]*?createAssistantTypingMessage\(responseId\)[\s\S]*?await call\('\/demo-api\/query\//);
+  assert.match(demo, /setMessages\(previous => \[\.\.\.previous,[\s\S]*?createAssistantTypingMessage\(responseId\)[\s\S]*?await callRagStream\(\s*'\/demo-api\/query-stream\/'/);
   assert.match(customer, /setMessages\(prev => \[\.\.\.prev, tempUserMsg, typingMessage\]\)[\s\S]*?await api\.post/);
 });
 

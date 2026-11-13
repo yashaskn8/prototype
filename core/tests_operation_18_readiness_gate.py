@@ -354,11 +354,18 @@ class TestBenchmarkIdentity(TestCase):
 
     def test_benchmark_manifest_denominators_consistent(self):
         """Primary denominators must sum to total queries."""
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
         from core.ml.benchmark_manifest import build_manifest
-        try:
-            manifest = build_manifest()
-        except Exception:
-            self.skipTest("Benchmark file not available")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                "core.ml.benchmark_manifest.MANIFEST_PATH",
+                Path(tmp) / "benchmark_accounting_manifest.json"):
+            try:
+                manifest = build_manifest()
+            except Exception:
+                self.skipTest("Benchmark file not available")
 
         denom = manifest["primary_denominators"]
         total_primary = denom["relevance_queries"] + denom["abstention_queries"] + denom["security_queries"]

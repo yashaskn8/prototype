@@ -13,6 +13,7 @@ import re
 import sys
 import django
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # repository root
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')
 django.setup()
 

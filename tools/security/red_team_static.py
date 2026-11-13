@@ -8,7 +8,7 @@ import ast
 import re
 import sys
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]   # repository root (this file is tools/security/)
 FAILURES = []
 PASSES = []
 
@@ -74,7 +74,7 @@ check("no-runtime-cdn", not re.search(r"https?://(?:cdn\.|cdn.jsdelivr|unpkg|cdn
 
 # 4) Startup scripts must not seed or reset synthetic business records implicitly.
 for name in ["run_windows.bat", "run_linux.sh", "setup_windows.bat", "setup_linux.sh"]:
-    path = ROOT / name
+    path = ROOT / "tools" / "launchers" / name
     check(f"startup-no-demo-seed:{name}", path.exists() and "seed_demo" not in path.read_text(errors="ignore"))
 
 # 5) RAG confidentiality and tenant filters should exist.

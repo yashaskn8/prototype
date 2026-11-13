@@ -1,5 +1,7 @@
 @echo off
 setlocal
+rem Run from the repository root regardless of the caller's directory.
+cd /d "%~dp0..\.."
 if not exist .venv python -m venv .venv
 call .venv\Scripts\activate
 python -m pip install --upgrade pip
@@ -8,4 +10,4 @@ python manage.py migrate
 python manage.py check
 
 echo.
-echo Setup complete. Run run_windows.bat to start Servy RAG.
+echo Setup complete. Run tools\launchers\run_windows.bat to start Servy RAG.

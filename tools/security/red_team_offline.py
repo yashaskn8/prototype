@@ -1,9 +1,12 @@
 """Offline behavioural red-team checks for Servy's RAG/security utilities.
 
-Run with: python red_team_offline.py
+Run from the repository root with: python tools/security/red_team_offline.py
 These checks do not require a seeded database or the retired screenshot UI.
 """
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))   # repository root
 
 from core.services.content_safety import detect_document_prompt_injection, query_is_control_abuse
 from core.services.chunking import chunk_markdownish

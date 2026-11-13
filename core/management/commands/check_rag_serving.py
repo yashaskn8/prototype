@@ -5,8 +5,17 @@ Without --strict, inspect configuration without loading private models.
 and executes the pinned V5 scorer using synthetic input. It never downloads,
 trains, mutates indexes or touches private source text.
 """
+import atexit
+import contextlib
+import gc
+import shutil
+import tempfile
+import time
+from pathlib import Path
+
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.test.utils import override_settings
 
 from core.ml.reranker import SERVY_V5_WEIGHTS_SHA256
 from core.services.retriever import get_serving_config
@@ -35,6 +44,56 @@ class ServingArtifactError(RuntimeError):
     """A named local serving artifact is missing or wrong. Carries no paths."""
 
 
+@contextlib.contextmanager
+def index_snapshot():
+    """Point Chroma at a temporary byte-for-byte copy of the configured index.
+
+    Opening a persistent Chroma collection replays its write-ahead log and
+    rewrites the HNSW segment files, so verifying the configured directory in
+    place modified it on every run. Verification reads an identical copy
+    instead; the configured directory is only read. A missing directory is
+    represented by an empty snapshot (and so fails verification) rather than
+    being created. The process's previous Chroma client is restored afterwards.
+    """
+    from core.services import chroma_store
+
+    source = Path(getattr(settings, "CHROMA_PERSIST_DIR", settings.BASE_DIR / "chroma_db"))
+    parent = Path(tempfile.gettempdir()) / "servy-index-snapshots"
+    parent.mkdir(exist_ok=True)
+    # A snapshot is used only for the seconds verification takes; anything
+    # older is a leftover whose file handles have since been released.
+    for stale in parent.iterdir():
+        if time.time() - stale.stat().st_mtime > 600:
+            shutil.rmtree(stale, ignore_errors=True)
+    workdir = Path(tempfile.mkdtemp(dir=parent))
+    snapshot = workdir / "index"
+    if source.is_dir():
+        shutil.copytree(source, snapshot)
+    else:
+        snapshot.mkdir()
+    previous_client = chroma_store._chroma_client
+    chroma_store._chroma_client = None
+    try:
+        with override_settings(CHROMA_PERSIST_DIR=snapshot):
+            yield snapshot
+    finally:
+        snapshot_client = chroma_store._chroma_client
+        chroma_store._chroma_client = previous_client
+        try:
+            if snapshot_client is not None:
+                snapshot_client._system.stop()       # release the snapshot's SQLite handles
+            from chromadb.api.shared_system_client import SharedSystemClient
+            SharedSystemClient._identifier_to_system.pop(str(snapshot), None)
+        except Exception:
+            pass
+        del snapshot_client
+        gc.collect()
+        shutil.rmtree(workdir, ignore_errors=True)
+        if workdir.exists():
+            # Windows keeps Chroma's SQLite file open until the process exits.
+            atexit.register(shutil.rmtree, workdir, True)
+
+
 def verify_local_serving_artifacts(required_collections=("bge-small", "company-bge-small"),
                                    optional_collections=()):
     """Verify the local BGE model and indexes, then execute the pinned V5 scorer.
@@ -43,8 +102,15 @@ def verify_local_serving_artifacts(required_collections=("bge-small", "company-b
     profile's dimension, and the collection exists (create=False) and is not
     empty. A collection listed as optional is reported rather than required.
     Then the SHA-pinned V5 checkpoint must run real scoring. Nothing is
-    downloaded, created or modified. Returns what was verified.
+    downloaded, created or modified: collections are opened from an identical
+    temporary snapshot of the index (see ``index_snapshot``). Returns what was
+    verified.
     """
+    with index_snapshot():
+        return _verify_local_serving_artifacts(required_collections, optional_collections)
+
+
+def _verify_local_serving_artifacts(required_collections, optional_collections):
     from core.ml.embeddings import encode_passages, get_collection, get_profile, load_model
     from core.ml.reranker import SERVY_V5_WEIGHTS_SHA256, require_verified_v5_reranker
 

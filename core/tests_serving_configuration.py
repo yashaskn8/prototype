@@ -71,3 +71,54 @@ class StartupModelLoadingTests(SimpleTestCase):
             with self.assertRaises(RuntimeError):
                 config.ready()
         required.assert_called_once_with()
+
+
+class StrictCheckIndexIsolationTests(SimpleTestCase):
+    """The strict serving check reads a snapshot, never the configured index."""
+
+    def _tree(self, root):
+        import hashlib
+        return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted(Path(root).rglob("*")) if p.is_file()}
+
+    def test_opening_collections_leaves_the_configured_index_unchanged(self):
+        import tempfile
+
+        import chromadb
+
+        from core.management.commands.check_rag_serving import index_snapshot
+        from core.services import chroma_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "index"
+            writer = chromadb.PersistentClient(path=str(source))
+            writer.create_collection("probe").add(ids=["a", "b"], embeddings=[[0.0, 1.0], [1.0, 0.0]])
+            writer._system.stop()
+            del writer
+            before = self._tree(source)
+            sentinel = object()
+            with self.settings(CHROMA_PERSIST_DIR=source), \
+                    mock.patch.object(chroma_store, "_chroma_client", sentinel):
+                with index_snapshot() as snapshot:
+                    self.assertNotEqual(Path(snapshot), source)
+                    client = chroma_store.get_chroma_client()
+                    collection = client.get_collection("probe")
+                    self.assertEqual(collection.count(), 2)
+                    collection.query(query_embeddings=[[0.0, 1.0]], n_results=1)
+                self.assertIs(chroma_store._chroma_client, sentinel)
+            self.assertEqual(self._tree(source), before)
+
+    def test_missing_index_is_not_created(self):
+        import tempfile
+
+        from core.management.commands.check_rag_serving import index_snapshot
+        from core.services import chroma_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent"
+            with self.settings(CHROMA_PERSIST_DIR=missing), \
+                    mock.patch.object(chroma_store, "_chroma_client", None):
+                with index_snapshot():
+                    client = chroma_store.get_chroma_client()
+                    self.assertEqual(list(client.list_collections()), [])
+            self.assertFalse(missing.exists())

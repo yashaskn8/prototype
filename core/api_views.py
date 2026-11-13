@@ -161,16 +161,21 @@ def _can_read_customer_conversation(ctx, conversation):
 # ----------------------------------------------------------------------
 # Rate Throttles
 # ----------------------------------------------------------------------
-class LoginThrottle(throttling.ScopedRateThrottle):
+# Each throttle carries its own scope. DRF's ScopedRateThrottle ignores a
+# class-level ``scope`` and reads ``view.throttle_scope`` instead, so the
+# previous ScopedRateThrottle subclasses allowed every request. The rate for
+# each scope comes from REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]; requests are
+# keyed by authenticated user, or by client address when anonymous (login).
+class LoginThrottle(throttling.UserRateThrottle):
     scope = "login"
 
-class CustomerRAGThrottle(throttling.ScopedRateThrottle):
+class CustomerRAGThrottle(throttling.UserRateThrottle):
     scope = "customer_rag"
 
-class EngineerRAGThrottle(throttling.ScopedRateThrottle):
+class EngineerRAGThrottle(throttling.UserRateThrottle):
     scope = "engineer_rag"
 
-class UploadThrottle(throttling.ScopedRateThrottle):
+class UploadThrottle(throttling.UserRateThrottle):
     scope = "upload"
 
 

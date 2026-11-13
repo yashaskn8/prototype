@@ -36,6 +36,14 @@ The technician portal reads the same workspace. This is part of the **current cu
 
 The local demo handoff is intentionally separate from an official Servy service call. It does not write company MySQL `ServiceCall` records.
 
+## Normal authenticated application (MySQL)
+
+```powershell
+.\tools\Start-ServyApp.ps1
+```
+
+This starts the authenticated Django/DRF backend on port 8000 against the configured MySQL database (read-only readiness check, no data initialization) and the React application on port 5173 (`frontend/src/App.jsx`, without the demo `VITE_*` flags). Customers sign in and use Customer AI Support, which stores conversations and creates official service calls through the API below; technicians use `http://127.0.0.1:5173/technician/inbox`. Its other screens (calls, knowledge base, assets, projects, inventory, staff) read live application data through the DRF API. It is a separate application from the two demos above and is retained.
+
 ## Application-layer conversation-to-service-call API
 
 The Django/DRF application also exposes the official database-backed workflow:
@@ -74,6 +82,19 @@ python manage.py check_rag_serving --strict
 ```
 
 The GitHub Actions workflow at `.github/workflows/ci.yml` runs the backend security/regression suite, three-asset checks, customer RAG tests, technician isolation tests, frontend contract tests, lint and production build. Use the result for the exact commit being reviewed; historical reports are not proof that the current commit passes.
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `core/`, `servy_rag/`, `manage.py` | Django project: models, DRF APIs, RAG services, management commands, tests |
+| `frontend/` | React/Vite apps: customer RAG (`VITE_SERVY_REAL_DEMO=1`), technician portal (`VITE_SERVY_TECH_DEMO=1`) and the normal authenticated app |
+| `tools/Start-Servy*.ps1` | Supported launchers for the three applications |
+| `tools/security/` | `red_team_static.py` and `red_team_offline.py` (run by CI from the repository root) |
+| `tools/diagnostics/` | Directly executed diagnostics, e.g. `test_rag_handoff_regression.py` |
+| `tools/launchers/` | Older plain launchers (`run_*.bat`, `run_linux.sh`, `setup_*`); `run_windows`, `run_linux` and `setup_*` run `migrate`, so prefer `tools/Start-ServyApp.ps1` |
+| `tools/` (other) | Evaluation, research and maintenance utilities; most are run directly |
+| `docs/` | Architecture, decision records and design notes; `docs/archive/` holds historical reports |
 
 ## Repository cleanup boundary
 

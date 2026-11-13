@@ -16,6 +16,7 @@ Validates Phase 2 and Phase 3 requirements:
 
 from unittest.mock import patch
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -50,6 +51,10 @@ from core.services.conversation_context import (
 )
 class CustomerConversationMultiTurnTests(TestCase):
     def setUp(self):
+        # The customer RAG endpoints are rate limited per user. Start each test
+        # with an empty throttle history so counts from earlier tests (whose
+        # user ids the test database may reuse) cannot carry over.
+        cache.clear()
         # 1. Tenants
         self.tenant_a = Tenant.objects.create(name="Tenant Alpha", slug="alpha-conv", is_active=True)
         self.tenant_b = Tenant.objects.create(name="Tenant Beta", slug="beta-conv", is_active=True)

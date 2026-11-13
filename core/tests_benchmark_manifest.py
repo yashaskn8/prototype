@@ -1,4 +1,8 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
+
 from django.test import TestCase
 from core.models import Tenant, Product, Asset
 from core.ml.benchmark_manifest import (
@@ -35,7 +39,16 @@ class BenchmarkManifestTests(TestCase):
         )
 
     def setUp(self):
+        # build_manifest() writes its cache file; keep the real
+        # ml_artifacts/benchmark_accounting_manifest.json untouched.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        target = Path(tmp.name) / "benchmark_accounting_manifest.json"
+        patcher = mock.patch("core.ml.benchmark_manifest.MANIFEST_PATH", target)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.manifest = build_manifest()
+        self.assertTrue(target.exists())
 
     def test_total_case_count_and_denominators(self):
         self.assertEqual(self.manifest["total_benchmark_cases"], 64)

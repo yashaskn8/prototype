@@ -5,10 +5,13 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
+from unittest import mock
+
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from core.api_views import CustomerRAGThrottle
 from core.models import (
     Asset, Brand, Customer, CustomerInteraction, KnowledgeDocument, Product,
     ProductCategory, ProductDomain, Project, ServiceCall, Site, StaffProfile,
@@ -66,36 +69,91 @@ class SecurityAndIsolationTests(TestCase):
         index_document(doc)
         return doc
 
-    def test_anonymous_is_redirected_to_login(self):
-        response = self.client.get(reverse("call_register"))
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("/accounts/login/", response.url)
+    # These checks exercise the DRF application API (core/api_urls.py). The
+    # server-rendered Django UI they originally targeted has been retired.
 
-    def test_customer_cannot_open_staff_call_register(self):
+    def _query(self, asset, site, question="thermostat issue"):
+        return self.client.post(reverse("api_customer_support_query"), {
+            "asset_id": asset.id, "site_id": site.id, "question": question,
+        }, content_type="application/json")
+
+    def test_anonymous_api_access_is_rejected_with_json(self):
+        for name in ("api_calls", "api_customer_support_query", "api_auth_switch_tenant"):
+            with self.subTest(route=name):
+                method = self.client.get if name == "api_calls" else self.client.post
+                response = method(reverse(name))
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response["Content-Type"], "application/json")
+                self.assertIn("detail", response.json())
+        self.assertEqual(CustomerInteraction.objects.count(), 0)
+
+    def test_customer_call_register_is_limited_to_own_calls(self):
+        own = ServiceCall.objects.create(
+            tenant=self.t1, servy_id=201, complaint_type="Own", complaint_text="own call",
+            customer=self.c1, site=self.s1, asset=self.a1,
+        )
+        other = ServiceCall.objects.create(
+            tenant=self.t1, servy_id=202, complaint_type="Other", complaint_text="other customer call",
+            customer=self.c1b, site=self.s1b, asset=self.a1b,
+        )
         self.client.login(username="cust1", password="SafePass!123")
-        response = self.client.get(reverse("call_register"))
-        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse("api_calls"))
+        self.assertEqual(response.status_code, 200)
+        ids = {row["id"] for row in response.json()["calls"]}
+        self.assertEqual(ids, {own.id})
+        self.assertNotIn(other.id, ids)
+
+    def test_call_register_never_crosses_tenants(self):
+        ServiceCall.objects.create(
+            tenant=self.t1, servy_id=203, complaint_type="T1", complaint_text="tenant one call",
+            customer=self.c1, site=self.s1, asset=self.a1,
+        )
+        self.client.login(username="admin2", password="SafePass!123")
+        response = self.client.get(reverse("api_calls"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["calls"], [])
 
     def test_customer_cannot_forge_another_customer_asset(self):
         self.client.login(username="cust1", password="SafePass!123")
-        response = self.client.post(reverse("customer_portal"), {
-            "asset": self.a1b.id, "site": self.s1b.id, "question": "thermostat issue",
-        })
-        self.assertEqual(response.status_code, 200)
+        response = self._query(self.a1b, self.s1b)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not belong", response.json()["detail"])
+        # Own site combined with another customer's asset is also refused.
+        response = self._query(self.a1b, self.s1)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not belong", response.json()["detail"])
         self.assertEqual(CustomerInteraction.objects.filter(created_by=self.customer_user).count(), 0)
 
     def test_customer_cannot_forge_cross_tenant_asset(self):
         self.client.login(username="cust1", password="SafePass!123")
-        response = self.client.post(reverse("customer_portal"), {
-            "asset": self.a2.id, "site": self.s2.id, "question": "thermostat issue",
-        })
-        self.assertEqual(response.status_code, 200)
+        response = self._query(self.a2, self.s2)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not belong", response.json()["detail"])
+        response = self._query(self.a2, self.s1)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not belong", response.json()["detail"])
         self.assertEqual(CustomerInteraction.objects.filter(created_by=self.customer_user).count(), 0)
 
-    def test_tenant_switch_rejects_unowned_tenant(self):
-        self.client.login(username="tech", password="SafePass!123")
-        response = self.client.post(reverse("switch_tenant"), {"tenant_id": self.t2.id})
-        self.assertEqual(response.status_code, 404)
+    def test_tenant_switch_is_refused_for_non_superusers(self):
+        for username in ("tech", "cust1"):
+            with self.subTest(user=username):
+                self.client.login(username=username, password="SafePass!123")
+                response = self.client.post(reverse("api_auth_switch_tenant"),
+                                            {"tenant_id": self.t2.id}, content_type="application/json")
+                self.assertEqual(response.status_code, 403)
+                self.assertNotIn("active_tenant_id", self.client.session)
+                self.client.logout()
+
+    def test_tenant_switch_rejects_inactive_or_unknown_tenant(self):
+        User.objects.create_superuser("root", password="SafePass!123")
+        inactive = Tenant.objects.create(name="Closed", slug="t-closed", is_active=False)
+        self.client.login(username="root", password="SafePass!123")
+        for tenant_id in (inactive.id, 999999):
+            with self.subTest(tenant_id=tenant_id):
+                response = self.client.post(reverse("api_auth_switch_tenant"),
+                                            {"tenant_id": tenant_id}, content_type="application/json")
+                self.assertEqual(response.status_code, 404)
+                self.assertNotIn("active_tenant_id", self.client.session)
 
     def test_model_rejects_cross_tenant_foreign_key(self):
         with self.assertRaises(ValidationError):
@@ -182,19 +240,37 @@ class SecurityAndIsolationTests(TestCase):
             site=self.s1b, asset=self.a1b, question="help", answer="try guide",
         )
         self.client.login(username="cust1", password="SafePass!123")
-        response = self.client.post(reverse("escalate_interaction", args=[interaction.id]))
+        # Even with explicit confirmation, another customer's interaction is not found.
+        response = self.client.post(reverse("api_customer_support_escalate", args=[interaction.id]),
+                                    {"confirm_ticket_creation": True}, content_type="application/json")
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Interaction not found.")
         self.assertFalse(ServiceCall.objects.filter(source_interactions=interaction).exists())
 
-    @override_settings(SERVY_RAG_RATE_LIMIT_PER_MINUTE=1)
+    def test_interaction_escalation_is_refused_for_technicians_and_other_tenants(self):
+        interaction = CustomerInteraction.objects.create(
+            tenant=self.t1, created_by=self.customer_user, customer=self.c1,
+            site=self.s1, asset=self.a1, question="help", answer="try guide",
+        )
+        url = reverse("api_customer_support_escalate", args=[interaction.id])
+        for username, expected in (("tech", 403), ("admin2", 404)):
+            with self.subTest(user=username):
+                self.client.login(username=username, password="SafePass!123")
+                response = self.client.post(url, {"confirm_ticket_creation": True},
+                                            content_type="application/json")
+                self.assertEqual(response.status_code, expected)
+                self.client.logout()
+        self.assertEqual(ServiceCall.objects.count(), 0)
+
     def test_rag_rate_limit_returns_429(self):
         self._doc("Guide", "Thermostat cup cleaning resolves unstable readings.")
         self.client.login(username="cust1", password="SafePass!123")
-        payload = {"asset": self.a1.id, "site": self.s1.id, "question": "thermostat unstable"}
-        first = self.client.post(reverse("customer_portal"), payload)
-        second = self.client.post(reverse("customer_portal"), payload)
-        self.assertEqual(first.status_code, 200)
+        with mock.patch.object(CustomerRAGThrottle, "THROTTLE_RATES", {"customer_rag": "1/minute"}):
+            first = self._query(self.a1, self.s1, "thermostat unstable")
+            second = self._query(self.a1, self.s1, "thermostat unstable")
+        self.assertEqual(first.status_code, 200, first.content[:300])
         self.assertEqual(second.status_code, 429)
+        self.assertIn("detail", second.json())
 
     def test_excel_export_formula_prefix_is_neutralised(self):
         for value in ["=2+2", "+cmd", "-10+20", "@SUM(A1:A2)"]:
@@ -228,11 +304,25 @@ class ProtectedKnowledgeDownloadTests(TestCase):
         self.doc.save(update_fields=["original_filename"])
 
     def test_confidential_download_requires_permission(self):
+        # Without confidential access the document is not disclosed at all.
         self.client.login(username="tech_no_secret", password="SafePass!123")
-        response = self.client.get(reverse("knowledge_download", args=[self.doc.id]))
-        self.assertEqual(response.status_code, 403)
+        response = self.client.get(reverse("api_knowledge_download", args=[self.doc.id]))
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(getattr(response, "streaming", False))
+        self.assertNotIn(b"secret", response.content)
+
+    def test_confidential_download_succeeds_with_permission(self):
+        user = User.objects.create_user("tech_secret", password="SafePass!123")
+        TenantMembership.objects.create(user=user, tenant=self.t1, role="technician",
+                                        can_view_confidential=True)
+        self.client.login(username="tech_secret", password="SafePass!123")
+        response = self.client.get(reverse("api_knowledge_download", args=[self.doc.id]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"secret")
+        response.close()
 
     def test_cross_tenant_download_is_not_found(self):
         self.client.login(username="other_admin", password="SafePass!123")
-        response = self.client.get(reverse("knowledge_download", args=[self.doc.id]))
+        response = self.client.get(reverse("api_knowledge_download", args=[self.doc.id]))
         self.assertEqual(response.status_code, 404)
+        self.assertFalse(getattr(response, "streaming", False))

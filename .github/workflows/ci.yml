@@ -178,10 +178,10 @@ jobs:
         run: python manage.py test core.tests_accuracy_redteam -v 2
 
       - name: Red Team Static Analysis (AST & Security Rules)
-        run: python red_team_static.py
+        run: python tools/security/red_team_static.py
 
       - name: Red Team Offline Checks (Roles & Scoping)
-        run: python red_team_offline.py
+        run: python tools/security/red_team_offline.py
 
       - name: Real-Company Isolation Tests
         run: python manage.py test core.tests_real_company_isolation -v 2
@@ -223,7 +223,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs test/assistantTypingIndicator.test.mjs test/documentCoverage.test.mjs test/technicianHandoffState.test.mjs test/technicianHandoffUI.test.mjs
 
       - name: Test Private Technician Access-code Instance
         working-directory: frontend
