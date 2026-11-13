@@ -372,8 +372,13 @@ def classify_action_safety(step_text: str, asset: Optional[Asset] = None) -> Tup
             return "PROHIBITED", f"Prohibited safety violation ({kw}). Defeating interlocks or safety circuits is strictly forbidden."
 
     # 2. Technician-only check
+    # "Variable Refrigerant Flow" names a category of HVAC system; it does not
+    # refer to refrigerant handling. Only the bare keyword "refrigerant" skips
+    # that name: every specific refrigerant-handling phrase still matches, and
+    # any other mention of refrigerant in the sentence still blocks it.
+    without_system_name = re.sub(r"\bvariable[\s-]+refrigerant[\s-]+flow\b", "vrf", lower)
     for kw in TECHNICIAN_ONLY_KEYWORDS:
-        if kw in lower:
+        if kw in (without_system_name if kw == "refrigerant" else lower):
             return "TECHNICIAN_ONLY", f"Procedure involves hazardous work ({kw}). Certified technician required."
 
     # 3. Observation keywords check

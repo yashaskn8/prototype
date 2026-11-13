@@ -96,13 +96,26 @@ class StatementSentenceAnswerTests(unittest.TestCase):
                 self.assertEqual(claim["text"], expected)          # shown verbatim
 
     def test_safety_classification_still_blocks_a_restricted_statement(self):
-        # The VRF installation guide's purpose sentence contains a term the
-        # existing safety classifier restricts. It must remain undisclosed.
+        # "Variable Refrigerant Flow" names the system category; the purpose
+        # sentence that contains it is documented information, not refrigerant
+        # handling. Every disclosed sentence must still pass the safety
+        # classifier, and no refrigerant-handling step may be disclosed.
+        from core.services.customer_diagnostic import classify_action_safety
         r = ask("vrf", "What does the VRF installation and commissioning guide cover?")
-        self.assertNotIn("Variable Refrigerant Flow", r.dump)
+        self.assertIn("Variable Refrigerant Flow (VRF) outdoor module", r.dump)
+        for text in r.texts:
+            with self.subTest(text=text):
+                self.assertNotIn(classify_action_safety(text)[0], ("TECHNICIAN_ONLY", "PROHIBITED"))
+                self.assertNotRegex(text, r"(?i)\b(?:charg\w*|recover\w*|vacuum|evacuat\w*|pressure[- ]test\w*)\b")
 
-    def test_purpose_written_as_an_instruction_is_not_disclosed(self):
+    def test_purpose_written_as_an_instruction_is_disclosed_only_for_purpose_questions(self):
+        # The PURPOSE line "Provide a documented maintenance routine ..." states
+        # what the checklist provides. It answers "what does it provide?", but
+        # it is never offered for any other question.
         r = ask("vrf", "What does the VRF preventive maintenance checklist provide?")
+        self.assertIn("Provide a documented maintenance routine", r.dump)
+        self.assertEqual({h for _t, h in r.cited}, {"1. PURPOSE"})
+        r = ask("vrf", "What should the maintenance frequency be based on?")
         self.assertNotIn("Provide a documented maintenance routine", r.dump)
 
     def test_splitting_does_not_surface_instructions_for_procedure_questions(self):

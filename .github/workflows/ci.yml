@@ -109,6 +109,11 @@ jobs:
         env:
           LOCALAPPDATA: /tmp
 
+      - name: Document Purpose and VRF Safety-Classification Tests
+        run: python -m unittest tools.test_servy_document_purpose_and_vrf_safety -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Manual Statement Sentence Disclosure Tests
         run: python -m unittest tools.test_servy_manual_statement_sentences -v
         env:

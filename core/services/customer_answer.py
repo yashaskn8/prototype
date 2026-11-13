@@ -177,6 +177,35 @@ _CLAUSE_DIRECTIVE = re.compile(
     r"(?:^|[,;:]\s+)" + _IMPERATIVE_START.pattern.lstrip("^"), re.I)
 
 
+# "What does the maintenance checklist provide?" asks what a document is for.
+_DOCUMENT_PURPOSE_QUESTION = re.compile(
+    r"\bpurpose\b|\bwhat\s+(?:is|are)\b.{0,80}\bfor\b|"
+    r"\bwhat\s+(?:does|do|is|are)\b.{0,80}\b(?:checklist|guide|manual|document|reference|procedure)s?\b"
+    r".{0,40}\b(?:provide|cover|contain|include|describe|explain|address)\w*\b", re.I)
+_PURPOSE_HEADING = re.compile(r"\b(?:purpose|scope)\b", re.I)
+# A purpose section may state what the document provides in imperative form
+# ("Provide a documented maintenance routine ...", "Use this checklist to plan
+# ..."). That describes the document; it does not ask the reader to do anything.
+_DOCUMENT_SELF_DESCRIPTION = re.compile(
+    r"^(?:provides?\b|use\s+this\s+(?:checklist|guide|document|reference|manual)\s+to\b)", re.I)
+
+
+def document_purpose_statement(text, level, heading):
+    """True for a purpose-section sentence that only states what the document provides.
+
+    The opening "Provide ..." / "Use this <document> to ..." is the only directive
+    allowed; any other directive, any physical operation, or a restricted safety
+    level still excludes the sentence.
+    """
+    clean = " ".join(str(text or "").split())
+    if (level in _RESTRICTED_LEVELS or not _PURPOSE_HEADING.search(str(heading or ""))
+            or not _DOCUMENT_SELF_DESCRIPTION.match(clean) or len(clean.split()) < 4):
+        return False
+    rest = _DOCUMENT_SELF_DESCRIPTION.sub("", clean, count=1)
+    return not (PHYSICAL_OPERATION.search(clean) or _CLAUSE_DIRECTIVE.search(rest.lstrip())
+                or re.search(r"[;:]", rest))
+
+
 def _sentence_spans(chunk_text, line, start, end):
     """Exact (sentence, start, end) spans of a multi-sentence source line.
 
@@ -721,6 +750,7 @@ def build_customer_answer(
         or _CAUSE_EXPLANATION_REQUEST.search(question)
     )
     asks_frequency = bool(_FREQUENCY_QUESTION.search(intent_text))
+    asks_document_purpose = bool(_DOCUMENT_PURPOSE_QUESTION.search(intent_text))
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
     eligible = []
@@ -788,6 +818,9 @@ def build_customer_answer(
                     # heading share at least two. Restricted, directive or
                     # unclassifiable sentences are never disclosed.
                     disclosure = customer_safe_fact(text, level)
+                    if (not disclosure and asks_document_purpose
+                            and document_purpose_statement(text, level, result.heading)):
+                        disclosure = "descriptive"
                     if not disclosure:
                         # A manual line often joins a plain statement with an
                         # instruction ("This guide covers X. Confirm Y before
@@ -799,7 +832,9 @@ def build_customer_answer(
                         for part, part_start, part_end in _sentence_spans(
                                 result.text, text, start, end):
                             part_level, _ = classify_action_safety(part, asset)
-                            if customer_safe_fact(part, part_level) != "descriptive":
+                            if customer_safe_fact(part, part_level) != "descriptive" and not (
+                                    asks_document_purpose
+                                    and document_purpose_statement(part, part_level, result.heading)):
                                 continue
                             part_words = set(
                                 re.findall(r"[a-z0-9_-]{3,}", part.casefold())) - _STOPWORDS
