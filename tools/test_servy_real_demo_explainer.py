@@ -33,6 +33,30 @@ class ExplanationValidationTests(TestCase):
                 }, [candidate])
                 self.assertEqual(result, {"c1": explanation})
 
+    def test_negated_confirm_is_allowed_but_positive_confirmation_is_rejected(self):
+        source = "A blocked filter may reduce airflow."
+        candidate = self._candidate("c1", "possible_cause", source)
+        negative = (
+            "The manual lists this as a possible cause, but does not identify "
+            "the exact mechanism or confirm that it applies to the equipment."
+        )
+        self.assertEqual(explainer._validate_explanations({
+            "explanations": [{
+                "claim_id": "c1",
+                "explanation": negative,
+                "source_quote": source,
+            }],
+        }, [candidate]), {"c1": negative})
+
+        positive = "This confirms that the filter is faulty."
+        self.assertIsNone(explainer._validate_explanations({
+            "explanations": [{
+                "claim_id": "c1",
+                "explanation": positive,
+                "source_quote": source,
+            }],
+        }, [candidate]))
+
     def test_missing_or_changed_source_quote_is_rejected(self):
         candidate = self._candidate("c1", "possible_cause", "A sensor issue may affect operation.")
         raw = {"explanations": [{
@@ -73,7 +97,7 @@ class SourceContextGenerationTests(TestCase):
     def test_explanation_may_use_details_from_the_same_authorized_passage_only(self):
         source = "Restricted airflow or blocked outdoor unit clearance."
         context = (
-            "Section heading: 3. SYMPTOM: POOR COOLING\\n"
+            "Section heading: 3. SYMPTOM: POOR COOLING\n"
             "Exact approved source statement: " + source
         )
         candidate = {
