@@ -1,4 +1,6 @@
 import { CustomerAnswer } from '../components/CustomerAnswer';
+import { RAGExecutionLog } from '../components/RAGExecutionLog';
+import { mergeRagExecutionEvent } from '../components/ragExecutionStream';
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useAuth } from '../AuthContext';
@@ -13,6 +15,13 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const isCustomer = user?.role === 'customer';
   const currentAssetId = useRef(assetId);
   currentAssetId.current = assetId;
+
+  useEffect(() => () => aiStreamAbortRef.current?.abort(), []);
+  useEffect(() => {
+    aiStreamAbortRef.current?.abort();
+    aiStreamAbortRef.current = null;
+    setAiExecutionLogs([]);
+  }, [assetId]);
 
   const [asset, setAsset] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -37,6 +46,8 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const [submittingQuery, setSubmittingQuery] = useState(false);
   const [aiResult, setAiResult] = useState(null);
   const [aiError, setAiError] = useState(null);
+  const [aiExecutionLogs, setAiExecutionLogs] = useState([]);
+  const aiStreamAbortRef = useRef(null);
   const [resolving, setResolving] = useState(false);
   const [escalating, setEscalating] = useState(false);
   const [resolutionNotice, setResolutionNotice] = useState(null);
@@ -373,22 +384,35 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
     e.preventDefault();
     if (!query.trim() || !asset || String(asset.id) !== String(assetId)) return;
 
+    aiStreamAbortRef.current?.abort();
+    const controller = new AbortController();
+    aiStreamAbortRef.current = controller;
     setSubmittingQuery(true);
     setAiError(null);
+    setAiResult(null);
+    setAiExecutionLogs([]);
     setResolutionNotice(null);
     setEscalationResult(null);
 
+    const recordExecutionEvent = event => {
+      if (String(currentAssetId.current) !== String(assetId)) return;
+      setAiExecutionLogs(previous => mergeRagExecutionEvent(previous, event));
+    };
+
     try {
-      const res = await api.post('/api/customer-support/query/', {
+      const res = await api.streamPost('/api/customer-support/query-stream/', {
         site_id: asset.site?.id,
         asset_id: asset.id,
         question: query.trim(),
         customer_id: asset.customer?.id,
-      });
+      }, recordExecutionEvent, { signal: controller.signal });
       if (String(currentAssetId.current) === String(assetId)) setAiResult(res);
     } catch (err) {
-      if (String(currentAssetId.current) === String(assetId)) setAiError(err.detail || 'Error communicating with AI assistant.');
+      if (err?.name !== 'AbortError' && String(currentAssetId.current) === String(assetId)) {
+        setAiError(err.detail || err.message || 'Error communicating with AI assistant.');
+      }
     } finally {
+      if (aiStreamAbortRef.current === controller) aiStreamAbortRef.current = null;
       if (String(currentAssetId.current) === String(assetId)) setSubmittingQuery(false);
     }
   }
@@ -1268,6 +1292,14 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
                 </button>
               </div>
             </form>
+
+            {(submittingQuery || aiExecutionLogs.length > 0) && (
+              <RAGExecutionLog
+                events={aiExecutionLogs}
+                running={submittingQuery}
+                title="Customer RAG execution log"
+              />
+            )}
 
             {aiResult && String(aiResult.asset?.id) === String(assetId) && (
               <div className="rag-answer-panel">
