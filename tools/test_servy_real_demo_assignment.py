@@ -63,6 +63,13 @@ def _run(question, contracts, *, continuation=None, thread_id=None, asset=None,
     answer_mod.build_customer_answer = Mock(
         side_effect=[copy.deepcopy(item) for item in contracts])
     answer_mod.exception_presentation = Mock(side_effect=lambda value: dict(value))
+    # The Qwen path must obtain fresh citation authorization. These isolated
+    # contracts have no live database/source resolver, so the fixture fails
+    # closed instead of pretending their synthetic citations are authorized.
+    answer_mod._clean_line = lambda value: str(value).strip()
+    answer_mod.source_chunk = Mock(
+        side_effect=ValueError("synthetic fixture has no authorized source resolver")
+    )
     diagnostic_mod = ModuleType("core.services.customer_diagnostic")
     diagnostic_mod.check_for_safety_hazard = Mock(return_value=(False, ""))
     diagnostic_mod.check_for_vague_complaint = Mock(return_value=(False, "", []))
@@ -220,8 +227,10 @@ class EvidenceStateTests(unittest.TestCase):
         self.assertIn("cannot establish", block["description"])
 
     def test_undocumented_fault_code_is_never_explained(self):
-        with patch.object(demo, "explain_claims",
-                          side_effect=AssertionError("no generation")):
+        with patch(
+            "tools.servy_real_demo_explainer.explain_claims_with_status",
+            side_effect=AssertionError("no generation"),
+        ):
             result, _, _ = _run("What does E-09 mean?", [contract(), contract()])
         self.assertEqual(result["evidence_state"], "INSUFFICIENT")
         self.assertEqual(_claims(result), [])
