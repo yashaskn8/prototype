@@ -173,6 +173,117 @@ class TechnicianCopilotStreamAccessTests(SimpleTestCase):
         self.assertIn('"answer":"synthetic technician recommendation"', body)
 
 
+class TechnicianWorkerReauthorizationTests(SimpleTestCase):
+    @staticmethod
+    def _prepared():
+        from types import SimpleNamespace
+
+        return {
+            "ctx": {
+                "user": SimpleNamespace(pk=7),
+                "role": "technician",
+            },
+            "tenant": SimpleNamespace(pk=273, id=273),
+            "call": SimpleNamespace(pk=100),
+            "question": "synthetic technician question",
+            # This is deliberately stale and must not be trusted by the worker.
+            "include_confidential": True,
+        }
+
+    @staticmethod
+    def _user_model(user):
+        class FakeUserModel:
+            objects = SimpleNamespace(get=Mock(return_value=user))
+        return FakeUserModel
+
+    def test_worker_stops_before_rag_when_membership_was_revoked(self):
+        from rest_framework.exceptions import PermissionDenied
+
+        from core.api_views import EngineerCopilotQueryView, Tenant, TenantMembership
+
+        prepared = self._prepared()
+        tenant = SimpleNamespace(pk=273, id=273)
+        user = SimpleNamespace(pk=7, is_active=True, is_superuser=False)
+        membership_query = Mock()
+        membership_query.first.return_value = None
+
+        with (
+            patch("django.contrib.auth.get_user_model", return_value=self._user_model(user)),
+            patch.object(Tenant.objects, "get", return_value=tenant),
+            patch.object(TenantMembership.objects, "filter", return_value=membership_query),
+            patch("core.api_views.ask_rag") as ask_rag,
+        ):
+            with self.assertRaises(PermissionDenied):
+                EngineerCopilotQueryView._execute(prepared)
+
+        ask_rag.assert_not_called()
+
+    def test_worker_uses_refreshed_confidential_permission_not_stale_prepared_flag(self):
+        from types import SimpleNamespace
+
+        from core.api_views import (
+            EngineerCopilotQueryView,
+            ServiceCall,
+            StaffProfile,
+            Tenant,
+            TenantMembership,
+        )
+
+        prepared = self._prepared()
+        tenant = SimpleNamespace(pk=273, id=273)
+        customer = SimpleNamespace(id=14)
+        user = SimpleNamespace(pk=7, is_active=True, is_superuser=False)
+        membership = SimpleNamespace(
+            role="technician",
+            can_view_confidential=False,
+            customer=customer,
+        )
+        membership_query = Mock()
+        membership_query.first.return_value = membership
+        profile = SimpleNamespace(
+            is_active=True,
+            role="technician",
+            tenant_id=273,
+            user_id=7,
+            zone_id=None,
+            branch_id=None,
+        )
+        profile_query = Mock()
+        profile_query.select_related.return_value.first.return_value = profile
+        calls_query = Mock()
+        call = SimpleNamespace(
+            pk=100,
+            asset=SimpleNamespace(id=59),
+            customer=customer,
+        )
+        calls_query.select_related.return_value.get.return_value = call
+        rag_result = {
+            "answer": "Synthetic source-grounded result",
+            "references": [],
+            "retrieved": [],
+            "engine": "extractive",
+            "reranker_applied": True,
+            "reranker_model": "servy_v5_bge_verified",
+        }
+
+        with (
+            patch("django.contrib.auth.get_user_model", return_value=self._user_model(user)),
+            patch.object(Tenant.objects, "get", return_value=tenant),
+            patch.object(TenantMembership.objects, "filter", return_value=membership_query),
+            patch.object(StaffProfile.objects, "filter", return_value=profile_query),
+            patch("core.api_views.authorized_service_calls", return_value=calls_query),
+            patch.object(ServiceCall.objects, "filter", return_value=[]),
+            patch("core.api_views.ask_rag", return_value=rag_result) as ask_rag,
+        ):
+            result = EngineerCopilotQueryView._execute(prepared)
+
+        self.assertEqual(result["answer"], "Synthetic source-grounded result")
+        ask_rag.assert_called_once()
+        self.assertFalse(ask_rag.call_args.kwargs["include_confidential"])
+        self.assertIs(ask_rag.call_args.kwargs["tenant"], tenant)
+        self.assertIs(ask_rag.call_args.kwargs["service_call"], call)
+
+
 class CustomerRAGStreamAccessTests(SimpleTestCase):
     def test_customer_first_turn_stream_rejects_anonymous_requests_before_work(self):
         request = APIRequestFactory().post(
