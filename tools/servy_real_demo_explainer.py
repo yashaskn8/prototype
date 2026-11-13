@@ -367,18 +367,21 @@ def apply_customer_explanations(
                     or not explanation.strip()):
                 continue
             full_citation = (context_citations_by_claim or {}).get(ident)
+            if context_citations_by_claim is not None and not isinstance(full_citation, dict):
+                continue
             if isinstance(full_citation, dict):
                 citation_id = full_citation.get("id")
-                if isinstance(citation_id, str):
-                    evidence_ids = claim.get("evidence_ids")
-                    if not isinstance(evidence_ids, list):
-                        evidence_ids = []
-                    if citation_id not in evidence_ids:
-                        claim["evidence_ids"] = list(evidence_ids) + [citation_id]
-                    if citation_id not in added_citations:
-                        presentation.setdefault("citations", []).append(full_citation)
-                        added_citations.add(citation_id)
-    changed = 0
+                if not isinstance(citation_id, str):
+                    continue
+                evidence_ids = claim.get("evidence_ids")
+                if not isinstance(evidence_ids, list):
+                    evidence_ids = []
+                if citation_id not in evidence_ids:
+                    claim["evidence_ids"] = list(evidence_ids) + [citation_id]
+                if citation_id not in added_citations:
+                    presentation.setdefault("citations", []).append(full_citation)
+                    added_citations.add(citation_id)
+    applied_ids = set()
     seen = set()
     for group in groups:
         for claim in group:
@@ -389,9 +392,12 @@ def apply_customer_explanations(
             if (not isinstance(ident, str) or not isinstance(explanation, str)
                     or not explanation.strip() or id(claim) in seen):
                 continue
+            full_citation = (context_citations_by_claim or {}).get(ident)
+            if context_citations_by_claim is not None and not isinstance(full_citation, dict):
+                continue
             original = str(claim.get("text") or "").strip()
             if explanation.strip() not in original:
                 claim["text"] = (original + " Explanation: " + explanation.strip()).strip()
             seen.add(id(claim))
-            changed += 1
-    return changed
+            applied_ids.add(ident)
+    return len(applied_ids)
