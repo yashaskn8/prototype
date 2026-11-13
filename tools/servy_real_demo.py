@@ -1009,15 +1009,15 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                         int(citation["document_id"]), int(citation["chunk_id"])
                     )
                     if source_key not in source_cache:
-                        authorized_chunk = source_chunk(
+                        source_cache[source_key] = source_chunk(
                             tenant=tenant, customer=customer, asset=asset,
                             document_id=source_key[0], chunk_id=source_key[1],
                         )
-                        source_cache[source_key] = (
-                            authorized_chunk.text
-                            if isinstance(authorized_chunk.text, str) else ""
-                        )
-                    full_source = source_cache[source_key]
+                    authorized_chunk = source_cache[source_key]
+                    full_source = (
+                        authorized_chunk.text
+                        if isinstance(authorized_chunk.text, str) else ""
+                    )
                     if full_source.strip():
                         source_context_by_claim[ident] = full_source
                 except Exception as exc:
@@ -1035,8 +1035,53 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
                 require_source_context=True,
             )
+            explanations = generation_result["explanations"]
+            context_citations_by_claim = {}
+            if explanations:
+                from core.services.customer_answer import _citation
+                full_citation_by_source = {}
+                for claim in final_presentation.get("supporting_claims", []) or []:
+                    if not isinstance(claim, dict) or claim.get("id") not in explanations:
+                        continue
+                    evidence_ids = claim.get("evidence_ids")
+                    if not isinstance(evidence_ids, list) or len(evidence_ids) != 1:
+                        continue
+                    citation = citation_by_id.get(evidence_ids[0])
+                    if not isinstance(citation, dict):
+                        continue
+                    try:
+                        source_key = (
+                            int(citation["document_id"]), int(citation["chunk_id"])
+                        )
+                        authorized_chunk = source_cache.get(source_key)
+                        if authorized_chunk is None:
+                            continue
+                        if source_key not in full_citation_by_source:
+                            full_citation = _citation(
+                                authorized_chunk, 0, len(authorized_chunk.text),
+                                asset=asset, customer=customer,
+                                user_id=DEMO_USER_ID, kind=claim.get("kind", "information"),
+                            )
+                            full_citation["id"] = (
+                                "s" + str(len(final_presentation.get("citations", []) or [])
+                                          + len(full_citation_by_source) + 1)
+                            )
+                            full_citation["url"] = full_citation["url"].replace(
+                                "/api/customer-support/source/",
+                                "/demo-api/source/", 1,
+                            )
+                            full_citation_by_source[source_key] = full_citation
+                        context_citations_by_claim[claim["id"]] = (
+                            full_citation_by_source[source_key]
+                        )
+                    except Exception as exc:
+                        logger.info(
+                            "Qwen full-passage citation unavailable for claim=%s (%s)",
+                            claim.get("id"), type(exc).__name__,
+                        )
             applied_claims = apply_customer_explanations(
-                final_presentation, generation_result["explanations"]
+                final_presentation, explanations,
+                context_citations_by_claim=context_citations_by_claim,
             )
             answer_generation = dict(generation_result["generation"])
             answer_generation["applied_claims"] = applied_claims
