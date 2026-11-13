@@ -669,6 +669,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 interaction, None, rag.get("references", []),
                 conversation_context=context if history else None,
                 original_question=answer_question,
+                generate_with_local_model=False,
             )
             presentation = contract["presentation"]
             if isinstance(presentation, dict):
@@ -745,6 +746,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                             retried.get("references", []),
                             conversation_context=context if history else None,
                             original_question=answer_question,
+                            generate_with_local_model=False,
                         )
                         if isinstance(next_contract.get("presentation"), dict):
                             next_contract["presentation"]["document_coverage"] = retried.get("document_coverage")
@@ -898,6 +900,19 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             explanation_presentation["cause_explanation_unavailable"] = True
         explanation_presentation["follow_up_question"] = None
         contract["presentation"] = explanation_presentation
+
+    # Generate customer-facing wording only after deterministic dialogue focus
+    # has filtered claims and revalidated their exact source bindings.
+    qwen_used = False
+    if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
+        from core.services.customer_answer_generation import apply_customer_answer_generation
+        final_presentation = contract.get("presentation")
+        if isinstance(final_presentation, dict):
+            qwen_used = apply_customer_answer_generation(
+                final_presentation, answer_question
+            )
+    if qwen_used:
+        contract["engine"] = "source-structured-qwen"
 
     from django.core import signing
     ticket_context = signing.dumps({

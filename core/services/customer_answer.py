@@ -348,7 +348,8 @@ def _guarded_customer_response(interaction, session, candidates, guard):
             "customer_safe_actions": [], "check_first": [], "technician_only_actions": [],
             "stop_conditions": [], "expected_result": "",
             "clarification_question": message if clarification else None,
-            "can_resolve": False, "can_escalate": True, "engine": "source-structured-extractive"}
+            "can_resolve": False, "can_escalate": True,
+            "engine": "source-structured-qwen" if used_qwen else "source-structured-extractive"}
 
 
 def _document_fact_family(question):
@@ -454,8 +455,6 @@ def _document_fact_response(interaction, session, family):
             {"text": "Share the missing record details with an authorized technician. No ticket has been created.",
              "kind": "next_step", "evidence_ids": []}]},
     ]
-    answer = "\n\n".join(f"{s['number']}. {s['title']}\n" + " ".join(c["text"] for c in s["claims"])
-                          for s in sections)
     equipment = {"id": asset.id, "name": asset.name, "model_number": asset.model_number}
     presentation = {"schema_version": "customer-answer-v1", "response_type": "DIAGNOSTIC_GUIDANCE",
                     "equipment": equipment, "sections": sections, "citations": citations,
@@ -463,6 +462,8 @@ def _document_fact_response(interaction, session, family):
                     "customer_authorized_actions": [], "hazard": {"severity": "none", "message": ""},
                     "message": "", "known_limitations": ["Document facts are not customer procedure approval."],
                     "authorized_user_actions": {"can_resolve": False, "can_escalate": True}}
+    answer = "\n\n".join(f"{s['number']}. {s['title']}\n" + " ".join(c["text"] for c in s["claims"])
+                          for s in sections)
     return {"presentation": presentation, "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
             "response_type": "DIAGNOSTIC_GUIDANCE", "interaction_id": interaction.id,
             "session_id": str(session.session_id) if session else None,
@@ -613,7 +614,10 @@ def exception_presentation(contract):
             "authorized_user_actions": {"can_resolve": False, "can_escalate": bool(contract.get("can_escalate"))}}
 
 
-def build_customer_answer(interaction, session, references, conversation_context=None, original_question=None):
+def build_customer_answer(
+    interaction, session, references, conversation_context=None,
+    original_question=None, generate_with_local_model=True,
+):
     from .customer_diagnostic import classify_action_safety
     from .llm import check_evidence_sufficiency, extract_typed_quantities, verify_quantity_support, _STOPWORDS
     from .identifiers import extract_error_codes
@@ -961,6 +965,11 @@ def build_customer_answer(interaction, session, references, conversation_context
         "technician_only_warnings": [] if procedures else ["Physical procedures require separate customer approval or an authorized technician."],
         "known_limitations": ["No physical inspection or confirmed diagnosis."],
         "authorized_user_actions": {"can_resolve": can_resolve, "can_escalate": True}}
+    from .customer_answer_generation import apply_customer_answer_generation
+    used_qwen = (
+        apply_customer_answer_generation(presentation, raw_user_q or question)
+        if normal and generate_with_local_model else False
+    )
     answer = "\n\n".join(f"{s['number']}. {s['title']}\n" + " ".join(c["text"] for c in s["claims"]) for s in sections) if normal else message
     actions = [{"action_id": c["id"], "action": c["text"], "safety_classification": "INFORMATIONAL_OBSERVATION" if c["kind"] == "observation" else "CUSTOMER_APPROVED",
                 "document_id": next(s["document_id"] for s in citations if s["id"] == c["evidence_ids"][0]),
@@ -976,5 +985,6 @@ def build_customer_answer(interaction, session, references, conversation_context
         "documented_cause_sections": cause_sections,
         "customer_safe_actions": actions, "check_first": [], "technician_only_actions": [],
         "stop_conditions": [], "expected_result": "", "clarification_question": None,
-        "can_resolve": can_resolve, "can_escalate": True, "engine": "source-structured-extractive",
+        "can_resolve": can_resolve, "can_escalate": True,
+        "engine": "source-structured-qwen" if used_qwen else "source-structured-extractive",
         "reason_code": reason_code}

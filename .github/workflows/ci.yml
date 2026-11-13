@@ -153,7 +153,7 @@ jobs:
         run: python manage.py check_rag_serving
 
       - name: RAG Serving Gate and Local Generator Unit Tests
-        run: python manage.py test core.tests_rag_serving_gate core.tests_serving_truth -v 2
+        run: python manage.py test core.tests_rag_serving_gate core.tests_serving_truth core.tests_customer_answer_generation -v 2
 
       - name: Three-Asset / Nine-Manual V5 Retrieval Regressions
         run: python manage.py test core.tests_three_asset_retrieval -v 2

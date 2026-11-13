@@ -230,8 +230,25 @@ SERVY_LLM_REQUIRE_OLLAMA = os.getenv("SERVY_LLM_REQUIRE_OLLAMA", "0") == "1"
 SERVY_OLLAMA_URL = os.getenv("SERVY_OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 SERVY_OLLAMA_MODEL = os.getenv("SERVY_OLLAMA_MODEL", "qwen2.5:3b")
 SERVY_OLLAMA_TIMEOUT = int(os.getenv("SERVY_OLLAMA_TIMEOUT", "30"))
-# Qwen GGUF through llama.cpp's OpenAI-compatible local server. The real-data
-# customer demo remains extractive; staff-mode RAG may opt into this generator.
+# Customer-facing Qwen wording is a separate source-span-bound postprocessor.
+# It is disabled by default; the deterministic safety and citation builder stays authoritative.
+SERVY_CUSTOMER_ANSWER_GENERATION = os.getenv(
+    "SERVY_CUSTOMER_ANSWER_GENERATION", "disabled"
+).lower().strip()
+SERVY_CUSTOMER_GENERATION_URL = os.getenv(
+    "SERVY_CUSTOMER_GENERATION_URL", "http://127.0.0.1:11434/api/chat"
+)
+SERVY_CUSTOMER_GENERATION_MODEL = os.getenv(
+    "SERVY_CUSTOMER_GENERATION_MODEL", SERVY_OLLAMA_MODEL
+)
+SERVY_CUSTOMER_GENERATION_TIMEOUT = float(os.getenv(
+    "SERVY_CUSTOMER_GENERATION_TIMEOUT", "45"
+))
+SERVY_CUSTOMER_GENERATION_MAX_CLAIMS = int(os.getenv(
+    "SERVY_CUSTOMER_GENERATION_MAX_CLAIMS", "6"
+))
+# Qwen GGUF through llama.cpp's OpenAI-compatible local server. Staff-mode RAG
+# may opt into this separate generator; customer mode uses the source-span path above.
 SERVY_LLAMA_CPP_URL = os.getenv(
     "SERVY_LLAMA_CPP_URL", "http://127.0.0.1:9931/v1/chat/completions"
 )

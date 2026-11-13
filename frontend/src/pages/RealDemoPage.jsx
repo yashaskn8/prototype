@@ -568,11 +568,13 @@ export function RealDemoPage() {
                               <details className="real-demo-dialogue-meta">
                                 <summary>How this answer was prepared</summary>
                                 <p>The technical statements are drawn from approved company sources.
-                                  {message.data.engine === 'source-structured-extractive'
-                                    ? ' The displayed technical claims are extracted from authorized passages and linked to exact citations; a generative language model did not rewrite them.'
-                                    : message.data.dialogue_planner === 'local-ollama-structured'
-                                      ? ' A local language model helped select the order of source-backed claims and a pre-approved follow-up.'
-                                      : ' No generative language model rewrote the technical claims.'}
+                                  {message.data.engine === 'source-structured-qwen'
+                                    ? ' Local Qwen helped phrase only already-approved factual and possible-cause claims. Their exact source sentences and citations are retained; customer procedures and observations remain source-exact.'
+                                    : message.data.engine === 'source-structured-extractive'
+                                      ? ' The displayed technical claims are extracted from authorized passages and linked to exact citations; a generative language model did not rewrite them.'
+                                      : message.data.dialogue_planner === 'local-ollama-structured'
+                                        ? ' A local language model helped select the order of source-backed claims and a pre-approved follow-up.'
+                                        : ' No generative language model rewrote the technical claims.'}
                                 </p>
                                 <p>
                                   Retrieval: {message.data.retrieval_attempts ?? 0} pass(es)

@@ -3,7 +3,10 @@
 param([switch]$Watch, [switch]$NoWatch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
 $environmentNames = @(
     'LOCALAPPDATA', 'SERVY_LOCAL_TICKET_DB_PATH', 'SERVY_REAL_DEMO_MODE', 'DJANGO_DEBUG',
-    'SERVY_LLM_PROVIDER', 'SERVY_REAL_DEMO_DIALOGUE_MODE',
+    'SERVY_LLM_PROVIDER', 'SERVY_LLM_REQUIRE_OLLAMA', 'SERVY_OLLAMA_MODEL',
+    'SERVY_CUSTOMER_ANSWER_GENERATION', 'SERVY_CUSTOMER_GENERATION_URL',
+    'SERVY_CUSTOMER_GENERATION_MODEL', 'SERVY_CUSTOMER_GENERATION_TIMEOUT',
+    'SERVY_REAL_DEMO_DIALOGUE_MODE',
     'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'SERVY_ALLOW_REMOTE_LLM',
     'SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES', 'VITE_SERVY_REAL_DEMO'
 )
@@ -138,13 +141,39 @@ if (!(Test-LocalPort 3306)) {
 $env:LOCALAPPDATA = $privateLocal
 $env:SERVY_REAL_DEMO_MODE = '1'
 $env:DJANGO_DEBUG = '1'
-# The real-data presentation uses the verified local retrieval stack and a
-# deterministic, source-grounded dialogue controller. BGE embeddings and V5
-# reranking are retrieval components; no chat-generation service is required.
-# -NoLocalChat remains accepted for compatibility with previously used commands.
-$env:SERVY_LLM_PROVIDER = 'extractive'
+# Retrieval and safety decisions remain deterministic. Qwen is used only after
+# the answer builder has selected safe, exact-span claims and citations. It may
+# reword informational/possible-cause claims; procedures and observations stay
+# source-exact. Invalid or unavailable model output falls back to exact source text.
 $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
-Write-Output 'Dialogue mode: deterministic and source-grounded; no chat-generation service required.'
+$env:SERVY_ALLOW_REMOTE_LLM = '0'
+if ($NoLocalChat) {
+    $env:SERVY_LLM_PROVIDER = 'extractive'
+    $env:SERVY_CUSTOMER_ANSWER_GENERATION = 'disabled'
+    Write-Output 'Qwen generation disabled; using deterministic source wording.'
+} else {
+    $env:SERVY_LLM_PROVIDER = 'ollama'
+    $env:SERVY_LLM_REQUIRE_OLLAMA = '0'
+    $env:SERVY_OLLAMA_MODEL = 'qwen3.5:2b-q4_K_M'
+    $env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'
+    $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
+    $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
+    $env:SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'
+    Write-Output 'Customer answers: local Qwen wording enabled; exact-source fallback retained.'
+    try {
+        $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
+        $qwenReady = @($qwenTags.models | Where-Object {
+            $_.name -eq 'qwen3.5:2b-q4_K_M'
+        }).Count -gt 0
+        if ($qwenReady) {
+            Write-Output 'Qwen model check: PASS (qwen3.5:2b-q4_K_M present locally).'
+        } else {
+            Write-Warning 'Qwen model is not listed by Ollama; Servy will retain exact source wording until it is available.'
+        }
+    } catch {
+        Write-Warning 'Ollama is not reachable; Servy will use exact source wording. Start Ollama and restart the demo to enable Qwen.'
+    }
+}
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'

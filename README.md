@@ -307,9 +307,10 @@ The authorized read-only real-data demo launched with `tools/Start-ServyRealDemo
 - **BGE-small** creates dense query/document embeddings for the approved company collection.
 - **Hybrid retrieval** combines dense retrieval with lexical/sparse matching.
 - **The verified Servy V5 reranker** reorders the retrieved candidate passages.
-- **The deterministic dialogue controller** handles follow-up context, clarification, answer focus, source limits and handoff. The customer-facing technical answer remains extractive and citation-bound.
+- **The deterministic customer answer builder** selects only source-supported claims, validates exact sentence spans, applies customer-action safety rules and creates signed citations.
+- **Qwen3.5-2B through local Ollama** can rephrase only already-approved informational and possible-cause claims after the final customer answer has passed dialogue focus. Source quotes, claim kinds and citation bindings remain unchanged. Observations and customer-approved procedures stay in source wording. Unsupported terms, quantities, codes, certainty or instructions are rejected; exact source wording is the fallback.
 
-These embedding and reranking components are retrieval models; they are not text-generation models. The real-data presentation launcher therefore sets `SERVY_LLM_PROVIDER=extractive` and `SERVY_REAL_DEMO_DIALOGUE_MODE=rules`. It does not probe or require Ollama, Qwen chat, a remote API, or another chat server. Do not install an extra inference server just to start this demo.
+BGE and V5 are retrieval components, not text-generation models. The real-data demo keeps retrieval, evidence sufficiency, action authorization, answer selection and citation creation deterministic. Its launcher enables the constrained local Qwen wording step using the already-installed `qwen3.5:2b-q4_K_M` Ollama model; `-NoLocalChat` disables it. No cloud LLM or remote endpoint is used.
 
 For staff-mode RAG, the repository also supports an optional local Qwen GGUF generator through llama.cpp. Install llama.cpp on Windows with `winget install llama.cpp`, then serve the Q4_K_M model. The first Hugging Face launch downloads the model if it is not already cached. Configure the backend process:
 
@@ -328,7 +329,7 @@ llama serve -hf gguf/Qwen3.5-2B-GGUF:Q4_K_M --alias gguf/Qwen3.5-2B-GGUF:Q4_K_M 
 
 The backend calls llama.cpp's OpenAI-compatible chat endpoint, disables proxy inheritance and redirects, and rejects non-loopback URLs. If the server is unavailable, the default behavior falls back to the existing extractive answer; set `SERVY_LLM_REQUIRE_LLAMA_CPP=1` only when an explicit abstention is preferred over fallback. Generation is permitted only when `ask_rag(..., staff_mode=True)`; customer-mode RAG deliberately does not call the model. The customer answer contract independently rebuilds its display from authorized source sentences and citations.
 
-The existing Ollama provider remains available for legacy explicitly configured runs. Neither Ollama nor llama.cpp is required by the authorized real-data customer demo.
+The persistent customer-conversation API uses the same guarded answer builder. To enable Qwen wording outside the demo launcher, configure `SERVY_CUSTOMER_ANSWER_GENERATION=ollama`, `SERVY_CUSTOMER_GENERATION_MODEL=qwen3.5:2b-q4_K_M`, and the loopback `SERVY_CUSTOMER_GENERATION_URL=http://127.0.0.1:11434/api/chat`. The feature is disabled by default elsewhere. Staff-mode RAG retains the explicit Ollama and llama.cpp generation providers; customer mode does not use unchecked free-form output.
 
 **Conversational RAG smoke tests** after updating `main`:
 
