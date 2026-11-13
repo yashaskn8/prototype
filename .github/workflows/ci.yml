@@ -12,7 +12,10 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Only the newest commit on a ref needs a complete CI run. In particular,
+  # cancel an obsolete long-running main run so the latest main SHA is tested
+  # instead of remaining pending behind a superseded MySQL suite.
+  cancel-in-progress: true
 
 jobs:
   backend-security-and-tests:

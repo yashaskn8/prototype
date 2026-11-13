@@ -471,9 +471,18 @@ class Operation14TruthRecoveryTests(TestCase):
                 k_max=5,
             )
 
-            # mock_coll.query should NEVER have been called with tenant-only fallback
+            # An empty authorized corpus must not trigger a tenant-only
+            # Chroma query. This case is an expected abstention, not a
+            # supported retrieval query: Hit@1 is undefined with denominator 0.
             mock_coll.query.assert_not_called()
-            self.assertEqual(res["hit@1"], 0.0)
+            self.assertEqual(res["status"], "NO_SUPPORTED_QUERIES")
+            self.assertEqual(res["n_total_queries"], 1)
+            self.assertEqual(res["n_supported_queries"], 0)
+            self.assertEqual(res["n_unsupported_queries"], 1)
+            self.assertEqual(res["retrieval_denominator"], 0)
+            self.assertIsNone(res["hit@1"])
+            self.assertEqual(res["abstention_denominator"], 1)
+            self.assertEqual(res["abstention_accuracy"], 1.0)
 
     # ---------------------------------------------------------------------------
     # Phase 15: Citation Integrity Across Diagnostic Modes

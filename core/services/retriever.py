@@ -412,6 +412,10 @@ DOMAIN_TYPO_MAP = {
     "deflecton": "deflection",
     "compresser": "compressor",
     "coyl": "coil",
+    # Customer phrasing often uses the gerund while the approved passage uses
+    # the base verb ("ice forming" -> "ice ... form"). Keep this correction
+    # retrieval-only; the original transcript and displayed question are preserved.
+    "forming": "form",
 }
 
 

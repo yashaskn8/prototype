@@ -24,6 +24,18 @@ class NumericObservationTests(SimpleTestCase):
         self.assertEqual(normalize_domain_terms('low preshure capcityy vrf hlep'),
                          'low pressure capacity vrf help')
 
+    def test_misspelled_ice_formation_complaint_normalizes_for_retrieval(self):
+        from core.services.retriever import normalize_domain_terms
+        self.assertEqual(
+            normalize_domain_terms("splitt ac icce forming on coolng coyl"),
+            "split ac ice form on cooling coil",
+        )
+        # Technical model/error identifiers remain unchanged by word correction.
+        self.assertEqual(
+            normalize_domain_terms("VRF-A E-04 splitt"),
+            "VRF-A E-04 split",
+        )
+
     def test_repair_permission_guard_does_not_block_manual_fact_question(self):
         from core.services.customer_answer import _question_guard
         self.assertEqual(
