@@ -177,6 +177,25 @@ _CLAUSE_DIRECTIVE = re.compile(
     r"(?:^|[,;:]\s+)" + _IMPERATIVE_START.pattern.lstrip("^"), re.I)
 
 
+def _sentence_spans(chunk_text, line, start, end):
+    """Exact (sentence, start, end) spans of a multi-sentence source line.
+
+    Only sentences found verbatim inside the line's own span are returned, so
+    a citation built from one always opens to precisely that sentence.
+    """
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+(?=[A-Z])", line or "")]
+    if len(sentences) < 2:
+        return []
+    spans, cursor = [], start
+    for sentence in sentences:
+        position = (chunk_text or "").find(sentence, cursor, end + 1) if sentence else -1
+        if position < 0:
+            continue
+        spans.append((sentence, position, position + len(sentence)))
+        cursor = position + len(sentence)
+    return spans
+
+
 def customer_safe_fact(text, level):
     """Classify an informational source sentence for customer disclosure.
 
@@ -745,7 +764,33 @@ def build_customer_answer(interaction, session, references, conversation_context
                     # heading share at least two. Restricted, directive or
                     # unclassifiable sentences are never disclosed.
                     disclosure = customer_safe_fact(text, level)
-                    if not disclosure or not sentence_overlap:
+                    if not disclosure:
+                        # A manual line often joins a plain statement with an
+                        # instruction ("This guide covers X. Confirm Y before
+                        # work begins."). The line as a whole stays undisclosed,
+                        # but a sentence that is itself a customer-safe
+                        # statement and itself answers the question may be
+                        # cited by its own exact span. Each sentence is safety
+                        # classified separately; instructions stay excluded.
+                        for part, part_start, part_end in _sentence_spans(
+                                result.text, text, start, end):
+                            part_level, _ = classify_action_safety(part, asset)
+                            if customer_safe_fact(part, part_level) != "descriptive":
+                                continue
+                            part_words = set(
+                                re.findall(r"[a-z0-9_-]{3,}", part.casefold())) - _STOPWORDS
+                            part_overlap = term_keys & match_keys(part_words)
+                            if (len({stem(w) for w in part_overlap}) < 2
+                                    or (asks_frequency and not re.search(
+                                        r"\b(?:frequency|intervals?|schedules?)\b", part, re.I))):
+                                continue
+                            eligible.append({
+                                "order": len(eligible), "target": facts, "kind": "information",
+                                "text": part, "start": part_start, "end": part_end,
+                                "result": result,
+                            })
+                        continue
+                    if not sentence_overlap:
                         continue
                     if disclosure == "maintenance_schedule":
                         # A schedule entry answers only a question about timing.

@@ -29,6 +29,8 @@ def stem(word: str) -> str:
     for suffix in _SUFFIXES:
         if w.endswith(suffix) and len(w) - len(suffix) >= 3:
             base = w[: -len(suffix)]
+            if suffix == "es" and not base.endswith(("ss", "x", "z", "ch", "sh")):
+                return w[:-1]             # "provides" -> "provide", not "provid"
             if suffix in {"ing", "ed"} and len(base) > 3 and base[-1] == base[-2]:
                 base = base[:-1]          # "tripped" -> "trip"
             return base

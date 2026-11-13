@@ -96,6 +96,11 @@ jobs:
         env:
           LOCALAPPDATA: /tmp
 
+      - name: Manual Statement Sentence Disclosure Tests
+        run: python -m unittest tools.test_servy_manual_statement_sentences -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Three-Asset SME Training Export Safety Tests
         run: python -m unittest tools.test_servy_three_asset_training_export -v
 
