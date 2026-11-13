@@ -416,10 +416,25 @@ def _attach_full_scope_scan(rag, *, tenant, customer, asset, question,
     if not isinstance(rag, dict) or rag.get("engine") == "policy-guard":
         return rag
     try:
-        scan = search_all_approved_documents(
-            tenant=tenant, customer=customer, asset=asset, question=question,
-            original_complaint=original_complaint, cause_claims=cause_claims,
-        )
+        with execution_stage(
+            "approved_manual_coverage_scan",
+            "Searching the selected asset's approved manual set",
+        ):
+            scan = search_all_approved_documents(
+                tenant=tenant, customer=customer, asset=asset, question=question,
+                original_complaint=original_complaint, cause_claims=cause_claims,
+            )
+        coverage = scan.get("coverage") if isinstance(scan, dict) else {}
+        if isinstance(coverage, dict):
+            emit_execution_event(
+                "approved_manual_coverage_summary",
+                "Approved manual scan result",
+                "info",
+                metrics={
+                    "candidate_count": coverage.get("passages_searched", 0),
+                    "retrieved_count": coverage.get("matching_passages", 0),
+                },
+            )
         merged, positions = [], {}
         for reference in list(rag.get("references") or []) + list(scan.get("references") or []):
             if not isinstance(reference, dict):
@@ -482,9 +497,13 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     from core.services.customer_answer import _question_guard, build_customer_answer, exception_presentation
     from core.services.customer_diagnostic import check_for_safety_hazard, check_for_vague_complaint
     from core.services.rag import ask_rag
-    tenant, customer, asset = _asset(asset_id)
-    if customer.id != ASSET_SCOPE[asset_id]:
-        raise ValueError("Customer scope changed")
+    with execution_stage(
+        "customer_asset_authorization",
+        "Validating the selected customer equipment scope",
+    ):
+        tenant, customer, asset = _asset(asset_id)
+        if customer.id != ASSET_SCOPE[asset_id]:
+            raise ValueError("Customer scope changed")
     asset_intent_issue = _asset_intent_guard(asset_id, question)
     if asset_intent_issue:
         return {
@@ -504,11 +523,21 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
             and (not isinstance(thread_id, str)
                  or not re.fullmatch(r"thread-[a-z0-9-]{8,90}", thread_id))):
         raise ValueError("Invalid conversation thread identity")
-    original, history, earlier_hazard = _load_demo_context(
-        continuation, asset_id, customer.id, thread_id=thread_id)
-    last_topic, previous_facts, asked_followups = _load_demo_dialogue_state(continuation)
-    last_causes = _load_demo_cause_state(continuation)
-    pending_followup = _load_demo_pending_followup(continuation)
+    with execution_stage(
+        "customer_conversation_context",
+        "Loading signed conversation context for this chat",
+    ):
+        original, history, earlier_hazard = _load_demo_context(
+            continuation, asset_id, customer.id, thread_id=thread_id)
+        last_topic, previous_facts, asked_followups = _load_demo_dialogue_state(continuation)
+        last_causes = _load_demo_cause_state(continuation)
+        pending_followup = _load_demo_pending_followup(continuation)
+    emit_execution_event(
+        "customer_conversation_summary",
+        "Current chat context",
+        "info",
+        metrics={"candidate_count": len(history)},
+    )
     # Ordinal references belong to the most recently selected fault category.
     # Switching categories invalidates the old list so "second cause" cannot
     # silently refer to a different VRF section.
@@ -562,10 +591,14 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         pending_followup = None
     facts_before = list(previous_facts)
     conflict = None
-    current_hazard, hazard_warning = check_for_safety_hazard(asked_question)
-    small_talk = conversational_turn(question)
-    ambiguous_reply = (followup_clarification(question, history)
-                       or vague_problem_clarification(question, history))
+    with execution_stage(
+        "customer_safety_and_intent",
+        "Checking safety conditions and customer request intent",
+    ):
+        current_hazard, hazard_warning = check_for_safety_hazard(asked_question)
+        small_talk = conversational_turn(question)
+        ambiguous_reply = (followup_clarification(question, history)
+                           or vague_problem_clarification(question, history))
     if reference and selected_cause is None:
         ambiguous_reply = (
             "The previous answer listed " + str(reference["available"])
@@ -730,12 +763,16 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 retrieval_query if history and context.is_followup
                 and _question_guard(question) == "clarify" else answer_question
             )
-            contract = build_customer_answer(
-                interaction, None, rag.get("references", []),
-                conversation_context=context if history else None,
-                original_question=answer_question,
-                generate_with_local_model=False,
-            )
+            with execution_stage(
+                "customer_evidence_contract",
+                "Validating source claims and assembling citation bindings",
+            ):
+                contract = build_customer_answer(
+                    interaction, None, rag.get("references", []),
+                    conversation_context=context if history else None,
+                    original_question=answer_question,
+                    generate_with_local_model=False,
+                )
             presentation = contract["presentation"]
             if isinstance(presentation, dict):
                 presentation["document_coverage"] = rag.get("document_coverage")
@@ -750,11 +787,28 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 question, history=history, last_topic=last_topic, contract=contract,
             )
             local_planner_used = plan is not None
-            contract, dialogue = focus_answer(
-                contract, answer_question, last_topic=last_topic,
-                previous_facts=previous_facts, plan=plan,
-                history=history, asked_followups=asked_followups,
-                allow_cause_information=bool(selected_cause or explanation_followup),
+            with execution_stage(
+                "customer_dialogue_filter",
+                "Selecting claims supported for the current conversation turn",
+            ):
+                contract, dialogue = focus_answer(
+                    contract, answer_question, last_topic=last_topic,
+                    previous_facts=previous_facts, plan=plan,
+                    history=history, asked_followups=asked_followups,
+                    allow_cause_information=bool(selected_cause or explanation_followup),
+                )
+            emit_execution_event(
+                "customer_claim_summary",
+                "Customer-safe claim selection",
+                "info",
+                metrics={
+                    "supported_count": len(
+                        (contract.get("presentation") or {}).get("supporting_claims", []) or []
+                    ),
+                    "citation_count": len(
+                        (contract.get("presentation") or {}).get("citations", []) or []
+                    ),
+                },
             )
             last_topic = dialogue["topic"]
             previous_facts = dialogue["facts"]
@@ -786,6 +840,12 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                     cause_claims=cause_claims if retry_for_deeper_explanation else (),
                 )
                 if second_query and second_query != retrieval_query:
+                    emit_execution_event(
+                        "customer_retry_search",
+                        "A second evidence search was triggered by the first-pass result",
+                        "info",
+                        metrics={"attempt_count": 2},
+                    )
                     retried = ask_rag(
                         tenant=tenant, customer=customer, asset=asset,
                         question=second_query, original_question=question,
@@ -806,13 +866,17 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                             id=None, created_by_id=DEMO_USER_ID, tenant=tenant,
                             customer=customer, asset=asset, question=second_query,
                         )
-                        next_contract = build_customer_answer(
-                            second_interaction, None,
-                            retried.get("references", []),
-                            conversation_context=context if history else None,
-                            original_question=answer_question,
-                            generate_with_local_model=False,
-                        )
+                        with execution_stage(
+                            "customer_retry_evidence_contract",
+                            "Validating additional source claims and citation bindings",
+                        ):
+                            next_contract = build_customer_answer(
+                                second_interaction, None,
+                                retried.get("references", []),
+                                conversation_context=context if history else None,
+                                original_question=answer_question,
+                                generate_with_local_model=False,
+                            )
                         if isinstance(next_contract.get("presentation"), dict):
                             next_contract["presentation"]["document_coverage"] = retried.get("document_coverage")
                         if next_contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
@@ -1038,19 +1102,32 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                         "Qwen source statement unavailable for claim=%s (%s)",
                         ident, type(exc).__name__,
                     )
-            generation_result = explain_claims_with_status(
-                answer_question,
-                final_presentation,
-                source_context_by_claim=source_context_by_claim,
-                enabled=os.environ.get("SERVY_CUSTOMER_ANSWER_GENERATION") == "ollama",
-                model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
-                require_source_context=True,
+            with execution_stage(
+                "customer_qwen_generation",
+                "Generating source-constrained customer answer wording",
+            ):
+                generation_result = explain_claims_with_status(
+                    answer_question,
+                    final_presentation,
+                    source_context_by_claim=source_context_by_claim,
+                    enabled=os.environ.get("SERVY_CUSTOMER_ANSWER_GENERATION") == "ollama",
+                    model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
+                    require_source_context=True,
+                )
+                applied_claims = apply_customer_explanations(
+                    final_presentation, generation_result["explanations"]
+                )
+                answer_generation = dict(generation_result["generation"])
+                answer_generation["applied_claims"] = applied_claims
+            emit_execution_event(
+                "customer_qwen_summary",
+                "Customer answer generation outcome",
+                "info",
+                metrics={
+                    "model_provider": answer_generation.get("provider") or "disabled",
+                    "supported_count": answer_generation.get("accepted_claims", 0),
+                },
             )
-            applied_claims = apply_customer_explanations(
-                final_presentation, generation_result["explanations"]
-            )
-            answer_generation = dict(generation_result["generation"])
-            answer_generation["applied_claims"] = applied_claims
     if answer_generation.get("applied_claims", 0) > 0:
         contract["engine"] = "source-grounded-qwen"
 
