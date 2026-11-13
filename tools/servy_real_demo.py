@@ -1366,8 +1366,24 @@ def main():
         raise RuntimeError("Explicit localhost debug demo mode is required")
     configure_process()
     from django.conf import settings
-    if settings.SERVY_CUSTOMER_DATA_MODE != "verified_real_only" or settings.SERVY_LLM_PROVIDER != "extractive":
-        raise RuntimeError("Verified-real, local extractive serving is required")
+    if (settings.SERVY_CUSTOMER_DATA_MODE != "verified_real_only"
+            or settings.SERVY_LLM_PROVIDER != "extractive"):
+        raise RuntimeError(
+            "Real-data demo requires verified_real_only data and the extractive RAG core."
+        )
+    # Qwen is a separate customer-answer wording stage, not the RAG retrieval or
+    # general answer provider. Validate its own loopback endpoint and installed
+    # model explicitly instead of weakening the verified-real/extractive guard.
+    from core.services.customer_answer_generation import validate_customer_generation_configuration
+    customer_generation = validate_customer_generation_configuration(check_runtime=True)
+    if customer_generation.get("enabled"):
+        print(
+            "Customer Qwen verified: "
+            + customer_generation["model"]
+            + " via local Ollama."
+        )
+    else:
+        print("Customer Qwen disabled: exact approved source wording will be used.")
     identity = verify_readonly_identity()
     configuration = serving()
     private_folder(PRIVATE)
