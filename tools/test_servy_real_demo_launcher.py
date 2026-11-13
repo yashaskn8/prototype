@@ -13,8 +13,10 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
     def test_retrieval_and_dialogue_remain_deterministic_while_qwen_is_enabled(self):
         self.assertIn("$env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'", self.launcher)
         self.assertIn("$env:SERVY_ALLOW_REMOTE_LLM = '0'", self.launcher)
+        self.assertIn("$env:SERVY_LLM_PROVIDER = 'extractive'", self.launcher)
+        self.assertNotIn("$env:SERVY_LLM_PROVIDER = 'ollama'", self.launcher)
         self.assertIn("$env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'", self.launcher)
-        self.assertIn("$env:SERVY_OLLAMA_MODEL = 'qwen3.5:2b-q4_K_M'", self.launcher)
+        self.assertIn("$env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'", self.launcher)
         self.assertIn("Customer answers: local Qwen wording enabled", self.launcher)
 
     def test_qwen_is_loopback_only_and_model_failure_keeps_exact_source_wording(self):
@@ -23,7 +25,8 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
             "http://127.0.0.1:11434/api/tags",
             "Ollama is not reachable",
             "exact source wording",
-            "SERVY_LLM_REQUIRE_OLLAMA = '0'",
+            "SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'",
+            "SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, self.launcher)
