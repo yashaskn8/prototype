@@ -679,34 +679,45 @@ class CustomerSupportQueryView(APIView):
         """Run the customer turn after revalidating its tenant/customer/asset binding."""
         from django.contrib.auth import get_user_model
 
-        tenant = Tenant.objects.get(pk=prepared["tenant_id"], is_active=True)
-        customer = Customer.objects.get(
-            pk=prepared["customer_id"], tenant=tenant
-        )
-        site = Site.objects.get(
-            pk=prepared["site_id"], tenant=tenant, customer=customer
-        )
-        asset = Asset.objects.get(
-            pk=prepared["asset_id"], tenant=tenant, customer=customer, site=site
-        )
-        user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
-        role = prepared["role"]
-        if user.is_superuser:
-            if role != "superuser":
-                raise PermissionDenied("Customer RAG access changed.")
-        else:
-            membership = TenantMembership.objects.filter(
-                user=user, tenant=tenant, role=role, is_active=True
-            ).first()
-            if not membership:
-                raise PermissionDenied("Customer RAG access changed.")
-            if role in CUSTOMER_ROLES and membership.customer_id != customer.id:
-                raise PermissionDenied("Customer RAG access changed.")
+        with execution_stage(
+            "customer_request_authorization",
+            "Revalidating customer membership, tenant, site and equipment access",
+        ):
+            tenant = Tenant.objects.get(pk=prepared["tenant_id"], is_active=True)
+            customer = Customer.objects.get(
+                pk=prepared["customer_id"], tenant=tenant
+            )
+            site = Site.objects.get(
+                pk=prepared["site_id"], tenant=tenant, customer=customer
+            )
+            asset = Asset.objects.get(
+                pk=prepared["asset_id"], tenant=tenant, customer=customer, site=site
+            )
+            user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
+            role = prepared["role"]
+            if user.is_superuser:
+                if role != "superuser":
+                    raise PermissionDenied("Customer RAG access changed.")
+            else:
+                membership = TenantMembership.objects.filter(
+                    user=user, tenant=tenant, role=role, is_active=True
+                ).first()
+                if not membership:
+                    raise PermissionDenied("Customer RAG access changed.")
+                if role in CUSTOMER_ROLES and membership.customer_id != customer.id:
+                    raise PermissionDenied("Customer RAG access changed.")
 
-        validate_customer_serving_policy(tenant=tenant, customer=customer)
-        validate_customer_serving_policy(
-            tenant=tenant, customer=customer, asset=asset
+            validate_customer_serving_policy(tenant=tenant, customer=customer)
+            validate_customer_serving_policy(
+                tenant=tenant, customer=customer, asset=asset
+            )
+        emit_execution_event(
+            "customer_request_authorization_summary",
+            "Customer equipment scope is authorized",
+            "info",
+            metrics={"confidential_scope": "restricted"},
         )
+
 
         from core.services.customer_conversation import process_customer_diagnostic_turn
         turn_result = process_customer_diagnostic_turn(
@@ -2735,40 +2746,51 @@ class CustomerConversationMessagesView(APIView):
         """Revalidate conversation ownership and execute one customer follow-up turn."""
         from django.contrib.auth import get_user_model
 
-        tenant = Tenant.objects.get(pk=prepared["tenant_id"], is_active=True)
-        customer = Customer.objects.get(pk=prepared["customer_id"], tenant=tenant)
-        user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
-        conv = CustomerConversation.objects.select_related(
-            "asset", "site", "customer", "current_diagnostic_session", "linked_service_call"
-        ).get(
-            tenant=tenant,
-            customer=customer,
-            conversation_uuid=prepared["conversation_uuid"],
+        with execution_stage(
+            "customer_conversation_authorization",
+            "Revalidating customer membership and conversation ownership",
+        ):
+            tenant = Tenant.objects.get(pk=prepared["tenant_id"], is_active=True)
+            customer = Customer.objects.get(pk=prepared["customer_id"], tenant=tenant)
+            user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
+            conv = CustomerConversation.objects.select_related(
+                "asset", "site", "customer", "current_diagnostic_session", "linked_service_call"
+            ).get(
+                tenant=tenant,
+                customer=customer,
+                conversation_uuid=prepared["conversation_uuid"],
+            )
+
+            # Membership can be revoked while a stream is opening. Recheck both the
+            # active customer membership and the conversation's own customer scope.
+            membership_ok = TenantMembership.objects.filter(
+                user=user,
+                tenant=tenant,
+                customer=customer,
+                role__in=CUSTOMER_ROLES,
+                is_active=True,
+            ).exists()
+            fresh_ctx = {
+                "tenant": tenant,
+                "customer": customer,
+                "role": prepared["role"],
+                "user": user,
+            }
+            if not membership_ok or not _can_read_customer_conversation(fresh_ctx, conv):
+                raise PermissionDenied("Conversation not found or access changed.")
+
+            if conv.status in ("RESOLVED", "CLOSED"):
+                raise ValidationError("This conversation is closed. Start a new conversation for new issues.")
+            validate_customer_serving_policy(
+                tenant=tenant, customer=customer, asset=conv.asset
+            )
+        emit_execution_event(
+            "customer_conversation_authorization_summary",
+            "Customer conversation scope is authorized",
+            "info",
+            metrics={"confidential_scope": "restricted"},
         )
 
-        # Membership can be revoked while a stream is opening. Recheck both the
-        # active customer membership and the conversation's own customer scope.
-        membership_ok = TenantMembership.objects.filter(
-            user=user,
-            tenant=tenant,
-            customer=customer,
-            role__in=CUSTOMER_ROLES,
-            is_active=True,
-        ).exists()
-        fresh_ctx = {
-            "tenant": tenant,
-            "customer": customer,
-            "role": prepared["role"],
-            "user": user,
-        }
-        if not membership_ok or not _can_read_customer_conversation(fresh_ctx, conv):
-            raise PermissionDenied("Conversation not found or access changed.")
-
-        if conv.status in ("RESOLVED", "CLOSED"):
-            raise ValidationError("This conversation is closed. Start a new conversation for new issues.")
-        validate_customer_serving_policy(
-            tenant=tenant, customer=customer, asset=conv.asset
-        )
 
         from core.services.customer_conversation import process_customer_diagnostic_turn
         turn_result = process_customer_diagnostic_turn(
