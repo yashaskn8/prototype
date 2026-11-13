@@ -437,7 +437,7 @@ def _apply_generated_claims(presentation: dict, generated: dict) -> int:
                 prefix = ""
                 if claim.get("kind") == "possible_cause":
                     match = re.match(
-                        r"^(Under .+?:\\s*)Possible documented cause:\\s*",
+                        r"^(Under .+?:\s*)Possible documented cause:\s*",
                         str(claim.get("text") or ""),
                         re.I,
                     )
@@ -465,6 +465,5 @@ def apply_customer_answer_generation_with_status(presentation: dict, question: s
 
 def apply_customer_answer_generation(presentation: dict, question: str) -> bool:
     """Compatibility wrapper; source/citation bindings remain unchanged."""
-    return bool(
-        apply_customer_answer_generation_with_status(presentation, question)["applied_claims"]
-    )
+    generated = generate_customer_claim_texts(question, presentation)
+    return bool(_apply_generated_claims(presentation, generated))
