@@ -16,6 +16,7 @@ from django.conf import settings
 from core.models import KnowledgeChunk, KnowledgeDocument, ServiceResolutionIndex
 from .vectors import embed_text, cosine_sparse, compute_bm25_scores, compute_char_ngram_scores
 from .identifiers import extract_error_codes, extract_identifiers, extract_document_ids
+from .rag_execution_log import execution_stage, emit_execution_event
 
 
 @dataclass
@@ -1125,11 +1126,22 @@ def retrieve(
 
     # Step 1: Django determines candidate pool according to tenant, customer,
     # confidentiality, and asset scope
-    candidates = list(_knowledge_candidates(
-        tenant, asset, customer, include_confidential,
-        allow_failed=True, query_doc_ids=query_doc_ids,
-        staff_mode=staff_mode,
-    ))
+    with execution_stage(
+        "document_scope_filter",
+        "Applying tenant, customer, asset and confidentiality filters",
+    ):
+        candidates = list(_knowledge_candidates(
+            tenant, asset, customer, include_confidential,
+            allow_failed=True, query_doc_ids=query_doc_ids,
+            staff_mode=staff_mode,
+        ))
+    emit_execution_event(
+        "document_scope_summary", "Authorized document scope", "info",
+        metrics={
+            "candidate_count": len(candidates),
+            "confidential_scope": "permitted" if include_confidential else "restricted",
+        },
+    )
     allowed_chunks_by_id = {c.id: c for c in candidates}
     allowed_doc_ids = {c.document_id for c in candidates}
     # For dense retrieval, only INDEXED documents have valid Chroma embeddings
@@ -1149,34 +1161,46 @@ def retrieve(
     # This replaces the old "sparse only if dense returns nothing" approach.
 
     # 2a: Sparse/local retrieval (runs in hybrid and sparse_only modes)
-    if serving_config.retrieval_mode == "dense_only":
-        sparse_results = []
-    else:
-        sparse_results = _sparse_score_candidates(
-            candidates, evidence_vector, scope_vector,
-            query_identifiers, asset, customer, min_score,
-            query_doc_ids=query_doc_ids,
-            evidence_text=evidence_text,
-            serving_config=serving_config,
-        )
-
-    # 2b: Dense retrieval (may fail gracefully; skipped in sparse_only mode)
-    if serving_config.retrieval_mode == "sparse_only":
-        dense_results = []
-    else:
-        try:
-            dense_results = _dense_score_candidates(
-                dense_candidates, dense_doc_ids, dense_chunks_by_id,
-                evidence_text, query_identifiers, asset, customer,
-                tenant, top_k, min_score,
+    with execution_stage(
+        "sparse_retrieval",
+        "Searching approved manual text passages",
+    ):
+        if serving_config.retrieval_mode == "dense_only":
+            sparse_results = []
+        else:
+            sparse_results = _sparse_score_candidates(
+                candidates, evidence_vector, scope_vector,
+                query_identifiers, asset, customer, min_score,
                 query_doc_ids=query_doc_ids,
-                staff_mode=staff_mode,
-                include_confidential=include_confidential,
+                evidence_text=evidence_text,
                 serving_config=serving_config,
             )
-        except Exception as exc:
-            logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+
+    # 2b: Dense retrieval (may fail gracefully; skipped in sparse_only mode)
+    with execution_stage(
+        "dense_retrieval",
+        "Searching the approved vector index",
+    ):
+        if serving_config.retrieval_mode == "sparse_only":
             dense_results = []
+        else:
+            try:
+                dense_results = _dense_score_candidates(
+                    dense_candidates, dense_doc_ids, dense_chunks_by_id,
+                    evidence_text, query_identifiers, asset, customer,
+                    tenant, top_k, min_score,
+                    query_doc_ids=query_doc_ids,
+                    staff_mode=staff_mode,
+                    include_confidential=include_confidential,
+                    serving_config=serving_config,
+                )
+            except Exception as exc:
+                logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+                emit_execution_event(
+                    "dense_retrieval", "Vector search", "skipped",
+                    error_type=type(exc).__name__,
+                )
+                dense_results = []
 
     # 2c: Fuse results using RRF
     qwen_dense_first = (
@@ -1230,6 +1254,16 @@ def retrieve(
         results = []
         retrieval_backend = "fallback"
 
+    emit_execution_event(
+        "rank_fusion",
+        "Combining sparse and semantic search rankings",
+        "completed",
+        metrics={
+            "retrieved_count": len(results),
+            "retrieval_backend": retrieval_backend,
+        },
+    )
+
     # Defense-in-depth: Ensure NO chunk from outside authorized candidates can leak
     results = [
         r for r in results
@@ -1269,49 +1303,68 @@ def retrieve(
     # Preserves the RRF ranking by default. Only swaps top-1 with a candidate
     # from positions 2-5 when high-confidence conditions are met (same-heading
     # procedural preference, generic overview demotion, fault code promotion).
-    try:
-        from core.ml.conditional_rerank import conditional_swap_rerank
-        results = conditional_swap_rerank(results, question or "", swap_window=5)
-    except Exception as exc:
-        logger.warning("Conditional swap re-ranking skipped due to error: %s", exc)
+    with execution_stage(
+        "conditional_reranking",
+        "Applying deterministic fault-category ranking rules",
+    ):
+        try:
+            from core.ml.conditional_rerank import conditional_swap_rerank
+            results = conditional_swap_rerank(results, question or "", swap_window=5)
+        except Exception as exc:
+            logger.warning("Conditional swap re-ranking skipped due to error: %s", exc)
+            emit_execution_event(
+                "conditional_reranking", "Conditional ranking", "skipped",
+                error_type=type(exc).__name__,
+            )
 
     # Step 3: Engineer Copilot - Previous Service Cases (separate from authoritative manuals)
     # Disabled for Customer Self-Service (only enabled when include_past_resolutions is True)
     resolution_results = []
     if include_past_resolutions:
-        for idx in _resolution_candidates(tenant, asset, customer, staff_mode):
-            call = idx.service_call
-            score = cosine_sparse(evidence_vector, idx.embedding)
-            if score < 0.02:
-                continue
-            boost = 0.0
+        with execution_stage(
+            "past_resolution_search",
+            "Searching tenant-authorized sanitized service history",
+        ):
+            for idx in _resolution_candidates(tenant, asset, customer, staff_mode):
+                call = idx.service_call
+                score = cosine_sparse(evidence_vector, idx.embedding)
+                if score < 0.02:
+                    continue
+                boost = 0.0
 
-            if asset and call.asset_id == asset.id:
-                boost += 0.20
-            elif asset and call.asset and call.asset.product_id == asset.product_id:
-                boost += 0.10
-            if service_call and call.id == service_call.id:
-                continue
+                if asset and call.asset_id == asset.id:
+                    boost += 0.20
+                elif asset and call.asset and call.asset.product_id == asset.product_id:
+                    boost += 0.10
+                if service_call and call.id == service_call.id:
+                    continue
 
-            final_score = float(score + boost)
-            if final_score < min_score:
-                continue
-            safe_text = idx.text
-            resolution_results.append(RetrievedChunk(
-                source_kind="past_resolution",
-                source_id=idx.id,
-                document_id=None,
-                chunk_id=None,
-                title=f"Previous service case #{call.servy_id}",
-                heading="Previous service case",
-                text=safe_text,
-                score=final_score,
-                doc_type="Previous Service Case",
-                source_url="",
-                confidential=True,
-                service_call_id=call.id,
-            ))
+                final_score = float(score + boost)
+                if final_score < min_score:
+                    continue
+                safe_text = idx.text
+                resolution_results.append(RetrievedChunk(
+                    source_kind="past_resolution",
+                    source_id=idx.id,
+                    document_id=None,
+                    chunk_id=None,
+                    title=f"Previous service case #{call.servy_id}",
+                    heading="Previous service case",
+                    text=safe_text,
+                    score=final_score,
+                    doc_type="Previous Service Case",
+                    source_url="",
+                    confidential=True,
+                    service_call_id=call.id,
+                ))
 
+
+    else:
+        emit_execution_event(
+            "past_resolution_search",
+            "Past service-case retrieval is unavailable in customer self-service",
+            "skipped",
+        )
     # Step 4: Strict Source Authority Tiering — authoritative technical guidance
     # (Knowledge Documents) strictly outranks historical cases (Service Calls).
     # Historical anecdotes can NEVER authorize repair actions or outrank approved manuals.
@@ -1371,36 +1424,52 @@ def retrieve(
             if value
         )
 
-    try:
-        from core.ml.reranker import rerank_candidates
-        if experimental_section_rerank_enabled:
-            selected = rerank_candidates(
-                evidence_text, selected, top_k=top_k,
-                context_aware=True, asset_context=asset_context,
+    with execution_stage(
+        "v5_reranking",
+        "Reranking authorized passages for technical relevance",
+    ):
+        try:
+            from core.ml.reranker import rerank_candidates
+            if experimental_section_rerank_enabled:
+                selected = rerank_candidates(
+                    evidence_text, selected, top_k=top_k,
+                    context_aware=True, asset_context=asset_context,
+                )
+            else:
+                # Preserve the exact production/default invocation and candidate text.
+                selected = rerank_candidates(evidence_text, selected, top_k=top_k)
+        except Exception as exc:
+            # Required-model deployments must not silently serve baseline results.
+            if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+                raise
+            logger.warning("Reranker step skipped due to error: %s", exc)
+            emit_execution_event(
+                "v5_reranking", "Passage reranker", "skipped",
+                error_type=type(exc).__name__,
             )
-        else:
-            # Preserve the exact production/default invocation and candidate text.
-            selected = rerank_candidates(evidence_text, selected, top_k=top_k)
-    except Exception as exc:
-        # Required-model deployments must not silently serve baseline results.
-        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
-            raise
-        logger.warning("Reranker step skipped due to error: %s", exc)
-        selected = selected[:top_k]
+            selected = selected[:top_k]
 
     experimental_section_rerank_applied = False
     if experimental_section_rerank_enabled and selected:
         before_experiment = list(selected)
-        try:
-            from core.ml.section_aware_rerank import experimental_evidence_section_rerank
-            selected = experimental_evidence_section_rerank(
-                selected, evidence_text, top_k=top_k,
-            )
-            experimental_section_rerank_applied = True
-        except Exception as exc:
-            # Experimental failures preserve the pre-experiment ranking.
-            logger.warning("Experimental section-aware reranking skipped: %s", exc)
-            selected = before_experiment
+        with execution_stage(
+            "experimental_section_reranking",
+            "Applying experimental section-aware ranking",
+        ):
+            try:
+                from core.ml.section_aware_rerank import experimental_evidence_section_rerank
+                selected = experimental_evidence_section_rerank(
+                    selected, evidence_text, top_k=top_k,
+                )
+                experimental_section_rerank_applied = True
+            except Exception as exc:
+                # Experimental failures preserve the pre-experiment ranking.
+                logger.warning("Experimental section-aware reranking skipped: %s", exc)
+                emit_execution_event(
+                    "experimental_section_reranking", "Experimental ranking", "skipped",
+                    error_type=type(exc).__name__,
+                )
+                selected = before_experiment
 
     if len(selected) > top_k:
         selected = selected[:top_k]
