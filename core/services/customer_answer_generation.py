@@ -238,8 +238,12 @@ def _validate_paraphrase(source: str, text: str, kind: str) -> bool:
         return False
     if kind == "possible_cause" and not _UNCERTAINTY.search(text):
         return False
-    # Never let a generated information/cause sentence become an instruction.
-    if _ACTION.search(text):
+    # Reject action language introduced by the model, but do not reject a
+    # source-backed state word such as "windows open". These candidates have
+    # already passed the evidence builder as possible causes/information; an
+    # action token already present in that exact source sentence is not a new
+    # instruction invented by Qwen.
+    if any(action.casefold() not in source_tokens for action in _ACTION.findall(text)):
         return False
     return True
 
@@ -273,30 +277,56 @@ def _validate_response(raw, candidates) -> dict:
     return output
 
 
-def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
-    """Return validated wording keyed by existing claim ID; empty means exact-source fallback."""
-    if not _enabled() or not isinstance(presentation, dict):
-        return {}
+def generate_customer_claim_texts_with_status(question: str, presentation: dict) -> dict:
+    """Generate validated source-bound wording and report why fallback was used.
+
+    Diagnostic metadata contains no customer text, source excerpts, or signed
+    citation tokens. It makes a silent extractive fallback distinguishable from
+    a successful Qwen rewrite without weakening the evidence contract.
+    """
+    model = str(getattr(
+        settings, "SERVY_CUSTOMER_GENERATION_MODEL", "qwen3.5:2b-q4_K_M"
+    )).strip()
+    report = {
+        "status": "disabled" if not _enabled() else "not_attempted",
+        "provider": "ollama" if _enabled() else "disabled",
+        "model": model if _enabled() else None,
+        "attempted": False,
+        "eligible_claims": 0,
+        "accepted_claims": 0,
+        "error_type": None,
+    }
+
+    def finish(status: str, texts: dict | None = None, *, error_type=None):
+        report["status"] = status
+        report["accepted_claims"] = len(texts or {})
+        if error_type:
+            report["error_type"] = error_type
+        logger.info(
+            "Servy customer answer generation status=%s model=%s eligible=%s accepted=%s",
+            report["status"], report["model"] or "none",
+            report["eligible_claims"], report["accepted_claims"],
+        )
+        return {"texts": texts or {}, "generation": dict(report)}
+
+    if not _enabled():
+        return finish("disabled")
+    if not isinstance(presentation, dict):
+        return finish("invalid_presentation")
+
     try:
         candidates = _eligible_claims(presentation)
+        report["eligible_claims"] = len(candidates)
         if not candidates:
-            logger.warning(
-                "Local customer Qwen fallback: no eligible citation-bound claims."
-            )
-            return {}
+            return finish("no_eligible_claims")
+
         url = _endpoint()
         if not _server_online(url):
-            logger.warning(
-                "Local customer Qwen fallback: Ollama /api/chat is not accepting loopback connections."
-            )
-            return {}
-        model = str(getattr(
-            settings, "SERVY_CUSTOMER_GENERATION_MODEL", "qwen3.5:2b-q4_K_M"
-        ))
-        # Ollama quantized tags commonly contain underscores (for example
-        # qwen3.5:2b-q4_K_M); reject control characters, not valid tag syntax.
+            return finish("ollama_unreachable")
+
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,100}", model):
-            return {}
+            return finish("invalid_model_tag")
+
         equipment = presentation.get("equipment") or {}
         payload = {
             "customer_question": str(question or "")[:400],
@@ -308,7 +338,8 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
         }
         user_content = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         if len(user_content.encode("utf-8")) > MAX_PROMPT_BYTES:
-            return {}
+            return finish("prompt_too_large")
+
         schema = {
             "type": "object",
             "properties": {
@@ -333,6 +364,7 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
         client = requests.Session()
         client.trust_env = False
         try:
+            report["attempted"] = True
             response = client.post(
                 url,
                 json={
@@ -355,34 +387,41 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
                 allow_redirects=False,
             )
             if 300 <= response.status_code < 400:
-                raise RuntimeError("Local Ollama redirect blocked.")
+                return finish("redirect_rejected")
             response.raise_for_status()
             if len(response.content) > MAX_RESPONSE_BYTES:
-                return {}
+                return finish("response_too_large")
             message = response.json().get("message", {}).get("content")
             if not isinstance(message, str) or len(message) > MAX_RESPONSE_BYTES:
-                return {}
-            validated = _validate_response(json.loads(message), candidates)
+                return finish("invalid_model_response")
+            try:
+                raw = json.loads(message)
+            except (TypeError, ValueError):
+                return finish("invalid_model_json")
+            validated = _validate_response(raw, candidates)
             if not validated:
-                logger.warning(
-                    "Local customer Qwen fallback: model response did not satisfy the source-preservation contract."
-                )
-            return validated
+                return finish("rejected_by_source_validator")
+            status = (
+                "applied" if len(validated) == len(candidates)
+                else "applied_partial"
+            )
+            return finish(status, validated)
         finally:
             client.close()
     except Exception as exc:
         logger.warning(
-            "Local customer answer generation unavailable (%s); using approved source wording",
+            "Servy customer answer generation failed (%s); retaining approved source wording",
             type(exc).__name__,
         )
-        return {}
+        return finish("request_failed", error_type=type(exc).__name__)
 
 
-def apply_customer_answer_generation(presentation: dict, question: str) -> bool:
-    """Apply validated display wording only; preserve exact source and citation fields."""
-    generated = generate_customer_claim_texts(question, presentation)
-    if not generated:
-        return False
+def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
+    """Compatibility wrapper: return only wording that passed source validation."""
+    return generate_customer_claim_texts_with_status(question, presentation)["texts"]
+
+
+def _apply_generated_claims(presentation: dict, generated: dict) -> int:
     updated = set()
     groups = [presentation.get("supporting_claims", []) or []]
     groups.extend(
@@ -398,7 +437,7 @@ def apply_customer_answer_generation(presentation: dict, question: str) -> bool:
                 prefix = ""
                 if claim.get("kind") == "possible_cause":
                     match = re.match(
-                        r"^(Under .+?:\s*)Possible documented cause:\s*",
+                        r"^(Under .+?:\\s*)Possible documented cause:\\s*",
                         str(claim.get("text") or ""),
                         re.I,
                     )
@@ -406,4 +445,26 @@ def apply_customer_answer_generation(presentation: dict, question: str) -> bool:
                         prefix = match.group(1)
                 claim["text"] = prefix + generated[ident]
                 updated.add(id(claim))
-    return bool(updated)
+    return len(updated)
+
+
+def apply_customer_answer_generation_with_status(presentation: dict, question: str) -> dict:
+    """Apply validated wording and return safe, per-request generation diagnostics."""
+    if not isinstance(presentation, dict):
+        return {
+            "status": "invalid_presentation", "provider": "disabled", "model": None,
+            "attempted": False, "eligible_claims": 0, "accepted_claims": 0,
+            "applied_claims": 0, "error_type": None,
+        }
+    result = generate_customer_claim_texts_with_status(question, presentation)
+    applied = _apply_generated_claims(presentation, result["texts"])
+    report = dict(result["generation"])
+    report["applied_claims"] = applied
+    return report
+
+
+def apply_customer_answer_generation(presentation: dict, question: str) -> bool:
+    """Compatibility wrapper; source/citation bindings remain unchanged."""
+    return bool(
+        apply_customer_answer_generation_with_status(presentation, question)["applied_claims"]
+    )
