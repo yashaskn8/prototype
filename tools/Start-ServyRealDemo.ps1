@@ -147,14 +147,14 @@ $env:DJANGO_DEBUG = '1'
 # source-exact. Invalid or unavailable model output falls back to exact source text.
 $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
+# Keep the general RAG answer engine extractive. Customer Qwen wording is a
+# separate source-span-bound postprocessor configured below.
+$env:SERVY_LLM_PROVIDER = 'extractive'
 if ($NoLocalChat) {
     $env:SERVY_LLM_PROVIDER = 'extractive'
     $env:SERVY_CUSTOMER_ANSWER_GENERATION = 'disabled'
     Write-Output 'Qwen generation disabled; using deterministic source wording.'
 } else {
-    $env:SERVY_LLM_PROVIDER = 'ollama'
-    $env:SERVY_LLM_REQUIRE_OLLAMA = '0'
-    $env:SERVY_OLLAMA_MODEL = 'qwen3.5:2b-q4_K_M'
     $env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'
     $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
     $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
