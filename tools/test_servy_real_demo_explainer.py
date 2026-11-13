@@ -69,6 +69,105 @@ class ExplanationValidationTests(TestCase):
             self.assertIsNone(explainer._validate_explanations({"explanations": rows}, [candidate]))
 
 
+class SourceContextGenerationTests(TestCase):
+    def test_explanation_may_use_details_from_the_same_authorized_passage_only(self):
+        source = "Restricted airflow or blocked outdoor unit clearance."
+        context = (
+            "Restricted airflow or blocked outdoor unit clearance can reduce "
+            "heat rejection and cooling capacity."
+        )
+        candidate = {
+            "id": "c1", "kind": "possible_cause",
+            "source_text": source, "source_context": context,
+        }
+        supported = (
+            "The manual lists restricted airflow or blocked outdoor unit clearance "
+            "as a possible cause that can reduce heat rejection and cooling capacity."
+        )
+        self.assertEqual(
+            explainer._validate_explanations({
+                "explanations": [{
+                    "claim_id": "c1", "explanation": supported,
+                    "source_quote": source,
+                }],
+            }, [candidate]),
+            {"c1": supported},
+        )
+        invented = (
+            "The manual lists restricted airflow as a possible cause that can "
+            "damage the compressor."
+        )
+        self.assertIsNone(explainer._validate_explanations({
+            "explanations": [{
+                "claim_id": "c1", "explanation": invented,
+                "source_quote": source,
+            }],
+        }, [candidate]))
+
+    def test_live_path_requires_reauthorized_full_source_context(self):
+        presentation = {
+            "equipment": {"name": "Split AC Unit 2T", "model_number": ""},
+            "citations": [{
+                "id": "s1", "document_id": 168, "chunk_id": 160,
+                "url": "/demo-api/source/?citation=synthetic-token",
+            }],
+            "supporting_claims": [{
+                "id": "c1", "kind": "possible_cause",
+                "text": "Possible documented cause: Dirty filter or coil.",
+                "source_text": "Dirty filter or coil.",
+                "evidence_ids": ["s1"],
+            }],
+        }
+        with patch.object(explainer, "_online", return_value=False):
+            result = explainer.explain_claims_with_status(
+                "Explain the documented cause.", presentation,
+                enabled=True, model="qwen3.5:2b-q4_K_M",
+                source_context_by_claim={}, require_source_context=True,
+            )
+        self.assertEqual(result["generation"]["status"], "no_eligible_claims")
+        self.assertEqual(result["generation"]["eligible_claims"], 0)
+        self.assertFalse(result["generation"]["attempted"])
+
+    def test_apply_preserves_original_source_claim_and_citation_bindings(self):
+        presentation = {
+            "supporting_claims": [{
+                "id": "c1", "kind": "possible_cause",
+                "text": "Possible documented cause: Dirty filter or coil.",
+                "source_text": "Dirty filter or coil.",
+                "evidence_ids": ["s1"],
+            }],
+            "sections": [{
+                "number": 1, "title": "What the document says",
+                "claims": [{
+                    "id": "c1", "kind": "possible_cause",
+                    "text": "Under Poor cooling: Possible documented cause: Dirty filter or coil.",
+                    "source_text": "Dirty filter or coil.",
+                    "evidence_ids": ["s1"],
+                }],
+            }],
+            "citations": [{
+                "id": "s1", "document_id": 168, "chunk_id": 160,
+                "url": "/demo-api/source/?citation=synthetic-token",
+            }],
+        }
+        explanation = (
+            "The manual lists this as one possible cause category, not a confirmed fault."
+        )
+        applied = explainer.apply_customer_explanations(presentation, {"c1": explanation})
+        self.assertEqual(applied, 2)
+        for claim in (
+            presentation["supporting_claims"][0],
+            presentation["sections"][0]["claims"][0],
+        ):
+            self.assertTrue(claim["text"].endswith("Explanation: " + explanation))
+            self.assertEqual(claim["source_text"], "Dirty filter or coil.")
+            self.assertEqual(claim["evidence_ids"], ["s1"])
+        self.assertEqual(
+            presentation["citations"][0]["url"],
+            "/demo-api/source/?citation=synthetic-token",
+        )
+
+
 class LocalExplanationCallTests(TestCase):
     def setUp(self):
         self.presentation = {
