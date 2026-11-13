@@ -1,0 +1,21 @@
+.rag-execution-log { margin: 12px 0 16px; padding: 13px 14px; border: 1px solid var(--border, #dfe4ee); border-radius: 10px; background: var(--card, #fff); color: var(--text-main, #17213b); }
+.rag-execution-log-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 9px; font-size: .82rem; }
+.rag-execution-log-live,.rag-execution-log-finished { border-radius: 999px; padding: 3px 8px; font-size: .62rem; font-weight: 800; letter-spacing: .06em; }
+.rag-execution-log-live { color: #166534; background: #dcfce7; }
+.rag-execution-log-finished { color: #475569; background: #e2e8f0; }
+.rag-execution-log-list { display: grid; gap: 0; list-style: none; margin: 0; padding: 0; max-height: 310px; overflow-y: auto; }
+.rag-execution-log-item { display: grid; grid-template-columns: 10px minmax(0,1fr); gap: 9px; padding: 7px 0; border-top: 1px solid #eef1f5; }
+.rag-execution-log-status { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #94a3b8; }
+.rag-execution-log-item.is-started .rag-execution-log-status { background: #2563eb; box-shadow: 0 0 0 3px #dbeafe; }
+.rag-execution-log-item.is-completed .rag-execution-log-status { background: #16a34a; }
+.rag-execution-log-item.is-skipped .rag-execution-log-status { background: #94a3b8; }
+.rag-execution-log-item.is-failed .rag-execution-log-status { background: #dc2626; }
+.rag-execution-log-content { min-width: 0; }
+.rag-execution-log-line { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: .74rem; }
+.rag-execution-log-line > span { color: #64748b; font-size: .68rem; }
+.rag-execution-log-meta,.rag-execution-log-metrics { display: flex; flex-wrap: wrap; gap: 7px 12px; margin-top: 3px; color: #64748b; font-size: .65rem; }
+.rag-execution-log-metrics { color: #475569; }
+.rag-execution-log-waiting { display: flex; align-items: center; gap: 8px; padding: 7px 0 2px; color: #64748b; font-size: .68rem; }
+.rag-execution-log-pulse { width: 7px; height: 7px; border-radius: 50%; background: #2563eb; animation: rag-log-pulse 1.2s ease-in-out infinite; }
+.rag-execution-log-note { margin: 8px 0 0; color: #94a3b8; font-size: .62rem; line-height: 1.4; }
+@keyframes rag-log-pulse { 50% { opacity: .25; } }
