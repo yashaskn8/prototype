@@ -16,13 +16,6 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const currentAssetId = useRef(assetId);
   currentAssetId.current = assetId;
 
-  useEffect(() => () => aiStreamAbortRef.current?.abort(), []);
-  useEffect(() => {
-    aiStreamAbortRef.current?.abort();
-    aiStreamAbortRef.current = null;
-    setAiExecutionLogs([]);
-  }, [assetId]);
-
   const [asset, setAsset] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -65,6 +58,13 @@ export function AssetDetailPage({ assetId, onBack, onNavigateTab }) {
   const [diagNotice, setDiagNotice] = useState(null);
   const [diagAnswerText, setDiagAnswerText] = useState('');
   const [diagClarifyText, setDiagClarifyText] = useState('');
+
+  useEffect(() => () => aiStreamAbortRef.current?.abort(), []);
+  useEffect(() => {
+    aiStreamAbortRef.current?.abort();
+    aiStreamAbortRef.current = null;
+    setAiExecutionLogs([]);
+  }, [assetId]);
 
   // --- Session persistence helpers (survives page refresh) ---
   const SESSION_STORAGE_KEY = `servy-diagnostic-session:${assetId}`;
