@@ -797,7 +797,7 @@ def focused_causal_query(question):
 # customer's words; they add no technical statement.
 _HYPOTHESIS = re.compile(
     r"\b(?:could|might|may|can)\b\s+(?P<h>.{3,140}?)\s+"
-    r"(?:cause|explain|account for|lead to|result in)\b", re.I)
+    r"(?:cause|explain|account for|affect|impact|reduce|impair|lead to|result in)\b", re.I)
 _LOCATION_WORDS = frozenset({
     "outdoor", "indoor", "unit", "external", "internal", "system", "machine",
     "equipment", "split", "this", "that", "these", "those", "manual", "according",

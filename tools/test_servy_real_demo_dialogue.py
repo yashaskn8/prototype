@@ -1425,13 +1425,20 @@ class TechnicianHandoffTests(unittest.TestCase):
 
 
 class CausalQuestionRoutingTests(unittest.TestCase):
+    QUESTION = (
+        "Can restricted airflow or blocked outdoor unit clearance "
+        "affect the cooling performance?"
+    )
+
     def test_can_affect_wording_is_routed_to_documented_causes(self):
+        self.assertEqual(question_topic(self.QUESTION), "causes")
+
+    def test_or_hypotheses_keep_each_matching_source_cause(self):
+        result, _ = focus_answer(contract(), self.QUESTION)
+        self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertEqual(
-            question_topic(
-                "Can restricted airflow or blocked outdoor unit clearance "
-                "affect the cooling performance?"
-            ),
-            "causes",
+            [claim["source_text"] for claim in result["presentation"]["supporting_claims"]],
+            ["Reduced airflow.", "Blocked external clearance."],
         )
 
 
