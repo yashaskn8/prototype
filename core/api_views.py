@@ -70,11 +70,12 @@ from core.services.customer_isolation import (
     validate_customer_serving_policy,
 )
 from rest_framework.exceptions import PermissionDenied
-from core.forms import MAX_KB_UPLOAD_BYTES
+
 
 logger = logging.getLogger("servy.api")
 
 ALLOWED_KB_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
+MAX_KB_UPLOAD_BYTES = getattr(settings, "SERVY_MAX_KB_UPLOAD_BYTES", 10 * 1024 * 1024)
 
 
 def _customer_ticket_data(call):

@@ -56,13 +56,14 @@ MIDDLEWARE = [
 ROOT_URLCONF = "servy_rag.urls"
 TEMPLATES = [{
     "BACKEND": "django.template.backends.django.DjangoTemplates",
-    "DIRS": [BASE_DIR / "templates"],
+    # Keep Django's app templates for the admin and DRF; the retired
+    # server-rendered prototype UI no longer ships project-level templates.
+    "DIRS": [],
     "APP_DIRS": True,
     "OPTIONS": {"context_processors": [
         "django.template.context_processors.request",
         "django.contrib.auth.context_processors.auth",
         "django.contrib.messages.context_processors.messages",
-        "core.context_processors.tenant_context",
     ]},
 }]
 WSGI_APPLICATION = "servy_rag.wsgi.application"
@@ -153,15 +154,15 @@ TIME_ZONE = "Asia/Kolkata"
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "/static/"
-STATICFILES_DIRS = [BASE_DIR / "static"]
+STATICFILES_DIRS = []  # Project-specific Bootstrap assets belonged to the retired Django UI.
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("SERVY_MEDIA_ROOT", str(BASE_DIR / "media"))).resolve()
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-LOGIN_URL = "/accounts/login/"
-LOGIN_REDIRECT_URL = "/"
-LOGOUT_REDIRECT_URL = "/accounts/login/"
+LOGIN_URL = "/app/"
+LOGIN_REDIRECT_URL = "/app/"
+LOGOUT_REDIRECT_URL = "/app/"
 
 # Security defaults suitable for local development and ready for hardening in production.
 SESSION_COOKIE_HTTPONLY = True
