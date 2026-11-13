@@ -17,7 +17,7 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
 - Knowledge Base upload flow with tags, document type, customer, product, asset, confidentiality and RAG enable/disable.
 - Local document parsing for text/Markdown, PDF, DOCX and CSV.
 - Local chunk indexing and vector synchronization.
-- Local text generation: staff-mode RAG supports legacy Ollama and a loopback llama.cpp Qwen provider. The authorized real-data customer demo can optionally use local Ollama Qwen to reword only already-approved, citation-bound information and possible-cause claims after deterministic retrieval and dialogue filtering. Procedures, observations, citations and source bindings remain unchanged; rejected or unavailable output falls back to exact approved source wording. Remote model endpoints remain disabled.
+- Local text generation: staff-mode RAG supports legacy Ollama and a loopback llama.cpp Qwen provider. The authorized real-data customer demo uses local Ollama Qwen only to reword already-approved, citation-bound information and possible-cause claims after deterministic retrieval and dialogue filtering. Startup verifies the local endpoint and installed model; invalid generation output falls back to exact approved source wording. Procedures, observations, citations and source bindings remain unchanged. Remote model endpoints remain disabled.
 - Call Register XLSX export and XLSX import with safety bounds.
 - Demo seed volume matching the screenshots: **51 assets, 26 projects, 118 KB items, 532 inventory rows, 7,665 calls**.
 - Two high-quality initial RAG domains: **Milk Analyzer** and **Aerolift**.
