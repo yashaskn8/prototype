@@ -115,6 +115,7 @@ def ask_rag(
         service_call=service_call,
         conversation_context=conversation_context,
         original_question=display_question,
+        allow_generation=bool(staff_mode),
     )
 
     # Helper to serialize chunk metadata

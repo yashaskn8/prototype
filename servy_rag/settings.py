@@ -224,12 +224,23 @@ REST_FRAMEWORK = {
 CHROMA_PERSIST_DIR = Path(os.getenv("SERVY_CHROMA_PERSIST_DIR", str(BASE_DIR / "chroma_db"))).resolve()
 
 # Local RAG / LLM settings. Docker is not required.
-SERVY_LLM_PROVIDER = os.getenv("SERVY_LLM_PROVIDER", "extractive")  # extractive|auto|ollama
-# Optional strict local generation: do not silently substitute extractive answers when Ollama is required.
+SERVY_LLM_PROVIDER = os.getenv("SERVY_LLM_PROVIDER", "extractive").lower().strip()  # extractive|auto|ollama|llama_cpp
+# Optional strict local generation: do not silently substitute extractive answers when a provider is required.
 SERVY_LLM_REQUIRE_OLLAMA = os.getenv("SERVY_LLM_REQUIRE_OLLAMA", "0") == "1"
 SERVY_OLLAMA_URL = os.getenv("SERVY_OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 SERVY_OLLAMA_MODEL = os.getenv("SERVY_OLLAMA_MODEL", "qwen2.5:3b")
 SERVY_OLLAMA_TIMEOUT = int(os.getenv("SERVY_OLLAMA_TIMEOUT", "30"))
+# Qwen GGUF through llama.cpp's OpenAI-compatible local server. The real-data
+# customer demo remains extractive; staff-mode RAG may opt into this generator.
+SERVY_LLAMA_CPP_URL = os.getenv(
+    "SERVY_LLAMA_CPP_URL", "http://127.0.0.1:9931/v1/chat/completions"
+)
+SERVY_LLAMA_CPP_MODEL = os.getenv(
+    "SERVY_LLAMA_CPP_MODEL", "gguf/Qwen3.5-2B-GGUF:Q4_K_M"
+)
+SERVY_LLAMA_CPP_TIMEOUT = float(os.getenv("SERVY_LLAMA_CPP_TIMEOUT", "90"))
+SERVY_LLAMA_CPP_MAX_TOKENS = int(os.getenv("SERVY_LLAMA_CPP_MAX_TOKENS", "512"))
+SERVY_LLM_REQUIRE_LLAMA_CPP = os.getenv("SERVY_LLM_REQUIRE_LLAMA_CPP", "0") == "1"
 SERVY_RAG_TOP_K = int(os.getenv("SERVY_RAG_TOP_K", "6"))
 SERVY_RAG_MIN_SCORE = float(os.getenv("SERVY_RAG_MIN_SCORE", "0.055"))
 SERVY_DENSE_RELEVANCE_GATE = float(os.getenv("SERVY_DENSE_RELEVANCE_GATE", "0.55"))

@@ -85,6 +85,101 @@ class OllamaEngineTransparencyTests(SimpleTestCase):
         self.assertEqual(self._run(online=True, error=RuntimeError("synthetic failure")),
                          ("Synthetic extractive answer", "extractive-local"))
 
+class LlamaCppProviderTests(SimpleTestCase):
+    def _passage(self):
+        return SimpleNamespace(
+            source_kind="knowledge_document",
+            reference="Synthetic Approved Manual / Safe Section",
+            doc_type="Manual",
+            text="The status LED indicates the documented operating state.",
+        )
+
+    @override_settings(
+        SERVY_LLAMA_CPP_URL="http://127.0.0.1:9931/v1/chat/completions",
+        SERVY_LLAMA_CPP_MODEL="gguf/Qwen3.5-2B-GGUF:Q4_K_M",
+        SERVY_LLAMA_CPP_TIMEOUT=90,
+        SERVY_LLAMA_CPP_MAX_TOKENS=512,
+    )
+    def test_llama_cpp_uses_loopback_openai_chat_api_without_proxy_or_redirects(self):
+        from core.services.llm import llama_cpp_generate
+        session = mock.Mock()
+        response = mock.Mock()
+        response.status_code = 200
+        response.content = b'{"choices":[]}'
+        response.json.return_value = {
+            "choices": [{"message": {"content": "The status LED indicates the operating state."}}]
+        }
+        session.post.return_value = response
+        with mock.patch("core.services.llm.requests.Session", return_value=session):
+            answer = llama_cpp_generate("Synthetic prompt")
+        self.assertEqual(answer, "The status LED indicates the operating state.")
+        self.assertFalse(session.trust_env)
+        args, kwargs = session.post.call_args
+        self.assertEqual(args, ("http://127.0.0.1:9931/v1/chat/completions",))
+        self.assertFalse(kwargs["allow_redirects"])
+        self.assertEqual(kwargs["json"]["model"], "gguf/Qwen3.5-2B-GGUF:Q4_K_M")
+        self.assertEqual(kwargs["json"]["messages"][0]["content"], "Synthetic prompt")
+        self.assertEqual(kwargs["json"]["chat_template_kwargs"], {"enable_thinking": False})
+        session.close.assert_called_once_with()
+
+    @override_settings(SERVY_LLAMA_CPP_URL="https://example.com/v1/chat/completions")
+    def test_remote_llama_cpp_endpoint_is_rejected_before_network_call(self):
+        from core.services.llm import llama_cpp_generate
+        with mock.patch("core.services.llm.requests.Session") as session:
+            with self.assertRaises(ValueError):
+                llama_cpp_generate("Do not send this prompt")
+        session.assert_not_called()
+
+    @override_settings(
+        SERVY_LLM_PROVIDER="llama_cpp",
+        SERVY_LLM_REQUIRE_LLAMA_CPP=True,
+    )
+    def test_required_offline_qwen_abstains(self):
+        passage = self._passage()
+        with (
+            mock.patch("core.services.llm.check_evidence_sufficiency",
+                       return_value=SimpleNamespace(grounded_chunks=[passage])),
+            mock.patch("core.services.llm.is_llama_cpp_service_online", return_value=False),
+            mock.patch("core.services.llm._extractive_answer") as extractive,
+        ):
+            result = generate_answer("What does the status LED indicate?", None, [passage])
+        self.assertEqual(result, (INSUFFICIENT_EVIDENCE_MESSAGE, "llm-unavailable"))
+        extractive.assert_not_called()
+
+    @override_settings(
+        SERVY_LLM_PROVIDER="llama_cpp",
+        SERVY_LLM_REQUIRE_LLAMA_CPP=False,
+    )
+    def test_optional_offline_qwen_falls_back_to_extractive(self):
+        passage = self._passage()
+        with (
+            mock.patch("core.services.llm.check_evidence_sufficiency",
+                       return_value=SimpleNamespace(grounded_chunks=[passage])),
+            mock.patch("core.services.llm.is_llama_cpp_service_online", return_value=False),
+            mock.patch("core.services.llm._extractive_answer",
+                       return_value="Synthetic source-grounded fallback"),
+        ):
+            result = generate_answer("What does the status LED indicate?", None, [passage])
+        self.assertEqual(result, ("Synthetic source-grounded fallback", "extractive-local"))
+
+    @override_settings(SERVY_LLM_PROVIDER="llama_cpp")
+    def test_customer_mode_can_explicitly_disable_model_generation(self):
+        passage = self._passage()
+        with (
+            mock.patch("core.services.llm.check_evidence_sufficiency",
+                       return_value=SimpleNamespace(grounded_chunks=[passage])),
+            mock.patch("core.services.llm.is_llama_cpp_service_online",
+                       side_effect=AssertionError("customer mode must not probe llama.cpp")),
+            mock.patch("core.services.llm._extractive_answer",
+                       return_value="Synthetic exact-source answer"),
+        ):
+            result = generate_answer(
+                "What does the status LED indicate?", None, [passage],
+                allow_generation=False,
+            )
+        self.assertEqual(result, ("Synthetic exact-source answer", "extractive-local"))
+
+
 class DenseEmbeddingSnapshotTests(SimpleTestCase):
     def test_dense_scorer_uses_request_snapshot_not_later_global_override(self):
         """Model identity must stay fixed for a request, even if settings change."""

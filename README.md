@@ -311,7 +311,24 @@ The authorized read-only real-data demo launched with `tools/Start-ServyRealDemo
 
 These embedding and reranking components are retrieval models; they are not text-generation models. The real-data presentation launcher therefore sets `SERVY_LLM_PROVIDER=extractive` and `SERVY_REAL_DEMO_DIALOGUE_MODE=rules`. It does not probe or require Ollama, Qwen chat, a remote API, or another chat server. Do not install an extra inference server just to start this demo.
 
-The repository retains a separate optional Ollama integration for other explicitly configured application runs. That optional feature is not part of the authorized real-data demo path and is not needed for the three-asset RAG presentation.
+For staff-mode RAG, the repository also supports an optional local Qwen GGUF generator through llama.cpp. Install llama.cpp on Windows, download/serve the Q4_K_M model, then configure the backend process:
+
+```powershell
+$env:SERVY_LLM_PROVIDER = "llama_cpp"
+$env:SERVY_LLAMA_CPP_URL = "http://127.0.0.1:9931/v1/chat/completions"
+$env:SERVY_LLAMA_CPP_MODEL = "gguf/Qwen3.5-2B-GGUF:Q4_K_M"
+$env:SERVY_LLM_REQUIRE_LLAMA_CPP = "0"
+```
+
+Start the local server separately with:
+
+```powershell
+llama serve -hf gguf/Qwen3.5-2B-GGUF:Q4_K_M -c 4096 -np 1
+```
+
+The backend calls llama.cpp's OpenAI-compatible chat endpoint, disables proxy inheritance and redirects, and rejects non-loopback URLs. If the server is unavailable, the default behavior falls back to the existing extractive answer; set `SERVY_LLM_REQUIRE_LLAMA_CPP=1` only when an explicit abstention is preferred over fallback. Generation is permitted only when `ask_rag(..., staff_mode=True)`; customer-mode RAG deliberately does not call the model. The customer answer contract independently rebuilds its display from authorized source sentences and citations.
+
+The existing Ollama provider remains available for legacy explicitly configured runs. Neither Ollama nor llama.cpp is required by the authorized real-data customer demo.
 
 **Conversational RAG smoke tests** after updating `main`:
 

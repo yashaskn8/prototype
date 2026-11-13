@@ -11,6 +11,32 @@ logger = logging.getLogger(__name__)
 
 _ollama_last_checked = 0.0
 _ollama_is_available = None
+_llama_cpp_last_checked = 0.0
+_llama_cpp_is_available = None
+
+
+def is_llama_cpp_service_online() -> bool:
+    """Check the configured loopback llama.cpp server, memoizing the result briefly."""
+    global _llama_cpp_last_checked, _llama_cpp_is_available
+    now = time.time()
+    if _llama_cpp_is_available is not None and (now - _llama_cpp_last_checked) < 15.0:
+        return _llama_cpp_is_available
+
+    import socket
+    try:
+        parsed = urlparse(settings.SERVY_LLAMA_CPP_URL)
+        if (parsed.scheme != "http"
+                or (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}
+                or not parsed.port):
+            _llama_cpp_is_available = False
+        else:
+            with socket.create_connection((parsed.hostname, parsed.port), timeout=0.1):
+                _llama_cpp_is_available = True
+    except (OSError, ValueError, socket.timeout):
+        _llama_cpp_is_available = False
+
+    _llama_cpp_last_checked = now
+    return _llama_cpp_is_available
 
 
 def is_ollama_service_online() -> bool:
@@ -66,6 +92,53 @@ def ollama_generate(prompt):
     if len(response.content) > 2 * 1024 * 1024:
         raise RuntimeError("Local LLM response exceeded the 2 MB safety limit.")
     return response.json().get("response", "").strip()
+    # Session is short-lived; do not retain customer or source text.
+
+
+def _validate_llama_cpp_endpoint():
+    """Require an HTTP loopback endpoint; never send approved source text remotely."""
+    url = settings.SERVY_LLAMA_CPP_URL
+    parsed = urlparse(url)
+    if (parsed.scheme != "http"
+            or (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.path.rstrip("/") != "/v1/chat/completions"
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("llama.cpp must use a plain HTTP loopback /v1/chat/completions endpoint.")
+    return url
+
+
+def llama_cpp_generate(prompt):
+    """Generate a local draft through llama.cpp's OpenAI-compatible chat endpoint."""
+    url = _validate_llama_cpp_endpoint()
+    session = requests.Session()
+    session.trust_env = False  # prevent proxy routing for private company evidence
+    try:
+        response = session.post(
+            url,
+            json={
+                "model": settings.SERVY_LLAMA_CPP_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "top_p": 0.8,
+                "max_tokens": settings.SERVY_LLAMA_CPP_MAX_TOKENS,
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            timeout=settings.SERVY_LLAMA_CPP_TIMEOUT,
+            allow_redirects=False,
+        )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("Local llama.cpp endpoint attempted an HTTP redirect; blocked for privacy.")
+        response.raise_for_status()
+        if len(response.content) > 2 * 1024 * 1024:
+            raise RuntimeError("Local llama.cpp response exceeded the 2 MB safety limit.")
+        payload = response.json()
+        answer = payload["choices"][0]["message"]["content"]
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("Local llama.cpp returned no assistant content.")
+        return answer.strip()
+    finally:
+        session.close()
 
 
 _STOPWORDS = {
@@ -912,7 +985,10 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     )
 
 
-def generate_answer(question, asset, retrieved, service_call=None, conversation_context=None, original_question=None):
+def generate_answer(
+    question, asset, retrieved, service_call=None,
+    conversation_context=None, original_question=None, allow_generation=True,
+):
     if not retrieved:
         return INSUFFICIENT_EVIDENCE_MESSAGE, "fallback"
 
@@ -1002,7 +1078,49 @@ RETRIEVED SOURCES:
 
 ANSWER:"""
 
-    provider = settings.SERVY_LLM_PROVIDER.lower()
+    provider = str(settings.SERVY_LLM_PROVIDER).lower().strip()
+    if not allow_generation:
+        return _extractive_answer(
+            question, asset, grounded, service_call=service_call,
+            conversation_context=conversation_context,
+            original_question=original_question,
+        ), "extractive-local"
+
+    # The local Qwen GGUF is served by llama.cpp. It is deliberately enabled
+    # only for staff-mode RAG; customer responses are rebuilt by the separate
+    # source-span contract and must remain exact-source/citation bound.
+    if provider == "llama_cpp":
+        llama_online = is_llama_cpp_service_online()
+        if llama_online:
+            try:
+                raw_answer = llama_cpp_generate(prompt)
+                clean_answer = _clean_model_answer(raw_answer, grounded)
+                if clean_answer and clean_answer != INSUFFICIENT_EVIDENCE_MESSAGE:
+                    seen_refs = set()
+                    ref_lines = ["\\n\\nVERIFIED REFERENCES"]
+                    for r in grounded[:5]:
+                        ref_label = f"{r.reference} ({r.doc_type})"
+                        if ref_label not in seen_refs:
+                            seen_refs.add(ref_label)
+                            ref_lines.append(f"- {ref_label}")
+                    return clean_answer + "\\n" + "\\n".join(ref_lines), "llama-cpp-local"
+                if clean_answer == INSUFFICIENT_EVIDENCE_MESSAGE:
+                    return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
+            except Exception as exc:
+                logger.warning(
+                    "Local llama.cpp generation unavailable (%s); using configured fallback",
+                    type(exc).__name__,
+                )
+        else:
+            logger.warning("Local llama.cpp generation unavailable (server offline); using configured fallback")
+        if getattr(settings, "SERVY_LLM_REQUIRE_LLAMA_CPP", False):
+            return INSUFFICIENT_EVIDENCE_MESSAGE, "llm-unavailable"
+        return _extractive_answer(
+            question, asset, grounded, service_call=service_call,
+            conversation_context=conversation_context,
+            original_question=original_question,
+        ), "extractive-local"
+
     # The returned engine must identify the generator that actually ran.
     ollama_online = (
         is_ollama_service_online()
