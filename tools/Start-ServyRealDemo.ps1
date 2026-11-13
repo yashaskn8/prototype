@@ -147,8 +147,8 @@ $env:DJANGO_DEBUG = '1'
 # source-exact. Invalid or unavailable model output falls back to exact source text.
 $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
-# Keep the general RAG answer engine extractive. Customer Qwen wording is a
-# separate source-span-bound postprocessor configured below.
+# Retrieval, ranking, evidence selection and safety remain deterministic.
+# Qwen writes customer-facing wording only from reauthorized cited source chunks.
 $env:SERVY_LLM_PROVIDER = 'extractive'
 if ($NoLocalChat) {
     $env:SERVY_LLM_PROVIDER = 'extractive'
@@ -159,7 +159,7 @@ if ($NoLocalChat) {
     $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
     $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
     $env:SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'
-    Write-Output 'Customer answers: local Qwen wording enabled; exact-source fallback retained.'
+    Write-Output 'Customer RAG answer generation: local Qwen enabled; cited-source validation and extractive fallback retained.'
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
     } catch {
