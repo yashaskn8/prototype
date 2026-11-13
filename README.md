@@ -456,4 +456,19 @@ The 10,000-session adversarial harness stress-tests 15 zero-tolerance invariants
 
 This is intentionally a **prototype**, not a production auth/security implementation. The tenant switcher is a demo convenience. In production, tenant identity must come from the authenticated user's organisation membership, not a user-selectable session value. Add production authentication, object-level permissions, audit logging, malware scanning for uploads, background indexing, rate limits, backup/restore and full test coverage before deployment.
 
-See `PROJECT_SCOPE.md`, `ARCHITECTURE.md` and `UI_LICENSE.md` for the design rationale.
+See `docs/archive/PROJECT_SCOPE.md`, `ARCHITECTURE.md` and `UI_LICENSE.md` for the design rationale.
+
+
+## Maintainer guide
+
+- [Current architecture](ARCHITECTURE.md)
+- [Customer answer and evidence design](CUSTOMER_ANSWER_REDESIGN.md)
+- [Real-data conversation design](REAL_DEMO_CONVERSATION_DESIGN.md)
+- [Demo walkthrough](DEMO_SCRIPT.md)
+- [Release contract](RELEASE_CONTRACT_2026-11-05.md)
+- [RAG architecture decisions](SERVY_RAG_ADR_2026-11-05.md)
+- [Local V5 reranker setup](V5_LOCAL_RERANKER_SETUP.md)
+- [Archived engineering reports and evaluation snapshots](docs/archive/README.md)
+- [Research, evaluation, launchers and test-tool guide](tools/README.md)
+
+Historical reports and JSON/CSV evaluation snapshots are retained under `docs/archive/`. They are preserved for traceability and should not be interpreted as the current serving status; use the current release contract, CI results and serving checks for that.
