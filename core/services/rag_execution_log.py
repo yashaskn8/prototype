@@ -35,6 +35,7 @@ _ALLOWED_METRICS = frozenset({
     "reranker_model",
     "answer_engine",
     "model_provider",
+    "generation_status",
 })
 
 
