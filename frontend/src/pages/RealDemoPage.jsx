@@ -594,11 +594,6 @@ export function RealDemoPage() {
                             />
                           </> : <>
                             <div className="real-demo-chat-answer-heading">
-                              <RAGExecutionLog
-                                events={message.executionLogs || []}
-                                running={false}
-                                title="Customer RAG execution log"
-                              />
                               <strong>Servy</strong>
                               <span className={message.data?.response_type === 'DIAGNOSTIC_GUIDANCE'
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
@@ -614,6 +609,11 @@ export function RealDemoPage() {
                                 })[message.data?.response_type] || 'Response'}
                               </span>
                             </div>
+                            <RAGExecutionLog
+                              events={message.executionLogs || []}
+                              running={false}
+                              title="Customer RAG execution log"
+                            />
                             {message.data?.response_type === 'TECHNICIAN_HANDOFF'
                               && message.data?.handoff ? (
                                 <section className="real-demo-handoff" aria-label="Technician handoff checklist">
