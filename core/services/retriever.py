@@ -1161,13 +1161,18 @@ def retrieve(
     # This replaces the old "sparse only if dense returns nothing" approach.
 
     # 2a: Sparse/local retrieval (runs in hybrid and sparse_only modes)
-    with execution_stage(
-        "sparse_retrieval",
-        "Searching approved manual text passages",
-    ):
-        if serving_config.retrieval_mode == "dense_only":
-            sparse_results = []
-        else:
+    if serving_config.retrieval_mode == "dense_only":
+        sparse_results = []
+        emit_execution_event(
+            "sparse_retrieval",
+            "Sparse text search disabled by the active retrieval mode",
+            "skipped",
+        )
+    else:
+        with execution_stage(
+            "sparse_retrieval",
+            "Searching approved manual text passages",
+        ):
             sparse_results = _sparse_score_candidates(
                 candidates, evidence_vector, scope_vector,
                 query_identifiers, asset, customer, min_score,
@@ -1177,13 +1182,18 @@ def retrieve(
             )
 
     # 2b: Dense retrieval (may fail gracefully; skipped in sparse_only mode)
-    with execution_stage(
-        "dense_retrieval",
-        "Searching the approved vector index",
-    ):
-        if serving_config.retrieval_mode == "sparse_only":
-            dense_results = []
-        else:
+    if serving_config.retrieval_mode == "sparse_only":
+        dense_results = []
+        emit_execution_event(
+            "dense_retrieval",
+            "Vector search disabled by the active retrieval mode",
+            "skipped",
+        )
+    else:
+        with execution_stage(
+            "dense_retrieval",
+            "Searching the approved vector index",
+        ):
             try:
                 dense_results = _dense_score_candidates(
                     dense_candidates, dense_doc_ids, dense_chunks_by_id,
