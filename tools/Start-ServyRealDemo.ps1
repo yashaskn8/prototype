@@ -141,10 +141,10 @@ if (!(Test-LocalPort 3306)) {
 $env:LOCALAPPDATA = $privateLocal
 $env:SERVY_REAL_DEMO_MODE = '1'
 $env:DJANGO_DEBUG = '1'
-# Retrieval and safety decisions remain deterministic. Qwen is used only after
-# the answer builder has selected safe, exact-span claims and citations. It may
-# reword informational/possible-cause claims; procedures and observations stay
-# source-exact. Invalid or unavailable model output falls back to exact source text.
+# Retrieval, evidence selection and safety remain deterministic. Qwen runs
+# only after claims and source citations are selected; it receives reauthorized
+# full source chunks and cannot add facts absent from those passages. Invalid
+# or unavailable output falls back to the exact cited source wording.
 $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
 # Retrieval, ranking, evidence selection and safety remain deterministic.
