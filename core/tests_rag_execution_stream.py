@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from threading import Thread
+from unittest.mock import patch
 
+from django.contrib.auth.models import User
 from django.test import SimpleTestCase
+from rest_framework.test import APIRequestFactory, force_authenticate
+
+from core.api_views import EngineerCopilotQueryStreamView, EngineerCopilotQueryView
 
 from core.services.rag_event_stream import rag_execution_stream
 from core.services.rag_execution_log import (
@@ -102,3 +107,61 @@ class RAGExecutionStreamTests(SimpleTestCase):
         self.assertIn('"status":"failed"', body)
         self.assertIn('"error_type":"ValueError"', body)
         self.assertNotIn("customer question", body)
+
+
+class TechnicianCopilotStreamAccessTests(SimpleTestCase):
+    def test_technician_stream_rejects_anonymous_requests_before_work(self):
+        request = APIRequestFactory().post(
+            "/api/engineer-copilot/query-stream/",
+            {"call_id": 100, "question": "synthetic question"},
+            format="json",
+        )
+        with patch.object(
+            EngineerCopilotQueryStreamView,
+            "_prepare",
+            side_effect=AssertionError("unauthenticated requests must not prepare RAG work"),
+        ):
+            response = EngineerCopilotQueryStreamView.as_view()(request)
+        self.assertEqual(response.status_code, 403)
+
+    def test_authenticated_stream_forwards_live_events_and_final_copilot_result(self):
+        request = APIRequestFactory().post(
+            "/api/engineer-copilot/query-stream/",
+            {"call_id": 100, "question": "synthetic question"},
+            format="json",
+        )
+        user = User(username="stream-test", is_active=True)
+        force_authenticate(request, user=user)
+        prepared = {"scope": "synthetic authorized ticket"}
+
+        def execute(_prepared):
+            with execution_stage(
+                "technician_ticket_authorization",
+                "Revalidating technician ticket and tenant access",
+            ):
+                emit_execution_event(
+                    "technician_confidential_scope",
+                    "Confidential source access",
+                    "info",
+                    metrics={"confidential_scope": "restricted"},
+                )
+            return {"answer": "synthetic technician recommendation"}
+
+        with (
+            patch.object(EngineerCopilotQueryStreamView, "throttle_classes", []),
+            patch.object(
+                EngineerCopilotQueryStreamView,
+                "_prepare",
+                return_value=(None, prepared),
+            ),
+            patch.object(EngineerCopilotQueryView, "_execute", staticmethod(execute)),
+        ):
+            response = EngineerCopilotQueryStreamView.as_view()(request)
+            body = b"".join(response.streaming_content).decode("utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/event-stream; charset=utf-8")
+        self.assertIn("event: log", body)
+        self.assertIn("technician_ticket_authorization", body)
+        self.assertIn("confidential_scope", body)
+        self.assertIn('"answer":"synthetic technician recommendation"', body)
