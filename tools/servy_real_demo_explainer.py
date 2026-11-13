@@ -26,14 +26,14 @@ MAX_EXPLANATION_CHARS = 800
 
 _SYSTEM_PROMPT = (
     "You are Servy's source-grounded customer answer writer. For every supplied "
-    "claim, write one short plain-language explanation using ONLY the complete "
-    "approved source passage supplied for that claim. Explain a documented "
+    "claim, write one short plain-language explanation using ONLY the exact "
+    "customer-approved source statement and its section heading. Explain a documented "
     "meaning or relationship only when the passage itself states it. If the "
-    "passage gives only a short cause category, say that the manual lists it as "
+    "source statement gives only a short cause category, say that the manual lists it as "
     "a possible category but does not state its mechanism. Never fill gaps from "
     "general HVAC knowledge. Do not add a cause, component, mechanism, condition, "
     "measurement, number, fault code, diagnosis, repair step, instruction, action, "
-    "recommendation, or safety procedure that is not stated in the passage. "
+    "recommendation, or safety procedure that is not stated in the exact source statement. "
     "Preserve uncertainty and negation. A possible cause is never a confirmed "
     "fault. Keep each explanation specific to its claim. Copy source_quote "
     "exactly, character for character. Return only the required JSON object. "
@@ -161,9 +161,9 @@ def explain_claims_with_status(
 ) -> dict:
     """Generate validated explanations and report the reason for any fallback.
 
-    The default enablement preserves the legacy explicit-local-mode contract.
-    The real-demo caller must opt in only after its launcher has verified local
-    Ollama and the configured model tag.
+    The caller must provide only reauthorized, customer-approved source
+    statements and headings. The default enablement preserves the legacy
+    explicit-local-mode contract; the real-demo caller opts in explicitly.
     """
     if enabled is None:
         enabled = os.environ.get("SERVY_REAL_DEMO_DIALOGUE_MODE") == "local"
@@ -342,13 +342,8 @@ def explain_claims(question: str, presentation: dict) -> dict:
     return explain_claims_with_status(question, presentation)["explanations"]
 
 
-def apply_customer_explanations(
-    presentation: dict,
-    explanations: dict,
-    *,
-    context_citations_by_claim: dict | None = None,
-) -> int:
-    """Append Qwen wording and attach full-passage citations used as context."""
+def apply_customer_explanations(presentation: dict, explanations: dict) -> int:
+    """Append validated Qwen wording while preserving source text and citations."""
     if not isinstance(presentation, dict) or not isinstance(explanations, dict):
         return 0
     groups = [presentation.get("supporting_claims", []) or []]
@@ -356,31 +351,6 @@ def apply_customer_explanations(
         section.get("claims", []) for section in presentation.get("sections", []) or []
         if isinstance(section, dict)
     )
-    added_citations = set()
-    for group in groups:
-        for claim in group:
-            if not isinstance(claim, dict):
-                continue
-            ident = claim.get("id")
-            explanation = explanations.get(ident)
-            if (not isinstance(ident, str) or not isinstance(explanation, str)
-                    or not explanation.strip()):
-                continue
-            full_citation = (context_citations_by_claim or {}).get(ident)
-            if context_citations_by_claim is not None and not isinstance(full_citation, dict):
-                continue
-            if isinstance(full_citation, dict):
-                citation_id = full_citation.get("id")
-                if not isinstance(citation_id, str):
-                    continue
-                evidence_ids = claim.get("evidence_ids")
-                if not isinstance(evidence_ids, list):
-                    evidence_ids = []
-                if citation_id not in evidence_ids:
-                    claim["evidence_ids"] = list(evidence_ids) + [citation_id]
-                if citation_id not in added_citations:
-                    presentation.setdefault("citations", []).append(full_citation)
-                    added_citations.add(citation_id)
     applied_ids = set()
     seen = set()
     for group in groups:
@@ -391,9 +361,6 @@ def apply_customer_explanations(
             explanation = explanations.get(ident)
             if (not isinstance(ident, str) or not isinstance(explanation, str)
                     or not explanation.strip() or id(claim) in seen):
-                continue
-            full_citation = (context_citations_by_claim or {}).get(ident)
-            if context_citations_by_claim is not None and not isinstance(full_citation, dict):
                 continue
             original = str(claim.get("text") or "").strip()
             if explanation.strip() not in original:
