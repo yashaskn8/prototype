@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
+import { RAGExecutionLog } from '../components/RAGExecutionLog';
+import { mergeRagExecutionEvent } from '../components/ragExecutionStream';
 import { 
   Wrench, 
   Send, 
@@ -25,6 +27,8 @@ export function EngineerCopilotPage({ initialCallId }) {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [executionLogs, setExecutionLogs] = useState([]);
+  const streamAbortRef = useRef(null);
 
   // Load calls list for selection
   async function loadCalls() {
@@ -62,28 +66,46 @@ export function EngineerCopilotPage({ initialCallId }) {
   }, []);
 
   useEffect(() => {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setExecutionLogs([]);
     if (selectedCallId) {
       loadDetail(selectedCallId);
       setResult(null);
     }
   }, [selectedCallId]);
 
+  useEffect(() => () => streamAbortRef.current?.abort(), []);
+
   async function handleQuery(e) {
     e.preventDefault();
     if (!query.trim() || !selectedCallId) return;
 
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
     setSubmitting(true);
     setError(null);
+    setExecutionLogs([]);
+    setResult(null);
 
     try {
-      const res = await api.post('/api/engineer-copilot/query/', {
-        call_id: selectedCallId,
-        question: query.trim(),
-      });
+      const res = await api.streamPost(
+        '/api/engineer-copilot/query-stream/',
+        {
+          call_id: selectedCallId,
+          question: query.trim(),
+        },
+        event => setExecutionLogs(previous => mergeRagExecutionEvent(previous, event)),
+        { signal: controller.signal },
+      );
       setResult(res);
     } catch (err) {
-      setError(err.detail || 'Failed to query engineer copilot.');
+      if (err.name !== 'AbortError') {
+        setError(err.detail || err.message || 'Failed to query engineer copilot.');
+      }
     } finally {
+      if (streamAbortRef.current === controller) streamAbortRef.current = null;
       setSubmitting(false);
     }
   }
@@ -259,6 +281,8 @@ export function EngineerCopilotPage({ initialCallId }) {
               </button>
             </div>
           </form>
+
+          <RAGExecutionLog events={executionLogs} running={submitting} title="Technician RAG execution log" />
 
           {result && (
             <div className="rag-answer-panel">
