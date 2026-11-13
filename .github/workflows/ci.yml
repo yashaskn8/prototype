@@ -182,6 +182,9 @@ jobs:
       - name: Customer RAG Mutation Tests
         run: python manage.py test core.tests_customer_mutations -v 2
 
+      - name: Live RAG Stream and Authorization Regressions
+        run: python manage.py test core.tests_rag_execution_stream -v 2
+
       - name: Run All Core Tests on MySQL
         run: python manage.py test core -v 2
 
