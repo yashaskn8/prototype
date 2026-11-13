@@ -20,8 +20,8 @@ ENDPOINT = "http://127.0.0.1:11434/api/chat"
 DEFAULT_MODEL = "qwen3.5:2b-q4_K_M"
 MAX_PROMPT_BYTES = 24000
 MAX_RESPONSE_BYTES = 24000
-MAX_CLAIMS = 10
-MAX_CONTEXT_CHARS = 6000
+MAX_CLAIMS = 6
+MAX_CONTEXT_CHARS = 3000
 MAX_EXPLANATION_CHARS = 800
 
 _SYSTEM_PROMPT = (
@@ -230,7 +230,14 @@ def explain_claims_with_status(
             # real-demo path requires a freshly reauthorized full source chunk.
             context = source
         if len(context) > MAX_CONTEXT_CHARS:
-            context = context[:MAX_CONTEXT_CHARS]
+            # Keep the claim itself inside the bounded prompt window instead
+            # of blindly truncating the beginning of a long manual chunk.
+            claim_position = context.casefold().find(source.casefold())
+            if claim_position >= 0:
+                window_start = max(0, claim_position - MAX_CONTEXT_CHARS // 3)
+                context = context[window_start:window_start + MAX_CONTEXT_CHARS]
+            else:
+                context = context[:MAX_CONTEXT_CHARS]
         candidates.append({
             "id": claim["id"], "kind": claim["kind"],
             "source_text": source, "source_context": context,
