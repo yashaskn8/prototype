@@ -1,4 +1,4 @@
-"""Regression tests for the real-data demo's no-Ollama startup contract."""
+"""Regression tests for the real-data demo's local-Qwen opt-in and fallback."""
 from pathlib import Path
 import unittest
 
@@ -10,18 +10,33 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_real_demo_uses_extractive_answers_and_deterministic_dialogue(self):
-        self.assertIn("$env:SERVY_LLM_PROVIDER = 'extractive'", self.launcher)
+    def test_retrieval_and_dialogue_remain_deterministic_while_qwen_is_enabled(self):
         self.assertIn("$env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'", self.launcher)
-        self.assertIn("Dialogue mode: deterministic and source-grounded", self.launcher)
+        self.assertIn("$env:SERVY_ALLOW_REMOTE_LLM = '0'", self.launcher)
+        self.assertIn("$env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'", self.launcher)
+        self.assertIn("$env:SERVY_OLLAMA_MODEL = 'qwen3.5:2b-q4_K_M'", self.launcher)
+        self.assertIn("Customer answers: local Qwen wording enabled", self.launcher)
 
-    def test_real_demo_does_not_probe_or_require_ollama(self):
-        for forbidden in ("11434", "/api/tags", "qwen2.5:3b", "Invoke-RestMethod"):
-            with self.subTest(forbidden=forbidden):
-                self.assertNotIn(forbidden, self.launcher)
+    def test_qwen_is_loopback_only_and_model_failure_keeps_exact_source_wording(self):
+        for required in (
+            "http://127.0.0.1:11434/api/chat",
+            "http://127.0.0.1:11434/api/tags",
+            "Ollama is not reachable",
+            "exact source wording",
+            "SERVY_LLM_REQUIRE_OLLAMA = '0'",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.launcher)
 
-    def test_legacy_no_local_chat_switch_remains_accepted(self):
+    def test_no_local_chat_switch_disables_generation_and_uses_extractive_fallback(self):
         self.assertIn("[switch]$NoLocalChat", self.launcher)
+        self.assertIn("if ($NoLocalChat)", self.launcher)
+        self.assertIn("$env:SERVY_CUSTOMER_ANSWER_GENERATION = 'disabled'", self.launcher)
+        self.assertIn("$env:SERVY_LLM_PROVIDER = 'extractive'", self.launcher)
+
+    def test_launcher_does_not_configure_remote_generation(self):
+        self.assertIn("$env:SERVY_ALLOW_REMOTE_LLM = '0'", self.launcher)
+        self.assertNotIn("https://", self.launcher)
 
 
 if __name__ == "__main__":

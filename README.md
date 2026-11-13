@@ -310,7 +310,14 @@ The authorized read-only real-data demo launched with `tools/Start-ServyRealDemo
 - **The deterministic customer answer builder** selects only source-supported claims, validates exact sentence spans, applies customer-action safety rules and creates signed citations.
 - **Qwen3.5-2B through local Ollama** can rephrase only already-approved informational and possible-cause claims after the final customer answer has passed dialogue focus. Source quotes, claim kinds and citation bindings remain unchanged. Observations and customer-approved procedures stay in source wording. Unsupported terms, quantities, codes, certainty or instructions are rejected; exact source wording is the fallback.
 
-BGE and V5 are retrieval components, not text-generation models. The real-data demo keeps retrieval, evidence sufficiency, action authorization, answer selection and citation creation deterministic. Its launcher enables the constrained local Qwen wording step using the already-installed `qwen3.5:2b-q4_K_M` Ollama model; `-NoLocalChat` disables it. No cloud LLM or remote endpoint is used.
+BGE and V5 are retrieval components, not text-generation models. The real-data demo keeps retrieval, evidence sufficiency, action authorization, answer selection and citation creation deterministic. Its launcher enables the constrained local Qwen wording step using the `qwen3.5:2b-q4_K_M` Ollama model; `-NoLocalChat` disables it. No cloud LLM or remote endpoint is used.
+
+Download the model once before the demo:
+```powershell
+ollama pull qwen3.5:2b-q4_K_M
+ollama list
+```
+If Ollama or the model is unavailable, the launcher continues with exact approved source wording.
 
 For staff-mode RAG, the repository also supports an optional local Qwen GGUF generator through llama.cpp. Install llama.cpp on Windows with `winget install llama.cpp`, then serve the Q4_K_M model. The first Hugging Face launch downloads the model if it is not already cached. Configure the backend process:
 
