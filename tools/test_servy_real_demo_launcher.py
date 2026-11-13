@@ -17,7 +17,8 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
         self.assertNotIn("$env:SERVY_LLM_PROVIDER = 'ollama'", self.launcher)
         self.assertIn("$env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'", self.launcher)
         self.assertIn("$env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'", self.launcher)
-        self.assertIn("Customer answers: local Qwen wording enabled", self.launcher)
+        self.assertIn("Customer RAG answer generation: local Qwen enabled", self.launcher)
+        self.assertIn("Qwen writes customer-facing wording only from reauthorized cited source chunks", self.launcher)
 
     def test_qwen_is_loopback_only_and_model_failure_keeps_exact_source_wording(self):
         for required in (
@@ -25,7 +26,8 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
             "http://127.0.0.1:11434/api/tags",
             "Qwen is enabled but local Ollama is not reachable",
             "Qwen is enabled but qwen3.5:2b-q4_K_M is not installed",
-            "exact-source fallback retained",
+            "cited-source validation and extractive fallback retained",
+            "exact cited source wording",
             "SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'",
             "SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'",
         ):
