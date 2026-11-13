@@ -208,7 +208,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
             return captured["result"]
 
         handler._send_rag_stream = run
-        with patch.object(demo, "read_only_database", return_value=nullcontext()), \\
+        with patch.object(demo, "read_only_database", return_value=nullcontext()), \
              patch.object(demo, "_answer", return_value={
                  "response_type": "DIAGNOSTIC_GUIDANCE",
                  "message": "Synthetic streamed response",
