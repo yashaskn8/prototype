@@ -210,7 +210,7 @@ class CustomerAnswerGuardTests(unittest.TestCase):
         self.assertEqual(answer["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(answer["reason_code"], "NO_AUTHORIZED_TEST_DOCUMENTATION")
         self.assertIn("No authorized documentation", answer["answer"])
-        self.assertIn("No service ticket has been created", answer["answer"])
+        self.assertIn("No ticket has been created", answer["answer"])
         self.assertEqual(answer["citations"], [])
         self.assertEqual(answer["presentation"]["sections"], [])
 

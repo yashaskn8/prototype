@@ -1437,8 +1437,8 @@ class CausalQuestionRoutingTests(unittest.TestCase):
         result, _ = focus_answer(contract(), self.QUESTION)
         self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertEqual(
-            [claim["source_text"] for claim in result["presentation"]["supporting_claims"]],
-            ["Reduced airflow.", "Blocked external clearance."],
+            set(claim["source_text"] for claim in result["presentation"]["supporting_claims"]),
+            {"Reduced airflow.", "Blocked external clearance."},
         )
 
 

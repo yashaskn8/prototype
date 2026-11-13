@@ -88,7 +88,7 @@ _CAUSE_MODAL_DIRECTIVE = re.compile(
 )
 _CAUSE_OBSERVATION_CUE = re.compile(
     r"\b(?:evidence of|signs? of|indications? of|look(?:ing)? for|"
-    r"check(?:ing)? for|inspect(?:s|ed|ing)?|inspection|visible|visually|"
+    r"check(?:ing)? for|inspect(?:s|ed|ing)?|inspection|visually|"
     r"observe|report|record|note|monitor)\b",
     re.I,
 )
