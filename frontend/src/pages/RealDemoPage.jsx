@@ -149,6 +149,7 @@ export function RealDemoPage() {
   const chatEndRef = useRef(null);
   const requestRevision = useRef(0);
   const requestInFlight = useRef(null);
+  const requestStreamController = useRef(null);
   const [result, setResult] = useState(null);
   const [answeredQuestion, setAnsweredQuestion] = useState('');
   const [ticketDraft, setTicketDraft] = useState(null);
@@ -158,11 +159,14 @@ export function RealDemoPage() {
   const [error, setError] = useState('');
   const [view, setView] = useState('chat');
 
+  useEffect(() => () => requestStreamController.current?.abort(), []);
 
   // Chat and its signed retrieval context are deliberately browser-memory only.
   // No customer conversation is saved to the company's operational database.
   function resetConversation() {
     requestRevision.current += 1;
+    requestStreamController.current?.abort();
+    requestStreamController.current = null;
     requestInFlight.current = null;
     setMessages([]);
     setContinuation(null);
@@ -184,6 +188,8 @@ export function RealDemoPage() {
 
   function hydrateThread(snapshot) {
     requestRevision.current += 1;
+    requestStreamController.current?.abort();
+    requestStreamController.current = null;
     setMessages(snapshot?.messages || []);
     setContinuation(snapshot?.continuation || null);
     setQuestion(snapshot?.question || '');
@@ -295,6 +301,9 @@ export function RealDemoPage() {
     if (!tryBeginRequest(requestInFlight, responseId)) return;
     const activeRevision = requestRevision.current;
     const activeAsset = assetId;
+    requestStreamController.current?.abort();
+    const streamController = new AbortController();
+    requestStreamController.current = streamController;
     setError('');
     setBusy(true);
     setTicketDraft(null);
@@ -329,6 +338,7 @@ export function RealDemoPage() {
             });
           });
         },
+        streamController.signal,
       );
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
       const responseAssetId = data?.presentation?.equipment?.id ?? data?.asset?.id;
@@ -369,6 +379,9 @@ export function RealDemoPage() {
       setQuestion(submittedQuestion);
       setError('');
     } finally {
+      if (requestStreamController.current === streamController) {
+        requestStreamController.current = null;
+      }
       finishRequest(requestInFlight, responseId);
       if (requestRevision.current === activeRevision && activeAsset === assetId) {
         setBusy(false);
