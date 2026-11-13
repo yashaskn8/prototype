@@ -318,8 +318,10 @@ class ProtectedKnowledgeDownloadTests(TestCase):
         self.client.login(username="tech_secret", password="SafePass!123")
         response = self.client.get(reverse("api_knowledge_download", args=[self.doc.id]))
         self.assertEqual(response.status_code, 200)
+        # Reading the stream to the end lets the test client close the file. An
+        # extra response.close() sends request_finished, which closes the DB
+        # connection inside the test transaction on MySQL.
         self.assertEqual(b"".join(response.streaming_content), b"secret")
-        response.close()
 
     def test_cross_tenant_download_is_not_found(self):
         self.client.login(username="other_admin", password="SafePass!123")

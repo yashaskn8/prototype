@@ -92,7 +92,7 @@ The GitHub Actions workflow at `.github/workflows/ci.yml` runs the backend secur
 | `tools/Start-Servy*.ps1` | Supported launchers for the three applications |
 | `tools/security/` | `red_team_static.py` and `red_team_offline.py` (run by CI from the repository root) |
 | `tools/diagnostics/` | Directly executed diagnostics, e.g. `test_rag_handoff_regression.py` |
-| `tools/launchers/` | Older plain launchers (`run_*.bat`, `run_linux.sh`, `setup_*`); `run_windows`, `run_linux` and `setup_*` run `migrate`, so prefer `tools/Start-ServyApp.ps1` |
+| `tools/launchers/` | Environment setup (`setup_windows.bat`, `setup_linux.sh`) and the Linux runner (`run_linux.sh`); these run `migrate`. On Windows start the app with `tools/Start-ServyApp.ps1` |
 | `tools/` (other) | Evaluation, research and maintenance utilities; most are run directly |
 | `docs/` | Architecture, decision records and design notes; `docs/archive/` holds historical reports |
 

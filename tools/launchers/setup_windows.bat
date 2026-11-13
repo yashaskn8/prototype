@@ -10,4 +10,4 @@ python manage.py migrate
 python manage.py check
 
 echo.
-echo Setup complete. Run tools\launchers\run_windows.bat to start Servy RAG.
+echo Setup complete. Start the app with tools\Start-ServyApp.ps1.

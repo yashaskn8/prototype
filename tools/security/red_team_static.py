@@ -73,7 +73,7 @@ frontend_text = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p i
 check("no-runtime-cdn", not re.search(r"https?://(?:cdn\.|cdn.jsdelivr|unpkg|cdnjs)", frontend_text, re.I))
 
 # 4) Startup scripts must not seed or reset synthetic business records implicitly.
-for name in ["run_windows.bat", "run_linux.sh", "setup_windows.bat", "setup_linux.sh"]:
+for name in ["run_linux.sh", "setup_windows.bat", "setup_linux.sh"]:
     path = ROOT / "tools" / "launchers" / name
     check(f"startup-no-demo-seed:{name}", path.exists() and "seed_demo" not in path.read_text(errors="ignore"))
 

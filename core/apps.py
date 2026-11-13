@@ -7,6 +7,10 @@ class CoreConfig(AppConfig):
 
     def ready(self):
         from . import signals  # noqa: F401
+        from .test_database_guard import install as install_test_database_guard
+
+        # Database tests may only run against a throwaway test database.
+        install_test_database_guard()
 
         # Production opt-in: do not report a healthy startup if the pinned
         # V5 checkpoint cannot run the exact serving scorer.
