@@ -84,6 +84,62 @@ def _endpoint() -> str:
     return url
 
 
+def validate_customer_generation_configuration(*, check_runtime: bool = False) -> dict:
+    """Validate the independent customer-Qwen configuration; optionally verify its local model tag."""
+    mode = str(getattr(settings, "SERVY_CUSTOMER_ANSWER_GENERATION", "disabled")).lower().strip()
+    if mode == "disabled":
+        return {"enabled": False, "provider": "disabled"}
+    if mode != "ollama":
+        raise RuntimeError("Customer answer generation must be either disabled or local Ollama.")
+    if bool(getattr(settings, "SERVY_ALLOW_REMOTE_LLM", False)):
+        raise RuntimeError("Customer Qwen requires remote model access to remain disabled.")
+    try:
+        url = _endpoint()
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Customer Qwen must use the approved loopback Ollama endpoint.") from None
+    model = str(getattr(settings, "SERVY_CUSTOMER_GENERATION_MODEL", "")).strip()
+    # Ollama quantized tags such as qwen3.5:2b-q4_K_M legitimately contain underscores.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,100}", model):
+        raise RuntimeError("Customer Qwen model tag is empty or invalid.")
+    if not 1 <= float(getattr(settings, "SERVY_CUSTOMER_GENERATION_TIMEOUT", 45)) <= 120:
+        raise RuntimeError("Customer Qwen timeout must be between 1 and 120 seconds.")
+    max_claims = int(getattr(settings, "SERVY_CUSTOMER_GENERATION_MAX_CLAIMS", MAX_CLAIMS))
+    if not 0 <= max_claims <= MAX_CLAIMS:
+        raise RuntimeError("Customer Qwen claim limit is outside the supported range.")
+    result = {"enabled": True, "provider": "ollama", "model": model, "url": url}
+    if not check_runtime:
+        return result
+
+    parsed = urlparse(url)
+    tags_url = parsed._replace(path="/api/tags", params="", query="", fragment="").geturl()
+    client = requests.Session()
+    client.trust_env = False
+    try:
+        response = client.get(
+            tags_url, timeout=(1.0, 3.0), allow_redirects=False
+        )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError("Local Ollama attempted an HTTP redirect.")
+        response.raise_for_status()
+        if len(response.content) > 1_000_000:
+            raise RuntimeError("Ollama model-list response exceeded the safety limit.")
+        models = response.json().get("models")
+        if not isinstance(models, list) or not any(
+            isinstance(item, dict) and item.get("name") == model for item in models
+        ):
+            raise RuntimeError("The configured Qwen model tag is not installed in Ollama.")
+    except Exception as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(
+            "The configured local Qwen model is not reachable. Start Ollama, verify the model tag, or restart with -NoLocalChat."
+        ) from None
+    finally:
+        client.close()
+    result["model_ready"] = True
+    return result
+
+
 def _enabled() -> bool:
     return str(getattr(settings, "SERVY_CUSTOMER_ANSWER_GENERATION", "disabled")).lower() == "ollama"
 
@@ -228,6 +284,8 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
         model = str(getattr(
             settings, "SERVY_CUSTOMER_GENERATION_MODEL", "qwen3.5:2b-q4_K_M"
         ))
+        # Ollama quantized tags commonly contain underscores (for example
+        # qwen3.5:2b-q4_K_M); reject control characters, not valid tag syntax.
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,100}", model):
             return {}
         equipment = presentation.get("equipment") or {}
