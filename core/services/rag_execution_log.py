@@ -22,6 +22,8 @@ _CURRENT_SINK: ContextVar[_EventSink | None] = ContextVar(
 
 _ALLOWED_METRICS = frozenset({
     "candidate_count",
+    "dense_count",
+    "sparse_count",
     "retrieved_count",
     "supported_count",
     "past_case_count",
