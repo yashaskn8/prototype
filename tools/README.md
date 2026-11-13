@@ -25,3 +25,16 @@ Do not delete or move a tool based only on its age or filename. Check imports, C
 ## Archived documentation
 
 Historical reports, experiment runbooks, access notes and prompts formerly shown beside executable scripts are preserved under [`docs/archive/tools/`](../docs/archive/tools/). They were moved as documentation only; Python modules, test modules and launchers were not moved.
+
+
+## Operation 21 diagnostic scripts
+
+Standalone historical OP21 retrieval audits are grouped under `tools/op21/`. These scripts are not imported by the current application or CI workflow. They use `Path(__file__).resolve().parents[2]` to locate the repository root and write private diagnostic output under `private_training_data/op21_accuracy_audit/`.
+
+Run an individual diagnostic from the repository root, for example:
+
+```powershell
+.\.venv\Scripts\python.exe -B tools\op21\op21_accuracy_audit.py
+```
+
+They are historical research tools, not production request handlers or proof of current serving accuracy.
