@@ -107,6 +107,11 @@ export function CustomerSupportPage() {
   const activeAssetRef = useRef('');
   const assetLoadVersion = useRef(0);
 
+  function abortCustomerRagStream() {
+    requestStreamController.current?.abort();
+    requestStreamController.current = null;
+  }
+
   // Load authorized customer sites & initial context
   async function loadContext() {
     setLoadingContext(true);
@@ -301,6 +306,7 @@ export function CustomerSupportPage() {
       });
       if (chatRevision.current !== revision || activeAssetRef.current !== assetId) return;
       chatRevision.current += 1;
+      abortCustomerRagStream();
       setConversationUuid(created.conversation_uuid);
       setMessages([]);
       setResult(null);
@@ -328,6 +334,7 @@ export function CustomerSupportPage() {
 
   function handleSiteChange(e) {
     chatRevision.current += 1;
+    abortCustomerRagStream();
     requestInFlight.current = null;
     assetLoadVersion.current += 1;
     setSubmitting(false);
@@ -351,6 +358,7 @@ export function CustomerSupportPage() {
 
   function handleAssetChange(e) {
     chatRevision.current += 1;
+    abortCustomerRagStream();
     requestInFlight.current = null;
     setSubmitting(false);
     const newAssetId = e.target.value;
@@ -387,6 +395,7 @@ export function CustomerSupportPage() {
 
   async function resumeConversationFromHistory(conv) {
     chatRevision.current += 1;
+    abortCustomerRagStream();
     requestInFlight.current = null;
     setSubmitting(false);
     setMessages([]);
@@ -399,6 +408,7 @@ export function CustomerSupportPage() {
     // Discard the automatic "last active" lookup started by loadAssetsForSite.
     // The explicitly selected history conversation is authoritative.
     chatRevision.current += 1;
+    abortCustomerRagStream();
     const assetId = String(conv.asset_id || (conv.asset ? conv.asset.id : ''));
     setSelectedAsset(assetId);
     activeAssetRef.current = assetId;
