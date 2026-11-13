@@ -236,6 +236,47 @@ class LocalExplanationCallTests(TestCase):
         self.assertIn("Operating conditions may affect operation.", kwargs["json"]["messages"][1]["content"])
         session.close.assert_called_once_with()
 
+    def test_explicit_customer_qwen_runs_even_when_dialogue_planner_is_in_rules_mode(self):
+        session = Mock()
+        response = Mock()
+        source = self.presentation["supporting_claims"][0]["source_text"]
+        explanation = (
+            "The manual lists this as one possible cause category. "
+            "This passage does not identify the exact mechanism or confirm "
+            "that the condition applies to this equipment."
+        )
+        response.status_code = 200
+        response.content = b"{}"
+        response.json.return_value = {"message": {"content": json.dumps({
+            "explanations": [{
+                "claim_id": "c1", "explanation": explanation,
+                "source_quote": source,
+            }],
+        })}}
+        session.post.return_value = response
+        with patch.dict(os.environ, {
+            "SERVY_REAL_DEMO_DIALOGUE_MODE": "rules",
+            "SERVY_CUSTOMER_ANSWER_GENERATION": "ollama",
+        }), patch.object(explainer, "_online", return_value=True), \\
+             patch.object(explainer.requests, "Session", return_value=session):
+            result = explainer.explain_claims_with_status(
+                "Explain each documented issue.", self.presentation,
+                enabled=True,
+                model="qwen3.5:2b-q4_K_M",
+                source_context_by_claim={"c1": source},
+                require_source_context=True,
+            )
+        self.assertEqual(result["generation"]["status"], "applied")
+        self.assertEqual(result["generation"]["provider"], "ollama")
+        self.assertEqual(result["generation"]["model"], "qwen3.5:2b-q4_K_M")
+        self.assertTrue(result["generation"]["attempted"])
+        self.assertEqual(result["generation"]["accepted_claims"], 1)
+        self.assertEqual(result["explanations"], {"c1": explanation})
+        args, kwargs = session.post.call_args
+        self.assertEqual(kwargs["json"]["model"], "qwen3.5:2b-q4_K_M")
+        self.assertIn(source, kwargs["json"]["messages"][1]["content"])
+        session.close.assert_called_once_with()
+
     def test_rules_mode_and_unavailable_local_model_fail_closed(self):
         with patch.dict(os.environ, {"SERVY_REAL_DEMO_DIALOGUE_MODE": "rules"}):
             with patch.object(explainer, "_online", side_effect=AssertionError("must not probe")):
