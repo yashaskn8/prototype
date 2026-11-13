@@ -257,7 +257,7 @@ class LocalExplanationCallTests(TestCase):
         with patch.dict(os.environ, {
             "SERVY_REAL_DEMO_DIALOGUE_MODE": "rules",
             "SERVY_CUSTOMER_ANSWER_GENERATION": "ollama",
-        }), patch.object(explainer, "_online", return_value=True), \\
+        }), patch.object(explainer, "_online", return_value=True), \
              patch.object(explainer.requests, "Session", return_value=session):
             result = explainer.explain_claims_with_status(
                 "Explain each documented issue.", self.presentation,
