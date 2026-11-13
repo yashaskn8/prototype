@@ -1213,62 +1213,68 @@ def retrieve(
                 dense_results = []
 
     # 2c: Fuse results using RRF
-    qwen_dense_first = (
-        bool(dense_results)
-        and getattr(settings, "SERVY_QWEN3_DENSE_FIRST", False) is True
-        and getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
-        and getattr(settings, "SERVY_QWEN3_ENABLED", False) is True
-        and getattr(settings, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
-        and all(r.model_version in ("qwen3", "company-qwen3") for r in dense_results)
-    )
-    if qwen_dense_first:
-        # Controlled accuracy experiment: Qwen3's raw dense ranking leads,
-        # instead of allowing unrelated lexical hits to displace it via RRF.
-        # Append only distinct sparse candidates after the dense hits, so
-        # authorized fallback passages remain available for the reranker.
-        results = _qwen_dense_first_merge(dense_results, sparse_results)
-        retrieval_backend = "qwen3_dense_first_experimental"
-    elif dense_results and sparse_results:
-        results = _reciprocal_rank_fusion(
-            dense_results,
-            sparse_results,
-            w_dense=serving_config.rrf_weight_dense,
-            w_sparse=serving_config.rrf_weight_sparse,
-            rrf_k=serving_config.rrf_k,
+    with execution_stage(
+        "rank_fusion",
+        "Combining dense and sparse search rankings",
+    ):
+        qwen_dense_first = (
+            bool(dense_results)
+            and getattr(settings, "SERVY_QWEN3_DENSE_FIRST", False) is True
+            and getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False) is True
+            and getattr(settings, "SERVY_QWEN3_ENABLED", False) is True
+            and getattr(settings, "SERVY_QWEN3_INDEX_VERIFIED", False) is True
+            and all(r.model_version in ("qwen3", "company-qwen3") for r in dense_results)
         )
-        retrieval_backend = "hybrid"
-    elif dense_results:
-        for i, r in enumerate(dense_results, 1):
-            r.dense_score = r.score
-            # Keep the original cosine similarity, not the metadata-boosted
-            # display score. Evidence gates and diagnostics need both.
-            if r.dense_similarity is None:
-                r.dense_similarity = r.dense_score
-            r.dense_rank = i
-            r.fusion_score = r.score
-            r.fusion_rank = i
-            r.final_rank = i
-        results = dense_results
-        retrieval_backend = "semantic"
-    elif sparse_results:
-        for i, r in enumerate(sparse_results, 1):
-            r.sparse_score = r.score
-            r.sparse_relevance = r.score
-            r.sparse_rank = i
-            r.fusion_score = r.score
-            r.fusion_rank = i
-            r.final_rank = i
-        results = sparse_results
-        retrieval_backend = "fallback"
-    else:
-        results = []
-        retrieval_backend = "fallback"
+        if qwen_dense_first:
+            # Controlled accuracy experiment: Qwen3's raw dense ranking leads,
+            # instead of allowing unrelated lexical hits to displace it via RRF.
+            # Append only distinct sparse candidates after the dense hits, so
+            # authorized fallback passages remain available for the reranker.
+            results = _qwen_dense_first_merge(dense_results, sparse_results)
+            retrieval_backend = "qwen3_dense_first_experimental"
+        elif dense_results and sparse_results:
+            results = _reciprocal_rank_fusion(
+                dense_results,
+                sparse_results,
+                w_dense=serving_config.rrf_weight_dense,
+                w_sparse=serving_config.rrf_weight_sparse,
+                rrf_k=serving_config.rrf_k,
+            )
+            retrieval_backend = "hybrid"
+        elif dense_results:
+            for i, r in enumerate(dense_results, 1):
+                r.dense_score = r.score
+                # Keep the original cosine similarity, not the metadata-boosted
+                # display score. Evidence gates and diagnostics need both.
+                if r.dense_similarity is None:
+                    r.dense_similarity = r.dense_score
+                r.dense_rank = i
+                r.fusion_score = r.score
+                r.fusion_rank = i
+                r.final_rank = i
+            results = dense_results
+            retrieval_backend = "semantic"
+        elif sparse_results:
+            for i, r in enumerate(sparse_results, 1):
+                r.sparse_score = r.score
+                r.sparse_relevance = r.score
+                r.sparse_rank = i
+                r.fusion_score = r.score
+                r.fusion_rank = i
+                r.final_rank = i
+            results = sparse_results
+            retrieval_backend = "fallback"
+        else:
+            results = []
+            retrieval_backend = "fallback"
 
     emit_execution_event(
-        "rank_fusion",
-        "Combining sparse and semantic search rankings",
-        "completed",
+        "rank_fusion_summary",
+        "Combined search result counts",
+        "info",
         metrics={
+            "dense_count": len(dense_results),
+            "sparse_count": len(sparse_results),
             "retrieved_count": len(results),
             "retrieval_backend": retrieval_backend,
         },
@@ -1375,6 +1381,13 @@ def retrieve(
             "Past service-case retrieval is unavailable in customer self-service",
             "skipped",
         )
+    emit_execution_event(
+        "past_resolution_summary",
+        "Past service-case retrieval summary",
+        "info",
+        metrics={"past_case_count": len(resolution_results)},
+    )
+
     # Step 4: Strict Source Authority Tiering — authoritative technical guidance
     # (Knowledge Documents) strictly outranks historical cases (Service Calls).
     # Historical anecdotes can NEVER authorize repair actions or outrank approved manuals.
