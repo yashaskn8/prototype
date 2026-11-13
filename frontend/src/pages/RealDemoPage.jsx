@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Bot, BookOpen, Building2, FilePlus2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2, X } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
 import { AssistantTypingIndicator } from '../components/AssistantTypingIndicator';
-import { consumeRagEventStream, mergeRagExecutionEvent } from '../components/ragExecutionStream';
+import { consumeRagEventStream } from '../components/ragExecutionStream';
 import {
   EMPTY_ASSISTANT_RESPONSE,
   createAssistantTypingMessage,
@@ -327,16 +327,7 @@ export function RealDemoPage() {
           continuation,
           thread_id: activeThreadId,
         },
-        event => {
-          if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
-          setMessages(previous => {
-            const current = previous.find(item => item.id === responseId);
-            return replaceMessageById(previous, responseId, {
-              ...(current || { id: responseId, role: 'assistant', pending: true }),
-              executionLogs: mergeRagExecutionEvent(current?.executionLogs || [], event),
-            });
-          });
-        },
+        undefined,
         streamController.signal,
       );
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
@@ -345,20 +336,12 @@ export function RealDemoPage() {
         throw new Error('Servy response equipment scope mismatch');
       }
       if (hasAssistantResponse(data)) {
-        setMessages(previous => {
-          const current = previous.find(item => item.id === responseId);
-          return replaceMessageById(previous, responseId,
-            { id: responseId, role: 'assistant', data,
-              executionLogs: current?.executionLogs || [] });
-        });
+        setMessages(previous => replaceMessageById(previous, responseId,
+          { id: responseId, role: 'assistant', data }));
       } else {
-        setMessages(previous => {
-          const current = previous.find(item => item.id === responseId);
-          return replaceMessageById(previous, responseId,
-            { id: responseId, role: 'assistant',
-              errorMessage: EMPTY_ASSISTANT_RESPONSE,
-              executionLogs: current?.executionLogs || [] });
-        });
+        setMessages(previous => replaceMessageById(previous, responseId,
+          { id: responseId, role: 'assistant',
+            errorMessage: EMPTY_ASSISTANT_RESPONSE }));
         setQuestion(submittedQuestion);
       }
       setContinuation(data.continuation || null);
@@ -369,12 +352,8 @@ export function RealDemoPage() {
       const errorMessage = err?.message === 'Servy response equipment scope mismatch'
         ? 'Servy returned information for different equipment. The response was blocked. Select the intended asset and start a new chat.'
         : 'Servy could not complete that response. Please try again.';
-      setMessages(previous => {
-        const current = previous.find(item => item.id === responseId);
-        return replaceMessageById(previous, responseId,
-          { id: responseId, role: 'assistant', errorMessage,
-            executionLogs: current?.executionLogs || [] });
-      });
+      setMessages(previous => replaceMessageById(previous, responseId,
+        { id: responseId, role: 'assistant', errorMessage }));
       setQuestion(submittedQuestion);
       setError('');
     } finally {
