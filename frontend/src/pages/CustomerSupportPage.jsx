@@ -10,6 +10,8 @@ import {
 import '../components/AssistantTypingIndicator.css';
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
+import { RAGExecutionLog } from '../components/RAGExecutionLog';
+import { mergeRagExecutionEvent } from '../components/ragExecutionStream';
 import { useAuth } from '../AuthContext';
 import { customerHandoffMessage, handoffLabel } from './technicianHandoffState';
 import {
@@ -70,6 +72,7 @@ export function CustomerSupportPage() {
   const chatEndRef = useRef(null);
   const chatRevision = useRef(0); // Ignore responses for an incident no longer selected.
   const requestInFlight = useRef(null);
+  const requestStreamController = useRef(null);
   const [activeSessionNotice, setActiveSessionNotice] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolutionNotice, setResolutionNotice] = useState(null);
@@ -167,6 +170,8 @@ export function CustomerSupportPage() {
   }
 
   loadTicketsRef.current = loadTickets;
+
+  useEffect(() => () => requestStreamController.current?.abort(), []);
 
   useEffect(() => {
     if (activeTab !== 'tickets') return undefined;
@@ -462,6 +467,10 @@ export function CustomerSupportPage() {
     const requestId = `assistant-${Date.now()}-${Math.random()}`;
     if (!tryBeginRequest(requestInFlight, requestId)) return;
 
+    requestStreamController.current?.abort();
+    const streamController = new AbortController();
+    requestStreamController.current = streamController;
+
     setSubmitting(true);
     setError(null);
     setResolutionNotice(null);
@@ -483,27 +492,50 @@ export function CustomerSupportPage() {
     setQuery('');
     setCustomClarification('');
 
+    const recordExecutionEvent = event => {
+      if (activeAssetRef.current !== currentAssetId || chatRevision.current !== revision) return;
+      setMessages(previous => previous.map(message => (
+        message.id === requestId
+          ? {
+            ...message,
+            executionLogs: mergeRagExecutionEvent(message.executionLogs || [], event),
+          }
+          : message
+      )));
+    };
+
     try {
       let turnContract = null;
       if (conversationUuid) {
-        const payload = {
-          message: queryText.trim(),
-        };
-        if (clarificationAnswer) {
-          payload.clarification_response = clarificationAnswer.trim();
-        }
-        const res = await api.post(`/api/customer-support/conversations/${conversationUuid}/messages/`, payload);
+        const payload = { message: queryText.trim() };
+        if (clarificationAnswer) payload.clarification_response = clarificationAnswer.trim();
+
+        const res = await api.streamPost(
+          `/api/customer-support/conversations/${conversationUuid}/messages-stream/`,
+          payload,
+          recordExecutionEvent,
+          { signal: streamController.signal },
+        );
         if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
           const hasResponse = hasAssistantResponse(res.assistant_message);
-          const assistantMessage = hasResponse
-            ? res.assistant_message
-            : { ...typingMessage, pending: false, requestError: EMPTY_ASSISTANT_RESPONSE };
           turnContract = hasResponse ? res.contract : null;
-          setMessages(prev => [
-            ...prev.filter(m => m.id !== tempUserMsg.id && m.id !== requestId),
-            res.user_message || tempUserMsg,
-            assistantMessage,
-          ]);
+          setMessages(prev => {
+            const current = prev.find(message => message.id === requestId);
+            const executionLogs = current?.executionLogs || [];
+            const assistantMessage = hasResponse
+              ? { ...res.assistant_message, id: requestId, executionLogs }
+              : {
+                ...(current || typingMessage),
+                pending: false,
+                requestError: EMPTY_ASSISTANT_RESPONSE,
+                executionLogs,
+              };
+            return [
+              ...prev.filter(message => message.id !== tempUserMsg.id && message.id !== requestId),
+              res.user_message || tempUserMsg,
+              assistantMessage,
+            ];
+          });
           if (!hasResponse) setQuery(queryText);
         }
       } else {
@@ -514,29 +546,41 @@ export function CustomerSupportPage() {
           customer_id: contextData?.customer?.id,
           session_id: activeSessionNotice?.session_id || null,
         };
-        if (clarificationAnswer) {
-          payload.clarification_response = clarificationAnswer.trim();
-        }
-        const res = await api.post('/api/customer-support/query/', payload);
+        if (clarificationAnswer) payload.clarification_response = clarificationAnswer.trim();
+
+        const res = await api.streamPost(
+          '/api/customer-support/query-stream/',
+          payload,
+          recordExecutionEvent,
+          { signal: streamController.signal },
+        );
         if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
           const hasResponse = hasAssistantResponse(res);
           turnContract = hasResponse ? res : null;
-          if (res.conversation_uuid) {
-            setConversationUuid(res.conversation_uuid);
-          }
-          const asstMsg = hasResponse ? {
-            id: requestId,
-            sender_role: 'assistant',
-            message_text: res.answer || res.summary || res.message || '',
-            structured_contract: res,
-            source_refs: res.citations || res.references || [],
-            created_at: new Date().toISOString(),
-          } : { ...typingMessage, pending: false, requestError: EMPTY_ASSISTANT_RESPONSE };
-          setMessages(prev => prev.map(message => {
-            if (message.id === tempUserMsg.id) return tempUserMsg;
-            if (message.id === requestId) return asstMsg;
-            return message;
-          }));
+          if (res.conversation_uuid) setConversationUuid(res.conversation_uuid);
+          setMessages(prev => {
+            const current = prev.find(message => message.id === requestId);
+            const executionLogs = current?.executionLogs || [];
+            const assistantMessage = hasResponse ? {
+              id: requestId,
+              sender_role: 'assistant',
+              message_text: res.answer || res.summary || res.message || '',
+              structured_contract: res,
+              source_refs: res.citations || res.references || [],
+              created_at: new Date().toISOString(),
+              executionLogs,
+            } : {
+              ...(current || typingMessage),
+              pending: false,
+              requestError: EMPTY_ASSISTANT_RESPONSE,
+              executionLogs,
+            };
+            return prev.map(message => {
+              if (message.id === tempUserMsg.id) return tempUserMsg;
+              if (message.id === requestId) return assistantMessage;
+              return message;
+            });
+          });
           if (!hasResponse) setQuery(queryText);
         }
       }
@@ -545,15 +589,23 @@ export function CustomerSupportPage() {
         setResult(turnContract);
         loadConversations();
       }
-    } catch {
-      if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
+    } catch (err) {
+      if (err?.name !== 'AbortError'
+          && activeAssetRef.current === currentAssetId
+          && chatRevision.current === revision) {
         setMessages(prev => prev.map(message => message.id === requestId
-          ? { ...typingMessage, pending: false,
-            requestError: 'Servy could not complete that response. Please try again.' }
+          ? {
+            ...message,
+            pending: false,
+            requestError: 'Servy could not complete that response. Please try again.',
+          }
           : message));
         setQuery(queryText);
       }
     } finally {
+      if (requestStreamController.current === streamController) {
+        requestStreamController.current = null;
+      }
       finishRequest(requestInFlight, requestId);
       if (activeAssetRef.current === currentAssetId && chatRevision.current === revision) {
         setSubmitting(false);
@@ -1042,6 +1094,14 @@ export function CustomerSupportPage() {
                           </>
                         ) : (
                           <div>
+                            {/* Backend execution telemetry is retained with this chat message. */}
+                            {(msg.pending || (msg.executionLogs || []).length > 0) && (
+                              <RAGExecutionLog
+                                events={msg.executionLogs || []}
+                                running={!!msg.pending}
+                                title="Customer RAG execution log"
+                              />
+                            )}
                             {/* Render Structured Contract Presentation if available */}
                             {msg.pending ? (
                               <AssistantTypingIndicator />
