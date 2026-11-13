@@ -28,7 +28,17 @@ class NumericObservationTests(SimpleTestCase):
         from core.services.retriever import normalize_domain_terms
         self.assertEqual(
             normalize_domain_terms("splitt ac icce forming on coolng coyl"),
-            "split ac ice form on cooling coil",
+            "split ac ice formation on cooling coil",
+        )
+        self.assertEqual(
+            normalize_domain_terms("frost forming on the coil"),
+            "frost formation on the coil",
+        )
+        # Do not alter unrelated gerunds; normalization is bounded by the
+        # equipment symptom phrase rather than a global stemming rewrite.
+        self.assertEqual(
+            normalize_domain_terms("fan forming unusual noise"),
+            "fan forming unusual noise",
         )
         # Technical model/error identifiers remain unchanged by word correction.
         self.assertEqual(
