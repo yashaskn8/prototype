@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Bot, BookOpen, Building2, FilePlus2, FileText, LockKeyhole, LogOut, Package, Plus, ShieldCheck, Send, Ticket, Trash2, X } from 'lucide-react';
 import { CustomerAnswer } from '../components/CustomerAnswer';
 import { AssistantTypingIndicator } from '../components/AssistantTypingIndicator';
+import { RAGExecutionLog } from '../components/RAGExecutionLog';
+import { consumeRagEventStream, mergeRagExecutionEvent } from '../components/ragExecutionStream';
 import {
   EMPTY_ASSISTANT_RESPONSE,
   createAssistantTypingMessage,
@@ -29,6 +31,21 @@ async function call(path, token, options = {}) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.detail || 'Demo request failed');
   return data;
+}
+
+async function callRagStream(path, token, payload, onLog, signal) {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      Authorization: `Demo ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    signal,
+  });
+  return consumeRagEventStream(response, onLog);
 }
 
 const TICKET_TYPES = ['Breakdown Service', 'Installation / Demo', 'Service', 'Preventive Maintenance (PM)', 'AMC'];
@@ -293,26 +310,46 @@ export function RealDemoPage() {
     ));
     setQuestion('');
     try {
-      const data = await call('/demo-api/query/', token, {
-        method: 'POST',
-        body: JSON.stringify({
+      const data = await callRagStream(
+        '/demo-api/query-stream/',
+        token,
+        {
           asset_id: Number(activeAsset),
           question: submittedQuestion,
           continuation,
           thread_id: activeThreadId,
-        }),
-      });
+        },
+        event => {
+          if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
+          setMessages(previous => {
+            const current = previous.find(item => item.id === responseId);
+            return replaceMessageById(previous, responseId, {
+              ...(current || { id: responseId, role: 'assistant', pending: true }),
+              executionLogs: mergeRagExecutionEvent(current?.executionLogs || [], event),
+            });
+          });
+        },
+      );
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
       const responseAssetId = data?.presentation?.equipment?.id ?? data?.asset?.id;
       if (responseAssetId != null && String(responseAssetId) !== String(activeAsset)) {
         throw new Error('Servy response equipment scope mismatch');
       }
       if (hasAssistantResponse(data)) {
-        setMessages(previous => replaceMessageById(previous, responseId,
-          { id: responseId, role: 'assistant', data }));
+        setMessages(previous => {
+          const current = previous.find(item => item.id === responseId);
+          return replaceMessageById(previous, responseId,
+            { id: responseId, role: 'assistant', data,
+              executionLogs: current?.executionLogs || [] });
+        });
       } else {
-        setMessages(previous => replaceMessageById(previous, responseId,
-          { id: responseId, role: 'assistant', errorMessage: EMPTY_ASSISTANT_RESPONSE }));
+        setMessages(previous => {
+          const current = previous.find(item => item.id === responseId);
+          return replaceMessageById(previous, responseId,
+            { id: responseId, role: 'assistant',
+              errorMessage: EMPTY_ASSISTANT_RESPONSE,
+              executionLogs: current?.executionLogs || [] });
+        });
         setQuestion(submittedQuestion);
       }
       setContinuation(data.continuation || null);
@@ -323,8 +360,12 @@ export function RealDemoPage() {
       const errorMessage = err?.message === 'Servy response equipment scope mismatch'
         ? 'Servy returned information for different equipment. The response was blocked. Select the intended asset and start a new chat.'
         : 'Servy could not complete that response. Please try again.';
-      setMessages(previous => replaceMessageById(previous, responseId,
-        { id: responseId, role: 'assistant', errorMessage }));
+      setMessages(previous => {
+        const current = previous.find(item => item.id === responseId);
+        return replaceMessageById(previous, responseId,
+          { id: responseId, role: 'assistant', errorMessage,
+            executionLogs: current?.executionLogs || [] });
+      });
       setQuestion(submittedQuestion);
       setError('');
     } finally {
@@ -523,10 +564,28 @@ export function RealDemoPage() {
                     <div className="real-demo-chat-avatar">{message.role === 'user' ? 'You' : <Bot size={19} />}</div>
                     <div className="real-demo-chat-bubble">
                       {message.role === 'user' ? <div className="real-demo-chat-user-text">{message.text}</div>
-                        : message.pending ? <AssistantTypingIndicator />
-                          : message.errorMessage ? <p className="servy-chat-error" role="alert">{message.errorMessage}</p>
-                          : <>
+                        : message.pending ? <>
+                            <AssistantTypingIndicator />
+                            <RAGExecutionLog
+                              events={message.executionLogs || []}
+                              running
+                              title="Customer RAG execution log"
+                            />
+                          </>
+                          : message.errorMessage ? <>
+                            <p className="servy-chat-error" role="alert">{message.errorMessage}</p>
+                            <RAGExecutionLog
+                              events={message.executionLogs || []}
+                              running={false}
+                              title="Customer RAG execution log"
+                            />
+                          </> : <>
                             <div className="real-demo-chat-answer-heading">
+                              <RAGExecutionLog
+                                events={message.executionLogs || []}
+                                running={false}
+                                title="Customer RAG execution log"
+                              />
                               <strong>Servy</strong>
                               <span className={message.data?.response_type === 'DIAGNOSTIC_GUIDANCE'
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
