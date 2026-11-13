@@ -17,7 +17,7 @@ A standalone proof-of-concept that mirrors the supplied Servy modules and implem
 - Knowledge Base upload flow with tags, document type, customer, product, asset, confidentiality and RAG enable/disable.
 - Local document parsing for text/Markdown, PDF, DOCX and CSV.
 - Local chunk indexing and vector synchronization.
-- Optional **local Ollama LLM**; when Ollama is unavailable the app falls back to a grounded extractive answer so the demo still works without paid APIs.
+- Optional local text generation: legacy Ollama support and a loopback llama.cpp Qwen provider for staff-mode RAG. Extractive answers remain the fallback; the authorized customer demo stays source-structured and does not require a chat server.
 - Call Register XLSX export and XLSX import with safety bounds.
 - Demo seed volume matching the screenshots: **51 assets, 26 projects, 118 KB items, 532 inventory rows, 7,665 calls**.
 - Two high-quality initial RAG domains: **Milk Analyzer** and **Aerolift**.
@@ -311,7 +311,7 @@ The authorized read-only real-data demo launched with `tools/Start-ServyRealDemo
 
 These embedding and reranking components are retrieval models; they are not text-generation models. The real-data presentation launcher therefore sets `SERVY_LLM_PROVIDER=extractive` and `SERVY_REAL_DEMO_DIALOGUE_MODE=rules`. It does not probe or require Ollama, Qwen chat, a remote API, or another chat server. Do not install an extra inference server just to start this demo.
 
-For staff-mode RAG, the repository also supports an optional local Qwen GGUF generator through llama.cpp. Install llama.cpp on Windows, download/serve the Q4_K_M model, then configure the backend process:
+For staff-mode RAG, the repository also supports an optional local Qwen GGUF generator through llama.cpp. Install llama.cpp on Windows with `winget install llama.cpp`, then serve the Q4_K_M model. The first Hugging Face launch downloads the model if it is not already cached. Configure the backend process:
 
 ```powershell
 $env:SERVY_LLM_PROVIDER = "llama_cpp"

@@ -134,6 +134,26 @@ class LlamaCppProviderTests(SimpleTestCase):
         SERVY_LLM_PROVIDER="llama_cpp",
         SERVY_LLM_REQUIRE_LLAMA_CPP=True,
     )
+    def test_successful_qwen_generation_reports_the_actual_engine(self):
+        passage = self._passage()
+        with (
+            mock.patch("core.services.llm.check_evidence_sufficiency",
+                       return_value=SimpleNamespace(grounded_chunks=[passage])),
+            mock.patch("core.services.llm.is_llama_cpp_service_online", return_value=True),
+            mock.patch("core.services.llm.llama_cpp_generate",
+                       return_value="The status LED indicates the documented operating state."),
+            mock.patch("core.services.llm._clean_model_answer",
+                       return_value="The status LED indicates the documented operating state."),
+        ):
+            result = generate_answer("What does the status LED indicate?", None, [passage])
+        self.assertEqual(result[1], "llama-cpp-local")
+        self.assertIn("VERIFIED REFERENCES", result[0])
+        self.assertIn("Synthetic Approved Manual", result[0])
+
+    @override_settings(
+        SERVY_LLM_PROVIDER="llama_cpp",
+        SERVY_LLM_REQUIRE_LLAMA_CPP=True,
+    )
     def test_required_offline_qwen_abstains(self):
         passage = self._passage()
         with (

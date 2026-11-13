@@ -13,18 +13,22 @@ _ollama_last_checked = 0.0
 _ollama_is_available = None
 _llama_cpp_last_checked = 0.0
 _llama_cpp_is_available = None
+_llama_cpp_last_url = None
 
 
 def is_llama_cpp_service_online() -> bool:
     """Check the configured loopback llama.cpp server, memoizing the result briefly."""
-    global _llama_cpp_last_checked, _llama_cpp_is_available
+    global _llama_cpp_last_checked, _llama_cpp_is_available, _llama_cpp_last_url
     now = time.time()
-    if _llama_cpp_is_available is not None and (now - _llama_cpp_last_checked) < 15.0:
+    endpoint = settings.SERVY_LLAMA_CPP_URL
+    if (_llama_cpp_is_available is not None
+            and _llama_cpp_last_url == endpoint
+            and (now - _llama_cpp_last_checked) < 15.0):
         return _llama_cpp_is_available
 
     import socket
     try:
-        parsed = urlparse(settings.SERVY_LLAMA_CPP_URL)
+        parsed = urlparse(endpoint)
         if (parsed.scheme != "http"
                 or (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}
                 or not parsed.port):
@@ -36,6 +40,7 @@ def is_llama_cpp_service_online() -> bool:
         _llama_cpp_is_available = False
 
     _llama_cpp_last_checked = now
+    _llama_cpp_last_url = endpoint
     return _llama_cpp_is_available
 
 
@@ -92,7 +97,6 @@ def ollama_generate(prompt):
     if len(response.content) > 2 * 1024 * 1024:
         raise RuntimeError("Local LLM response exceeded the 2 MB safety limit.")
     return response.json().get("response", "").strip()
-    # Session is short-lived; do not retain customer or source text.
 
 
 def _validate_llama_cpp_endpoint():
@@ -101,6 +105,7 @@ def _validate_llama_cpp_endpoint():
     parsed = urlparse(url)
     if (parsed.scheme != "http"
             or (parsed.hostname or "").lower() not in {"127.0.0.1", "localhost", "::1"}
+            or not parsed.port
             or parsed.path.rstrip("/") != "/v1/chat/completions"
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise ValueError("llama.cpp must use a plain HTTP loopback /v1/chat/completions endpoint.")
