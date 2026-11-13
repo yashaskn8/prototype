@@ -38,3 +38,12 @@ Run an individual diagnostic from the repository root, for example:
 ```
 
 They are historical research tools, not production request handlers or proof of current serving accuracy.
+
+
+## Historical standalone diagnostics
+
+- `tools/op21/`: Operation 21 retrieval, chunking, integrity and latency diagnostics.
+- `tools/op25/`: Operation 25 candidate-recall diagnostics.
+- `tools/op28/`: Operation 28 grounding and adversarial evaluation.
+
+These folders are explicitly invoked research/evaluation utilities, not web-service runtime modules. They are retained for reproducibility. The other OP22/23/26/27 and V4–V6 files remain at the tools root for now because the audit found import, test or workflow dependencies that make moving them more involved.
