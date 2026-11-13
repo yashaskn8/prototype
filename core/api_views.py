@@ -574,16 +574,22 @@ class CustomerSupportQueryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [CustomerRAGThrottle]
 
-    def post(self, request):
+    def _prepare(self, request):
         ctx = require_api_context(request)
         tenant = ctx["tenant"]
         role = ctx["role"]
         customer = ctx["customer"]
 
         if role in {"store_admin", "store_operator"}:
-            return Response({"detail": "Customer AI Support is not available for store roles."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"detail": "Customer AI Support is not available for store roles."},
+                status=status.HTTP_403_FORBIDDEN,
+            ), None
         if role == "technician":
-            return Response({"detail": "Technicians must use the assigned service-call workflow."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"detail": "Technicians must use the assigned service-call workflow."},
+                status=status.HTTP_403_FORBIDDEN,
+            ), None
 
         if not customer and role in (TECH_ROLES | ADMIN_ROLES | {"superuser"}):
             cust_id = request.data.get("customer_id")
@@ -592,75 +598,144 @@ class CustomerSupportQueryView(APIView):
             if not customer:
                 target_site_id = request.data.get("site_id")
                 if target_site_id:
-                    matched_site = Site.objects.filter(tenant=tenant, id=target_site_id).select_related("customer").first()
+                    matched_site = Site.objects.filter(
+                        tenant=tenant, id=target_site_id
+                    ).select_related("customer").first()
                     if matched_site and matched_site.customer:
                         customer = matched_site.customer
             if not customer:
                 customer = Customer.objects.filter(tenant=tenant).first()
 
         if not customer:
-            return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Customer context required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
 
-        # Enforce server-side real customer data isolation
         try:
             validate_customer_serving_policy(tenant=tenant, customer=customer)
-        except PermissionDenied as pe:
-            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN), None
 
         site_id = request.data.get("site_id")
         asset_id = request.data.get("asset_id")
-        question = _clean_input(request.data.get("question") or request.data.get("query"), max_len=4000)
+        question = _clean_input(
+            request.data.get("question") or request.data.get("query"), max_len=4000
+        )
         clarification_response = _clean_input(request.data.get("clarification_response"))
         user_observation = _clean_input(request.data.get("observation"))
 
         if not site_id or not asset_id or not question:
-            return Response({"detail": "Site, asset, and question are required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Site, asset, and question are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
 
-        # Validate asset and site belong to customer
         try:
             site = Site.objects.get(tenant=tenant, customer=customer, id=site_id)
         except Site.DoesNotExist:
-            return Response({"detail": "Selected site does not belong to this customer."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Selected site does not belong to this customer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
 
         try:
-            asset = Asset.objects.get(tenant=tenant, customer=customer, site=site, id=asset_id)
-        except Asset.DoesNotExist:
-            return Response({"detail": "Selected asset does not belong to this customer or site."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Enforce asset-level real data isolation
-        try:
-            validate_customer_serving_policy(tenant=tenant, customer=customer, asset=asset)
-        except PermissionDenied as pe:
-            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
-
-        conversation_uuid = request.data.get("conversation_uuid")
-        session_id = request.data.get("session_id")
-        idempotency_key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
-
-        try:
-            from core.services.customer_conversation import process_customer_diagnostic_turn
-            turn_result = process_customer_diagnostic_turn(
-                tenant=tenant,
-                customer=customer,
-                user=request.user,
-                site=site,
-                asset=asset,
-                question=question,
-                clarification_response=clarification_response,
-                user_observation=user_observation,
-                conversation_uuid=conversation_uuid,
-                session_id=session_id,
-                idempotency_key=idempotency_key,
+            asset = Asset.objects.get(
+                tenant=tenant, customer=customer, site=site, id=asset_id
             )
-            return Response(turn_result["contract"])
-        except PermissionDenied as pe:
-            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
-        except ValidationError as ve:
-            detail_msg = ve.message if hasattr(ve, "message") else str(ve)
+        except Asset.DoesNotExist:
+            return Response(
+                {"detail": "Selected asset does not belong to this customer or site."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
+
+        try:
+            validate_customer_serving_policy(
+                tenant=tenant, customer=customer, asset=asset
+            )
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN), None
+
+        return None, {
+            "tenant_id": tenant.id,
+            "customer_id": customer.id,
+            "user_id": request.user.id,
+            "site_id": site.id,
+            "asset_id": asset.id,
+            "question": question,
+            "clarification_response": clarification_response,
+            "user_observation": user_observation,
+            "conversation_uuid": request.data.get("conversation_uuid"),
+            "session_id": request.data.get("session_id"),
+            "idempotency_key": (
+                request.headers.get("X-Idempotency-Key")
+                or request.data.get("idempotency_key")
+            ),
+        }
+
+    @staticmethod
+    def _execute(prepared):
+        """Run the customer turn after revalidating its tenant/customer/asset binding."""
+        from django.contrib.auth import get_user_model
+
+        tenant = Tenant.objects.get(pk=prepared["tenant_id"], is_active=True)
+        customer = Customer.objects.get(
+            pk=prepared["customer_id"], tenant=tenant
+        )
+        site = Site.objects.get(
+            pk=prepared["site_id"], tenant=tenant, customer=customer
+        )
+        asset = Asset.objects.get(
+            pk=prepared["asset_id"], tenant=tenant, customer=customer, site=site
+        )
+        user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
+
+        validate_customer_serving_policy(tenant=tenant, customer=customer)
+        validate_customer_serving_policy(
+            tenant=tenant, customer=customer, asset=asset
+        )
+
+        from core.services.customer_conversation import process_customer_diagnostic_turn
+        turn_result = process_customer_diagnostic_turn(
+            tenant=tenant,
+            customer=customer,
+            user=user,
+            site=site,
+            asset=asset,
+            question=prepared["question"],
+            clarification_response=prepared["clarification_response"],
+            user_observation=prepared["user_observation"],
+            conversation_uuid=prepared["conversation_uuid"],
+            session_id=prepared["session_id"],
+            idempotency_key=prepared["idempotency_key"],
+        )
+        return turn_result["contract"]
+
+    def post(self, request):
+        error, prepared = self._prepare(request)
+        if error is not None:
+            return error
+        try:
+            return Response(self._execute(prepared))
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValidationError as exc:
+            detail_msg = exc.message if hasattr(exc, "message") else str(exc)
             return Response({"detail": detail_msg}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             logger.exception("Error processing customer diagnostic query: %s", exc)
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomerSupportQueryStreamView(CustomerSupportQueryView):
+    """Authenticated customer RAG endpoint that streams real execution stages."""
+
+    def post(self, request):
+        error, prepared = self._prepare(request)
+        if error is not None:
+            return error
+        from core.services.rag_event_stream import rag_execution_stream
+        return rag_execution_stream(lambda: self._execute(prepared))
 
 
 class CustomerSupportResolveView(APIView):
