@@ -133,6 +133,95 @@ class RealDemoBoundaryTests(unittest.TestCase):
         self.assertNotIn(63, demo.ASSET_SCOPE)
         self.assertEqual(demo.ASSET_SCOPE, {59: 14, 60: 13, 61: 14})
 
+    def test_customer_rag_stream_requires_demo_identity_before_reading_request_body(self):
+        handler = object.__new__(demo.Handler)
+        handler.token = "synthetic-stream-token"
+        handler.path = "/demo-api/query-stream/"
+        handler.headers = {
+            "Host": "127.0.0.1:8002",
+            "Content-Length": "64",
+        }
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.rfile = io.BytesIO(b'{"asset_id":60,"question":"synthetic"}')
+        handler._send = lambda status, payload: (status, payload)
+
+        status, payload = handler.do_POST()
+
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["detail"], "Demo identity required")
+        self.assertEqual(handler.rfile.tell(), 0)
+
+    def test_customer_rag_stream_forwards_backend_events_and_final_result(self):
+        handler = object.__new__(demo.Handler)
+        handler.wfile = io.BytesIO()
+        handler.client_address = ("127.0.0.1", 12345)
+        handler._request_started = demo.time.perf_counter()
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+
+        def work():
+            from core.services.rag_execution_log import execution_stage, emit_execution_event
+            with execution_stage("customer_asset_authorization", "Validating selected equipment"):
+                emit_execution_event(
+                    "customer_context_summary", "Current conversation context",
+                    "info", metrics={"candidate_count": 2},
+                )
+            return {"response_type": "DIAGNOSTIC_GUIDANCE", "message": "Synthetic answer"}
+
+        handler._send_rag_stream(work)
+        body = handler.wfile.getvalue().decode("utf-8")
+
+        handler.send_response.assert_called_once_with(200)
+        self.assertTrue(any(
+            call.args == ("Content-Type", "text/event-stream; charset=utf-8")
+            for call in handler.send_header.call_args_list
+        ))
+        self.assertIn("event: log", body)
+        self.assertIn("customer_asset_authorization", body)
+        self.assertIn("event: result", body)
+        self.assertIn('"message":"Synthetic answer"', body)
+
+    def test_customer_query_stream_route_uses_same_asset_and_thread_validation(self):
+        handler = object.__new__(demo.Handler)
+        handler.token = "synthetic-stream-token"
+        handler.path = "/demo-api/query-stream/"
+        body = json.dumps({
+            "asset_id": 60,
+            "question": "Synthetic customer RAG query",
+            "continuation": None,
+            "thread_id": None,
+        }).encode("utf-8")
+        handler.headers = {
+            "Host": "127.0.0.1:8002",
+            "Authorization": "Demo synthetic-stream-token",
+            "Content-Length": str(len(body)),
+            "Content-Type": "application/json",
+        }
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.rfile = io.BytesIO(body)
+        handler._authorized = lambda: True
+        captured = {}
+
+        def run(work):
+            captured["result"] = work()
+            return captured["result"]
+
+        handler._send_rag_stream = run
+        with patch.object(demo, "read_only_database", return_value=nullcontext()), \\
+             patch.object(demo, "_answer", return_value={
+                 "response_type": "DIAGNOSTIC_GUIDANCE",
+                 "message": "Synthetic streamed response",
+             }) as answer:
+            result = handler.do_POST()
+
+        self.assertEqual(result["message"], "Synthetic streamed response")
+        answer.assert_called_once_with(
+            60, "Synthetic customer RAG query",
+            continuation=None,
+        )
+
+
     def test_bearer_identity_requires_loopback_and_local_host(self):
         handler = object.__new__(demo.Handler)
         handler.token = "a-private-synthetic-test-value"
