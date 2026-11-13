@@ -1481,12 +1481,24 @@ class Handler(BaseHTTPRequestHandler):
         """Stream real execution events from one already-authenticated query."""
         events = Queue(maxsize=128)
         disconnected = Event()
-        finished = object()
 
-        def publish(event_name, payload):
+        def publish(event_name, payload, *, terminal=False):
             if disconnected.is_set():
                 return
             item = (event_name, payload)
+            if terminal:
+                # Never let a completion/error frame be displaced by a
+                # sentinel after a slow browser has filled the log queue.
+                while not disconnected.is_set():
+                    try:
+                        events.put_nowait(item)
+                        return
+                    except Full:
+                        try:
+                            events.get_nowait()
+                        except Empty:
+                            continue
+                return
             try:
                 events.put_nowait(item)
             except Full:
@@ -1502,12 +1514,17 @@ class Handler(BaseHTTPRequestHandler):
         def run_query():
             try:
                 with bind_execution_log(lambda event: publish("log", event)):
+                    emit_execution_event(
+                        "customer_request_validation",
+                        "Authenticated customer request accepted",
+                        "info",
+                    )
                     result = work()
-                publish("result", result)
+                publish("result", result, terminal=True)
             except ValueError:
                 publish("error", {
                     "detail": "Conversation context is invalid or equipment access changed. Start a new chat."
-                })
+                }, terminal=True)
             except Exception as exc:
                 request_id = secrets.token_hex(6)
                 logger.exception(
@@ -1517,20 +1534,7 @@ class Handler(BaseHTTPRequestHandler):
                 publish("error", {
                     "detail": "Read-only demo request failed",
                     "request_id": request_id,
-                })
-            finally:
-                if not disconnected.is_set():
-                    try:
-                        events.put_nowait(finished)
-                    except Full:
-                        try:
-                            events.get_nowait()
-                        except Empty:
-                            pass
-                        try:
-                            events.put_nowait(finished)
-                        except Full:
-                            pass
+                }, terminal=True)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1540,23 +1544,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         try:
-            self.wfile.write(b": servy-rag-stream\\n\\n")
+            self.wfile.write(b": servy-rag-stream\n\n")
             self.wfile.flush()
             Thread(target=run_query, name="servy-customer-rag-stream", daemon=True).start()
             while True:
                 try:
                     item = events.get(timeout=12)
                 except Empty:
-                    self.wfile.write(b": keep-alive\\n\\n")
+                    self.wfile.write(b": keep-alive\n\n")
                     self.wfile.flush()
                     continue
-                if item is finished:
-                    break
                 event_name, payload = item
                 frame = (
-                    "event: " + event_name + "\\n"
+                    "event: " + event_name + "\n"
                     + "data: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-                    + "\\n\\n"
+                    + "\n\n"
                 )
                 self.wfile.write(frame.encode("utf-8"))
                 self.wfile.flush()
