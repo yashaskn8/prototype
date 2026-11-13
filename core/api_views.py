@@ -660,6 +660,7 @@ class CustomerSupportQueryView(APIView):
             "tenant_id": tenant.id,
             "customer_id": customer.id,
             "user_id": request.user.id,
+            "role": role,
             "site_id": site.id,
             "asset_id": asset.id,
             "question": question,
@@ -689,6 +690,18 @@ class CustomerSupportQueryView(APIView):
             pk=prepared["asset_id"], tenant=tenant, customer=customer, site=site
         )
         user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
+        role = prepared["role"]
+        if user.is_superuser:
+            if role != "superuser":
+                raise PermissionDenied("Customer RAG access changed.")
+        else:
+            membership = TenantMembership.objects.filter(
+                user=user, tenant=tenant, role=role, is_active=True
+            ).first()
+            if not membership:
+                raise PermissionDenied("Customer RAG access changed.")
+            if role in CUSTOMER_ROLES and membership.customer_id != customer.id:
+                raise PermissionDenied("Customer RAG access changed.")
 
         validate_customer_serving_policy(tenant=tenant, customer=customer)
         validate_customer_serving_policy(
