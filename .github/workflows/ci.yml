@@ -210,7 +210,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs          test/ragExecutionStream.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs
 
       - name: Test Private Technician Access-code Instance
         working-directory: frontend
