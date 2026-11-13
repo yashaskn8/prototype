@@ -200,6 +200,49 @@ class LlamaCppProviderTests(SimpleTestCase):
         self.assertEqual(result, ("Synthetic exact-source answer", "extractive-local"))
 
 
+class RAGGenerationScopeTests(SimpleTestCase):
+    def _run_rag(self, staff_mode):
+        from core.services.rag import ask_rag
+
+        class Results(list):
+            retrieval_backend = "hybrid"
+            reranker_applied = True
+            reranker_model = "synthetic-v5"
+            pre_rerank_candidate_chunk_ids = [11]
+
+        passage = SimpleNamespace(
+            source_kind="knowledge_document", source_id=7, document_id=10,
+            chunk_id=11, service_call_id=None, title="Synthetic Manual",
+            heading="LED status", reference="Synthetic Manual / LED status",
+            doc_type="Manual", score=0.8, dense_similarity=0.7,
+            sparse_relevance=0.2, fusion_score=0.9, final_rank=1,
+            evidence_support=True, source_verified=True, equipment_applicable=True,
+            customer_action_authorized=False, source_url="/synthetic-source",
+            model_version="bge-small",
+        )
+        results = Results([passage])
+        with (
+            mock.patch("core.services.customer_isolation.is_real_tenant", return_value=False),
+            mock.patch("core.services.rag.retrieve", return_value=results),
+            mock.patch("core.services.rag.generate_answer",
+                       return_value=("Synthetic answer", "llama-cpp-local")) as generate,
+        ):
+            payload = ask_rag(
+                tenant=SimpleNamespace(id=1), customer=None,
+                asset=SimpleNamespace(id=2), question="What does the LED indicate?",
+                staff_mode=staff_mode,
+            )
+        self.assertEqual(payload["engine"], "llama-cpp-local")
+        generate.assert_called_once()
+        return generate.call_args.kwargs["allow_generation"]
+
+    def test_staff_rag_can_use_the_local_generator(self):
+        self.assertTrue(self._run_rag(staff_mode=True))
+
+    def test_customer_rag_keeps_generator_disabled(self):
+        self.assertFalse(self._run_rag(staff_mode=False))
+
+
 class DenseEmbeddingSnapshotTests(SimpleTestCase):
     def test_dense_scorer_uses_request_snapshot_not_later_global_override(self):
         """Model identity must stay fixed for a request, even if settings change."""

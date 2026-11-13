@@ -1102,13 +1102,13 @@ ANSWER:"""
                 clean_answer = _clean_model_answer(raw_answer, grounded)
                 if clean_answer and clean_answer != INSUFFICIENT_EVIDENCE_MESSAGE:
                     seen_refs = set()
-                    ref_lines = ["\\n\\nVERIFIED REFERENCES"]
+                    ref_lines = ["\n\nVERIFIED REFERENCES"]
                     for r in grounded[:5]:
                         ref_label = f"{r.reference} ({r.doc_type})"
                         if ref_label not in seen_refs:
                             seen_refs.add(ref_label)
                             ref_lines.append(f"- {ref_label}")
-                    return clean_answer + "\\n" + "\\n".join(ref_lines), "llama-cpp-local"
+                    return clean_answer + "\n" + "\n".join(ref_lines), "llama-cpp-local"
                 if clean_answer == INSUFFICIENT_EVIDENCE_MESSAGE:
                     return INSUFFICIENT_EVIDENCE_MESSAGE, "insufficient-evidence"
             except Exception as exc:

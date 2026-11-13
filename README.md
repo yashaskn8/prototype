@@ -323,7 +323,7 @@ $env:SERVY_LLM_REQUIRE_LLAMA_CPP = "0"
 Start the local server separately with:
 
 ```powershell
-llama serve -hf gguf/Qwen3.5-2B-GGUF:Q4_K_M -c 4096 -np 1
+llama serve -hf gguf/Qwen3.5-2B-GGUF:Q4_K_M --alias gguf/Qwen3.5-2B-GGUF:Q4_K_M -c 4096 -np 1
 ```
 
 The backend calls llama.cpp's OpenAI-compatible chat endpoint, disables proxy inheritance and redirects, and rejects non-loopback URLs. If the server is unavailable, the default behavior falls back to the existing extractive answer; set `SERVY_LLM_REQUIRE_LLAMA_CPP=1` only when an explicit abstention is preferred over fallback. Generation is permitted only when `ask_rag(..., staff_mode=True)`; customer-mode RAG deliberately does not call the model. The customer answer contract independently rebuilds its display from authorized source sentences and citations.
