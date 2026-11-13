@@ -157,6 +157,7 @@ def explain_claims_with_status(
     source_context_by_claim: dict | None = None,
     enabled: bool | None = None,
     model: str | None = None,
+    require_source_context: bool = False,
 ) -> dict:
     """Generate validated explanations and report the reason for any fallback.
 
@@ -223,8 +224,10 @@ def explain_claims_with_status(
             continue
         context = contexts.get(claim["id"])
         if not isinstance(context, str) or not context.strip():
+            if require_source_context:
+                continue
             # Legacy callers can still explain a single source sentence. The
-            # real-demo path supplies a freshly reauthorized full source chunk.
+            # real-demo path requires a freshly reauthorized full source chunk.
             context = source
         if len(context) > MAX_CONTEXT_CHARS:
             context = context[:MAX_CONTEXT_CHARS]
