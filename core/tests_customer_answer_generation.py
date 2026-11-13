@@ -252,6 +252,24 @@ class CustomerClaimTextValidationTests(TestCase):
         self.assertIn(_good_text(), focused["text"])
         self.assertEqual(focused["source_text"], "A blocked filter may reduce airflow.")
 
+class CustomerParaphraseValidationRegressionTests(TestCase):
+    def test_source_backed_open_state_is_not_misclassified_as_an_instruction(self):
+        source = "Doors/windows open or heat load exceeds capacity."
+        generated = (
+            "A possible cause is doors/windows open or heat load exceeds capacity."
+        )
+        self.assertTrue(generation._validate_paraphrase(
+            source, generated, "possible_cause"
+        ))
+
+    def test_model_cannot_add_an_unstated_maintenance_instruction(self):
+        source = "Dirty filter or coil."
+        generated = "You should clean the dirty filter or coil."
+        self.assertFalse(generation._validate_paraphrase(
+            source, generated, "possible_cause"
+        ))
+
+
 class LocalQwenTransportTests(TestCase):
     @override_settings(
         SERVY_CUSTOMER_ANSWER_GENERATION="ollama",
@@ -286,6 +304,21 @@ class LocalQwenTransportTests(TestCase):
         self.assertNotIn("customer_id", kwargs["json"]["messages"][1]["content"])
         session.close.assert_called_once_with()
 
+        # The serving path exposes the same outcome to its caller, rather than
+        # silently collapsing all failures into an extractive engine label.
+        with (
+            patch.object(generation, "_server_online", return_value=True),
+            patch("core.services.customer_answer_generation.requests.Session", return_value=session),
+        ):
+            result_with_status = generation.generate_customer_claim_texts_with_status(
+                "What causes poor airflow?", _presentation()
+            )
+        self.assertEqual(result_with_status["texts"], {"c1": _good_text()})
+        self.assertEqual(result_with_status["generation"]["status"], "applied")
+        self.assertTrue(result_with_status["generation"]["attempted"])
+        self.assertEqual(result_with_status["generation"]["eligible_claims"], 1)
+        self.assertEqual(result_with_status["generation"]["accepted_claims"], 1)
+
     @override_settings(
         SERVY_CUSTOMER_ANSWER_GENERATION="ollama",
         SERVY_CUSTOMER_GENERATION_URL="https://example.com/api/chat",
@@ -310,6 +343,11 @@ class LocalQwenTransportTests(TestCase):
         presentation = _presentation()
         before = json.dumps(presentation, sort_keys=True)
         with patch.object(generation, "_server_online", return_value=False):
+            status = generation.generate_customer_claim_texts_with_status(
+                "What causes poor airflow?", presentation
+            )
+            self.assertEqual(status["generation"]["status"], "ollama_unreachable")
+            self.assertFalse(status["generation"]["attempted"])
             self.assertFalse(generation.apply_customer_answer_generation(
                 presentation, "What causes poor airflow?"
             ))
