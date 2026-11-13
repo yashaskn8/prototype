@@ -25,7 +25,10 @@ function metricLabels(metrics = {}) {
     metrics.confidential_scope === 'permitted' ? 'Confidential scope permitted' : 'Confidential scope restricted'
   );
   if (metrics.answer_engine) labels.push(`Answer engine: ${metrics.answer_engine}`);
-  if (metrics.model_provider) labels.push(`Generation: ${metrics.model_provider}`);
+  if (metrics.model_provider) {
+    labels.push(`Generation: ${metrics.model_provider}`);
+    if (metrics.generation_status) labels.push(`Outcome: ${metrics.generation_status}`);
+  }
   return labels;
 }
 
