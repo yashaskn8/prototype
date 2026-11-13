@@ -207,6 +207,7 @@ def _loopback_request(handler):
 
 class Handler(BaseHTTPRequestHandler):
     token = ""
+    known_ticket_ids = set()
 
     def log_message(self, *_args):
         # Do not log access codes, ticket contents, attachment names, or URLs.
@@ -214,6 +215,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _log_response(self, status):
         route = urlsplit(self.path).path
+        # The UI polls this endpoint every few seconds. Successful polls are
+        # not operational events; suppress their repetitive HTTP 200 lines.
+        if (self.command == "GET" and route == "/tech-api/tickets/"
+                and status == 200 and getattr(self, "_quiet_queue_poll", False)):
+            return
         if re.fullmatch(r"/tech-api/tickets/[^/]+/attachments/[^/]+/", route):
             safe_route = "/tech-api/tickets/{ticket_id}/attachments/{attachment_id}/"
         elif re.fullmatch(r"/tech-api/tickets/[^/]+/", route):
@@ -257,7 +263,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/tech-api/tickets/":
             try:
-                return self._send_json(200, {"tickets": list_tickets()})
+                tickets = list_tickets()
+                ticket_ids = {str(item.get("id", "")) for item in tickets if item.get("id")}
+                new_ticket_count = len(ticket_ids - self.__class__.known_ticket_ids)
+                if new_ticket_count:
+                    print(
+                        f"{datetime.now().astimezone().strftime('%H:%M:%S')} "
+                        f"TICKET_ARRIVED new_tickets={new_ticket_count} total_tickets={len(ticket_ids)}",
+                        flush=True,
+                    )
+                self.__class__.known_ticket_ids.update(ticket_ids)
+                self._quiet_queue_poll = True
+                return self._send_json(200, {"tickets": tickets})
             except Exception:
                 return self._send_json(503, {"detail": "The local technician ticket workspace is unavailable."})
 
@@ -327,11 +344,15 @@ def main():
         connection = _open_store(DB_PATH)
         connection.close()
     Handler.token = _ensure_access_code()
+    existing_tickets = list_tickets(DB_PATH)
+    Handler.known_ticket_ids = {
+        str(item.get("id", "")) for item in existing_tickets if item.get("id")
+    }
     server = HTTPServer((HOST, PORT), Handler)
     print(json.dumps({
         "ready": True,
         "mode": "local-rag-technician-workspace",
-        "ticket_count": len(list_tickets(DB_PATH)),
+        "ticket_count": len(existing_tickets),
         "ticket_workspace": "ready" if workspace_exists else "waiting_for_first_customer_ticket",
         "database": "separate-local-sqlite-ticket-workspace",
         "access_file": str(ACCESS_FILE),
