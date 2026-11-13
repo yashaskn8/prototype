@@ -2652,67 +2652,156 @@ class CustomerConversationMessagesView(APIView):
         ]
         return Response({"messages": messages})
 
-    def post(self, request, conversation_uuid):
+    def _prepare_post(self, request, conversation_uuid):
         ctx = require_api_context(request)
         tenant = ctx["tenant"]
         customer = ctx["customer"]
         role = ctx["role"]
 
         if role not in CUSTOMER_ROLES or not customer:
-            return Response({"detail": "Only an authenticated customer can add messages to a support conversation."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"detail": "Only an authenticated customer can add messages to a support conversation."},
+                status=status.HTTP_403_FORBIDDEN,
+            ), None
 
         try:
             conv = CustomerConversation.objects.select_related(
                 "asset", "site", "customer", "current_diagnostic_session", "linked_service_call"
-            ).get(
-                tenant=tenant, conversation_uuid=conversation_uuid
-            )
+            ).get(tenant=tenant, conversation_uuid=conversation_uuid)
         except CustomerConversation.DoesNotExist:
-            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Conversation not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            ), None
 
         if not _can_read_customer_conversation(ctx, conv):
-            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Conversation not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            ), None
 
         if conv.status in ("RESOLVED", "CLOSED"):
-            return Response({"detail": "This conversation is closed. Start a new conversation for new issues."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "This conversation is closed. Start a new conversation for new issues."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
 
-        message_text = _clean_input(request.data.get("message") or request.data.get("text") or request.data.get("question"), max_len=4000)
+        message_text = _clean_input(
+            request.data.get("message") or request.data.get("text") or request.data.get("question"),
+            max_len=4000,
+        )
         clarification_response = _clean_input(request.data.get("clarification_response"))
         observation = _clean_input(request.data.get("observation"))
-
         if not message_text and not clarification_response and not observation:
-            return Response({"detail": "Message text is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Message text is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
 
-        idempotency_key = request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key")
+        return None, {
+            "tenant_id": tenant.id,
+            "customer_id": customer.id,
+            "user_id": request.user.id,
+            "role": role,
+            "conversation_uuid": str(conv.conversation_uuid),
+            "message_text": message_text,
+            "clarification_response": clarification_response,
+            "observation": observation,
+            "session_id": (
+                str(conv.current_diagnostic_session.session_id)
+                if conv.current_diagnostic_session else None
+            ),
+            "idempotency_key": (
+                request.headers.get("X-Idempotency-Key")
+                or request.data.get("idempotency_key")
+            ),
+        }
 
+    @staticmethod
+    def _execute_post(prepared):
+        """Revalidate conversation ownership and execute one customer follow-up turn."""
+        from django.contrib.auth import get_user_model
+
+        tenant = Tenant.objects.get(pk=prepared["tenant_id"], is_active=True)
+        customer = Customer.objects.get(pk=prepared["customer_id"], tenant=tenant)
+        user = get_user_model().objects.get(pk=prepared["user_id"], is_active=True)
+        conv = CustomerConversation.objects.select_related(
+            "asset", "site", "customer", "current_diagnostic_session", "linked_service_call"
+        ).get(
+            tenant=tenant,
+            customer=customer,
+            conversation_uuid=prepared["conversation_uuid"],
+        )
+
+        # Membership can be revoked while a stream is opening. Recheck both the
+        # active customer membership and the conversation's own customer scope.
+        membership_ok = TenantMembership.objects.filter(
+            user=user,
+            tenant=tenant,
+            customer=customer,
+            role__in=CUSTOMER_ROLES,
+            is_active=True,
+        ).exists()
+        fresh_ctx = {
+            "tenant": tenant,
+            "customer": customer,
+            "role": prepared["role"],
+            "user": user,
+        }
+        if not membership_ok or not _can_read_customer_conversation(fresh_ctx, conv):
+            raise PermissionDenied("Conversation not found or access changed.")
+
+        if conv.status in ("RESOLVED", "CLOSED"):
+            raise ValidationError("This conversation is closed. Start a new conversation for new issues.")
+        validate_customer_serving_policy(
+            tenant=tenant, customer=customer, asset=conv.asset
+        )
+
+        from core.services.customer_conversation import process_customer_diagnostic_turn
+        turn_result = process_customer_diagnostic_turn(
+            tenant=tenant,
+            customer=customer,
+            user=user,
+            site=conv.site,
+            asset=conv.asset,
+            question=prepared["message_text"],
+            clarification_response=prepared["clarification_response"],
+            user_observation=prepared["observation"],
+            conversation_uuid=str(conv.conversation_uuid),
+            session_id=prepared["session_id"],
+            idempotency_key=prepared["idempotency_key"],
+        )
+        return {
+            "user_message": turn_result["user_message"],
+            "assistant_message": turn_result["assistant_message"],
+            "contract": turn_result["contract"],
+        }
+
+    def post(self, request, conversation_uuid):
+        error, prepared = self._prepare_post(request, conversation_uuid)
+        if error is not None:
+            return error
         try:
-            from core.services.customer_conversation import process_customer_diagnostic_turn
-            turn_result = process_customer_diagnostic_turn(
-                tenant=tenant,
-                customer=conv.customer,
-                user=request.user,
-                site=conv.site,
-                asset=conv.asset,
-                question=message_text,
-                clarification_response=clarification_response,
-                user_observation=observation,
-                conversation_uuid=str(conv.conversation_uuid),
-                session_id=str(conv.current_diagnostic_session.session_id) if conv.current_diagnostic_session else None,
-                idempotency_key=idempotency_key,
-            )
-            return Response({
-                "user_message": turn_result["user_message"],
-                "assistant_message": turn_result["assistant_message"],
-                "contract": turn_result["contract"],
-            })
-        except PermissionDenied as pe:
-            return Response({"detail": str(pe)}, status=status.HTTP_403_FORBIDDEN)
-        except ValidationError as ve:
-            detail_msg = ve.message if hasattr(ve, "message") else str(ve)
+            return Response(self._execute_post(prepared))
+        except PermissionDenied as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except ValidationError as exc:
+            detail_msg = exc.message if hasattr(exc, "message") else str(exc)
             return Response({"detail": detail_msg}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             logger.exception("Error processing customer conversation message turn: %s", exc)
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomerConversationMessagesStreamView(CustomerConversationMessagesView):
+    """Authenticated customer follow-up endpoint with live RAG execution events."""
+
+    def post(self, request, conversation_uuid):
+        error, prepared = self._prepare_post(request, conversation_uuid)
+        if error is not None:
+            return error
+        from core.services.rag_event_stream import rag_execution_stream
+        return rag_execution_stream(lambda: self._execute_post(prepared))
 
 
 class CustomerConversationTicketView(APIView):
