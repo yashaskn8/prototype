@@ -100,6 +100,47 @@ def _claims(result):
     return result["presentation"]["supporting_claims"]
 
 
+class AssetIntentScopeTests(unittest.TestCase):
+    def test_split_ac_question_is_blocked_when_vrf_is_selected(self):
+        question = (
+            "My Split AC is running, but it is not cooling the room properly. "
+            "What are the possible causes documented in the approved manuals?"
+        )
+        result, ask_rag, build_answer = _run(
+            question, [contract()], asset=_asset(60), customer_id=13,
+        )
+        self.assertEqual(result["response_type"], "CLARIFICATION")
+        self.assertEqual(result["reason_code"], "ASSET_SELECTION_MISMATCH")
+        self.assertIn("Split AC Unit 2T", result["message"])
+        self.assertIn("VRF Outdoor Module", result["message"])
+        self.assertIn("No manuals were searched", result["message"])
+        self.assertEqual(result["retrieval_attempts"], 0)
+        self.assertEqual(result["engine"], "asset-scope-guard")
+        self.assertIsNone(result["issue_assignment"])
+        self.assertIsNone(result["ticket_context"])
+        self.assertEqual(ask_rag.call_count, 0)
+        self.assertEqual(build_answer.call_count, 0)
+
+    def test_question_for_selected_asset_family_is_not_blocked(self):
+        result, ask_rag, _ = _run(
+            "My VRF outdoor module is not cooling. What causes are documented?",
+            [contract(), contract()], asset=_asset(60), customer_id=13,
+        )
+        self.assertNotEqual(result.get("reason_code"), "ASSET_SELECTION_MISMATCH")
+        self.assertGreater(ask_rag.call_count, 0)
+
+    def test_question_naming_multiple_demo_asset_families_is_blocked(self):
+        result, ask_rag, _ = _run(
+            "Compare poor cooling on my Split AC and VRF outdoor module.",
+            [contract()], asset=_asset(60), customer_id=13,
+        )
+        self.assertEqual(result["response_type"], "CLARIFICATION")
+        self.assertEqual(result["reason_code"], "MULTIPLE_ASSET_TYPES_IN_QUESTION")
+        self.assertEqual(ask_rag.call_count, 0)
+        self.assertIsNone(result["issue_assignment"])
+        self.assertIsNone(result["ticket_context"])
+
+
 class EvidenceStateTests(unittest.TestCase):
     def test_sufficient_internal_evidence_gives_a_cited_answer_without_escalation(self):
         result, _ = _cause_turn()

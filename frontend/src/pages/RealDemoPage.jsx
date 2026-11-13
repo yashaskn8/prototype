@@ -11,7 +11,9 @@ import {
   tryBeginRequest,
 } from '../components/assistantRequestLifecycle';
 import '../components/AssistantTypingIndicator.css';
-import { appendDemoThread, canOpenDemoThread, chatTitle } from './demoThreadState';
+import {
+  appendDemoThread, canOpenDemoThread, chatTitle, isDemoAssetThreadBound,
+} from './demoThreadState';
 import './RealDemoPage.css';
 
 async function call(path, token, options = {}) {
@@ -247,7 +249,9 @@ export function RealDemoPage() {
     try {
       const value = entry.trim();
       const data = await call('/demo-api/inventory/', value);
-      const selected = String(data.assets.find(item => item.id === 60)?.id || data.assets[0]?.id || '');
+      // Never choose equipment silently. Every conversation must begin with
+      // the customer explicitly selecting the asset they are asking about.
+      const selected = '';
       initializeThreads(selected);
       setToken(value);
       setEntry('');
@@ -265,6 +269,10 @@ export function RealDemoPage() {
     event?.preventDefault?.();
     const submittedQuestion = (suggestedQuestion ?? question).trim();
     if (!submittedQuestion || busy || !token || !assetId) return;
+    if (!isDemoAssetThreadBound(threads, activeThreadId, assetId)) {
+      setError('Select the intended equipment and start a new chat before asking a question.');
+      return;
+    }
     const messageId = `user-${Date.now()}-${Math.random()}`;
     const responseId = `assistant-${Date.now()}-${Math.random()}`;
     if (!tryBeginRequest(requestInFlight, responseId)) return;
@@ -295,6 +303,10 @@ export function RealDemoPage() {
         }),
       });
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
+      const responseAssetId = data?.presentation?.equipment?.id ?? data?.asset?.id;
+      if (responseAssetId != null && String(responseAssetId) !== String(activeAsset)) {
+        throw new Error('Servy response equipment scope mismatch');
+      }
       if (hasAssistantResponse(data)) {
         setMessages(previous => replaceMessageById(previous, responseId,
           { id: responseId, role: 'assistant', data }));
@@ -306,10 +318,13 @@ export function RealDemoPage() {
       setContinuation(data.continuation || null);
       setResult(hasAssistantResponse(data) ? data : null);
       if (hasAssistantResponse(data)) setAnsweredQuestion(submittedQuestion);
-    } catch {
+    } catch (err) {
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
+      const errorMessage = err?.message === 'Servy response equipment scope mismatch'
+        ? 'Servy returned information for different equipment. The response was blocked. Select the intended asset and start a new chat.'
+        : 'Servy could not complete that response. Please try again.';
       setMessages(previous => replaceMessageById(previous, responseId,
-        { id: responseId, role: 'assistant', errorMessage: 'Servy could not complete that response. Please try again.' }));
+        { id: responseId, role: 'assistant', errorMessage }));
       setQuestion(submittedQuestion);
       setError('');
     } finally {
@@ -454,7 +469,11 @@ export function RealDemoPage() {
             <div className="form-group"><label className="form-label" htmlFor="demo-asset">Equipment / Asset</label>
               <select className="form-control" id="demo-asset" value={assetId}
                 onChange={event => { initializeThreads(event.target.value); setAssetId(event.target.value); }}>
+                <option value="">Select equipment before asking questions</option>
                 {assets.map(item => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}</select></div>
+            {!asset && <p className="real-demo-doc-status" role="status">
+              Select the equipment you want to ask about. Servy will not choose an asset automatically.
+            </p>}
             {asset && <div className="real-demo-asset-detail"><h3>{asset.name}</h3>
               <dl><div><dt>Asset code</dt><dd>{asset.code}</dd></div>
                 <div><dt>Product</dt><dd>{asset.product || 'Not listed'}</dd></div>
@@ -493,9 +512,10 @@ export function RealDemoPage() {
               <div className="real-demo-chat-thread" role="log" aria-label="Conversation messages" aria-live="polite" aria-busy={busy}>
                 {messages.length === 0 && <div className="real-demo-chat-empty">
                   <Bot size={28} />
-                  <h3>Ask about this equipment</h3>
-                  <p>Describe a symptom or fault code. Continue asking follow-up questions;
-                    Servy will use the earlier customer reports to retrieve relevant approved documentation.</p>
+                  <h3>{asset ? 'Ask about this equipment' : 'Select equipment first'}</h3>
+                  <p>{asset
+                    ? 'Describe a symptom or fault code. Continue asking follow-up questions; Servy will use the earlier customer reports to retrieve relevant approved documentation.'
+                    : 'Choose the exact equipment in Equipment Selection before starting a conversation. Each chat stays bound to that asset and its approved manuals.'}</p>
                   <small>This is a read-only local demo. Conversations exist only in this browser tab and are not saved as company records.</small>
                 </div>}
                 {messages.map((message, index) => (

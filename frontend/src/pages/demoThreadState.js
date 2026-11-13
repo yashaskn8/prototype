@@ -21,3 +21,9 @@ export function canOpenDemoThread(thread, selectedAssetId) {
   return Boolean(thread && selectedAssetId
     && String(thread.assetId) === String(selectedAssetId));
 }
+
+export function isDemoAssetThreadBound(threads, activeThreadId, selectedAssetId) {
+  if (!selectedAssetId || !activeThreadId || !Array.isArray(threads)) return false;
+  const active = threads.find(thread => thread?.id === activeThreadId);
+  return Boolean(active && String(active.assetId) === String(selectedAssetId));
+}

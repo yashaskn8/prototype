@@ -53,6 +53,54 @@ from tools.servy_real_demo_dialogue import (
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
 ASSET_SCOPE = {59: 14, 60: 13, 61: 14}
+DEMO_ASSET_NAMES = {
+    59: "Split AC Unit 2T",
+    60: "VRF Outdoor Module",
+    61: "Ductable AC 5T",
+}
+DEMO_ASSET_INTENT_PATTERNS = {
+    59: re.compile(r"\b(?:split\s*ac|split\s+air\s+condition(?:er|ing)?|split\s+unit|sky\s*-?ast\s*-?00001)\b", re.I),
+    60: re.compile(r"\b(?:vrf|variable\s+refrigerant\s+flow|sky\s*-?ast\s*-?00002)\b", re.I),
+    61: re.compile(r"\b(?:ductable(?:\s+ac)?|ducted\s+(?:ac|air\s+condition(?:er)?)|sky\s*-?ast\s*-?00003)\b", re.I),
+}
+
+def _asset_intent_guard(asset_id, question):
+    """Fail closed when a question explicitly names another demo asset family."""
+    if not isinstance(question, str):
+        return None
+    mentioned = [
+        candidate_id for candidate_id, pattern in DEMO_ASSET_INTENT_PATTERNS.items()
+        if pattern.search(question)
+    ]
+    if not mentioned:
+        return None
+    if len(mentioned) > 1:
+        names = [DEMO_ASSET_NAMES[item] for item in mentioned]
+        return {
+            "response_type": "CLARIFICATION",
+            "reason_code": "MULTIPLE_ASSET_TYPES_IN_QUESTION",
+            "message": (
+                "Your question mentions more than one equipment type: "
+                + " and ".join(names)
+                + ". Select one equipment item and ask about it in a separate chat. "
+                "No manuals were searched and no ticket was prepared."
+            ),
+        }
+    requested_id = mentioned[0]
+    if requested_id == asset_id:
+        return None
+    requested_name = DEMO_ASSET_NAMES[requested_id]
+    selected_name = DEMO_ASSET_NAMES.get(asset_id, "the selected equipment")
+    return {
+        "response_type": "CLARIFICATION",
+        "reason_code": "ASSET_SELECTION_MISMATCH",
+        "message": (
+            f"Your question refers to {requested_name}, but the selected equipment is "
+            f"{selected_name}. Select {requested_name} in Equipment Selection and start "
+            "a new chat. No manuals were searched and no ticket was prepared."
+        ),
+    }
+
 # Set once at startup from the nine required manuals. None means readiness was
 # not evaluated in this process (unit tests); a dict gates every request.
 MANUAL_READINESS = None
@@ -435,6 +483,21 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
     tenant, customer, asset = _asset(asset_id)
     if customer.id != ASSET_SCOPE[asset_id]:
         raise ValueError("Customer scope changed")
+    asset_intent_issue = _asset_intent_guard(asset_id, question)
+    if asset_intent_issue:
+        return {
+            **asset_intent_issue,
+            "presentation": None,
+            "citations": [],
+            "issue_assignment": None,
+            "ticket_context": None,
+            "continuation": None,
+            "suggested_follow_ups": [],
+            "retrieval_attempts": 0,
+            "retrieval_backend": None,
+            "reranker_applied": False,
+            "engine": "asset-scope-guard",
+        }
     if (thread_id is not None
             and (not isinstance(thread_id, str)
                  or not re.fullmatch(r"thread-[a-z0-9-]{8,90}", thread_id))):

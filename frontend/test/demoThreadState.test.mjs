@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chatTitle, appendDemoThread, canOpenDemoThread, MAX_DEMO_THREADS }
-  from '../src/pages/demoThreadState.js';
+import {
+  chatTitle, appendDemoThread, canOpenDemoThread, isDemoAssetThreadBound, MAX_DEMO_THREADS,
+} from '../src/pages/demoThreadState.js';
 
 test('thread memory is capped at eight conversations', () => {
   let threads = [];
@@ -35,4 +36,16 @@ test('invalid and duplicate thread indexes fail safely', () => {
     { id: 'a', assetId: '60', title: 'New' });
   assert.equal(next.length, 1);
   assert.equal(next[0].title, 'New');
+});
+
+test('a message can only be sent from a thread bound to the selected asset', () => {
+  const threads = [
+    { id: 'thread-split', assetId: '59', title: 'Split AC' },
+    { id: 'thread-vrf', assetId: '60', title: 'VRF' },
+  ];
+  assert.equal(isDemoAssetThreadBound(threads, 'thread-split', '59'), true);
+  assert.equal(isDemoAssetThreadBound(threads, 'thread-split', '60'), false);
+  assert.equal(isDemoAssetThreadBound(threads, 'thread-vrf', ''), false);
+  assert.equal(isDemoAssetThreadBound(threads, '', '59'), false);
+  assert.equal(isDemoAssetThreadBound(null, 'thread-split', '59'), false);
 });
