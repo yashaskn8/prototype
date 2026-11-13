@@ -73,6 +73,8 @@ def process_customer_diagnostic_turn(
     - Exactly ONE customer message and ONE assistant message persist per completed turn.
     - Atomic transaction boundaries: all turn mutations commit together or roll back cleanly.
     """
+    from core.services.rag_execution_log import execution_stage, emit_execution_event
+
     clean_question = (question or "").strip()
     clean_clarification = (clarification_response or "").strip()
     clean_obs = (user_observation or "").strip()
@@ -262,7 +264,23 @@ def process_customer_diagnostic_turn(
     try:
         # Extract Attributable Multi-turn Context
         from core.services.conversation_context import extract_conversation_context, contextualize_customer_query
-        conv_context = extract_conversation_context(conv, turn_text, asset=asset)
+        with execution_stage(
+            "customer_conversation_context",
+            "Reconstructing this customer's authorized conversation context",
+        ):
+            conv_context = extract_conversation_context(
+                conv, turn_text, asset=asset
+            )
+        emit_execution_event(
+            "customer_conversation_context_summary",
+            "Conversation context summary",
+            "info",
+            metrics={
+                "candidate_count": len(
+                    getattr(conv_context, "reported_symptoms", None) or []
+                ),
+            },
+        )
 
         # 4. Safety Hazard Evaluation (P0-1)
         all_inputs = [clean_question, clean_clarification, clean_obs]
@@ -276,28 +294,42 @@ def process_customer_diagnostic_turn(
         _api_views = sys.modules.get("core.api_views")
         _hazard_checker = getattr(_api_views, "check_for_safety_hazard", check_for_safety_hazard) if _api_views else check_for_safety_hazard
 
-        is_hazard, hazard_warning = _hazard_checker(combined_text)
-        if not is_hazard:
-            for inp in all_inputs:
-                if inp:
-                    is_h, h_w = _hazard_checker(inp)
-                    if is_h:
-                        is_hazard, hazard_warning = is_h, h_w
-                        break
+        with execution_stage(
+            "customer_safety_screening",
+            "Checking current and previously reported safety conditions",
+        ):
+            is_hazard, hazard_warning = _hazard_checker(combined_text)
+            if not is_hazard:
+                for inp in all_inputs:
+                    if inp:
+                        is_h, h_w = _hazard_checker(inp)
+                        if is_h:
+                            is_hazard, hazard_warning = is_h, h_w
+                            break
 
-        if not is_hazard and session:
-            facts = session.facts_snapshot or {}
-            if facts.get("hazard"):
-                is_hazard = True
-                # Do not replay an older persisted warning that may contain
-                # unsafe generic power-isolation advice from an earlier version.
-                hazard_warning = (
-                    "IMMEDIATE SAFETY RISK DETECTED: A previously reported safety concern still requires escalation. "
-                    "Move away from the equipment and keep others clear. Do not touch the equipment, controls, "
-                    "wiring or electrical switches. Do not open, operate, reset or attempt to disconnect power. "
-                    "Follow the site's emergency procedure and notify the site safety lead and an authorized "
-                    "service technician. Contact emergency responders if anyone is injured or there is immediate danger."
-                )
+            if not is_hazard and session:
+                facts = session.facts_snapshot or {}
+                if facts.get("hazard"):
+                    is_hazard = True
+                    # Do not replay an older persisted warning that may contain
+                    # unsafe generic power-isolation advice from an earlier version.
+                    hazard_warning = (
+                        "IMMEDIATE SAFETY RISK DETECTED: A previously reported safety concern still requires escalation. "
+                        "Move away from the equipment and keep others clear. Do not touch the equipment, controls, "
+                        "wiring or electrical switches. Do not open, operate, reset or attempt to disconnect power. "
+                        "Follow the site's emergency procedure and notify the site safety lead and an authorized "
+                        "service technician. Contact emergency responders if anyone is injured or there is immediate danger."
+                    )
+        emit_execution_event(
+            "customer_safety_outcome",
+            (
+                "Safety condition detected; RAG retrieval will not run"
+                if is_hazard else
+                "No safety escalation condition detected"
+            ),
+            "info",
+        )
+
 
         if is_hazard:
             with transaction.atomic():
@@ -399,8 +431,26 @@ def process_customer_diagnostic_turn(
         # 5. Ambiguity & Clarification Evaluation
         # Only evaluate vague complaint at start of issue when no symptoms/history are established
         is_vague, clarif_q, clarif_opts = False, None, None
-        if not conv_context.is_followup and conv_context.turn_count == 0:
-            is_vague, clarif_q, clarif_opts = check_for_vague_complaint(clean_question, asset=asset)
+        with execution_stage(
+            "customer_clarification_screening",
+            "Checking whether more symptom detail is needed",
+        ):
+            if not conv_context.is_followup and conv_context.turn_count == 0:
+                is_vague, clarif_q, clarif_opts = check_for_vague_complaint(
+                    clean_question, asset=asset
+                )
+        if is_vague and not clean_clarification:
+            emit_execution_event(
+                "customer_clarification_outcome",
+                "Additional symptom detail is required before retrieval",
+                "info",
+            )
+        else:
+            emit_execution_event(
+                "customer_clarification_outcome",
+                "Customer request is ready for evidence retrieval",
+                "info",
+            )
         if is_vague and not clean_clarification:
             with transaction.atomic():
                 user_msg = CustomerMessage.objects.create(
@@ -475,16 +525,20 @@ def process_customer_diagnostic_turn(
             combined_query = f"{clean_question} (User clarification: {clean_clarification})" if clean_clarification else clean_question
             retrieval_query = combined_query or turn_text
 
-        rag_res = ask_rag(
-            tenant=tenant,
-            question=retrieval_query,
-            original_question=turn_text,
-            conversation_context=conv_context,
-            asset=asset,
-            customer=customer,
-            include_confidential=False,
-            staff_mode=False,
-        )
+        with execution_stage(
+            "customer_rag_execution",
+            "Retrieving approved customer-visible manual evidence",
+        ):
+            rag_res = ask_rag(
+                tenant=tenant,
+                question=retrieval_query,
+                original_question=turn_text,
+                conversation_context=conv_context,
+                asset=asset,
+                customer=customer,
+                include_confidential=False,
+                staff_mode=False,
+            )
 
         with transaction.atomic():
             user_msg = CustomerMessage.objects.create(
@@ -520,13 +574,33 @@ def process_customer_diagnostic_turn(
                 source_refs=rag_res.get("references", []),
             )
 
-            contract = build_structured_diagnostic_contract(
-                interaction=interaction,
-                session=session,
-                raw_answer=rag_res.get("answer", ""),
-                retrieved_references=rag_res.get("references", []),
-                conversation_context=conv_context,
-                original_question=turn_text,
+            with execution_stage(
+                "customer_evidence_validation",
+                "Validating manual claims and constructing citation-backed answer",
+            ):
+                contract = build_structured_diagnostic_contract(
+                    interaction=interaction,
+                    session=session,
+                    raw_answer=rag_res.get("answer", ""),
+                    retrieved_references=rag_res.get("references", []),
+                    conversation_context=conv_context,
+                    original_question=turn_text,
+                )
+            presentation = contract.get("presentation") or {}
+            emit_execution_event(
+                "customer_evidence_summary",
+                "Customer answer evidence summary",
+                "info",
+                metrics={
+                    "supported_count": len(
+                        presentation.get("supporting_claims", []) or []
+                    ),
+                    "citation_count": len(
+                        presentation.get("citations", []) or
+                        contract.get("citations", []) or
+                        rag_res.get("references", []) or []
+                    ),
+                },
             )
             if session:
                 record_customer_action_presentation(session, contract.get("customer_safe_actions", []), tenant)
