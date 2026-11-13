@@ -12,16 +12,20 @@ const STATUS_LABELS = {
 function metricLabels(metrics = {}) {
   const labels = [];
   if (Number.isInteger(metrics.candidate_count)) labels.push(`Candidates: ${metrics.candidate_count}`);
+  if (Number.isInteger(metrics.dense_count)) labels.push(`Vector hits: ${metrics.dense_count}`);
+  if (Number.isInteger(metrics.sparse_count)) labels.push(`Text hits: ${metrics.sparse_count}`);
   if (Number.isInteger(metrics.retrieved_count)) labels.push(`Retrieved: ${metrics.retrieved_count}`);
   if (Number.isInteger(metrics.supported_count)) labels.push(`Supported: ${metrics.supported_count}`);
   if (Number.isInteger(metrics.past_case_count)) labels.push(`Past cases: ${metrics.past_case_count}`);
   if (metrics.retrieval_backend) labels.push(`Search: ${metrics.retrieval_backend}`);
   if (metrics.reranker_applied === true) labels.push('Reranker applied');
   if (metrics.reranker_applied === false) labels.push('Reranker not applied');
+  if (metrics.reranker_model) labels.push(`Reranker: ${metrics.reranker_model}`);
   if (metrics.confidential_scope) labels.push(
     metrics.confidential_scope === 'permitted' ? 'Confidential scope permitted' : 'Confidential scope restricted'
   );
   if (metrics.answer_engine) labels.push(`Answer engine: ${metrics.answer_engine}`);
+  if (metrics.model_provider) labels.push(`Generation: ${metrics.model_provider}`);
   return labels;
 }
 
