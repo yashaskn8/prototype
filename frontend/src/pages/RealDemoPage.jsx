@@ -57,6 +57,22 @@ function assignmentNotice(data) {
     ? value.notice.slice(0, 500) : '';
 }
 
+// Inventory status from the server's per-manual readiness. An asset is
+// ready only when every required manual is; a count of database records is
+// never shown as readiness.
+function manualStatus(item) {
+  const required = Array.isArray(item?.required_manuals) ? item.required_manuals : [];
+  if (item?.manuals_ready === true) return `${required.length} required manuals ready`;
+  if (item?.manuals_ready === false) {
+    const incomplete = required.filter(doc => doc && doc.ready !== true)
+      .map(doc => `${doc.doc_type || 'manual'} (${doc.id})`);
+    return incomplete.length
+      ? `Not ready: ${incomplete.join(', ')} unavailable or incomplete`
+      : 'Not ready: required manuals could not be verified';
+  }
+  return item?.documents?.length ? `${item.documents.length} permitted manuals` : 'No demo document access';
+}
+
 function answerForTicket(data) {
   const presentation = data?.presentation;
   // A refusal has no sections; record what Servy actually told the customer.
@@ -431,7 +447,7 @@ export function RealDemoPage() {
             <div className="real-demo-inventory">{assets.map(item => <button className="real-demo-inventory-item" type="button" key={item.id}
               onClick={() => { initializeThreads(String(item.id)); setAssetId(String(item.id)); setView('chat'); }}>
               <span className="real-demo-icon"><Package size={18} /></span><span><strong>{item.name}</strong><small>{item.code} · {item.model || 'Model not listed'}</small></span>
-              <em>{item.documents.length ? `${item.documents.length} permitted manuals` : 'No demo document access'}</em></button>)}</div></section>
+              <em>{manualStatus(item)}</em></button>)}</div></section>
         </> : <>
           <div className="real-demo-columns real-demo-conversation-layout"><section className="card real-demo-equipment">
             <h2 className="card-title"><Building2 size={20} /> Equipment Selection</h2>
@@ -444,7 +460,9 @@ export function RealDemoPage() {
                 <div><dt>Product</dt><dd>{asset.product || 'Not listed'}</dd></div>
                 {asset.site && <div><dt>Site</dt><dd>{asset.site}</dd></div>}</dl>
               {!asset.documents.length && <p className="real-demo-doc-status"><FileText size={17} />
-                Technical-document access unavailable in this demo</p>}</div>}</section>
+                Technical-document access unavailable in this demo</p>}
+              {asset.manuals_ready === false && <p className="real-demo-doc-status" role="status"><FileText size={17} />
+                {manualStatus(asset)}. Questions are disabled until all required manuals are available.</p>}</div>}</section>
 
             <section className="card real-demo-assistant real-demo-chat-panel" aria-label="Ask Servy conversation">
               <div className="real-demo-assistant-header">

@@ -139,7 +139,15 @@ def read_only_database():
     connection.close()
 
 
-def serving():
+def serving(verify_artifacts=False, required_collections=("bge-small", "company-bge-small"),
+            optional_collections=()):
+    """Evaluated serving configuration; optionally prove the artifacts run.
+
+    With verify_artifacts the local BGE model, its collections and real V5
+    inference are checked after the private index copy is active. A caller
+    that needs the evaluated stack must pass it: configuration alone does
+    not show that V5 is actually scoring.
+    """
     from django.conf import settings
     from core.services.retriever import get_serving_config
     from core.management.commands.check_rag_serving import serving_configuration_issues
@@ -151,10 +159,16 @@ def serving():
         raise RuntimeError("Remote LLM is outside this authorization.")
     if config.embedding_profile != "bge-small" or config.retrieval_mode != "hybrid" or not config.reranker_enabled or settings.SERVY_RERANKER_POOL_SIZE != 5:
         raise RuntimeError("Expected BGE-small hybrid retrieval with V5 pool size 5.")
-    return {"embedding": config.embedding_profile, "retrieval": config.retrieval_mode,
-            "reranker_enabled": config.reranker_enabled, "reranker_pool_size": settings.SERVY_RERANKER_POOL_SIZE,
-            "expected_v5_sha256": settings.SERVY_RERANKER_EXPECTED_SHA256,
-            "data_mode": settings.SERVY_CUSTOMER_DATA_MODE, "llm_provider": settings.SERVY_LLM_PROVIDER}
+    result = {"embedding": config.embedding_profile, "retrieval": config.retrieval_mode,
+              "reranker_enabled": config.reranker_enabled, "reranker_pool_size": settings.SERVY_RERANKER_POOL_SIZE,
+              "expected_v5_sha256": settings.SERVY_RERANKER_EXPECTED_SHA256,
+              "data_mode": settings.SERVY_CUSTOMER_DATA_MODE, "llm_provider": settings.SERVY_LLM_PROVIDER}
+    if verify_artifacts:
+        from core.management.commands.check_rag_serving import verify_local_serving_artifacts
+        result["verified_artifacts"] = verify_local_serving_artifacts(
+            required_collections=required_collections,
+            optional_collections=optional_collections)
+    return result
 
 
 def validate_bank(path):

@@ -752,9 +752,13 @@ def build_customer_answer(interaction, session, references, conversation_context
                         if (not asks_frequency
                                 or len(term_keys & match_keys(words | heading_words)) < 2):
                             continue
-                    elif asks_frequency or len({stem(w) for w in sentence_overlap}) < 2:
+                    elif (len({stem(w) for w in sentence_overlap}) < 2
+                          or (asks_frequency and not re.search(
+                              r"\b(?:frequency|intervals?|schedules?)\b", text, re.I))):
                         # A plain statement must itself share two distinct
-                        # question terms, and never stands in for a schedule.
+                        # question terms. For a timing question it must be a
+                        # statement about frequency; it never stands in for a
+                        # schedule entry otherwise.
                         continue
                     target = facts
                 else:

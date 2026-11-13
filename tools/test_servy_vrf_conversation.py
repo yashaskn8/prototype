@@ -347,9 +347,18 @@ class VrfConversationTests(unittest.TestCase):
     def test_another_asset_gets_its_own_conditions_and_cannot_reuse_the_chat(self):
         (split,) = converse("split", ["What could be the issues if the unit is not working?"],
                             thread_id="thread-answer-stage-0002")
-        message = split["presentation"]["message"]
-        self.assertIn("Poor cooling", message)
-        self.assertNotIn("Communication or addressing fault", message)
+        # A broad "not working" report lists each documented cause under its
+        # own section of the selected asset's manual, never another asset's.
+        texts = [claim["text"] for claim in split["presentation"]["supporting_claims"]]
+        self.assertTrue(texts)
+        self.assertTrue(all(text.startswith("Under ") for text in texts), texts)
+        self.assertTrue(any(text.startswith("Under Poor cooling:") for text in texts), texts)
+        dump = json.dumps(split["presentation"])
+        for vrf_only in ("Communication or addressing fault", "Compressor or inverter fault",
+                         "High-pressure or heat-exchange fault"):
+            self.assertNotIn(vrf_only, dump)
+        self.assertEqual({citation["title"] for citation in split["presentation"]["citations"]},
+                         {"Troubleshooting and Fault Reference"})
         with self.assertRaises(ValueError):
             converse("split", ["What can I safely observe?"],
                      continuation=self.first["continuation"])

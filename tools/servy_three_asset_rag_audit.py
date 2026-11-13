@@ -127,6 +127,166 @@ def _load_scope(tenant):
     return assets, documents, chunk_counts
 
 
+def _norm(text):
+    import re
+    text = re.sub(r"^\s*(?:[-*•]+|\[\s?\]|\d+[.)])\s*", "", str(text or ""), flags=re.M)
+    return " ".join(text.split()).casefold()
+
+
+def extraction_coverage(tenant, documents):
+    """Compare each original source file with its searchable chunks.
+
+    Reports, per document, how many non-empty source lines appear in the
+    indexed chunk text and which do not. Nothing is assumed complete: a
+    document whose source cannot be read as text is flagged, not passed.
+    """
+    from django.conf import settings
+    from core.models import KnowledgeChunk, KnowledgeDocument
+    out = {}
+    for doc_id in documents:
+        doc = KnowledgeDocument.objects.get(pk=doc_id, tenant=tenant)
+        path = Path(doc.file.path).resolve()
+        row = {"file_type": path.suffix.lower() or "none", "warnings": []}
+        chunk_text = _norm(" ".join(KnowledgeChunk.objects.filter(
+            document=doc, tenant=tenant, is_quarantined=False,
+        ).order_by("chunk_index", "id").values_list("text", flat=True)))
+        headings = [h for h in KnowledgeChunk.objects.filter(
+            document=doc, tenant=tenant, is_quarantined=False,
+        ).values_list("heading", flat=True) if h]
+        row["chunk_headings"] = sorted(set(headings))
+        if row["file_type"] not in {".txt", ".md"}:
+            # A PDF or scan cannot be compared line by line here; say so.
+            row["warnings"].append("SOURCE_NOT_PLAIN_TEXT_COVERAGE_NOT_VERIFIED")
+            row["source_lines"] = row["lines_in_chunks"] = None
+            out[str(doc_id)] = row
+            continue
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        lines = [line for line in raw.splitlines() if _norm(line) and len(_norm(line)) >= 4]
+        missing = [line.strip()[:80] for line in lines if _norm(line) not in chunk_text]
+        row["source_lines"] = len(lines)
+        row["lines_in_chunks"] = len(lines) - len(missing)
+        row["lines_not_searchable"] = missing[:12]
+        if "\ufffd" in raw:
+            row["warnings"].append("SOURCE_HAS_UNDECODABLE_CHARACTERS")
+        if missing:
+            row["warnings"].append(f"{len(missing)}_SOURCE_LINES_NOT_IN_SEARCHABLE_CHUNKS")
+        out[str(doc_id)] = row
+    return out
+
+
+def _open_source_in_process(url):
+    """Open a signed citation exactly as the demo's source route does."""
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs, urlsplit
+    from django.core import signing
+    from core.services.customer_answer import SALT, open_citation
+    from tools import servy_real_demo as demo
+    try:
+        token = parse_qs(urlsplit(url).query).get("citation", [""])[0]
+        payload = signing.loads(token, salt=SALT, max_age=3600)
+        asset_id = payload.get("asset")
+        if (demo.ASSET_SCOPE.get(asset_id) != payload.get("customer")
+                or payload.get("user") != demo.DEMO_USER_ID):
+            return 404, {}
+        tenant, customer, _asset = demo._asset(asset_id)
+        ctx = {"user": SimpleNamespace(id=demo.DEMO_USER_ID), "tenant": tenant,
+               "customer": customer, "can_view_confidential": False}
+        return 200, open_citation(token, ctx)
+    except Exception:
+        return 404, {}
+
+
+def evaluate_manual_grounded(tenant, assets, documents):
+    """Retrieval stage and full customer path for manual-grounded questions.
+
+    For each answerable single question: the positive passages are the
+    indexed chunks of the named manual that contain the expected phrase, the
+    pre-reranking candidates and final ranking come from ``ask_rag``, and the
+    customer answer comes from the demo's own ``_answer`` path. Failures are
+    attributed to candidate recall, reranking or answer construction.
+    """
+    import uuid
+    from types import SimpleNamespace
+    from core.models import KnowledgeChunk
+    from core.services.rag import ask_rag
+    from tools import servy_real_demo as demo
+    from tools import servy_three_asset_customer_eval as evaluation
+
+    sources = {}
+    chunks_by_doc = {}
+    for doc_id in documents:
+        rows = list(KnowledgeChunk.objects.filter(
+            document_id=doc_id, tenant=tenant, is_quarantined=False,
+        ).order_by("chunk_index", "id"))
+        chunks_by_doc[doc_id] = rows
+        sources[doc_id] = " ".join(f"{row.heading or ''} {row.text or ''}" for row in rows)
+    opener = SimpleNamespace(source=_open_source_in_process)
+    all_docs = set(documents)
+    out = []
+    for case_id, asset_id, manual, turns in evaluation.CASES:
+        asset = assets[asset_id]
+        expected_docs = set(DOCUMENTS_BY_ASSET[asset_id])
+        continuation, thread_id = None, "thread-" + uuid.uuid4().hex
+        for index, expected in enumerate(turns, start=1):
+            row = {"case": case_id, "turn": index, "asset_id": asset_id, "manual": manual}
+            if index == 1 and expected["kind"] == evaluation.ANSWER:
+                positives = {
+                    chunk.id for chunk in chunks_by_doc[expected["doc"]]
+                    if any(_norm(phrase) in _norm(chunk.text) for phrase in expected["include"])}
+                result = ask_rag(
+                    tenant=tenant, customer=asset.customer, asset=asset,
+                    question=expected["question"], original_question=expected["question"],
+                    include_confidential=False, service_call=None, staff_mode=False, top_k=10)
+                retrieved = [item for item in (result.get("retrieved") or [])
+                             if getattr(item, "source_kind", "knowledge_document") == "knowledge_document"]
+                ranked = [int(i.chunk_id) for i in retrieved if i.chunk_id is not None]
+                ranked_docs = [int(i.document_id) for i in retrieved if i.document_id is not None]
+                candidates = [int(c) for c in result.get("pre_rerank_candidate_chunk_ids") or []]
+                hits = [n + 1 for n, cid in enumerate(ranked) if cid in positives]
+                pre_hits = [n + 1 for n, cid in enumerate(candidates) if cid in positives]
+                first = min(hits) if hits else None
+                row["retrieval"] = {
+                    "positive_chunk_ids": sorted(positives),
+                    "ground_truth_passage_indexed": bool(positives),
+                    "pre_rerank_candidate_chunk_ids": candidates,
+                    "pre_rerank_first_positive_rank": min(pre_hits) if pre_hits else None,
+                    "candidate_recall": bool(pre_hits),
+                    "final_ranked_chunk_ids": ranked[:10],
+                    "final_first_positive_rank": first,
+                    "hit_at_1": first == 1, "hit_at_5": first is not None and first <= 5,
+                    "retrieval_backend": result.get("retrieval_backend"),
+                    "reranker_applied": bool(result.get("reranker_applied")),
+                    "reranker_model": result.get("reranker_model"),
+                    "cited_positive": bool({int(r["chunk_id"]) for r in result.get("references") or []
+                                            if r.get("chunk_id") is not None} & positives),
+                    "cross_asset_document_ids": sorted({
+                        d for d in ranked_docs if d in all_docs and d not in expected_docs}),
+                }
+            try:
+                data = demo._answer(asset_id, expected["question"], continuation=continuation,
+                                    thread_id=thread_id)
+                status = 200
+            except ValueError:
+                data, status = {}, 400
+            answer = evaluation.evaluate_turn(expected, status, data, asset_id=asset_id,
+                                              sources=sources, client=opener)
+            continuation = data.get("continuation") or continuation
+            row["answer"] = answer
+            retrieval = row.get("retrieval")
+            if answer["passed"]:
+                row["failure_stage"] = None
+            elif retrieval and not retrieval["ground_truth_passage_indexed"]:
+                row["failure_stage"] = "GROUND_TRUTH_PASSAGE_NOT_INDEXED"
+            elif retrieval and not retrieval["candidate_recall"]:
+                row["failure_stage"] = "CANDIDATE_RECALL_FAILURE"
+            elif retrieval and not retrieval["hit_at_5"]:
+                row["failure_stage"] = "RERANKING_FAILURE"
+            else:
+                row["failure_stage"] = "ANSWER_CONSTRUCTION_FAILURE"
+            out.append(row)
+    return out
+
+
 def _build_cases(benchmark):
     cases = [
         row for row in benchmark["cases"]
@@ -167,14 +327,35 @@ def run_audit():
     from core.services.rag import ask_rag
     from core.services.retriever import get_serving_config
     from tools.servy_500_benchmark import (
-        operational_counts, private_folder, read_only_database,
+        activate_index_copy, file_manifest, load_json, operational_counts,
+        prepare_index_copy, private_folder, read_only_database, serving,
     )
 
     if settings.SERVY_CUSTOMER_DATA_MODE != "verified_real_only":
         raise RuntimeError("Live audit requires verified_real_only serving mode.")
     if settings.SERVY_ALLOW_REMOTE_LLM:
         raise RuntimeError("Live audit refuses remote model/API access.")
+    # Evaluated configuration only: BGE-small, hybrid, V5 enabled, pool five.
+    serving_configuration = serving()
     config = get_serving_config()
+
+    # Chroma rewrites files when opened, so no query touches the original
+    # index. Copy it byte-for-byte into this run's private folder, verify the
+    # original and copied manifests, and point this process at the copy.
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
+    output_dir = private_folder(base / f"servy_three_asset_rag_{timestamp}")
+    original_index = Path(settings.CHROMA_PERSIST_DIR).resolve()
+    prepare_index_copy(output_dir)
+    index_manifest_before = load_json(output_dir / "production_index_manifest.json")
+    if file_manifest(output_dir / "chroma_index_copy") != index_manifest_before:
+        raise RuntimeError("Private index copy differs from the original manifest; no queries run.")
+    activate_index_copy(output_dir)
+
+    # No result is recorded unless the stack demonstrably runs: local BGE
+    # dimensions, both collections present, and real SHA-pinned V5 inference.
+    from core.management.commands.check_rag_serving import verify_local_serving_artifacts
+    verified_serving = verify_local_serving_artifacts()
     benchmark = load_and_verify_benchmark("servy-ci-regression-fixture-v1")
     cases = _build_cases(benchmark)
 
@@ -188,9 +369,11 @@ def run_audit():
     documents = {}
     chunk_counts = {}
     query_rows = []
+    reranker_gaps = []
     with read_only_database():
         before = operational_counts()
         assets, documents, chunk_counts = _load_scope(tenant)
+        coverage = extraction_coverage(tenant, documents)
 
         all_target_doc_ids = set(documents)
         positive_ids = {
@@ -264,7 +447,12 @@ def run_audit():
                 for ref in (result.get("references") or [])
                 if ref.get("chunk_id") is not None
             }
+            candidate_ids = [int(c) for c in result.get("pre_rerank_candidate_chunk_ids") or []]
+            if config.reranker_enabled and not result.get("reranker_applied"):
+                reranker_gaps.append(row["query_id"])
             query_rows.append({
+                "pre_rerank_candidate_chunk_ids": candidate_ids,
+                "candidate_recall": bool(set(candidate_ids) & positives),
                 "query_id": row["query_id"],
                 "equipment": row["equipment"],
                 "category": row.get("category"),
@@ -294,10 +482,55 @@ def run_audit():
                 "reranker_model": result.get("reranker_model"),
                 "engine": result.get("engine"),
             })
+        manual_rows = evaluate_manual_grounded(tenant, assets, documents)
         after = operational_counts()
 
     if before != after:
         raise RuntimeError("Operational record counts changed during the read-only audit.")
+    index_manifest_after = file_manifest(original_index)
+    if index_manifest_after != index_manifest_before:
+        raise RuntimeError("Original Chroma index bytes changed during the read-only audit.")
+
+    def _stage_counts(rows):
+        return dict(Counter(str(r["failure_stage"] or "PASS") for r in rows))
+
+    retrieval_rows = [r for r in manual_rows if r.get("retrieval")]
+    manual_by_document = {}
+    for document_id in documents:
+        rows = [r for r in manual_rows if r["manual"] == document_id]
+        staged = [r for r in rows if r.get("retrieval")]
+        manual_by_document[str(document_id)] = {
+            "turns": len(rows),
+            "customer_answer_passed": sum(r["answer"]["passed"] for r in rows),
+            "retrieval_questions": len(staged),
+            "candidate_recall": sum(r["retrieval"]["candidate_recall"] for r in staged),
+            "final_hit_at_1": sum(r["retrieval"]["hit_at_1"] for r in staged),
+            "final_hit_at_5": sum(r["retrieval"]["hit_at_5"] for r in staged),
+            "citation_coverage": sum(r["retrieval"]["cited_positive"] for r in staged),
+            "failure_stages": _stage_counts(rows),
+        }
+    manual_by_asset = {}
+    for asset_id in ASSET_SCOPE:
+        rows = [r for r in manual_rows if r["asset_id"] == asset_id]
+        staged = [r for r in rows if r.get("retrieval")]
+        manual_by_asset[str(asset_id)] = {
+            "turns": len(rows),
+            "customer_answer_passed": sum(r["answer"]["passed"] for r in rows),
+            "retrieval_questions": len(staged),
+            "candidate_recall": sum(r["retrieval"]["candidate_recall"] for r in staged),
+            "final_hit_at_1": sum(r["retrieval"]["hit_at_1"] for r in staged),
+            "final_hit_at_5": sum(r["retrieval"]["hit_at_5"] for r in staged),
+            "cross_asset_leaks": sum(
+                bool(r["retrieval"]["cross_asset_document_ids"]) for r in staged)
+                + sum(not r["answer"]["checks"]["no_cross_asset_citation"] for r in rows),
+            "restricted_content_turns": sum(
+                not r["answer"]["checks"]["no_restricted_or_procedural_content"] for r in rows),
+            "claims_not_verbatim": sum(
+                not r["answer"]["checks"]["claims_verbatim_in_cited_manual"] for r in rows),
+            "citation_open_failures": sum(
+                r["answer"]["checks"].get("citation_opens_to_the_claim") is False for r in rows),
+            "failure_stages": _stage_counts(rows),
+        }
 
     by_asset = {}
     for asset_name in ASSET_NAME_TO_ID:
@@ -330,11 +563,37 @@ def run_audit():
             "citation_coverage": sum(item["cited_positive"] for item in rows) if denom else None,
         }
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    base = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
-    output_dir = private_folder(base / f"servy_three_asset_rag_{timestamp}")
     report = {
-        "audit_version": "three-asset-nine-document-v1",
+        "audit_version": "three-asset-nine-document-v2",
+        "index_under_test": (
+            "byte-identical private copy of the original Chroma index "
+            "(the customer demo may serve from a separately rebuilt isolated index)"),
+        "serving_verification": {
+            "configuration": serving_configuration,
+            "artifacts": verified_serving,
+            "fixture_queries_where_v5_did_not_apply": reranker_gaps,
+        },
+        "integrity": {
+            "original_index_manifest_unchanged": index_manifest_after == index_manifest_before,
+            "private_copy_matched_original_before_queries": True,
+            "operational_counts_unchanged": before == after,
+        },
+        "extraction_coverage": coverage,
+        "manual_grounded": {
+            "note": ("Expected passages are located in the indexed chunks by the manual's own "
+                     "wording. This is a small, hand-built question set, not an independent "
+                     "holdout or an accuracy estimate."),
+            "turns": len(manual_rows),
+            "customer_answer_passed": sum(r["answer"]["passed"] for r in manual_rows),
+            "retrieval_questions": len(retrieval_rows),
+            "candidate_recall": sum(r["retrieval"]["candidate_recall"] for r in retrieval_rows),
+            "final_hit_at_1": sum(r["retrieval"]["hit_at_1"] for r in retrieval_rows),
+            "final_hit_at_5": sum(r["retrieval"]["hit_at_5"] for r in retrieval_rows),
+            "failure_stages": _stage_counts(manual_rows),
+            "by_asset": manual_by_asset,
+            "by_document": manual_by_document,
+            "rows": manual_rows,
+        },
         "benchmark": {
             "dataset_id": benchmark["dataset_id"],
             "dataset_role": benchmark["dataset_role"],
@@ -391,6 +650,18 @@ def run_audit():
         "serving_config": report["serving_config"],
         "metrics_by_asset": by_asset,
         "metrics_by_document": by_document,
+        "index_under_test": report["index_under_test"],
+        "serving_verification": report["serving_verification"],
+        "integrity": report["integrity"],
+        "extraction_coverage": {
+            doc: {k: v for k, v in row.items() if k != "chunk_headings"}
+            for doc, row in coverage.items()},
+        "manual_grounded": {k: v for k, v in report["manual_grounded"].items() if k != "rows"},
+        "manual_grounded_failures": [
+            {"case": r["case"], "turn": r["turn"], "stage": r["failure_stage"],
+             "question": r["answer"]["question"], "failed_checks": r["answer"]["failed_checks"],
+             "response_type": r["answer"]["response_type"]}
+            for r in manual_rows if not r["answer"]["passed"]],
         "total_queries": len(query_rows),
         "total_hit_at_1": report["total_hit_at_1"],
         "total_hit_at_5": report["total_hit_at_5"],

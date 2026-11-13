@@ -53,6 +53,9 @@ from tools.servy_real_demo_dialogue import (
 PRIVATE_BASE = Path(os.environ["LOCALAPPDATA"]) / "Servy" / "private_evaluations"
 PRIVATE = PRIVATE_BASE / "servy_real_demo_20261031_01"
 ASSET_SCOPE = {59: 14, 60: 13, 61: 14}
+# Set once at startup from the nine required manuals. None means readiness was
+# not evaluated in this process (unit tests); a dict gates every request.
+MANUAL_READINESS = None
 DEMO_USER_ID = -27360
 MAX_BODY = 20000
 MAX_LOCAL_TICKET_BODY = 26 * 1024 * 1024
@@ -142,10 +145,19 @@ def _asset(asset_id):
     return tenant, asset.customer, asset
 
 
-def _inventory():
+def _three_asset_readiness():
+    """Evaluate all nine required manuals for the three demo assets."""
+    from core.models import Tenant
+    from tools.servy_three_asset_scope import manual_readiness
+    return manual_readiness(Tenant.objects.get(slug="skydream", is_active=True))
+
+
+def _inventory(readiness=None):
     from core.models import Asset, KnowledgeDocument
     from core.services.customer_isolation import is_verified_real_asset, is_verified_real_document
     from core.services.retriever import _knowledge_candidates
+    if readiness is None:
+        readiness = MANUAL_READINESS if MANUAL_READINESS is not None else _three_asset_readiness()
     rows = []
     for asset in Asset.objects.filter(tenant__slug="skydream").select_related(
             "tenant", "customer", "product", "site").order_by("id"):
@@ -162,12 +174,24 @@ def _inventory():
                     continue
                 seen.add(doc.id)
                 documents.append({"id": doc.id, "title": doc.title})
+        # An approved asset/customer binding is not enough: the asset can be
+        # queried only when all three of its required manuals are usable.
+        state = readiness.get(asset.id) if approved_scope else None
+        manuals_ready = bool(state and state["ready"])
         rows.append({"id": asset.id, "code": asset.asset_code, "name": asset.name,
             "model": asset.model_number, "product": asset.product.name if asset.product else "",
             "customer_id": asset.customer_id,
             "customer_name": asset.customer.name if approved_scope else "",
             "site": asset.site.name if asset.site else "",
-            "can_query": approved_scope, "documents": documents})
+            "can_query": approved_scope and manuals_ready,
+            "manuals_ready": manuals_ready if approved_scope else None,
+            "required_manuals": [
+                {"id": d["id"], "doc_type": d["doc_type"], "ready": d["ready"],
+                 "searchable_chunks": d["searchable_chunks"], "issues": d["issues"]}
+                for d in state["documents"]] if state else [],
+            "readiness_issues": (state["asset_issues"] if state else
+                                 (["READINESS_NOT_EVALUATED"] if approved_scope else [])),
+            "documents": documents})
     return rows
 
 
@@ -400,6 +424,11 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         return {"response_type": "INSUFFICIENT_EVIDENCE", "message":
             "This equipment is visible in the inventory, but technical-document access is not approved for this demo identity.",
             "presentation": None, "citations": [], "reranker_applied": False}
+    if MANUAL_READINESS is not None and not (MANUAL_READINESS.get(asset_id) or {}).get("ready"):
+        return {"response_type": "INSUFFICIENT_EVIDENCE", "reason_code": "REQUIRED_MANUALS_NOT_READY",
+            "message": "The required approved manuals for this equipment are not all available, "
+                       "so Servy cannot answer technical questions about it right now.",
+            "presentation": None, "citations": [], "reranker_applied": False}
     from core.services.customer_answer import _question_guard, build_customer_answer, exception_presentation
     from core.services.customer_diagnostic import check_for_safety_hazard, check_for_vague_complaint
     from core.services.rag import ask_rag
@@ -482,7 +511,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         if isinstance(item, dict) and isinstance(item.get("text"), str)
     ]
     recap = conversation_recap(
-        question, recap_history, original_complaint=context.original_complaint,
+        question, recap_history,
+        original_complaint=getattr(context, "original_complaint", None),
     )
     off_topic = out_of_scope_response(question)
     suggestions = []
@@ -1302,11 +1332,23 @@ def main():
     else:
         token = secrets.token_urlsafe(40)
         access_file.write_text(token, encoding="ascii")
+    global MANUAL_READINESS
+    from tools.servy_three_asset_scope import REQUIRED_MANUALS, readiness_failures
     with read_only_database():
         original = _original_state()
-        inventory = _inventory()
-    if not any(row["id"] == 60 and row["can_query"] and row["documents"] for row in inventory):
-        raise RuntimeError("Approved Customer 13 / Asset 60 documents are not ready")
+        readiness = _three_asset_readiness()
+        inventory = _inventory(readiness)
+    # Demo readiness is all three assets with all nine required manuals, not
+    # one asset. Report exactly what is missing and do not start.
+    failures = readiness_failures(readiness)
+    by_id = {row["id"]: row for row in inventory}
+    for asset_id in REQUIRED_MANUALS:
+        row = by_id.get(asset_id)
+        if row is None or not row["can_query"]:
+            failures.append(f"asset {asset_id}: not queryable in the verified inventory")
+    if failures:
+        raise RuntimeError("Three-asset demo is not ready: " + "; ".join(dict.fromkeys(failures)))
+    MANUAL_READINESS = readiness
     before = PRIVATE / "before.json"
     copy = PRIVATE / "chroma_index_copy"
     manifest = PRIVATE / "production_index_manifest.json"
@@ -1364,8 +1406,25 @@ def main():
         verify_signed_approval(PRIVATE, request)
         activate_runtime_snapshot(copy, private_manifest, PRIVATE)
         review_mode = "independently-reviewed-versioned"
+    # Prove the serving stack actually runs before declaring the demo ready:
+    # local BGE dimensions, the collection this runtime index serves from, and
+    # real inference by the SHA-pinned V5 checkpoint. The isolated rebuild
+    # contains only the company collection, so the generic one is reported
+    # rather than required in that mode. Nothing is downloaded or created.
+    from core.management.commands.check_rag_serving import verify_local_serving_artifacts
+    isolated = review_mode not in {"original-frozen", "independently-reviewed-versioned"}
+    verified = verify_local_serving_artifacts(
+        required_collections=("company-bge-small",) if isolated
+        else ("bge-small", "company-bge-small"),
+        optional_collections=("bge-small",) if isolated else (),
+    )
     Handler.token = token
     print(json.dumps({"ready": True, "database": identity["database"],
+        "three_asset_manuals": {
+            str(asset_id): {str(d["id"]): d["searchable_chunks"] for d in row["documents"]}
+            for asset_id, row in readiness.items()},
+        "reranker_pool_size": configuration["reranker_pool_size"],
+        "verified_serving": verified,
         "database_account": identity["account"], "asset_count": len(inventory),
         "query_asset_scope": sorted(ASSET_SCOPE), "retrieval": configuration["retrieval"],
         "embedding": configuration["embedding"], "reranker_enabled": configuration["reranker_enabled"],

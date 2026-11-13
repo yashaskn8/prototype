@@ -31,18 +31,57 @@ def serving_configuration_issues(config, config_settings):
     return issues
 
 
-def verify_local_serving_artifacts():
-    """Verify BGE indexes with create=False and execute the pinned V5 scorer."""
-    from core.ml.embeddings import get_collection, get_profile, load_model
-    from core.ml.reranker import require_verified_v5_reranker
+class ServingArtifactError(RuntimeError):
+    """A named local serving artifact is missing or wrong. Carries no paths."""
 
-    for key in ("bge-small", "company-bge-small"):
+
+def verify_local_serving_artifacts(required_collections=("bge-small", "company-bge-small"),
+                                   optional_collections=()):
+    """Verify the local BGE model and indexes, then execute the pinned V5 scorer.
+
+    For each profile: the model loads offline, a probe embedding has the
+    profile's dimension, and the collection exists (create=False) and is not
+    empty. A collection listed as optional is reported rather than required.
+    Then the SHA-pinned V5 checkpoint must run real scoring. Nothing is
+    downloaded, created or modified. Returns what was verified.
+    """
+    from core.ml.embeddings import encode_passages, get_collection, get_profile, load_model
+    from core.ml.reranker import SERVY_V5_WEIGHTS_SHA256, require_verified_v5_reranker
+
+    verified = {"collections": {}, "embedding_dimensions": {}}
+    for key in tuple(required_collections) + tuple(optional_collections):
+        required = key in required_collections
         profile = get_profile(key)
-        if load_model(profile, allow_download=False) is None:
-            raise RuntimeError("Local BGE model not available")
-        if get_collection(profile, create=False) is None:
-            raise RuntimeError("BGE collection not available")
-    require_verified_v5_reranker()
+        model = load_model(profile, allow_download=False)
+        if model is None:
+            raise ServingArtifactError(f"local BGE model for profile {key} is not available")
+        vector = encode_passages(profile, model, ["servy serving readiness probe"])[0]
+        if len(vector) != profile.dim:
+            raise ServingArtifactError(
+                f"profile {key} produced {len(vector)}-dimensional embeddings, expected {profile.dim}")
+        verified["embedding_dimensions"][key] = profile.dim
+        try:
+            collection = get_collection(profile, create=False)
+            count = collection.count() if collection is not None else 0
+        except Exception as exc:
+            if required:
+                raise ServingArtifactError(
+                    f"collection for profile {key} is not available ({type(exc).__name__})") from exc
+            collection, count = None, 0
+        if collection is None or count < 1:
+            if required:
+                raise ServingArtifactError(f"collection for profile {key} is missing or empty")
+            verified["collections"][key] = "NOT_PRESENT"
+        else:
+            verified["collections"][key] = count
+    try:
+        require_verified_v5_reranker()
+    except Exception as exc:
+        raise ServingArtifactError(
+            f"pinned V5 reranker did not run verified inference ({type(exc).__name__})") from exc
+    verified["v5"] = {"inference": "verified", "weights_sha256": SERVY_V5_WEIGHTS_SHA256,
+                      "model": "servy_v5_bge_verified"}
+    return verified
 
 
 class Command(BaseCommand):

@@ -248,10 +248,14 @@ class CauseFollowUpTests(unittest.TestCase):
         self.assertEqual([c["source_text"] for c in _claims(result)],
                          ["Blocked external clearance."])
         self.assertEqual(result["evidence_state"], "PARTIAL")
+        # The gap is stated once, in the current wording, beside the cause.
         self.assertEqual(
             [s["title"] for s in result["presentation"]["sections"]],
-            ["Documented possible causes"],
+            ["Documented possible causes", "Evidence limitation"],
         )
+        self.assertIn("does not provide separate explanations for each item",
+                      json.dumps(result["presentation"]["sections"][1]))
+        self.assertEqual(result["presentation"]["sections"][1]["claims"][0]["evidence_ids"], [])
         self.assertTrue(result["presentation"]["cause_explanation_unavailable"])
         self.assertNotIn(
             "The approved documents for this equipment contain no further explanation",
@@ -304,9 +308,13 @@ class CauseFollowUpTests(unittest.TestCase):
                                 continuation=first["continuation"])
         self.assertEqual(result["evidence_state"], "PARTIAL")
         self.assertTrue(result["presentation"]["cause_explanation_unavailable"])
-        self.assertNotIn("Evidence limitation", [
-            section["title"] for section in result["presentation"]["sections"]
-        ])
+        limitations = [
+            section for section in result["presentation"]["sections"]
+            if section["title"] == "Evidence limitation"
+        ]
+        self.assertEqual(len(limitations), 1)             # stated once, not repeated
+        self.assertIn("do not contain a separately citable explanation",
+                      json.dumps(limitations[0]))
         self.assertTrue(result["issue_assignment"]["required"])
 
     def test_reference_beyond_the_listed_causes_asks_which_one(self):

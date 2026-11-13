@@ -283,8 +283,17 @@ def conversation_recap(question, history, *, original_complaint=None):
         if not clean or "?" in clean:
             continue
         if _already_reported_code_absence(clean):
-            # Keep the customer's exact wording, while marking it as a report.
-            item = clean[:140] + " (customer-reported)."
+            # A terse reply such as "No code." is ambiguous by itself, so
+            # state it in clear words. A full sentence keeps the customer's
+            # exact wording. Either way it stays marked as the customer's
+            # report: nothing here verifies what the equipment displays.
+            if re.fullmatch(
+                r"(?:no|none|nope|not any)(?:\s+(?:error|fault|alarm|displayed))?"
+                r"(?:\s+(?:codes?|warnings?|alarms?))?", normalized
+            ):
+                item = "No fault code or warning is visible (customer-reported)."
+            else:
+                item = clean[:140] + " (customer-reported)."
         elif re.fullmatch(
             r"(?:it\s+)?(?:still\s+)?(?:runs?|is running|continues? to run)", normalized
         ):
@@ -1566,8 +1575,17 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         topic = plan["intent"]
     topics = _requested_topics(question, topic)
     focus = _FocusPlan(question)
+    # A customer who names a specific symptom ("it is overheating") is not
+    # asking for an overview of every documented fault section, even when the
+    # same message also says the unit is "not working". The named symptom
+    # must then be supported by the cited source like any other question.
+    names_specific_symptom = bool(symptom_concepts(question)) or any(
+        asked.search(_words(focus.relevant))
+        for asked, _evidence in SPECIFIC_EVIDENCE.values()
+    )
     generic_cause_overview = (
         topic == "causes"
+        and not names_specific_symptom
         and (
             is_generic_cause_overview(question)
             or is_cause_coverage_review(question, history)
@@ -1778,13 +1796,24 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             follow_up = plan["follow_up"]
         if plan.get("style") in STYLES:
             style = plan["style"]
+    cause_headings = {
+        str(citation.get("heading") or "")
+        for claim, citation, _fp in collected if claim.get("kind") == "possible_cause"
+    }
+    # Name the manual section when the answer comes from exactly one fault
+    # section: always for a "what does the manual say" question, and for a
+    # causes question only when the customer named that section's condition.
+    names_single_section = (
+        topic == "causes" and len(cause_headings) == 1
+        and question_states_heading(question, next(iter(cause_headings)))
+    )
     selected_claims = []
     reported = " ".join([*[str(t) for t in list(history or [])[-6:]], question or ""])
     sectioned_observations = False
     for source_claim, citation, _fingerprint in collected:
         claim = dict(source_claim)
         if claim.get("kind") == "possible_cause" and (
-                generic_cause_overview or topic == "documents"):
+                generic_cause_overview or topic == "documents" or names_single_section):
             heading = re.sub(r"^\s*\d+[.)]\s*", "", str(citation.get("heading") or ""))
             heading = re.sub(r"^symptom\s*:\s*", "", heading, flags=re.I).strip()
             if heading:
@@ -1841,7 +1870,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             "documents": "The approved document states:",
             "general": "Verified manual information:",
         }[topic]
-    if topic == "documents":
+    if topic == "documents" or names_single_section:
         documented_fault_heading = next((
             re.sub(r"^\s*\d+[.)]\s*", "", str(citation.get("heading") or ""))
             for claim, citation, _fp in collected

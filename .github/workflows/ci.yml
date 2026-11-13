@@ -88,6 +88,11 @@ jobs:
       - name: Three-Asset / Nine-Manual Retrieval Scope Regressions
         run: python -m unittest tools.test_servy_three_asset_rag -v
 
+      - name: Three-Asset Nine-Manual Readiness and Strict Serving Gate Tests
+        run: python -m unittest tools.test_servy_three_asset_readiness -v
+        env:
+          LOCALAPPDATA: /tmp
+
       - name: Three-Asset SME Training Export Safety Tests
         run: python -m unittest tools.test_servy_three_asset_training_export -v
 
