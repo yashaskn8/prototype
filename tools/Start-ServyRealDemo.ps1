@@ -3,7 +3,7 @@
 param([switch]$Watch, [switch]$NoWatch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
 $environmentNames = @(
     'LOCALAPPDATA', 'SERVY_LOCAL_TICKET_DB_PATH', 'SERVY_REAL_DEMO_MODE', 'DJANGO_DEBUG',
-    'SERVY_LLM_PROVIDER', 'SERVY_REAL_DEMO_DIALOGUE_MODE', 'SERVY_REAL_DEMO_CHAT_MODEL',
+    'SERVY_LLM_PROVIDER', 'SERVY_REAL_DEMO_DIALOGUE_MODE',
     'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'SERVY_ALLOW_REMOTE_LLM',
     'SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES', 'VITE_SERVY_REAL_DEMO'
 )
@@ -138,32 +138,13 @@ if (!(Test-LocalPort 3306)) {
 $env:LOCALAPPDATA = $privateLocal
 $env:SERVY_REAL_DEMO_MODE = '1'
 $env:DJANGO_DEBUG = '1'
-# Technical claims stay extractive; a local open-weight model may only
-# choose from already approved evidence IDs and vetted follow-up prompts.
+# The real-data presentation uses the verified local retrieval stack and a
+# deterministic, source-grounded dialogue controller. BGE embeddings and V5
+# reranking are retrieval components; no chat-generation service is required.
+# -NoLocalChat remains accepted for compatibility with previously used commands.
 $env:SERVY_LLM_PROVIDER = 'extractive'
-if (-not $env:SERVY_REAL_DEMO_CHAT_MODEL) {
-    $env:SERVY_REAL_DEMO_CHAT_MODEL = 'qwen2.5:3b'
-}
-$localDialogueReady = $false
-if (-not $NoLocalChat) {
-    try {
-        $ollama = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -Method Get -TimeoutSec 3
-        $modelName = $env:SERVY_REAL_DEMO_CHAT_MODEL
-        $localDialogueReady = @($ollama.models | Where-Object { $_.name -eq $modelName }).Count -gt 0
-    } catch {
-        $localDialogueReady = $false
-    }
-}
-if ($NoLocalChat) {
-    $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
-    Write-Output 'Local conversational model explicitly disabled; rules-only dialogue mode is active.'
-} elseif ($localDialogueReady) {
-    $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'local'
-    Write-Output ('Local dialogue explanations enabled: ' + $env:SERVY_REAL_DEMO_CHAT_MODEL)
-} else {
-    $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
-    Write-Warning ('Ollama or model ' + $env:SERVY_REAL_DEMO_CHAT_MODEL + ' is unavailable. Rules-only dialogue mode is active; hybrid BGE/V5 retrieval and cited extractive answers remain enabled. No Ollama connection will be attempted for each customer question.')
-}
+$env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
+Write-Output 'Dialogue mode: deterministic and source-grounded; no chat-generation service required.'
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'

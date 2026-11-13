@@ -300,11 +300,18 @@ cd prototype/frontend
 npm run build
 ```
 
-## Local LLM (optional, zero API cost)
+## Local model and generation configuration
 
-The current default is `SERVY_LLM_PROVIDER=extractive` (see `servy_rag/settings.py` and `.env.example`). This mode does not require a running LLM and assembles customer-facing responses from authorized, verified document passages, with signed citations.
+The authorized read-only real-data demo launched with `tools/Start-ServyRealDemo.ps1` uses the local, source-grounded path:
 
-To optionally enable local model generation, explicitly configure `SERVY_LLM_PROVIDER=ollama` or `auto` and run a compatible local Ollama model. If model generation is unavailable, the application uses its configured extractive fallback unless `SERVY_LLM_REQUIRE_OLLAMA` is set. Customer-facing diagnostic claims still pass through the server's source-grounded answer contract; a generated free-form answer is not automatically shown as verified technician guidance.
+- **BGE-small** creates dense query/document embeddings for the approved company collection.
+- **Hybrid retrieval** combines dense retrieval with lexical/sparse matching.
+- **The verified Servy V5 reranker** reorders the retrieved candidate passages.
+- **The deterministic dialogue controller** handles follow-up context, clarification, answer focus, source limits and handoff. The customer-facing technical answer remains extractive and citation-bound.
+
+These embedding and reranking components are retrieval models; they are not text-generation models. The real-data presentation launcher therefore sets `SERVY_LLM_PROVIDER=extractive` and `SERVY_REAL_DEMO_DIALOGUE_MODE=rules`. It does not probe or require Ollama, Qwen chat, a remote API, or another chat server. Do not install an extra inference server just to start this demo.
+
+The repository retains a separate optional Ollama integration for other explicitly configured application runs. That optional feature is not part of the authorized real-data demo path and is not needed for the three-asset RAG presentation.
 
 **Conversational RAG smoke tests** after updating `main`:
 
@@ -318,16 +325,7 @@ npm run build
 
 Use the approved Knowledge Base documents for the selected asset. Missing, unapproved, or unrelated documents must produce an insufficient-evidence response instead of an invented answer.
 
-Example:
-
-```bash
-ollama pull qwen2.5:3b
-ollama serve
-```
-
-Then run Django normally. You can change the local model in `.env.example` / environment variables.
-
-**No OpenAI/Anthropic/Gemini API key is required.**
+**No OpenAI/Anthropic/Gemini API key or Ollama installation is required for the real-data demo.**
 
 ## Best demo flow
 

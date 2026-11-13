@@ -35,49 +35,42 @@ The previous backend produced four fixed sections and the frontend rejected othe
 
 The first improvement replaced those four sections with a focused, source-backed answer, signed conversation state, relevant follow-up choices, and clarification of ambiguous customer responses.
 
-## New implementation: local open-weight dialogue planner
+## Current real-data demo configuration
 
-An optional Ollama component now interprets the current customer question, recent bounded customer reports, and a small list of approved technical claims. The request is sent only to 127.0.0.1:11434, with HTTP proxies and redirects disabled. It sends no citation URLs or secrets.
+The approved Windows real-data presentation runs without a chat-generation server. The verified local retrieval stack is:
 
-The model is NOT asked to write technical paragraphs. It can return only a structured selector with:
-- One intent: causes, observations, next, meaning, documents, general.
-- Up to four existing claim IDs, never newly generated IDs.
-- One question exactly copied from a server-side list of safe customer-observation questions, or an empty string.
-- One allowed tone: direct, friendly or brief.
+- **BGE-small embeddings** for dense semantic retrieval over the approved company collection.
+- **Hybrid retrieval** that also considers lexical/sparse matches.
+- **The verified Servy V5 reranker** to order the retrieved candidates.
+- **The deterministic dialogue controller** for intent focus, follow-up context, clarifications, evidence limits, safe handoff and conversation recap.
 
-The application validates every output field. An explicitly asked intent overrides a conflicting model guess. The model can only reorder or select source-verified claims; it cannot create citations, quantities, procedures, diagnosed faults, ticket actions or safety approvals.
+BGE-small and V5 serve retrieval/ranking roles. They do not generate conversational prose. Technical responses are assembled from approved source passages and retain their citations; dialogue behavior is handled by deterministic server-side logic.
 
-The deterministic source engine still checks selected equipment, customer and tenant; access permissions; document provenance; exact cited spans and fault codes; evidence sufficiency; completed checks; and any required procedure approval.
-
-The response includes a simple indicator of whether a local structured planner or the deterministic grounded fallback was used. If Ollama is offline, the selected model is missing, a request times out, or the model returns invalid JSON or fabricated IDs, the reply remains source-grounded through the fallback. Technical generation remains extractive even when the model plans the conversation.
-
-The demo also supports a customer-report recap. Asking what the customer has reported so far summarizes only authenticated, signed customer turns, explicitly without claiming a verified diagnosis.
+The optional Ollama planner and source-bound explanation modules remain separate legacy capabilities in the repository. They are not enabled by the real-data launcher. That launcher sets `SERVY_LLM_PROVIDER=extractive` and `SERVY_REAL_DEMO_DIALOGUE_MODE=rules`, does not probe port 11434, and never depends on a Qwen chat model. This avoids a false startup warning and avoids an unnecessary service dependency during the presentation.
 
 ## Activation and configuration
 
-The normal Real-data launcher enables local planning when a local Ollama model is present:
+Use the existing authorized real-data launcher:
 
-    git pull origin main
+    git pull --ff-only origin main
+    .\tools\Start-ServyRealDemo.ps1 -Restart
+
+The launcher keeps the read-only company data path, BGE/V5 retrieval readiness gate, customer/asset authorization checks, and cited extractive answer contract. It explicitly reports that deterministic source-grounded dialogue is active. The backward-compatible `-NoLocalChat` switch may still be passed, but it is no longer required.
+
+No Ollama installation, Qwen chat download, external API key or remote model endpoint is required for this demo. The general application still has a separately configurable optional LLM integration; it is not part of this presentation runtime.
+
+The old drifted Chroma index and frozen baseline are left unchanged. A separate verified-document rebuild is used only when the original Chroma integrity gate requires it:
+
     .\tools\Start-ServyRealDemo.ps1 -Restart -RebuildFromVerifiedDocs
-
-Model default is qwen2.5:3b. Install and start Ollama separately if it is not already available, then install that model using the Ollama application or its documented commands. No model download or company-data export is performed automatically.
-
-The launcher deliberately keeps SERVY_LLM_PROVIDER=extractive, while SERVY_REAL_DEMO_DIALOGUE_MODE=local controls this separate model-assisted dialogue planner.
-
-For a deterministic A/B comparison:
-
-    .\tools\Start-ServyRealDemo.ps1 -Restart -RebuildFromVerifiedDocs -NoLocalChat
-
-The old drifted Chroma index and frozen baseline are left unchanged. A separate verified-document rebuild is required if the original Chroma integrity gate is still blocking startup.
 
 ## Security and privacy guarantees implemented in code
 
 1. Tenant, customer, equipment, and document scope remains server-side.
 2. All technical claims are drawn from existing approved RAG evidence and citation IDs, never written by the local LLM.
-3. The local planner can neither authorize physical interventions nor suppress safety escalation.
+3. No chat model can authorize physical interventions or suppress safety escalation in this runtime; the deterministic server policy remains authoritative.
 4. No unapproved URLs, customer procedures or fault-code mismatches can be introduced by a plan.
-5. Model instructions embedded in customer reports or retrieved source text remain untrusted data; arbitrary model output cannot execute commands or manipulate the database.
-6. The model endpoint is fixed to loopback; no proxy, redirect, remote model host or automatic download is allowed.
+5. Instructions embedded in customer reports or retrieved source text remain untrusted data and cannot override server policy or manipulate the database.
+6. The presentation runtime makes no chat-model network request and performs no automatic model download.
 7. No company database writes or operational ticket creation are introduced.
 8. Bounded customer history lives in browser memory and a signed continuation token rather than a persistent corporate transcript.
 
@@ -99,10 +92,10 @@ Then evaluate in the real Windows demo with authorized documents, checking each 
 - What does E-04 mean? -> Exact E-04 source binding, not E-05.
 - Ask about a different customer's equipment -> No access or fabricated citation.
 - Ask for an unsupported internal procedure -> A refusal or escalation, not actionable unapproved advice.
-- Shut down Ollama -> Prompt deterministic fallback without a crash.
+- Run with no Ollama installation -> Normal deterministic, source-grounded startup and dialogue; no Ollama probe or warning.
 
 Measure: intent accuracy, citation precision, unsupported technical claims, unsafe-action rate, repeated facts per session, time-to-answer, clarity of follow-up, latency, and successful handoff.
 
 ## Known limits
 
-This is an intentionally constrained local conversational RAG system, not an unconstrained clone of ChatGPT, Claude or Gemini. Local model quality varies by installed checkpoint. The planner improves dialogue choices, not the set of authorized source facts. Limited company documents can still require abstaining. The real-company Windows deployment needs live tests to establish that sources and results are correct.
+This is an intentionally constrained conversational RAG system, not an unconstrained text-generation assistant. The real-data demo uses retrieval models plus deterministic dialogue logic; it does not claim to run a chat-generation model. Limited company documentation can still require abstaining. The real-company Windows deployment needs live query tests to establish source accuracy and answer quality.

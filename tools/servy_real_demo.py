@@ -677,8 +677,9 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 citation["url"] = citation["url"].replace(
                     "/api/customer-support/source/", "/demo-api/source/", 1
                 )
-            # Local Ollama may plan intent/evidence order only; it cannot
-            # create, edit or authorize a technical claim or a citation.
+            # The presentation launcher disables the optional local planner;
+            # deterministic dialogue selection keeps all technical claims
+            # bound to the approved answer contract and its citations.
             plan = plan_turn(
                 question, history=history, last_topic=last_topic, contract=contract,
             )
