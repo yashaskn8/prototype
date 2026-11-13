@@ -1421,7 +1421,18 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(400, {"detail": "Conversation context is invalid or equipment access changed. Start a new chat."})
         except Exception:
-            return self._send(503, {"detail": "Read-only demo request failed"})
+            # Keep the customer-facing error generic, but retain a correlated
+            # traceback in the private local backend log. Never log request
+            # bodies, customer text, credentials or signed continuation tokens.
+            request_id = secrets.token_hex(6)
+            logger.exception(
+                "Read-only demo request failed request_id=%s path=%s",
+                request_id, path,
+            )
+            return self._send(503, {
+                "detail": "Read-only demo request failed",
+                "request_id": request_id,
+            })
 
 
 def main():

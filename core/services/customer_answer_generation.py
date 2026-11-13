@@ -277,9 +277,15 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
     try:
         candidates = _eligible_claims(presentation)
         if not candidates:
+            logger.warning(
+                "Local customer Qwen fallback: no eligible citation-bound claims."
+            )
             return {}
         url = _endpoint()
         if not _server_online(url):
+            logger.warning(
+                "Local customer Qwen fallback: Ollama /api/chat is not accepting loopback connections."
+            )
             return {}
         model = str(getattr(
             settings, "SERVY_CUSTOMER_GENERATION_MODEL", "qwen3.5:2b-q4_K_M"
@@ -353,7 +359,12 @@ def generate_customer_claim_texts(question: str, presentation: dict) -> dict:
             message = response.json().get("message", {}).get("content")
             if not isinstance(message, str) or len(message) > MAX_RESPONSE_BYTES:
                 return {}
-            return _validate_response(json.loads(message), candidates)
+            validated = _validate_response(json.loads(message), candidates)
+            if not validated:
+                logger.warning(
+                    "Local customer Qwen fallback: model response did not satisfy the source-preservation contract."
+                )
+            return validated
         finally:
             client.close()
     except Exception as exc:
