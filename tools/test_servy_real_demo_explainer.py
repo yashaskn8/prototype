@@ -161,7 +161,7 @@ class SourceContextGenerationTests(TestCase):
             presentation, {"c1": explanation},
             context_citations_by_claim={"c1": full_passage_citation},
         )
-        self.assertEqual(applied, 2)
+        self.assertEqual(applied, 1)
         for claim in (
             presentation["supporting_claims"][0],
             presentation["sections"][0]["claims"][0],
@@ -181,6 +181,44 @@ class SourceContextGenerationTests(TestCase):
             presentation["citations"][1]["url"],
             "/demo-api/source/?citation=full-passage-token",
         )
+
+    def test_generated_text_is_not_applied_without_its_full_passage_citation(self):
+        presentation = {
+            "supporting_claims": [{
+                "id": "c1", "kind": "possible_cause",
+                "text": "Possible documented cause: Dirty filter or coil.",
+                "source_text": "Dirty filter or coil.",
+                "evidence_ids": ["s1"],
+            }],
+            "sections": [{
+                "number": 1, "title": "What the document says",
+                "claims": [{
+                    "id": "c1", "kind": "possible_cause",
+                    "text": "Possible documented cause: Dirty filter or coil.",
+                    "source_text": "Dirty filter or coil.",
+                    "evidence_ids": ["s1"],
+                }],
+            }],
+            "citations": [{
+                "id": "s1", "document_id": 168, "chunk_id": 160,
+                "url": "/demo-api/source/?citation=sentence-token",
+            }],
+        }
+        applied = explainer.apply_customer_explanations(
+            presentation,
+            {"c1": "The manual lists this as one possible cause category, not a confirmed fault."},
+            context_citations_by_claim={},
+        )
+        self.assertEqual(applied, 0)
+        self.assertEqual(
+            presentation["supporting_claims"][0]["text"],
+            "Possible documented cause: Dirty filter or coil.",
+        )
+        self.assertEqual(
+            presentation["sections"][0]["claims"][0]["text"],
+            "Possible documented cause: Dirty filter or coil.",
+        )
+        self.assertEqual(len(presentation["citations"]), 1)
 
 
 class LocalExplanationCallTests(TestCase):
