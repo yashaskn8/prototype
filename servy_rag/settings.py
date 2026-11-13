@@ -241,12 +241,19 @@ SERVY_CUSTOMER_GENERATION_URL = os.getenv(
 SERVY_CUSTOMER_GENERATION_MODEL = os.getenv(
     "SERVY_CUSTOMER_GENERATION_MODEL", SERVY_OLLAMA_MODEL
 )
-SERVY_CUSTOMER_GENERATION_TIMEOUT = float(os.getenv(
-    "SERVY_CUSTOMER_GENERATION_TIMEOUT", "45"
-))
-SERVY_CUSTOMER_GENERATION_MAX_CLAIMS = int(os.getenv(
-    "SERVY_CUSTOMER_GENERATION_MAX_CLAIMS", "6"
-))
+try:
+    SERVY_CUSTOMER_GENERATION_TIMEOUT = min(
+        120.0, max(1.0, float(os.getenv("SERVY_CUSTOMER_GENERATION_TIMEOUT", "45")))
+    )
+except (TypeError, ValueError):
+    SERVY_CUSTOMER_GENERATION_TIMEOUT = 45.0
+
+try:
+    SERVY_CUSTOMER_GENERATION_MAX_CLAIMS = min(
+        6, max(0, int(os.getenv("SERVY_CUSTOMER_GENERATION_MAX_CLAIMS", "6")))
+    )
+except (TypeError, ValueError):
+    SERVY_CUSTOMER_GENERATION_MAX_CLAIMS = 6
 # Qwen GGUF through llama.cpp's OpenAI-compatible local server. Staff-mode RAG
 # may opt into this separate generator; customer mode uses the source-span path above.
 SERVY_LLAMA_CPP_URL = os.getenv(
