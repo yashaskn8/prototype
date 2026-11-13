@@ -963,10 +963,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         explanation_presentation["follow_up_question"] = None
         contract["presentation"] = explanation_presentation
 
-    # Qwen is the customer-facing RAG answer writer, not an optional
-    # after-the-fact paraphraser. Give it only complete source chunks that are
-    # reauthorized against the selected tenant/customer/asset and already
-    # cited by the deterministic answer contract.
+    # Qwen writes the customer-facing explanation only from the exact
+    # customer-approved claim sentence and its manual section heading. The
+    # full chunk is reauthorized to confirm provenance, but unrelated lines
+    # (which may include technician-only procedures) are never sent to Qwen.
     answer_generation = {
         "status": "not_applicable",
         "provider": "disabled",
@@ -978,7 +978,7 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
         "error_type": None,
     }
     if contract.get("response_type") == "DIAGNOSTIC_GUIDANCE":
-        from core.services.customer_answer import source_chunk
+        from core.services.customer_answer import _clean_line, source_chunk
         from tools.servy_real_demo_explainer import (
             apply_customer_explanations,
             explain_claims_with_status,
@@ -996,9 +996,10 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 if not isinstance(claim, dict):
                     continue
                 ident = claim.get("id")
+                source_text = claim.get("source_text")
                 evidence_ids = claim.get("evidence_ids")
-                if (not isinstance(ident, str) or not isinstance(evidence_ids, list)
-                        or len(evidence_ids) != 1):
+                if (not isinstance(ident, str) or not isinstance(source_text, str)
+                        or not isinstance(evidence_ids, list) or len(evidence_ids) != 1):
                     continue
                 citation = citation_by_id.get(evidence_ids[0])
                 if not isinstance(citation, dict):
@@ -1013,17 +1014,25 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                             document_id=source_key[0], chunk_id=source_key[1],
                         )
                     authorized_chunk = source_cache[source_key]
-                    full_source = (
-                        authorized_chunk.text
-                        if isinstance(authorized_chunk.text, str) else ""
+                    source_sentence = " ".join(source_text.split()).casefold()
+                    source_lines = {
+                        " ".join(_clean_line(line).split()).casefold()
+                        for line in authorized_chunk.text.splitlines()
+                        if _clean_line(line)
+                    }
+                    if source_sentence not in source_lines:
+                        continue
+                    heading = citation.get("heading")
+                    heading = heading.strip() if isinstance(heading, str) else ""
+                    source_context_by_claim[ident] = (
+                        "Section heading: " + heading
+                        + "\\nExact approved source statement: " + source_text
                     )
-                    if full_source.strip():
-                        source_context_by_claim[ident] = full_source
                 except Exception as exc:
                     # A missing/revoked/out-of-scope source means no generation
                     # for that claim; it never falls back to an uncited prompt.
                     logger.info(
-                        "Qwen source context unavailable for claim=%s (%s)",
+                        "Qwen source statement unavailable for claim=%s (%s)",
                         ident, type(exc).__name__,
                     )
             generation_result = explain_claims_with_status(
@@ -1034,53 +1043,8 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 model=os.environ.get("SERVY_CUSTOMER_GENERATION_MODEL"),
                 require_source_context=True,
             )
-            explanations = generation_result["explanations"]
-            context_citations_by_claim = {}
-            if explanations:
-                from core.services.customer_answer import _citation
-                full_citation_by_source = {}
-                for claim in final_presentation.get("supporting_claims", []) or []:
-                    if not isinstance(claim, dict) or claim.get("id") not in explanations:
-                        continue
-                    evidence_ids = claim.get("evidence_ids")
-                    if not isinstance(evidence_ids, list) or len(evidence_ids) != 1:
-                        continue
-                    citation = citation_by_id.get(evidence_ids[0])
-                    if not isinstance(citation, dict):
-                        continue
-                    try:
-                        source_key = (
-                            int(citation["document_id"]), int(citation["chunk_id"])
-                        )
-                        authorized_chunk = source_cache.get(source_key)
-                        if authorized_chunk is None:
-                            continue
-                        if source_key not in full_citation_by_source:
-                            full_citation = _citation(
-                                authorized_chunk, 0, len(authorized_chunk.text),
-                                asset=asset, customer=customer,
-                                user_id=DEMO_USER_ID, kind=claim.get("kind", "information"),
-                            )
-                            full_citation["id"] = (
-                                "s" + str(len(final_presentation.get("citations", []) or [])
-                                          + len(full_citation_by_source) + 1)
-                            )
-                            full_citation["url"] = full_citation["url"].replace(
-                                "/api/customer-support/source/",
-                                "/demo-api/source/", 1,
-                            )
-                            full_citation_by_source[source_key] = full_citation
-                        context_citations_by_claim[claim["id"]] = (
-                            full_citation_by_source[source_key]
-                        )
-                    except Exception as exc:
-                        logger.info(
-                            "Qwen full-passage citation unavailable for claim=%s (%s)",
-                            claim.get("id"), type(exc).__name__,
-                        )
             applied_claims = apply_customer_explanations(
-                final_presentation, explanations,
-                context_citations_by_claim=context_citations_by_claim,
+                final_presentation, generation_result["explanations"]
             )
             answer_generation = dict(generation_result["generation"])
             answer_generation["applied_claims"] = applied_claims
