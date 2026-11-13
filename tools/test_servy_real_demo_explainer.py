@@ -153,7 +153,14 @@ class SourceContextGenerationTests(TestCase):
         explanation = (
             "The manual lists this as one possible cause category, not a confirmed fault."
         )
-        applied = explainer.apply_customer_explanations(presentation, {"c1": explanation})
+        full_passage_citation = {
+            "id": "s2", "document_id": 168, "chunk_id": 160,
+            "url": "/demo-api/source/?citation=full-passage-token",
+        }
+        applied = explainer.apply_customer_explanations(
+            presentation, {"c1": explanation},
+            context_citations_by_claim={"c1": full_passage_citation},
+        )
         self.assertEqual(applied, 2)
         for claim in (
             presentation["supporting_claims"][0],
@@ -161,10 +168,18 @@ class SourceContextGenerationTests(TestCase):
         ):
             self.assertTrue(claim["text"].endswith("Explanation: " + explanation))
             self.assertEqual(claim["source_text"], "Dirty filter or coil.")
-            self.assertEqual(claim["evidence_ids"], ["s1"])
+            self.assertEqual(claim["evidence_ids"], ["s1", "s2"])
+        self.assertEqual(
+            [item["id"] for item in presentation["citations"]],
+            ["s1", "s2"],
+        )
         self.assertEqual(
             presentation["citations"][0]["url"],
             "/demo-api/source/?citation=synthetic-token",
+        )
+        self.assertEqual(
+            presentation["citations"][1]["url"],
+            "/demo-api/source/?citation=full-passage-token",
         )
 
 
