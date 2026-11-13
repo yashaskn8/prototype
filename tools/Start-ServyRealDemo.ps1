@@ -141,9 +141,28 @@ $env:DJANGO_DEBUG = '1'
 # Technical claims stay extractive; a local open-weight model may only
 # choose from already approved evidence IDs and vetted follow-up prompts.
 $env:SERVY_LLM_PROVIDER = 'extractive'
-$env:SERVY_REAL_DEMO_DIALOGUE_MODE = if ($NoLocalChat) { 'rules' } else { 'local' }
 if (-not $env:SERVY_REAL_DEMO_CHAT_MODEL) {
     $env:SERVY_REAL_DEMO_CHAT_MODEL = 'qwen2.5:3b'
+}
+$localDialogueReady = $false
+if (-not $NoLocalChat) {
+    try {
+        $ollama = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -Method Get -TimeoutSec 3
+        $modelName = $env:SERVY_REAL_DEMO_CHAT_MODEL
+        $localDialogueReady = @($ollama.models | Where-Object { $_.name -eq $modelName }).Count -gt 0
+    } catch {
+        $localDialogueReady = $false
+    }
+}
+if ($NoLocalChat) {
+    $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
+    Write-Output 'Local conversational model explicitly disabled; rules-only dialogue mode is active.'
+} elseif ($localDialogueReady) {
+    $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'local'
+    Write-Output ('Local dialogue explanations enabled: ' + $env:SERVY_REAL_DEMO_CHAT_MODEL)
+} else {
+    $env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
+    Write-Warning ('Ollama or model ' + $env:SERVY_REAL_DEMO_CHAT_MODEL + ' is unavailable. Rules-only dialogue mode is active; hybrid BGE/V5 retrieval and cited extractive answers remain enabled. No Ollama connection will be attempted for each customer question.')
 }
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
@@ -233,7 +252,10 @@ Write-Output ('Enter the separate code from: ' + $accessFile)
 # just open TCP ports. This also emits a safe HTTP 200 entry in the backend log.
 $demoToken = (Get-Content -LiteralPath $accessFile -Raw).Trim()
 try {
-    $inventoryProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/inventory/' -Headers @{ Authorization = "Demo $demoToken" } -Method Get -UseBasicParsing -TimeoutSec 30
+    $inventoryProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/inventory/' -Headers @{
+        Authorization = "Demo $demoToken"
+        'X-Servy-Request-Source' = 'launcher-readiness'
+    } -Method Get -UseBasicParsing -TimeoutSec 30
     $inventoryPayload = $inventoryProbe.Content | ConvertFrom-Json
     if ($inventoryProbe.StatusCode -ne 200 -or @($inventoryPayload.assets).Count -lt 1) {
         throw 'The authenticated inventory response was empty or invalid.'
@@ -247,24 +269,6 @@ try {
     $inventoryProbe = $null
 }
 
-if ($NoLocalChat) {
-    Write-Warning 'Local conversational generation is disabled by -NoLocalChat. Servy will show only source-extractable answers.'
-} else {
-    try {
-        $ollama = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -Method Get -TimeoutSec 3
-        $modelName = if ($env:SERVY_REAL_DEMO_CHAT_MODEL) { $env:SERVY_REAL_DEMO_CHAT_MODEL } else { 'qwen2.5:3b' }
-        $modelReady = @($ollama.models | Where-Object { $_.name -eq $modelName }).Count -gt 0
-        if ($modelReady) {
-            Write-Output ('Local explanation model check: PASS (' + $modelName + ')')
-        } else {
-            Write-Warning ('Ollama is running, but model ' + $modelName + ' is not installed. Run: ollama pull ' + $modelName)
-            Write-Warning 'The demo will remain available, but detailed plain-language explanations will fall back to the cited source text.'
-        }
-    } catch {
-        Write-Warning 'Ollama is not reachable on localhost:11434. The demo will remain available, but generated plain-language explanations will be unavailable.'
-        Write-Warning 'Start Ollama and ensure qwen2.5:3b is installed before demonstrating detailed explanations.'
-    }
-}
 if (-not $NoWatch) {
     $availableLogs = @($activityLogPaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     Write-Output ''

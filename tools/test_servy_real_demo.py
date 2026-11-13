@@ -326,6 +326,9 @@ class RealDemoBoundaryTests(unittest.TestCase):
         handler = object.__new__(demo.Handler)
         handler.path = "/demo-api/source/?citation=private-sentinel"
         handler.command = "GET"
+        handler.headers = {}
+        handler.client_address = ("127.0.0.1", 12345)
+        handler._request_authenticated = True
         handler.wfile = io.BytesIO()
         handler.send_response = lambda status: None
         handler.send_header = lambda name, value: None
@@ -335,8 +338,55 @@ class RealDemoBoundaryTests(unittest.TestCase):
             handler._send(200, {"answer": "private-answer-sentinel"})
         line = output.getvalue()
         self.assertIn("HTTP 200 OK | GET /demo-api/source/", line)
+        self.assertIn("client=127.0.0.1 auth=ok", line)
         self.assertNotIn("private-sentinel", line)
         self.assertNotIn("private-answer-sentinel", line)
+
+    def test_request_log_identifies_launcher_readiness_probe(self):
+        handler = object.__new__(demo.Handler)
+        handler.path = "/demo-api/inventory/"
+        handler.command = "GET"
+        handler.headers = {
+            "X-Servy-Request-Source": "launcher-readiness",
+            "Authorization": "Demo private-launcher-token",
+        }
+        handler.client_address = ("127.0.0.1", 12345)
+        handler._request_authenticated = True
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+        output = io.StringIO()
+        with redirect_stdout(output):
+            handler._send(200, {"assets": []})
+        line = output.getvalue()
+        self.assertIn("source=launcher-readiness", line)
+        self.assertIn("auth=ok", line)
+        self.assertNotIn("private-launcher-token", line)
+
+    def test_request_log_classifies_rejected_browser_probe_without_logging_headers(self):
+        handler = object.__new__(demo.Handler)
+        handler.path = "/demo-api/inventory/"
+        handler.command = "GET"
+        handler.headers = {
+            "User-Agent": "Mozilla/5.0 synthetic browser",
+            "Authorization": "Demo private-unauthorized-token",
+        }
+        handler.client_address = ("127.0.0.1", 12345)
+        handler._request_authenticated = False
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+        output = io.StringIO()
+        with redirect_stdout(output):
+            handler._send(401, {"detail": "Demo identity required"})
+        line = output.getvalue()
+        self.assertIn("HTTP 401 Unauthorized", line)
+        self.assertIn("source=browser", line)
+        self.assertIn("client=127.0.0.1 auth=rejected", line)
+        self.assertNotIn("Mozilla", line)
+        self.assertNotIn("private-unauthorized-token", line)
 
 
     def test_continuation_is_signed_scoped_and_not_database_persisted(self):

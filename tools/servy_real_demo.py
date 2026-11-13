@@ -1200,18 +1200,39 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(raw)
-        # Never log question text, signed source URLs, credentials, or response bodies.
+        # Log only coarse local caller metadata. Never log headers, user-agent
+        # strings, query strings, signed source URLs, tokens, or response bodies.
         route = urlsplit(self.path).path
         route = route if route in LOGGED_ROUTES else "other"
         started = getattr(self, "_request_started", None)
         elapsed = f" {int((time.perf_counter() - started) * 1000)}ms" if started is not None else ""
+        headers = getattr(self, "headers", {})
+        user_agent = str(headers.get("User-Agent", "")).casefold()
+        authenticated = getattr(self, "_request_authenticated", None)
+        if authenticated is True and headers.get("X-Servy-Request-Source") == "launcher-readiness":
+            source = "launcher-readiness"
+        elif "powershell" in user_agent:
+            source = "powershell"
+        elif "mozilla/" in user_agent:
+            source = "browser"
+        elif "python" in user_agent or "httpx" in user_agent:
+            source = "python-client"
+        elif "curl/" in user_agent:
+            source = "curl"
+        else:
+            source = "unclassified-local-client"
+        client_address = getattr(self, "client_address", ("unknown",))
+        client = client_address[0] if client_address else "unknown"
+        auth_state = "ok" if authenticated is True else (
+            "rejected" if authenticated is False else "unchecked"
+        )
         try:
             phrase = HTTPStatus(status).phrase
         except ValueError:
             phrase = "Unknown status"
         print(
             f"{time.strftime('%H:%M:%S')} HTTP {status} {phrase} | "
-            f"{self.command} {route}{elapsed}",
+            f"{self.command} {route} source={source} client={client} auth={auth_state}{elapsed}",
             flush=True,
         )
 
@@ -1224,7 +1245,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._request_started = time.perf_counter()
-        if not self._authorized():
+        authorized = self._authorized()
+        self._request_authenticated = authorized
+        if not authorized:
             return self._send(401, {"detail": "Demo identity required"})
         path = urlsplit(self.path)
         try:
@@ -1249,7 +1272,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._request_started = time.perf_counter()
-        if not self._authorized():
+        authorized = self._authorized()
+        self._request_authenticated = authorized
+        if not authorized:
             return self._send(401, {"detail": "Demo identity required"})
         path = urlsplit(self.path).path
         if path not in ("/demo-api/query/", "/demo-api/tickets/preview/",
