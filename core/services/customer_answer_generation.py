@@ -95,7 +95,7 @@ def validate_customer_generation_configuration(*, check_runtime: bool = False) -
         raise RuntimeError("Customer Qwen requires remote model access to remain disabled.")
     try:
         url = _endpoint()
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError):
         raise RuntimeError("Customer Qwen must use the approved loopback Ollama endpoint.") from None
     model = str(getattr(settings, "SERVY_CUSTOMER_GENERATION_MODEL", "")).strip()
     # Ollama quantized tags such as qwen3.5:2b-q4_K_M legitimately contain underscores.
