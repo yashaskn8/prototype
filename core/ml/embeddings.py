@@ -2,11 +2,11 @@
 
 Each embedding model is bound to exactly one versioned Chroma collection.
 Vectors from different models are NEVER written into or queried from the same
-collection, even when dimensions match (MiniLM and BGE-small are both 384-d
-but live in different embedding spaces).
+collection, even when dimensions match.
 
-The legacy MiniLM profile keeps the existing collection name ``servy_dense_kb``
-so current production behaviour and data are untouched.
+BGE-small is the only approved embedding model. MiniLM has been retired: there is
+no MiniLM profile, and the legacy MiniLM collections (``servy_dense_kb``,
+``servy_company_dense_kb``) are no longer read or written by Servy.
 """
 from __future__ import annotations
 
@@ -52,10 +52,6 @@ except Exception:
 BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 PROFILES: Dict[str, EmbeddingProfile] = {
-    "minilm": EmbeddingProfile(
-        key="minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
-        collection="servy_dense_kb", content_first=False, promotion_eligible=True,
-    ),
     "bge-small": EmbeddingProfile(
         key="bge-small", model_id="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
         dim=384, collection="servy_dense_bge_small_v1",
@@ -66,11 +62,7 @@ PROFILES: Dict[str, EmbeddingProfile] = {
         dim=384, collection="servy_company_bge_small_v1",
         query_prefix=BGE_QUERY_PREFIX, content_first=True, promotion_eligible=True,
     ),
-    "company-minilm": EmbeddingProfile(
-        key="company-minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
-        collection="servy_company_dense_kb", content_first=False, promotion_eligible=True,
-    ),
-    # Separate 1024-D Qwen3 embedding spaces, never combined with 384-D MiniLM/BGE.
+    # Separate 1024-D Qwen3 embedding spaces, never combined with 384-D BGE.
     # Local-only model loading; activation additionally requires explicit flags
     # and verified index maintenance (see retriever and management command).
     "qwen3": EmbeddingProfile(
@@ -168,8 +160,6 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         if profile.revision:
             kwargs["revision"] = profile.revision
         model_target = profile.local_path or profile.model_id
-        if model_target == "all-MiniLM-L6-v2":
-            model_target = "sentence-transformers/all-MiniLM-L6-v2"
         try:
             m = SentenceTransformer(model_target, local_files_only=not allow_download, **kwargs)
         except Exception as exc:
@@ -292,14 +282,6 @@ def get_collection(profile: EmbeddingProfile, create: bool = True):
 
     stored_meta = coll.metadata or {}
     stamped_model = stored_meta.get("servy_model")
-
-    # Legacy servy_dense_kb and company-minilm have no stamp; only ever paired with minilm.
-    if profile.key in ("minilm", "company-minilm"):
-        if stamped_model and stamped_model != profile.model_id:
-            raise EmbeddingConfigError(
-                f"Collection '{profile.collection}' belongs to model '{stamped_model}', not '{profile.model_id}'."
-            )
-        return coll
 
     if not stamped_model:
         raise EmbeddingConfigError(f"Collection '{profile.collection}' is unstamped; refusing to use it.")

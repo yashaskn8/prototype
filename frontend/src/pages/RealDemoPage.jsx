@@ -16,6 +16,9 @@ import {
   appendDemoThread, canOpenDemoThread, chatTitle, isDemoAssetThreadBound,
 } from './demoThreadState';
 import './RealDemoPage.css';
+import {
+  CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
+} from './demoGatewayClient';
 
 async function call(path, token, options = {}) {
   const headers = { 'Authorization': `Demo ${token}` };
@@ -61,13 +64,6 @@ const COMPLAINT_TYPES = [
 const MAX_TICKET_FILES = 10;
 const MAX_TICKET_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-// Server-declared escalation for an answer the internal documents could not
-// (fully) support. Only well-formed blocks are honoured.
-function pendingAssignment(data) {
-  const value = data?.issue_assignment;
-  return value?.required === true && value.status === 'AWAITING_CUSTOMER_CONFIRMATION'
-    && typeof value.description === 'string' && value.description.trim() ? value : null;
-}
 
 function assignmentNotice(data) {
   const value = data?.issue_assignment;
@@ -91,47 +87,7 @@ function manualStatus(item) {
   return item?.documents?.length ? `${item.documents.length} permitted manuals` : 'No demo document access';
 }
 
-function answerForTicket(data) {
-  const presentation = data?.presentation;
-  // A refusal has no sections; record what Servy actually told the customer.
-  if (!Array.isArray(presentation?.sections) || !presentation.sections.length) {
-    return presentation?.message || data?.message || '';
-  }
-  const citations = presentation.citations || [];
-  const refs = new Map(citations.map((citation, index) => [citation.id, {
-    number: index + 1, text: [citation.title, citation.heading].filter(Boolean).join(' — '),
-  }]));
-  const used = new Map();
-  const sections = presentation.sections.map((section) => {
-    const claims = (section.claims || []).map((claim) => {
-      const markers = (claim.evidence_ids || []).map((id) => {
-        const source = refs.get(id);
-        if (source) used.set(source.number, source.text);
-        return source ? `[${source.number}]` : '';
-      }).filter(Boolean).join(' ');
-      return `• ${claim.text}${markers ? ` ${markers}` : ''}`;
-    });
-    return `${section.title}\n${claims.join('\n')}`;
-  });
-  const sourceList = [...used.entries()].sort(([a], [b]) => a - b)
-    .map(([number, source]) => `[${number}] ${source}`);
-  return [sections.join('\n\n'), sourceList.length ? `Sources\n${sourceList.join('\n')}` : '']
-    .filter(Boolean).join('\n\n');
-}
 
-function conversationForTicket(messages) {
-  let turn = 0;
-  return messages.filter(message => !message.pending).map((message) => {
-    if (message.role === 'user') {
-      turn += 1;
-      return `Customer · Turn ${turn}\n${message.text}`;
-    }
-    if (message.role === 'assistant' && message.data) {
-      return `Servy · Turn ${turn}\n${answerForTicket(message.data)}`;
-    }
-    return '';
-  }).filter(Boolean).join('\n\n');
-}
 
 export function RealDemoPage() {
   const [token, setToken] = useState('');
@@ -160,8 +116,9 @@ export function RealDemoPage() {
 
   useEffect(() => () => requestStreamController.current?.abort(), []);
 
-  // Chat and its signed retrieval context are deliberately browser-memory only.
-  // No customer conversation is saved to the company's operational database.
+  // Conversations are saved in the isolated local development database
+  // (servy_dev) and reload after a browser refresh. Nothing is written to the
+  // company's operational database.
   function resetConversation() {
     requestRevision.current += 1;
     requestStreamController.current?.abort();
@@ -200,7 +157,7 @@ export function RealDemoPage() {
     setError('');
   }
 
-  function initializeThreads(nextAssetId) {
+  function initializeThreads(nextAssetId, accessToken = token) {
     threadCache.current.clear();
     threadSequence.current = nextAssetId ? 1 : 0;
     const initialId = nextAssetId ? 'thread-' + crypto.randomUUID() : '';
@@ -209,6 +166,24 @@ export function RealDemoPage() {
       ? [{ id: initialId, assetId: String(nextAssetId), title: 'New chat' }]
       : []);
     resetConversation();
+    if (nextAssetId && accessToken) loadSavedThreads(String(nextAssetId), accessToken);
+  }
+
+  // Previously saved conversations for this equipment (survive a refresh).
+  async function loadSavedThreads(forAssetId, accessToken) {
+    try {
+      const data = await call(`${CONVERSATIONS_PATH}?asset_id=${encodeURIComponent(forAssetId)}&limit=50`, accessToken);
+      const saved = (data.conversations || [])
+        .filter(item => String(item.asset_id ?? item.asset?.id ?? forAssetId) === forAssetId)
+        .map(item => ({
+          id: 'conv-' + item.conversation_uuid, assetId: forAssetId,
+          conversationUuid: item.conversation_uuid, title: item.title || 'Saved chat',
+        }));
+      setThreads(previous => [...previous.filter(item => !item.conversationUuid
+        || !saved.some(entry => entry.conversationUuid === item.conversationUuid)), ...saved]);
+    } catch {
+      setError('Saved conversations could not be loaded. New questions still work.');
+    }
   }
 
   function startNewChat() {
@@ -226,14 +201,24 @@ export function RealDemoPage() {
     resetConversation();
   }
 
-  function openThread(id) {
+  async function openThread(id) {
     if (busy || id === activeThreadId) return;
     const thread = threads.find(item => item.id === id);
     if (!canOpenDemoThread(thread, assetId)) {
       setError('That conversation is not available for the selected equipment.');
       return;
     }
-    const snapshot = threadCache.current.get(id);
+    let snapshot = threadCache.current.get(id);
+    if (!snapshot && thread.conversationUuid) {
+      try {
+        const data = await call(conversationPath(thread.conversationUuid, 'messages/'), token);
+        snapshot = { assetId: String(assetId), messages: messagesFromServer(data.messages),
+          continuation: thread.conversationUuid };
+      } catch {
+        setError('That saved conversation could not be loaded.');
+        return;
+      }
+    }
     if (!snapshot || String(snapshot.assetId) !== String(assetId)) {
       setError('That conversation was cleared or its equipment scope changed.');
       return;
@@ -318,18 +303,27 @@ export function RealDemoPage() {
     ));
     setQuestion('');
     try {
-      const data = await callRagStream(
-        '/demo-api/query-stream/',
+      // The first question of a new chat creates the saved conversation; every
+      // question then continues it through the official message stream.
+      let conversationUuid = continuation;
+      if (!conversationUuid) {
+        const created = await call(CONVERSATIONS_PATH, token, {
+          method: 'POST', body: JSON.stringify({ asset_id: Number(activeAsset) }),
+        });
+        conversationUuid = created.conversation_uuid;
+        if (!conversationUuid) throw new Error('The conversation could not be started.');
+        setContinuation(conversationUuid);
+        setThreads(previous => previous.map(item => item.id === activeThreadId
+          ? { ...item, conversationUuid } : item));
+      }
+      const turn = await callRagStream(
+        conversationPath(conversationUuid, 'messages-stream/'),
         token,
-        {
-          asset_id: Number(activeAsset),
-          question: submittedQuestion,
-          continuation,
-          thread_id: activeThreadId,
-        },
+        { message: submittedQuestion },
         undefined,
         streamController.signal,
       );
+      const data = { ...(turn?.contract || {}), continuation: conversationUuid };
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
       const responseAssetId = data?.presentation?.equipment?.id ?? data?.asset?.id;
       if (responseAssetId != null && String(responseAssetId) !== String(activeAsset)) {
@@ -367,28 +361,32 @@ export function RealDemoPage() {
     }
   }
 
-  function startTicket() {
+  // The ticket description is built by the server from the complete saved
+  // conversation; the customer reviews it here and confirms explicitly.
+  async function startTicket() {
     const latest = messages.at(-1);
-    if (latest?.role !== 'assistant' || !latest.data?.ticket_context) return;
-    // When internal evidence was insufficient, the server-prepared issue
-    // summary leads the description; the customer can still edit it.
-    const escalation = pendingAssignment(latest.data)?.description;
-    const transcript = conversationForTicket(messages);
-    setTicketDraft({
-      ticket_context: latest.data.ticket_context,
-      question: answeredQuestion,
-      call_type: TICKET_TYPES[0],
-      complaint_type: '',
-      complaint_text: (escalation ? `${escalation}\n\n--- Conversation ---\n${transcript}` : transcript)
-        .slice(0, 100_000),
-      contact_name: '',
-      severity: '',
-      priority: 'normal',
-      machine_status: '',
-    });
-    setTicketFiles([]);
-    setTicketConfirmation(null);
+    if (latest?.role !== 'assistant' || !continuation || busy) return;
+    setBusy(true);
     setError('');
+    try {
+      const data = await call(conversationPath(continuation, 'ticket/'), token);
+      if (data.ticket) {
+        setTicketConfirmation({ ticket: data.ticket, duplicate: true,
+          detail: 'A service call already exists for this conversation.' });
+        return;
+      }
+      setTicketDraft({
+        call_type: TICKET_TYPES[0], complaint_type: '', severity: '', priority: 'normal', machine_status: '',
+        preview: data.preview || null,
+        previewDetail: data.preview_detail || (data.preview ? '' : 'The service call description could not be prepared.'),
+      });
+      setTicketFiles([]);
+      setTicketConfirmation(null);
+    } catch (err) {
+      setError(err.message || 'The service call preview could not be loaded.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   function closeTicketPanel() {
@@ -426,18 +424,21 @@ export function RealDemoPage() {
     setBusy(true);
     try {
       const payload = new FormData();
-      payload.append('ticket', JSON.stringify(ticketDraft));
+      payload.append('confirm_ticket_creation', 'true');
+      ['call_type', 'complaint_type', 'severity', 'priority', 'machine_status'].forEach(field => {
+        if (ticketDraft[field]) payload.append(field, ticketDraft[field]);
+      });
       ticketFiles.forEach(file => payload.append('attachments', file, file.name));
-      const data = await call('/demo-api/tickets/create-local/', token, {
+      const data = await call(conversationPath(continuation, 'ticket/'), token, {
         method: 'POST', body: payload,
       });
-      if (data.mode !== 'LOCAL_SQLITE' || !data.ticket?.id) {
-        throw new Error('The local technician ticket was not confirmed.');
+      if (data.mode !== 'SERVY_DEV_MYSQL' || !data.ticket?.id) {
+        throw new Error('The service call was not confirmed.');
       }
       setTicketConfirmation({ ticket: data.ticket, duplicate: data.duplicate === true,
         detail: data.duplicate === true
-          ? 'This issue was already recorded. No duplicate ticket was created.'
-          : 'Created in the local SQLite technician workspace.' });
+          ? 'This issue was already recorded. No duplicate service call was created.'
+          : 'Service call created in the local development database.' });
       setTicketDraft(null);
       setTicketFiles([]);
     } catch (err) { setError(err.message); }
@@ -459,7 +460,7 @@ export function RealDemoPage() {
           <Package className="icon" /><span>Equipment</span></button>
       </nav>
       <div className="sidebar-footer"><div className="user-profile-badge"><div className="avatar">RD</div>
-        <div className="user-meta"><div className="user-name">Real-data demo</div><div className="user-role">Local · read-only</div></div></div>
+        <div className="user-meta"><div className="user-name">Real-data demo</div><div className="user-role">Local · development data</div></div></div>
         {assets && <button type="button" className="btn btn-secondary btn-sm real-demo-lock" onClick={() => {
           initializeThreads(''); setToken(''); setAssets(null); setAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
     </aside>
@@ -482,8 +483,8 @@ export function RealDemoPage() {
             <small><ShieldCheck size={15} /> Customer documents stay restricted by equipment and customer.</small></section>
           <aside className="real-demo-login-aside"><BookOpen size={29} />
             <h2>Original manuals.<br />Real equipment.<br />Clear limits.</h2>
-            <p>SELECT-only database access, a private company index copy, and local BGE-small + V5 retrieval.</p>
-            <span>✓ No company tickets or dispatches created</span><span>✓ Source access checked when opened</span></aside>
+            <p>Approved manuals in an isolated local index, local BGE-small + V5 retrieval, and a separate development database.</p>
+            <span>✓ Service calls stay in the local development database</span><span>✓ Source access checked when opened</span></aside>
         </div> : view === 'assets' ? <>
           <div className="real-demo-stats"><div className="kpi-card"><div className="kpi-icon purple"><Package size={22} /></div>
             <div><div className="kpi-value">{assets.length}</div><div className="kpi-label">Verified assets</div></div></div>
@@ -527,7 +528,7 @@ export function RealDemoPage() {
                 </button>
               </div>
               <div className="real-demo-thread-index" aria-label="Conversations in this tab">
-                <span className="real-demo-thread-label">Chats · this tab only</span>
+                <span className="real-demo-thread-label">Chats · saved locally</span>
                 <div className="real-demo-thread-items">
                   {threads.map(item => <div className={[
                       'real-demo-thread-item', item.id === activeThreadId ? 'is-active' : ''
@@ -548,7 +549,7 @@ export function RealDemoPage() {
                   <p>{asset
                     ? 'Describe a symptom or fault code. Continue asking follow-up questions; Servy will use the earlier customer reports to retrieve relevant approved documentation.'
                     : 'Choose the exact equipment in Equipment Selection before starting a conversation. Each chat stays bound to that asset and its approved manuals.'}</p>
-                  <small>This is a read-only local demo. Conversations exist only in this browser tab and are not saved as company records.</small>
+                  <small>Local demo: conversations are saved in the isolated development database and reload after a refresh. Nothing is written to company records.</small>
                 </div>}
                 {messages.map((message, index) => (
                   <div key={message.id} className={`real-demo-chat-message ${message.role === 'user' ? 'is-user' : 'is-assistant'}`}>
@@ -612,7 +613,7 @@ export function RealDemoPage() {
                               ) : message.data?.presentation ? <CustomerAnswer
                               assetId={Number(assetId)}
                               presentation={message.data.presentation}
-                              loadSource={url => call(url, token)}
+                              loadSource={url => call(gatewaySourceUrl(url), token)}
                             /> : <p>{message.data?.message || 'No response is available.'}</p>}
                             {message.data?.reason_code === 'CUSTOMER_REPORT_CAPTURED' && (
                               <p className="real-demo-dialogue-meta">
@@ -724,13 +725,13 @@ export function RealDemoPage() {
                 <p>{assignmentNotice(messages.at(-1).data)}</p></div>
             </section>
           )}
-          {messages.at(-1)?.role === 'assistant' && messages.at(-1)?.data?.ticket_context
+          {messages.at(-1)?.role === 'assistant' && continuation
             && messages.at(-1)?.data?.issue_assignment?.status !== 'ALREADY_ASSIGNED'
             && !ticketDraft && !ticketConfirmation && (
             <section className="card real-demo-ticket-action" aria-label="Ticket escalation options">
               <div><strong>Still need assistance?</strong>
                 <p>Raise a ticket with the conversation attached for the technician.</p></div>
-              <button className="btn btn-secondary" type="button" onClick={startTicket}>
+              <button className="btn btn-secondary" type="button" onClick={startTicket} disabled={busy}>
                 <Ticket size={17} /> Create Ticket
               </button>
             </section>
@@ -766,9 +767,8 @@ export function RealDemoPage() {
                       <label className="real-demo-ticket-field"><span>Facility <b>*</b></span>
                         <input className="form-control" value={asset?.site || ''} readOnly aria-readonly="true" /></label>
                       <label className="real-demo-ticket-field"><span>Contact Person</span>
-                        <input className="form-control" maxLength={150} value={ticketDraft.contact_name}
-                          onChange={event => updateTicketDraft('contact_name', event.target.value)}
-                          placeholder="Enter contact name" /></label>
+                        <input className="form-control" value="From your customer record" readOnly
+                          aria-readonly="true" /></label>
                     </div>
 
                     <label className="real-demo-ticket-field real-demo-ticket-equipment"><span>Facility Equipment <b>*</b></span>
@@ -805,10 +805,24 @@ export function RealDemoPage() {
                         </select></label>
                     </div>
 
-                    <label className="real-demo-ticket-field real-demo-ticket-description"><span>Description <b>*</b></span>
-                      <textarea className="form-control" value={ticketDraft.complaint_text} maxLength={100_000}
-                        rows={8} required onChange={event => updateTicketDraft('complaint_text', event.target.value)}
-                        placeholder="The complete customer and Servy conversation is pre-filled here." /></label>
+                    <div className="real-demo-ticket-field real-demo-ticket-description">
+                      <span>Description (prepared by Servy from this whole conversation)</span>
+                      {ticketDraft.previewDetail && <p className="real-demo-error" role="alert">{ticketDraft.previewDetail}</p>}
+                      {ticketDraft.preview?.missing_fields?.length > 0 && <p className="real-demo-error" role="alert">
+                        Contact details needed before a technician can be dispatched:{' '}
+                        {ticketDraft.preview.missing_fields.map(field => ({
+                          contact_name: 'contact name', phone_or_email: 'a phone number or email address',
+                          asset: 'the selected equipment' })[field] || field).join(', ')}.
+                        Update your customer record; Servy does not fill these in.</p>}
+                      {ticketDraft.preview?.sections && <div className="form-control real-demo-ticket-preview"
+                        data-testid="ticket-description-preview" style={{ height: 'auto', maxHeight: 320, overflowY: 'auto' }}>
+                        <small>{ticketDraft.preview.message_count} saved messages</small>
+                        {Object.entries(ticketDraft.preview.sections).map(([title, items]) => <div key={title}>
+                          <strong>{title}</strong>
+                          <ul>{(items || []).map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>
+                        </div>)}
+                      </div>}
+                    </div>
 
                     <div className="real-demo-ticket-field">
                       <span className="real-demo-ticket-label">Issue Documentation</span>
@@ -817,7 +831,7 @@ export function RealDemoPage() {
                         onDrop={event => { event.preventDefault(); addTicketFiles(event.dataTransfer.files); }}>
                         <FilePlus2 size={25} />
                         <strong>Click or drag to upload</strong>
-                        <span>Files are stored with this local SQLite ticket · up to 10 files, 25 MB total</span>
+                        <span>Images, PDF or text · up to 10 files, 25 MB total · stored with the service call</span>
                         <input id="real-demo-ticket-files" type="file" multiple
                           onChange={event => { addTicketFiles(event.target.files); event.target.value = ''; }} />
                       </label>
@@ -833,7 +847,7 @@ export function RealDemoPage() {
                     <div className="real-demo-ticket-modal-actions">
                       <button type="button" className="btn btn-secondary" onClick={closeTicketPanel} disabled={busy}>Cancel</button>
                       <button type="submit" className="btn btn-primary" disabled={busy || !ticketDraft.complaint_type
-                        || !ticketDraft.complaint_text.trim()}>
+                        || !ticketDraft.preview?.can_create}>
                         <Ticket size={16} /> {busy ? 'Creating…' : 'Create Ticket'}
                       </button>
                     </div>
@@ -844,7 +858,8 @@ export function RealDemoPage() {
           </div>}
           {ticketConfirmation && <div className="real-demo-ticket-confirmation" role="status">
             <strong>{ticketConfirmation.duplicate ? 'Ticket already exists' : 'Ticket created'}</strong>
-            <span>{ticketConfirmation.ticket.id}</span>
+            <span>{ticketConfirmation.ticket.ticket_ref || `SRV-${ticketConfirmation.ticket.servy_id}`}</span>
+            {ticketConfirmation.detail && <small>{ticketConfirmation.detail}</small>}
           </div>}
         </>}
         {error && !ticketDraft && <p className="real-demo-error" role="alert">{error}</p>}

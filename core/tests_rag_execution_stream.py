@@ -407,3 +407,43 @@ class CustomerRAGStreamAccessTests(SimpleTestCase):
         self.assertIn('"candidate_count":2', body)
         self.assertIn("event: result", body)
         self.assertIn('"response_type":"DIAGNOSTIC_GUIDANCE"', body)
+
+
+class SseFrameEncodingTests(SimpleTestCase):
+    def test_final_result_frame_encodes_datetimes(self):
+        """A saved message's created_at must not abort the stream before the result."""
+        import datetime
+        from core.services.rag_event_stream import _sse_frame
+        frame = _sse_frame("result", {"assistant_message": {
+            "created_at": datetime.datetime(2026, 11, 14, 9, 30, tzinfo=datetime.timezone.utc)}})
+        self.assertTrue(frame.startswith("event: result\ndata: "))
+        self.assertIn('"created_at":"2026-11-14T09:30:00Z"', frame)
+
+
+class StreamWorkerConnectionTests(SimpleTestCase):
+    """Each streamed answer runs in its own thread; its DB connections must not outlive it."""
+
+    def _closing_threads(self, work):
+        from threading import current_thread
+        from core.services import rag_event_stream
+        closed_in, ran_in = [], []
+
+        def tracked_work():
+            ran_in.append(current_thread().ident)
+            return work()
+
+        with patch.object(rag_event_stream.connections, "close_all",
+                          side_effect=lambda: closed_in.append(current_thread().ident)):
+            response = rag_execution_stream(tracked_work)
+            b"".join(response.streaming_content)
+        return ran_in, closed_in
+
+    def test_worker_closes_its_connections_after_a_result(self):
+        ran_in, closed_in = self._closing_threads(lambda: {"answer": "ok"})
+        self.assertEqual(closed_in, ran_in)   # closed exactly once, in the worker thread
+
+    def test_worker_closes_its_connections_after_a_failure(self):
+        def failing():
+            raise RuntimeError("synthetic failure")
+        ran_in, closed_in = self._closing_threads(failing)
+        self.assertEqual(closed_in, ran_in)

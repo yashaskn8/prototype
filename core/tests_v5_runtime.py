@@ -21,7 +21,28 @@ from core.services.rag import ask_rag
 from core.services.retriever import retrieve
 
 
-@skipUnless(os.getenv("SERVY_TEST_REAL_V5") == "1", "Requires the local V5 weights")
+def _real_v5_requested() -> bool:
+    """Run wherever the configured V5 weights exist (skip in CI, which has none).
+
+    SERVY_TEST_REAL_V5=1 forces the test, =0 disables it. Present-but-wrong
+    weights do not skip: the loader's SHA-256 pin then makes the test fail.
+    """
+    flag = os.getenv("SERVY_TEST_REAL_V5")
+    if flag in ("0", "1"):
+        return flag == "1"
+    from pathlib import Path
+    from django.conf import settings as django_settings
+    configured = str(getattr(django_settings, "SERVY_RERANKER_MODEL_PATH", "") or "").strip()
+    if not configured:
+        return False
+    path = Path(configured)
+    if not path.is_absolute():
+        path = Path(django_settings.BASE_DIR) / path
+    return (path / "model.safetensors").is_file()
+
+
+@skipUnless(_real_v5_requested(),
+            "Real V5 test disabled (SERVY_TEST_REAL_V5=0) or the configured local V5 weights are not present")
 @override_settings(
     SERVY_CUSTOMER_DATA_MODE="test_isolated",
     SERVY_LLM_PROVIDER="extractive",

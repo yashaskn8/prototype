@@ -10,7 +10,7 @@ Guarantees:
 - Technical attachments are downloaded over HTTPS only from approved hosts (starlly.sgp1.digitaloceanspaces.com).
 - Full SSRF and redirect protection.
 - Content hash (SHA-256) validation and structured text chunking.
-- Dense vectors are synced exclusively to isolated company collections ('servy_company_dense_kb', 'servy_company_bge_small_v1').
+- Dense vectors are synced exclusively to the isolated company BGE collection ('servy_company_bge_small_v1').
 - Idempotent: re-running updates or skips without duplicating records.
 """
 

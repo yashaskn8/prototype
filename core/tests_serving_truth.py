@@ -16,9 +16,21 @@ class ServingTruthConfigTests(SimpleTestCase):
         self.assertEqual(config.embedding_profile, "bge-small")
         self.assertEqual(config.retrieval_mode, "hybrid")
 
-    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="minilm")
-    def test_explicit_minilm_override_is_preserved(self):
-        self.assertEqual(get_serving_config().embedding_profile, "minilm")
+    def test_retired_minilm_profile_is_refused_at_startup(self):
+        import os
+        import subprocess
+        import sys
+        from django.conf import settings
+        env = {**os.environ, "SERVY_SERVING_EMBEDDING_PROFILE": "minilm", "SERVY_DB_ENGINE": "sqlite3"}
+        result = subprocess.run(
+            # A test process, so the in-memory SQLite test database is accepted
+            # and settings reach the embedding-profile check.
+            [sys.executable, "-c", "import sys; sys.argv = ['manage.py', 'test']; "
+             "import django, os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', "
+             "'servy_rag.settings'); django.setup()"],
+            cwd=str(settings.BASE_DIR), env=env, capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("MiniLM has been retired", result.stderr)
 
 
 class PolicyGuardRedTeamTests(SimpleTestCase):
@@ -254,7 +266,7 @@ class DenseEmbeddingSnapshotTests(SimpleTestCase):
         # request has already captured its immutable settings snapshot.
         with (
             override_settings(
-                SERVY_SERVING_EMBEDDING_PROFILE="minilm",
+                SERVY_SERVING_EMBEDDING_PROFILE="company-bge-ft",
                 SERVY_CUSTOMER_DATA_MODE="test_isolated",
             ),
             mock.patch("core.services.customer_isolation.get_customer_data_mode", return_value="test_isolated"),

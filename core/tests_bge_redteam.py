@@ -1,5 +1,5 @@
 """Comprehensive Red-Team scenarios for Category-Independent Retrieval,
-BGE-small / MiniLM embedding separation, and Enterprise Authorization.
+BGE-small embedding-collection separation, and Enterprise Authorization.
 
 Covers the 20 mandatory red-team scenarios and real model integration layers:
 Layer A — Pure unit & manifest tests

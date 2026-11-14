@@ -98,6 +98,36 @@ if SERVY_DB_ENGINE == "mysql":
     MYSQL_USER = os.getenv("MYSQL_USER", os.getenv("SERVY_DB_USER", "servy_app")).strip()
     MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", os.getenv("SERVY_DB_PASSWORD", "")).strip()
 
+    # Isolated local databases (servy_dev / test_servy_dev) are selected with
+    # SERVY_MYSQL_ENV_FILE. The file must supply all five connection values; they
+    # replace anything .env loaded, so production credentials can never be used
+    # silently. The password is never logged.
+    SERVY_MYSQL_ENV_FILE = os.getenv("SERVY_MYSQL_ENV_FILE", "").strip()
+    if SERVY_MYSQL_ENV_FILE:
+        from django.core.exceptions import ImproperlyConfigured as _ImproperlyConfigured
+        _env_path = Path(SERVY_MYSQL_ENV_FILE)
+        if not _env_path.is_absolute():
+            _env_path = BASE_DIR / _env_path
+        if not _env_path.is_file():
+            raise _ImproperlyConfigured(f"SERVY_MYSQL_ENV_FILE not found: {_env_path.name}")
+        _values = {}
+        for _line in _env_path.read_text(encoding="utf-8").splitlines():
+            if "=" in _line and not _line.lstrip().startswith("#"):
+                _k, _v = _line.split("=", 1)
+                _values[_k.strip()] = _v.strip()
+        _required = ("MYSQL_HOST", "MYSQL_PORT", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD")
+        _missing = [k for k in _required if not _values.get(k)]
+        if _missing:
+            raise _ImproperlyConfigured(f"{_env_path.name} is missing: {', '.join(_missing)}")
+        MYSQL_HOST = _values["MYSQL_HOST"]
+        MYSQL_PORT = int(_values["MYSQL_PORT"])
+        MYSQL_DATABASE = _values["MYSQL_DATABASE"]
+        MYSQL_USER = _values["MYSQL_USER"]
+        MYSQL_PASSWORD = _values["MYSQL_PASSWORD"]
+        if MYSQL_DATABASE in ("servy", "test_servy") or MYSQL_USER == "servy_app":
+            raise _ImproperlyConfigured("SERVY_MYSQL_ENV_FILE must not select the protected servy database or account.")
+        del _values
+
     MYSQL_OPTIONS = {
         "charset": "utf8mb4",
         "init_command": (
@@ -124,17 +154,23 @@ if SERVY_DB_ENGINE == "mysql":
             "TEST": {
                 "CHARSET": "utf8mb4",
                 "COLLATION": "utf8mb4_unicode_ci",
+                # The restricted test account may only use the pre-created
+                # test_servy_dev, so tests run in that database (use --keepdb).
+                **({"NAME": "test_servy_dev"} if MYSQL_DATABASE == "test_servy_dev" else {}),
             },
         }
     }
 elif SERVY_DB_ENGINE == "sqlite3":
-    # Allowed strictly when explicitly specified for test isolation or offline review
-    if not DEBUG and os.getenv("CI") != "true":
-        raise RuntimeError("SQLite backend is strictly prohibited when DJANGO_DEBUG=0. MySQL is required.")
+    # Only for disposable automated tests: an in-memory database that never
+    # persists. SQLite is never a runtime database or fallback, and the legacy
+    # db.sqlite3 file (preserved, possibly unique company records) is never opened.
+    import sys as _db_sys
+    if len(_db_sys.argv) < 2 or _db_sys.argv[1] != "test":
+        raise RuntimeError("SQLite is allowed only for disposable test runs; Servy requires MySQL.")
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": ":memory:",
             "OPTIONS": {"timeout": 20},
             "TEST": {
                 "NAME": ":memory:",
@@ -158,6 +194,11 @@ STATICFILES_DIRS = []  # Project-specific Bootstrap assets belonged to the retir
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("SERVY_MEDIA_ROOT", str(BASE_DIR / "media"))).resolve()
+# The isolated development database keeps its uploaded files out of the
+# repository media folder (approved manuals and existing documents live there).
+if globals().get("MYSQL_DATABASE") == "servy_dev" and MEDIA_ROOT == (BASE_DIR / "media").resolve():
+    from django.core.exceptions import ImproperlyConfigured as _MediaConfigError
+    raise _MediaConfigError("servy_dev requires SERVY_MEDIA_ROOT to point to a separate development media folder.")
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGIN_URL = "/app/"
@@ -222,7 +263,21 @@ REST_FRAMEWORK = {
     },
 }
 
-CHROMA_PERSIST_DIR = Path(os.getenv("SERVY_CHROMA_PERSIST_DIR", str(BASE_DIR / "chroma_db"))).resolve()
+PRODUCTION_CHROMA_DIR = (BASE_DIR / "chroma_db").resolve()
+CHROMA_PERSIST_DIR = Path(os.getenv("SERVY_CHROMA_PERSIST_DIR", str(PRODUCTION_CHROMA_DIR))).resolve()
+
+# Backend tests never touch the production index: they get a fresh temporary
+# directory by default, and an explicit production path is refused.
+import sys as _sys
+if len(_sys.argv) > 1 and _sys.argv[1] == "test":
+    if not os.getenv("SERVY_CHROMA_PERSIST_DIR"):
+        import tempfile as _tempfile
+        CHROMA_PERSIST_DIR = Path(_tempfile.mkdtemp(prefix="servy_test_chroma_")).resolve()
+    elif CHROMA_PERSIST_DIR == PRODUCTION_CHROMA_DIR:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            "Refusing to run tests against the production ChromaDB directory; "
+            "unset SERVY_CHROMA_PERSIST_DIR or point it at a disposable copy.")
 
 # Local RAG / LLM settings. Docker is not required.
 SERVY_LLM_PROVIDER = os.getenv("SERVY_LLM_PROVIDER", "extractive").lower().strip()  # extractive|auto|ollama|llama_cpp
@@ -280,14 +335,15 @@ SERVY_MAX_IMPORT_ROWS = int(os.getenv("SERVY_MAX_IMPORT_ROWS", "10000"))
 SERVY_MAX_XLSX_UNCOMPRESSED_BYTES = int(os.getenv("SERVY_MAX_XLSX_UNCOMPRESSED_BYTES", str(30 * 1024 * 1024)))
 SERVY_ALLOW_REMOTE_LLM = os.getenv("SERVY_ALLOW_REMOTE_LLM", "0") == "1"
 
-# Embedding model selection. Active production model stays MiniLM unless both
-# the experimental flag is set AND the matching index has passed verification.
-SERVY_EMBEDDING_MODEL = os.getenv("SERVY_EMBEDDING_MODEL", "minilm")
-SERVY_EXPERIMENTAL_EMBEDDING_MODEL = os.getenv("SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
+# Embedding model: the approved BGE-small profile is the only document and query
+# embedding model. MiniLM has been retired; there is no MiniLM profile or fallback.
 SERVY_USE_EXPERIMENTAL_RAG = os.getenv("SERVY_USE_EXPERIMENTAL_RAG", "0") == "1"
 # Default to the evaluated BGE-small profile, using the separate company BGE
 # collection for real tenants. Verify the local model and index on each host.
 SERVY_SERVING_EMBEDDING_PROFILE = os.getenv("SERVY_SERVING_EMBEDDING_PROFILE", "bge-small").strip().lower()
+if "minilm" in SERVY_SERVING_EMBEDDING_PROFILE:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured("MiniLM has been retired; SERVY_SERVING_EMBEDDING_PROFILE must be a BGE profile.")
 # Retrieval mode actually served. It was previously never declared here, so
 # SERVY_RETRIEVAL_MODE in the environment was ignored and serving silently
 # reported "hybrid". An unknown value is a configuration error, not a default.
@@ -349,12 +405,8 @@ if _allowed_tenants_env:
 
 # Real company data isolation controls
 SERVY_CUSTOMER_DATA_MODE = os.getenv("SERVY_CUSTOMER_DATA_MODE", "verified_real_only")
-_local_app_data = os.getenv("LOCALAPPDATA")
-_local_state = Path(_local_app_data) if _local_app_data else Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
-SERVY_LOCAL_TICKET_DB_PATH = Path(os.getenv(
-    "SERVY_LOCAL_TICKET_DB_PATH",
-    str(_local_state / "Servy" / "local-ticket-workspace.sqlite3"),
-)).expanduser()
+# Tickets, conversations, attachments and technician updates are official MySQL
+# records; there is no SQLite ticket workspace.
 STARLLY_REAL_TENANTS = ["skydream"]
 STARLLY_REAL_ORGANISATIONS = ["273"]
 SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"
@@ -378,3 +430,26 @@ SERVY_AUTHORIZED_SAFETY_APPROVERS = [
     "Staff Diagnostics Auditor",
     "admin",
 ]
+
+# --- Access-code demo gateways (local development only) --------------------------------
+# SERVY_DEMO_GATEWAY=customer|technician serves the official APIs to the existing
+# access-code demos from the isolated servy_dev database. Unset for every other use.
+SERVY_DEMO_GATEWAY = os.getenv("SERVY_DEMO_GATEWAY", "").strip().lower()
+SERVY_DEMO_EXPECTED_DATABASE = os.getenv("SERVY_DEMO_EXPECTED_DATABASE", "servy_dev")
+SERVY_DEMO_EXPECTED_USER = os.getenv("SERVY_DEMO_EXPECTED_USER", "servy_dev_app")
+SERVY_DEMO_ACCESS_FILE = os.getenv("SERVY_DEMO_ACCESS_FILE", "")
+SERVY_TECHNICIAN_ACCESS_FILE = os.getenv("SERVY_TECHNICIAN_ACCESS_FILE", "")
+if SERVY_DEMO_GATEWAY:
+    from django.core.exceptions import ImproperlyConfigured as _GatewayConfigError
+    if SERVY_DEMO_GATEWAY not in ("customer", "technician"):
+        raise _GatewayConfigError("SERVY_DEMO_GATEWAY must be 'customer' or 'technician'.")
+    if globals().get("MYSQL_DATABASE") != "servy_dev" or not os.getenv("SERVY_MYSQL_ENV_FILE"):
+        raise _GatewayConfigError("The demo gateways run only on servy_dev selected through SERVY_MYSQL_ENV_FILE.")
+    _access = SERVY_DEMO_ACCESS_FILE if SERVY_DEMO_GATEWAY == "customer" else SERVY_TECHNICIAN_ACCESS_FILE
+    if not _access or not Path(_access).is_file():
+        raise _GatewayConfigError("The demo gateway needs its existing access-code file.")
+    ROOT_URLCONF = f"servy_rag.demo_{SERVY_DEMO_GATEWAY}_urls"
+    # The gateways run on the threaded development server, which serves every
+    # request in a new thread. Persistent connections would outlive those threads
+    # and exhaust MySQL (max_connections); close each request's connection instead.
+    DATABASES["default"]["CONN_MAX_AGE"] = 0

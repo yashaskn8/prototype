@@ -22,6 +22,8 @@ def _settings_value(name, **env):
                       "DJANGO_DEBUG": "1", **env})
     return subprocess.run(
         [sys.executable, "-c",
+         # SQLite is accepted only in test processes (in-memory, never persistent).
+         "import sys; sys.argv = ['manage.py', 'test']; "
          "import django; from django.conf import settings; django.setup(); "
          f"print(settings.{name})"],
         cwd=ROOT, env=child_env, capture_output=True, text=True, timeout=120,
@@ -54,14 +56,17 @@ class RetrievalModeSettingTests(SimpleTestCase):
 
 
 class StartupModelLoadingTests(SimpleTestCase):
-    def test_app_startup_does_not_load_the_legacy_minilm_model(self):
+    def test_app_startup_loads_no_embedding_model(self):
+        from core.services import chroma_store
+        # MiniLM is retired: the legacy loader no longer exists at all.
+        self.assertFalse(hasattr(chroma_store, "get_sentence_transformer"))
         config = apps.get_app_config("core")
-        with mock.patch("core.services.chroma_store.get_sentence_transformer",
-                        side_effect=AssertionError("legacy MiniLM must not load at startup")) as legacy, \
+        with mock.patch("core.ml.embeddings.load_model",
+                        side_effect=AssertionError("no embedding model loads at startup")) as loader, \
                 mock.patch.object(threading.Thread, "start",
                                   side_effect=AssertionError("no background model thread")):
             config.ready()
-        legacy.assert_not_called()
+        loader.assert_not_called()
 
     def test_strict_v5_startup_check_is_still_enforced_when_required(self):
         config = apps.get_app_config("core")

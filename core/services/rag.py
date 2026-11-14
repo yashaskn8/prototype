@@ -189,7 +189,7 @@ def ask_rag(
             "equipment_applicable": getattr(r, "equipment_applicable", False),
             "customer_action_authorized": getattr(r, "customer_action_authorized", False),
             "source_url": r.source_url,
-            "model_version": getattr(r, "model_version", "minilm"),
+            "model_version": getattr(r, "model_version", "bge-small"),
         }
 
     is_abstention = (

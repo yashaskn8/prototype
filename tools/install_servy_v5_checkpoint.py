@@ -11,6 +11,7 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 
 V5_WEIGHTS_SHA256 = "b1cf23ba0806f0057d73a5ab93fde88d634fc278f71b27f3a2a915afd8f8bcda"
@@ -25,12 +26,27 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_link(path: Path) -> bool:
+    """A symlink, or any Windows reparse point such as a directory junction.
+
+    Junctions need no special privilege on Windows and Path.is_symlink() reports
+    them as False, so they are detected through the reparse-point attribute.
+    """
+    if path.is_symlink():
+        return True
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
 def validate_source(source: Path, expected_sha256: str = V5_WEIGHTS_SHA256) -> None:
-    if source.is_symlink() or not source.is_dir():
+    if is_link(source) or not source.is_dir():
         raise ValueError("Source must be a real directory, not a symlink")
     for root, directories, files in os.walk(source, followlinks=False):
         for name in directories + files:
-            if (Path(root) / name).is_symlink():
+            if is_link(Path(root) / name):
                 raise ValueError("Checkpoint contains symlinks; refusing installation")
     for filename in ("model.safetensors", "config.json"):
         if not (source / filename).is_file():
@@ -45,7 +61,7 @@ def install_checkpoint(source: Path, target: Path = DEFAULT_TARGET,
     target = Path(target).expanduser().absolute()
     if source == target or source in target.parents or target in source.parents:
         raise ValueError("Source and target directories must not overlap")
-    if target.exists() or target.is_symlink():
+    if target.exists() or is_link(target):
         raise FileExistsError(f"Refusing to overwrite existing checkpoint: {target}")
     validate_source(source, expected_sha256)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +69,7 @@ def install_checkpoint(source: Path, target: Path = DEFAULT_TARGET,
         staged = Path(stage) / "best_model"
         shutil.copytree(source, staged, symlinks=False)
         validate_source(staged, expected_sha256)
-        if target.exists() or target.is_symlink():
+        if target.exists() or is_link(target):
             raise FileExistsError(f"Checkpoint destination appeared during installation: {target}")
         staged.rename(target)
     return target

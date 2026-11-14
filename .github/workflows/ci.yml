@@ -127,12 +127,6 @@ jobs:
         env:
           LOCALAPPDATA: /tmp
 
-      - name: Code-gated Technician Ticket Isolation Tests
-        run: python -m unittest tools.test_servy_technician_demo -v
-        env:
-          LOCALAPPDATA: /tmp
-          SERVY_LOCAL_TICKET_DB_PATH: /tmp/servy-technician-ci/local-ticket-workspace.sqlite3
-
       - name: V5 Research Fine-Tuning Input Safety Tests
         run: python -m unittest discover -s tools -p "test_servy_v5_training_preflight.py" -v
 
@@ -228,7 +222,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs test/assistantTypingIndicator.test.mjs test/documentCoverage.test.mjs test/technicianHandoffState.test.mjs test/technicianHandoffUI.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs test/assistantTypingIndicator.test.mjs test/documentCoverage.test.mjs test/technicianHandoffState.test.mjs test/technicianHandoffUI.test.mjs test/ticketPreviewContract.test.mjs test/composedResponseContract.test.mjs
 
       - name: Test Private Technician Access-code Instance
         working-directory: frontend

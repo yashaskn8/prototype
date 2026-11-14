@@ -25,8 +25,12 @@ class RegistryTests(TestCase):
     def test_profiles_use_distinct_collections(self):
         cols = [p.collection for p in E.PROFILES.values()]
         self.assertEqual(len(cols), len(set(cols)))
-        self.assertEqual(E.get_profile("minilm").collection, "servy_dense_kb")
-        self.assertNotEqual(E.get_profile("bge-small").collection, "servy_dense_kb")
+        # MiniLM is retired: no profile may read or write the legacy MiniLM collections.
+        for retired in ("minilm", "company-minilm"):
+            with self.assertRaises(E.EmbeddingConfigError):
+                E.get_profile(retired)
+        self.assertFalse({"servy_dense_kb", "servy_company_dense_kb"} & set(cols))
+        self.assertTrue(all("MiniLM" not in p.model_id for p in E.PROFILES.values()))
 
     def test_unknown_profile_rejected(self):
         with self.assertRaises(E.EmbeddingConfigError):
@@ -38,7 +42,8 @@ class RegistryTests(TestCase):
     def test_experimental_off_by_default(self):
         from django.conf import settings
         self.assertFalse(settings.SERVY_USE_EXPERIMENTAL_RAG)
-        self.assertEqual(settings.SERVY_EMBEDDING_MODEL, "minilm")
+        self.assertEqual(settings.SERVY_SERVING_EMBEDDING_PROFILE, "bge-small")
+        self.assertFalse(hasattr(settings, "SERVY_EMBEDDING_MODEL"))
 
     def test_collection_stamped_by_other_model_rejected(self):
         fake = mock.MagicMock(metadata={"servy_model": "all-MiniLM-L6-v2"})
@@ -119,9 +124,9 @@ class ContentFirstTests(TestCase):
         self.assertNotIn("CATEGORY_TAG_WRONG", txt)
         self.assertIn("intake tube", txt)
 
-    def test_minilm_passage_unchanged_legacy_behaviour(self):
-        txt = E.passage_text(E.get_profile("minilm"), self.chunk)
-        self.assertIn("upload_final_v2", txt)
+    def test_retired_minilm_profile_cannot_build_passages(self):
+        with self.assertRaises(E.EmbeddingConfigError):
+            E.passage_text(E.get_profile("minilm"), self.chunk)
 
 
 class LabelValidationTests(TestCase):

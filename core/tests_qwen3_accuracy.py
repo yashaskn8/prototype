@@ -16,7 +16,7 @@ class Qwen3AccuracySafetyTests(SimpleTestCase):
         profile = embeddings.get_profile("qwen3")
         self.assertEqual(profile.dim, 1024)
         self.assertNotEqual(
-            profile.collection, embeddings.get_profile("minilm").collection
+            profile.collection, embeddings.get_profile("bge-small").collection
         )
         with self.assertRaisesRegex(embeddings.EmbeddingConfigError, "requires"):
             embeddings.load_model(profile)
@@ -55,11 +55,11 @@ class Qwen3AccuracySafetyTests(SimpleTestCase):
             flags[enabled] = False
             self.assertEqual(
                 _qwen3_profile_if_ready(SimpleNamespace(**flags), False),
-                "minilm",
+                "bge-small",
             )
             self.assertEqual(
                 _qwen3_profile_if_ready(SimpleNamespace(**flags), True),
-                "company-minilm",
+                "company-bge-small",
             )
         allowed = SimpleNamespace(
             SERVY_USE_EXPERIMENTAL_RAG=True,
@@ -69,12 +69,12 @@ class Qwen3AccuracySafetyTests(SimpleTestCase):
         self.assertEqual(_qwen3_profile_if_ready(allowed, False), "qwen3")
         self.assertEqual(_qwen3_profile_if_ready(allowed, True), "company-qwen3")
 
-    def test_legacy_encode_stays_unchanged(self):
-        profile = embeddings.get_profile("minilm")
+    def test_bge_query_encoding_uses_the_bge_query_prefix(self):
+        profile = embeddings.get_profile("bge-small")
         model = mock.Mock()
         embeddings.encode_queries(profile, model, ["question"])
         model.encode.assert_called_once()
-        self.assertEqual(model.encode.call_args.args[0], ["question"])
+        self.assertEqual(model.encode.call_args.args[0], [embeddings.BGE_QUERY_PREFIX + "question"])
 
     def test_qwen3_retrieval_rejects_stale_checkpoint_vector(self):
         from core.services.retriever import _matches_current_bge_vector

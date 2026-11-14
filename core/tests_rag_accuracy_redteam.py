@@ -13,7 +13,7 @@ Usage:
 
 import re
 import unicodedata
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.contrib.auth.models import User
@@ -674,7 +674,7 @@ class DenseOutageFallbackTests(_RAGFixtureMixin, TransactionTestCase):
 
     def test_retrieval_works_when_chroma_raises_exception(self):
         """Simulate Chroma being completely down; sparse retrieval must work."""
-        with patch("core.services.chroma_store.get_sentence_transformer", side_effect=Exception("Chroma crashed")):
+        with patch("core.ml.embeddings.get_collection", side_effect=Exception("Chroma crashed")):
             results = self._retrieve("E12 sample aspiration failure")
         self.assertTrue(
             len(results) > 0,
@@ -693,7 +693,7 @@ class DenseOutageFallbackTests(_RAGFixtureMixin, TransactionTestCase):
 
         # Sparse retrieval should still find the chunks
         # Patch out the dense retriever so only sparse is used
-        with patch("core.services.chroma_store.get_sentence_transformer", return_value=None):
+        with patch("core.ml.embeddings.load_model", return_value=None):
             results = self._retrieve("E12 probe blockage")
 
         self.assertTrue(
@@ -703,7 +703,9 @@ class DenseOutageFallbackTests(_RAGFixtureMixin, TransactionTestCase):
 
     def test_chroma_timeout_does_not_crash_request(self):
         """Chroma query timeout should gracefully fall back, not 500."""
-        with patch("core.services.chroma_store.get_dense_collection") as mock_coll:
+        with patch("core.ml.embeddings.load_model", return_value=MagicMock()), \
+                patch("core.ml.embeddings.encode_queries", return_value=MagicMock(tolist=lambda: [[0.1] * 384])), \
+                patch("core.ml.embeddings.get_collection") as mock_coll:
             mock_coll.return_value.query.side_effect = TimeoutError("Chroma timeout")
             results = self._retrieve("E12 aspiration")
         # Should either return sparse results or empty, not crash

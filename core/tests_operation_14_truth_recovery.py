@@ -47,17 +47,13 @@ from core.services.llm import (
 from core.services.customer_diagnostic import build_structured_diagnostic_contract
 
 
-def _current_minilm_metadata(chunk):
-    """Mirror the identity fields written by the legacy MiniLM indexer."""
-    return {
-        "document_id": chunk.document_id,
-        "chunk_id": chunk.id,
-        "chunk_index": chunk.chunk_index,
-        "tenant_id": chunk.tenant_id,
-        "document_version": str(chunk.document.index_version or "1.0"),
-        "content_sha256": hashlib.sha256(chunk.text.encode("utf-8")).hexdigest(),
-        "embedding_model": "all-MiniLM-L6-v2",
-    }
+def _current_bge_metadata(chunk, profile_key="bge-small"):
+    """Mirror the identity fields written by the BGE indexer for this chunk."""
+    from core.ml.embeddings import get_profile, passage_text
+    from core.ml.indexer import _expected_vector_metadata
+    profile = get_profile(profile_key)
+    content_hash = hashlib.sha256(passage_text(profile, chunk).encode("utf-8")).hexdigest()
+    return _expected_vector_metadata(chunk, profile, content_hash, "")
 
 
 @override_settings(
@@ -88,7 +84,7 @@ class Operation14TruthRecoveryTests(TestCase):
     # Phase 1: Chroma Document-Count / Chunk-Count Recall Bug
     # ---------------------------------------------------------------------------
 
-    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="minilm")
+    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="bge-small")
     def test_phase1_chroma_candidate_recall_multi_chunk_not_truncated_by_doc_count(self):
         """
         Phase 1 Verification:
@@ -120,12 +116,12 @@ class Operation14TruthRecoveryTests(TestCase):
         allowed_doc_ids = {doc.id}
         allowed_chunks_by_id = {c.id: c for c in chunks}
 
-        # This regression tests legacy MiniLM vector identity, not the
-        # application-wide BGE-small default. The decorator pins that profile.
+        # This regression tests BGE vector identity across many chunks of one
+        # document. The decorator pins the approved BGE profile.
         # Mock Chroma collection returning multiple chunks
         mock_coll = MagicMock()
         # 80 items returned from Chroma
-        mock_metas = [[_current_minilm_metadata(c) for c in chunks]]
+        mock_metas = [[_current_bge_metadata(c) for c in chunks]]
         # Chunk 1 (2nd passage) has similarity dist=0.10, Chunk 0 has dist=0.05
         mock_dists = [0.05 + (0.01 * i) for i in range(80)]
 
@@ -162,7 +158,7 @@ class Operation14TruthRecoveryTests(TestCase):
             self.assertIn(chunks[1].id, chunk_indices)
             self.assertGreaterEqual(len(results), 2, "Candidate pool must contain multiple chunks from the single document")
 
-    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="minilm")
+    @override_settings(SERVY_SERVING_EMBEDDING_PROFILE="bge-small")
     def test_phase1_stale_chroma_metadata_filtered_out(self):
         """Stale vectors in Chroma that do not exist in authorized candidate pool must be skipped."""
         doc = KnowledgeDocument.objects.create(
@@ -178,7 +174,7 @@ class Operation14TruthRecoveryTests(TestCase):
         # Chroma returns active chunk 0 AND stale chunk 99 (deleted from DB)
         mock_coll.query.return_value = {
             "metadatas": [[
-                _current_minilm_metadata(c1),
+                _current_bge_metadata(c1),
                 {"document_id": doc.id, "chunk_id": 99999, "chunk_index": 99},
             ]],
             "distances": [[0.05, 0.02]],
@@ -387,7 +383,7 @@ class Operation14TruthRecoveryTests(TestCase):
         Phase 7 Verification:
         company-bge-ft is registered with promotion_eligible=False.
         If configured as the serving profile, _dense_score_candidates must reject it
-        and safely fall back to the authorized baseline profile (company-minilm / minilm).
+        and use the approved BGE profile (company-bge-small / bge-small) instead.
         """
         doc = KnowledgeDocument.objects.create(
             tenant=self.tenant, title="Test Doc",
@@ -408,7 +404,7 @@ class Operation14TruthRecoveryTests(TestCase):
 
                 mock_coll = MagicMock()
                 mock_coll.query.return_value = {
-                    "metadatas": [[_current_minilm_metadata(c)]],
+                    "metadatas": [[_current_bge_metadata(c)]],
                     "distances": [[0.1]],
                 }
                 mock_get_coll.return_value = mock_coll
@@ -427,10 +423,10 @@ class Operation14TruthRecoveryTests(TestCase):
                     staff_mode=False,
                 )
 
-                # The result's model_version must NOT be company-bge-ft (fell back to minilm / company-minilm)
+                # The result's model_version must NOT be company-bge-ft (it uses approved BGE)
                 self.assertTrue(len(results) > 0)
                 self.assertNotEqual(results[0].model_version, "company-bge-ft")
-                self.assertIn("minilm", results[0].model_version)
+                self.assertIn(results[0].model_version, ("bge-small", "company-bge-small"))
 
     # ---------------------------------------------------------------------------
     # Phase 10: Track A Unauthorized Scope Prevention
@@ -464,7 +460,7 @@ class Operation14TruthRecoveryTests(TestCase):
             mock_coll_fn.return_value = mock_coll
 
             res = evaluate_track_a_dense(
-                model_family="minilm",
+                model_family="bge-small",
                 cases=cases,
                 chunk_meta={},
                 chunk_lookup={},

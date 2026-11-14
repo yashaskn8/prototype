@@ -5,12 +5,14 @@ import test from 'node:test';
 const readSource = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
 test('technician experience is a distinct access-code instance', async () => {
-  const [page, app, vite, launcher, backend, customerPage, customerLauncher] = await Promise.all([
+  const [page, client, app, vite, launcher, gateway, settings, customerPage, customerLauncher] = await Promise.all([
     readSource('../src/pages/TechnicianSecretPage.jsx'),
+    readSource('../src/pages/technicianGatewayClient.js'),
     readSource('../src/App.jsx'),
     readSource('../vite.config.js'),
     readSource('../../tools/Start-ServyTechnicianDemo.ps1'),
-    readSource('../../tools/servy_technician_demo.py'),
+    readSource('../../core/demo_gateway.py'),
+    readSource('../../servy_rag/settings.py'),
     readSource('../src/pages/RealDemoPage.jsx'),
     readSource('../../tools/Start-ServyRealDemo.ps1'),
   ]);
@@ -23,8 +25,9 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.ok(page.includes("Authorization: `Technician ${token}`"));
   assert.equal(page.includes("\\`"), false);
   assert.equal(page.includes("\\${"), false);
-  assert.match(page, /tech-api\/tickets/);
-  assert.match(page, /technicianNotes/);
+  assert.match(client, /INBOX_PATH = '\/tech-api\/technician\/inbox\/'/);
+  assert.match(page, /technicianCall\(INBOX_PATH/);
+  assert.match(page, /ticketPath\(selected\.id, 'update\/'\)/);
   assert.match(page, /downloadAttachment/);
   assert.match(page, /window\.setInterval\(refreshQueue, 8000\)/);
   assert.match(page, /queue refreshes automatically/i);
@@ -34,34 +37,43 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(customerPage, /Ticket created/);
   assert.match(launcher, /technician_access\.txt/);
   assert.match(launcher, /VITE_SERVY_TECH_DEMO/);
-  assert.match(launcher, /No customer RAG ticket workspace exists yet/);
-  assert.match(launcher, /GetFolderPath\(\[System\.Environment\+SpecialFolder\]::LocalApplicationData\)/);
-  assert.match(customerLauncher, /GetFolderPath\(\[System\.Environment\+SpecialFolder\]::LocalApplicationData\)/);
-  assert.match(launcher, /SERVY_LOCAL_TICKET_DB_PATH/);
-  assert.match(customerLauncher, /SERVY_LOCAL_TICKET_DB_PATH/);
-  assert.match(customerLauncher, /Get-Content -LiteralPath \$backendOutLog -Tail 25 -Wait/);
+  // Both demos run the Django gateway against the isolated servy_dev database only,
+  // and refuse to start unless the isolation check passes.
+  for (const [source, gatewayName, port] of [[launcher, 'technician', 8003], [customerLauncher, 'customer', 8002]]) {
+    assert.match(source, /\.env\.mysql\.servy_dev/);
+    assert.ok(source.includes(`'SERVY_DEMO_GATEWAY', '${gatewayName}'`) || source.includes(`SERVY_DEMO_GATEWAY = '${gatewayName}'`));
+    assert.match(source, /'manage\.py' 'check_dev_database'/);
+    assert.ok(source.includes(`'runserver','127.0.0.1:${port}'`) || source.includes(`'runserver', '127.0.0.1:${port}'`));
+    assert.doesNotMatch(source, /servy_(real|technician)_demo\.py/);
+  }
+  assert.match(settings, /MYSQL_DATABASE[^\n]*!= "servy_dev"|"servy_dev"[^\n]*MYSQL_DATABASE/);
+  assert.match(customerLauncher, /Get-Content -LiteralPath \$backendErrLog -Tail 25 -Wait/);
   assert.match(customerLauncher, /Live customer RAG events/);
-  assert.match(launcher, /Get-Content -LiteralPath \$backendOut -Tail 20 -Wait/);
+  assert.match(launcher, /Get-Content -LiteralPath \$backendErr -Tail 20 -Wait/);
   assert.match(launcher, /Live technician events/);
-  assert.match(backend, /TICKET_ARRIVED new_tickets=/);
-  assert.match(backend, /_quiet_queue_poll = True/);
-  assert.match(backend, /if not path\.is_file\(\):\s+return \[\]/);
-  assert.match(backend, /secrets\.compare_digest/);
-  assert.match(backend, /127\.0\.0\.1/);
-  assert.match(backend, /created_by = \?/);
-  assert.match(backend, /servy-real-demo/);
-  assert.match(backend, /never connects to MySQL/i);
+  assert.match(gateway, /secrets\.compare_digest/);
+  assert.match(gateway, /"127\.0\.0\.1", "::1"/);
+  assert.match(gateway, /verify_isolated_database\(/);
+  assert.match(gateway, /never logged/);
 });
 
 test('technician interface supports status and notes but not ownership edits', async () => {
-  const [page, backend] = await Promise.all([
+  const [page, inbox] = await Promise.all([
     readSource('../src/pages/TechnicianSecretPage.jsx'),
-    readSource('../../tools/servy_technician_demo.py'),
+    readSource('../../core/technician_inbox.py'),
   ]);
   assert.match(page, /Save technician update/);
-  assert.match(page, /Customer report and RAG conversation/);
+  assert.match(page, /Service call description/);
+  assert.match(page, /Customer conversation/);
   assert.match(page, /Issue documentation/);
-  assert.match(backend, /"status", "technicianNotes"/);
-  assert.match(backend, /Only ticket status and technician notes can be changed/);
-  assert.doesNotMatch(backend, /UPDATE ServiceCall/i);
+  assert.match(page, /JSON\.stringify\(\{ status, note: notes\.trim\(\) \}\)/);
+  const update = inbox.slice(inbox.indexOf('class TechnicianTicketUpdateView'));
+  assert.ok(update.length > 0, 'technician update view is missing');
+  // Only status and an append-only note are accepted; ownership fields are not.
+  assert.match(update, /request\.data\.get\("status"\)/);
+  assert.match(update, /request\.data\.get\("note"\)/);
+  assert.doesNotMatch(update, /request\.data\.get\("(technician|customer|asset|site|tenant|contact)/);
+  assert.match(update, /assigned to another technician/);
+  assert.match(update, /CallUpdate\.objects\.create\(/);
+  assert.doesNotMatch(update, /technician_notes\s*=/);
 });

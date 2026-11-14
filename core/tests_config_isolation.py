@@ -92,7 +92,8 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
         """Verify in an isolated subprocess that SERVY_DB_ENGINE=sqlite3 selects SQLite."""
         import subprocess
         script = (
-            "import os, django\n"
+            "import os, sys, django\n"
+            "sys.argv = ['manage.py', 'test']\n"
             "os.environ['SERVY_DB_ENGINE'] = 'sqlite3'\n"
             "os.environ['DJANGO_DEBUG'] = '1'\n"
             "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')\n"
@@ -111,25 +112,35 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
         self.assertIn("ENGINE=django.db.backends.sqlite3", res.stdout)
         self.assertIn("TEST_DB=:memory:", res.stdout)
 
+    def test_sqlite_is_refused_outside_test_runs(self):
+        """SQLite is never a runtime database: runserver/migrate with sqlite3 must fail."""
+        import subprocess
+        script = (
+            "import os, sys, django\n"
+            "sys.argv = ['manage.py', 'runserver']\n"
+            "os.environ['SERVY_DB_ENGINE'] = 'sqlite3'\n"
+            "os.environ['DJANGO_DEBUG'] = '1'\n"
+            "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')\n"
+            "django.setup()\n"
+        )
+        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                             cwd=str(Path(__file__).resolve().parent.parent), timeout=120)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("SQLite is allowed only for disposable test runs", res.stderr)
+
 
 class SettingsProductionGuardTests(unittest.TestCase):
     """Verify production-mode safety guards are intact."""
 
     def test_sqlite_rejected_in_production_mode(self):
-        """SQLite must be rejected when DJANGO_DEBUG=0 and CI is not set."""
-        # We can't easily reload settings in-process without side effects,
-        # so we test the guard logic by examining the source code.
+        """SQLite is rejected for every non-test process (production included) and never persists."""
         settings_path = Path(__file__).resolve().parent.parent / "servy_rag" / "settings.py"
         src = settings_path.read_text(encoding="utf-8")
-        # The guard must exist
-        self.assertIn(
-            "SQLite backend is strictly prohibited when DJANGO_DEBUG=0",
-            src,
-            "Production SQLite guard is missing from settings.py"
-        )
-        # Must check both DEBUG and CI
-        self.assertIn('not DEBUG', src)
-        self.assertIn('os.getenv("CI")', src)
+        self.assertIn("SQLite is allowed only for disposable test runs", src)
+        self.assertIn('_db_sys.argv[1] != "test"', src)
+        sqlite_block = src[src.index('elif SERVY_DB_ENGINE == "sqlite3":'):src.index("Unsupported database engine")]
+        self.assertIn('"NAME": ":memory:"', sqlite_block)
+        self.assertNotIn("db.sqlite3\"", sqlite_block.replace("db.sqlite3 file", ""))
 
     def test_invalid_engine_raises_runtime_error(self):
         """Unsupported SERVY_DB_ENGINE values must raise RuntimeError."""

@@ -2556,6 +2556,16 @@ class CustomerConversationsListView(APIView):
         asset_id = request.data.get("asset_id")
         title = _clean_input(request.data.get("title") or "")
         complaint = _clean_input(request.data.get("complaint") or request.data.get("initial_message") or "")
+        # Optional first message: answered in this same request by the same
+        # turn pipeline as the messages endpoint. Without it, behaviour is unchanged.
+        first_message = _clean_input(request.data.get("message") or "", max_len=4000)
+        if first_message:
+            if not asset_id:
+                return Response({"detail": "asset_id is required to ask a question."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            rag_throttle = CustomerRAGThrottle()
+            if not rag_throttle.allow_request(request, self):
+                self.throttled(request, rag_throttle.wait())
 
         site = None
         if site_id:
@@ -2588,7 +2598,7 @@ class CustomerConversationsListView(APIView):
                 customer=customer,
                 site=site,
                 asset=asset,
-                complaint=complaint or "Customer conversation started",
+                complaint=complaint or first_message or "Customer conversation started",
                 status="ACTIVE",
                 current_node_id="intake",
                 version=1,
@@ -2614,7 +2624,7 @@ class CustomerConversationsListView(APIView):
             current_diagnostic_session=session,
         )
 
-        if complaint:
+        if complaint and not first_message:
             CustomerMessage.objects.create(
                 tenant=tenant,
                 conversation=conv,
@@ -2622,7 +2632,7 @@ class CustomerConversationsListView(APIView):
                 message_text=complaint,
             )
 
-        return Response({
+        payload = {
             "id": conv.id,
             "conversation_uuid": str(conv.conversation_uuid),
             "title": conv.title,
@@ -2636,7 +2646,33 @@ class CustomerConversationsListView(APIView):
                 "model_number": asset.model_number,
             } if asset else None,
             "created_at": conv.created_at,
-        }, status=status.HTTP_201_CREATED)
+        }
+        if first_message:
+            prepared = {
+                "tenant_id": tenant.id,
+                "customer_id": customer.id,
+                "user_id": request.user.id,
+                "role": role,
+                "conversation_uuid": str(conv.conversation_uuid),
+                "message_text": first_message,
+                "clarification_response": "",
+                "observation": "",
+                "session_id": str(session.session_id) if session else None,
+                "idempotency_key": request.headers.get("X-Idempotency-Key") or request.data.get("idempotency_key"),
+            }
+            from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
+            try:
+                payload["first_turn"] = CustomerConversationMessagesView._execute_post(prepared)
+            except (PermissionDenied, DjangoPermissionDenied, ValidationError) as exc:
+                payload["first_turn"] = None
+                payload["first_turn_error"] = exc.message if hasattr(exc, "message") else str(exc)
+            except Exception:
+                logger.exception("First conversation turn failed")
+                payload["first_turn"] = None
+                payload["first_turn_error"] = (
+                    "The conversation was created but the first answer could not be generated. "
+                    "Send the message again to continue this conversation.")
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class CustomerConversationDetailView(APIView):
@@ -2923,7 +2959,26 @@ class CustomerConversationTicketView(APIView):
             return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if not conv.linked_service_call:
-            return Response({"ticket": None, "detail": "No ticket has been created for this conversation yet."})
+            # Read-only preview of the description POST would use. Nothing is
+            # written, locked or created here.
+            from core.services.conversation_ticket import (
+                build_conversation_ticket_description, missing_contact_fields)
+            body = {"ticket": None, "detail": "No ticket has been created for this conversation yet."}
+            try:
+                built = build_conversation_ticket_description(conv)
+                missing = missing_contact_fields(conv.customer)
+                body["preview"] = {
+                    "complaint": built["complaint"],
+                    "description": built["description"],
+                    "sections": built["sections"],
+                    "message_count": built["message_count"],
+                    "missing_fields": missing,
+                    "can_create": not missing and conv.asset_id is not None,
+                }
+            except ValueError as exc:
+                body["preview"] = None
+                body["preview_detail"] = str(exc)
+            return Response(body)
 
         sc = conv.linked_service_call
         return Response({"ticket": _customer_ticket_data(sc)})
@@ -2963,8 +3018,21 @@ class CustomerConversationTicketView(APIView):
             sc = conv.linked_service_call
             return Response({
                 "ticket": _customer_ticket_data(sc),
+                "created": False,
                 "detail": f"Service Call #{sc.servy_id} already exists for this conversation."
             })
+
+        # A technician must be able to reach the customer. Contact details come
+        # only from the customer record; nothing is substituted or invented.
+        from core.services.conversation_ticket import missing_contact_fields
+        missing = missing_contact_fields(conv.customer)
+        if conv.asset_id is None:
+            missing = ["asset"] + missing
+        if missing:
+            return Response({
+                "detail": "Contact details required to create a service call are missing from the customer record.",
+                "missing_fields": missing,
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         # Take the same conversation lock as interaction escalation so both
         # endpoints serialize creation for one incident, even under concurrency.
@@ -2974,9 +3042,12 @@ class CustomerConversationTicketView(APIView):
             )
             if not _can_read_customer_conversation(ctx, conv):
                 return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+            created = False
             if conv.linked_service_call_id:
+                # A concurrent confirmation created it first: same call, not a new one.
                 call = conv.linked_service_call
             else:
+                created = True
                 customer_report = conv.messages.filter(sender_role="customer").values_list(
                     "message_text", flat=True
                 )
@@ -3017,7 +3088,9 @@ class CustomerConversationTicketView(APIView):
 
         return Response({
             "ticket": _customer_ticket_data(call),
-            "detail": f"Service Call #{call.servy_id} created successfully."
+            "created": created,
+            "detail": (f"Service Call #{call.servy_id} created successfully." if created
+                       else f"Service Call #{call.servy_id} already exists for this conversation."),
         })
 
 

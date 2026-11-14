@@ -17,7 +17,6 @@ from typing import List
 from django.conf import settings
 
 logger = logging.getLogger("servy.rag.reranker")
-RERANKER_MODEL_ID = "cross-encoder/ms-marco-MiniLM-L6-v2"
 _cross_encoder = None
 _loaded_config = None
 _lock = threading.Lock()
@@ -52,7 +51,7 @@ def get_reranker():
     device = str(getattr(settings, "SERVY_RERANKER_DEVICE", "cpu"))
     expected_sha = str(getattr(settings, "SERVY_RERANKER_EXPECTED_SHA256", "") or "").lower().strip()
     length = 256
-    key = (str(path) if path else RERANKER_MODEL_ID, device, length, expected_sha)
+    key = (str(path) if path else "", device, length, expected_sha)
     if _loaded_config == key and _cross_encoder is not None:
         return _cross_encoder
     with _lock:
@@ -77,20 +76,14 @@ def get_reranker():
                     local_files_only=True,
                 )
             else:
-                # An expected local digest is a strict local-only intent.
-                # Do not silently use the legacy network model if the V5
-                # checkpoint path was omitted or misconfigured.
-                if expected_sha:
-                    raise ValueError(
-                        "SERVY_RERANKER_MODEL_PATH_REQUIRED_FOR_PINNED_CHECKPOINT"
-                    )
-                # Legacy opt-in mode remains available only with no pin.
-                model = CrossEncoder(RERANKER_MODEL_ID, device=device)
+                # V5 is the only reranker. Without its local checkpoint path
+                # there is no network or legacy-model fallback.
+                raise ValueError("SERVY_RERANKER_MODEL_PATH_REQUIRED_FOR_PINNED_CHECKPOINT")
             _cross_encoder = model
             _loaded_config = key
             logger.info(
                 "CrossEncoder loaded: %s (device=%s)",
-                str(path) if path else RERANKER_MODEL_ID, device,
+                str(path), device,
             )
             return model
         except Exception as exc:

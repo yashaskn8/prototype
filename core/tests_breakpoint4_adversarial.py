@@ -421,7 +421,7 @@ class Breakpoint4AdversarialRedTeamTests(TestCase):
             index_status="NOT_INDEXED",
         )
         readiness = get_document_retrieval_readiness(partial_doc)
-        self.assertFalse(readiness["minilm_vectors_ready"])
+        self.assertNotIn("minilm_vectors_ready", readiness)  # MiniLM retired
         self.assertFalse(readiness["bge_vectors_ready"])
         self.assertEqual(readiness["index_status"], "NOT_INDEXED")
 
@@ -832,7 +832,7 @@ class Breakpoint4AdversarialRedTeamTests(TestCase):
             embedding=[0.1] * 384,
         )
 
-        with patch("core.services.chroma_store.get_sentence_transformer", side_effect=RuntimeError("Chroma down")):
+        with patch("core.ml.indexer.index_single_document_bge", side_effect=RuntimeError("Chroma down")):
             success = sync_document_to_chroma(fail_doc.id)
             self.assertFalse(success)
 
@@ -842,7 +842,7 @@ class Breakpoint4AdversarialRedTeamTests(TestCase):
 
         readiness = get_document_retrieval_readiness(fail_doc)
         self.assertEqual(readiness["index_status"], "FAILED")
-        self.assertFalse(readiness["minilm_vectors_ready"])
+        self.assertNotIn("minilm_vectors_ready", readiness)
         self.assertFalse(readiness["bge_vectors_ready"])
         self.assertTrue(readiness["sparse_index_ready"])
         self.assertFalse(readiness["customer_serving_eligible"])

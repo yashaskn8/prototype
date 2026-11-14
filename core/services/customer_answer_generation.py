@@ -206,25 +206,87 @@ def _eligible_claims(presentation: dict) -> list[dict]:
     return selected
 
 
+_ADDRESSED_DIRECTIVE = re.compile(
+    r"\b(?:you|customer|operator)\s+(?:should|must|need to|can)\b|"
+    r"\b(?:try|attempt to|make sure you|be sure to)\b", re.I,
+)
+_IMPERATIVE = re.compile(
+    r"(?:^|[.!?:;]\s+)(?:please\s+)?(inspect|check|open|remove|replace|reset|restart|"
+    r"adjust|measure|disconnect|connect|press|turn|switch|clean|test|repair)\b", re.I,
+)
+# Order carries meaning only when the statement describes a sequence.
+_SEQUENCE = re.compile(r"\b(?:before|after|then|first|second|third|next|followed|until|once|prior)\b", re.I)
+POSSIBLE_CAUSE_PREFIX = "Possible cause: "
+
+
+_NUMBER_WORDS = {w: str(i) for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve".split())}
+
+
+def _digits(text: str, source_numbers=frozenset()) -> str:
+    """Spell a small number as digits only when the source states that number.
+
+    "Every six months" matches a source "Every 6 months"; "one possible cause"
+    stays a word, so it can never be mistaken for a number.
+    """
+    return re.sub(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b",
+                  lambda m: (_NUMBER_WORDS[m.group(1).casefold()]
+                             if _NUMBER_WORDS[m.group(1).casefold()] in source_numbers else m.group(0)),
+                  text, flags=re.I)
+
+
+def _stem(token: str) -> str:
+    """Conservative inflection folding: filters/filter, cleaned/clean, cleaning/clean."""
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(token) > len(suffix) + 2 and token.endswith(suffix):
+            return token[: -len(suffix)]
+    return token
+
+
+def _compose_display(text: str, kind: str) -> str:
+    """Server-side framing: a possible cause is always shown as possible.
+
+    Qwen often rewrites a listed cause as a plain noun phrase. Instead of
+    rejecting that wording, the server adds a fixed hedge, so the displayed
+    claim can never read as a confirmed diagnosis.
+    """
+    text = (text or "").strip()
+    if kind == "possible_cause" and text and not _UNCERTAINTY.search(text):
+        text = POSSIBLE_CAUSE_PREFIX + text[0].lower() + text[1:]
+    return text
+
+
 def _validate_paraphrase(source: str, text: str, kind: str) -> bool:
     text = (text or "").strip()
     if (not 25 <= len(text) <= MAX_DISPLAY_CHARS
             or "\n" in text or "\r" in text
             or _CERTAINTY.search(text)
-            or _CUSTOMER_DIRECTIVE.search(text)):
+            or _ADDRESSED_DIRECTIVE.search(text)):
         return False
-    source_sequence = _TOKEN.findall(source.casefold())
-    display_sequence = _TOKEN.findall(text.casefold())
+    # An imperative is allowed only when it repeats the source's own imperative
+    # (e.g. "Quarterly: clean filters" -> "Clean filters quarterly"); the model may
+    # never turn a statement into an instruction or add a new instruction.
+    source_imperatives = {verb.casefold() for verb in _IMPERATIVE.findall(source)}
+    if any(verb.casefold() not in source_imperatives for verb in _IMPERATIVE.findall(text)):
+        return False
+    source_numbers = frozenset(re.findall(r"\d+", source))
+    text = _digits(text, source_numbers)
+    source_sequence = [_stem(t) for t in _TOKEN.findall(source.casefold())]
+    display_sequence = [_stem(t) for t in _TOKEN.findall(text.casefold())]
     source_tokens = set(source_sequence)
     display_tokens = set(display_sequence)
-    # Keep every source token in its original order; allow only neutral framing.
-    cursor = 0
-    for token in source_sequence:
-        try:
-            cursor = display_sequence.index(token, cursor) + 1
-        except ValueError:
-            return False
-    if display_tokens - source_tokens - _SAFE_GLUE:
+    if _SEQUENCE.search(source):
+        # Keep every source token in its original order for sequences.
+        cursor = 0
+        for token in source_sequence:
+            try:
+                cursor = display_sequence.index(token, cursor) + 1
+            except ValueError:
+                return False
+    elif source_tokens - display_tokens:
+        # Every source term must still be present (order may change).
+        return False
+    if display_tokens - source_tokens - {_stem(t) for t in _SAFE_GLUE}:
         return False
     if _NUMBER_OR_CODE.findall(source.casefold()) != _NUMBER_OR_CODE.findall(text.casefold()):
         return False
@@ -243,7 +305,7 @@ def _validate_paraphrase(source: str, text: str, kind: str) -> bool:
     # already passed the evidence builder as possible causes/information; an
     # action token already present in that exact source sentence is not a new
     # instruction invented by Qwen.
-    if any(action.casefold() not in source_tokens for action in _ACTION.findall(text)):
+    if any(_stem(action.casefold()) not in source_tokens for action in _ACTION.findall(text)):
         return False
     return True
 
@@ -265,6 +327,8 @@ def _validate_response(raw, candidates) -> dict:
         seen.add(ident)
         candidate = expected[ident]
         display = row.get("display_text")
+        if isinstance(display, str):
+            display = _compose_display(display, candidate["kind"])
         # Validate each claim independently. One invalid paraphrase must not
         # discard other claims that independently preserve their exact source.
         if (row.get("source_quote") != candidate["source_text"]

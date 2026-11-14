@@ -387,8 +387,11 @@ class CustomerRagEndToEndTests(TestCase):
         # Primary complaint text must equal the authentic customer complaint
         self.assertEqual(call.complaint_text, original_complaint)
         # AI guidance and citations must be recorded in technician_notes
-        self.assertIn("Customer AI Self-Service Escalation", call.technician_notes)
+        # (the reviewed conversation description: findings section with the answer and its source)
+        self.assertIn("Approved-manual findings and citations", call.technician_notes)
+        self.assertIn("Assistant answer 1:", call.technician_notes)
         self.assertIn("DOC_XYZ_9921_RANDOM.PDF", call.technician_notes)
+        self.assertNotIn(original_complaint, call.technician_notes.split("1. Customer-reported problem")[0])
 
     def test_escalation_idempotency_prevents_duplicate_tickets(self):
         """Concurrent or repeated escalation calls on the same interaction return the exact same ServiceCall."""

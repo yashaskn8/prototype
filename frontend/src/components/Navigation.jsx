@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   Building2,
   Ticket,
-  ClipboardList,
   ExternalLink,
 } from 'lucide-react';
 
@@ -33,7 +32,6 @@ export function Navigation({ activeTab, setActiveTab }) {
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, show: true },
     { id: 'customer-support', label: 'AI Self-Service', icon: Bot, show: true, badge: 'Pre-Ticket' },
     { id: 'technician-inbox', label: 'Technician Inbox', icon: Ticket, show: isTechnician },
-    { id: 'rag-ticket-workspace', label: 'Authorized RAG Tickets', icon: ClipboardList, show: isTechnician || isSuperuser },
     { id: 'engineer-copilot', label: 'Engineer Copilot', icon: Wrench, show: isTechnician, badge: 'Staff' },
     { id: 'calls', label: 'Service Calls', icon: PhoneCall, show: true },
     { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen, show: isTechnician },

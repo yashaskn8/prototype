@@ -48,6 +48,32 @@ from core.services.customer_diagnostic import (
 logger = logging.getLogger(__name__)
 
 
+def _compose_conversational_reply(contract, turn_text, conv_context, cause_reference, asset, tenant):
+    """Add a natural, cited reply built only from the already-validated claims.
+
+    The fixed report sections stay in the contract; the composed reply becomes
+    the stored message text. Any failure keeps the existing answer unchanged.
+    """
+    from core.services.customer_response_composer import clarification_for_ambiguous, compose_response
+    try:
+        presentation = contract.get("presentation") or {}
+        response = compose_response(contract, turn_text, conv_context, cause_reference)
+        if response:
+            presentation["response"] = response
+            contract["answer"] = response["text"]
+            return
+        if presentation.get("response_type") == "INSUFFICIENT_EVIDENCE":
+            clarification = clarification_for_ambiguous(turn_text, asset, tenant)
+            if clarification:
+                contract["response_type"] = presentation["response_type"] = "CLARIFICATION"
+                contract["clarification_question"] = clarification["text"]
+                presentation["follow_up_question"] = clarification["text"]
+                presentation["message"] = "I need a little more detail to find the right section of the manual."
+                contract["answer"] = f"{presentation['message']} {clarification['text']}"
+    except Exception:
+        logger.exception("Conversational composition failed; keeping the structured answer")
+
+
 def process_customer_diagnostic_turn(
     *,
     tenant: Tenant,
@@ -551,6 +577,18 @@ def process_customer_diagnostic_turn(
         from core.services.rag import ask_rag
 
         retrieval_query = contextualize_customer_query(turn_text, conv_context, asset=asset)
+        # "Explain the second cause." refers to the previous answer's listed causes:
+        # search for that one cause in its own manual section.
+        from core.services.conversation_context import focus_presentation_on_cause, resolve_cause_reference
+        cause_reference = resolve_cause_reference(turn_text, conv_context)
+        # A correction or explicit topic change ("Sorry, I meant ice, not water")
+        # is answered for the new subject; the stored message keeps the exact words.
+        from core.services.conversation_context import topic_shift_query
+        answer_question = (topic_shift_query(turn_text) if conv_context.is_followup and not cause_reference
+                           else None) or turn_text
+        if cause_reference:
+            selected = cause_reference["selected"]
+            retrieval_query = f"{selected['heading']}: {selected['source_text']}".strip(": ")
         if not retrieval_query:
             combined_query = f"{clean_question} (User clarification: {clean_clarification})" if clean_clarification else clean_question
             retrieval_query = combined_query or turn_text
@@ -562,7 +600,7 @@ def process_customer_diagnostic_turn(
             rag_res = ask_rag(
                 tenant=tenant,
                 question=retrieval_query,
-                original_question=turn_text,
+                original_question=answer_question,
                 conversation_context=conv_context,
                 asset=asset,
                 customer=customer,
@@ -614,8 +652,11 @@ def process_customer_diagnostic_turn(
                     raw_answer=rag_res.get("answer", ""),
                     retrieved_references=rag_res.get("references", []),
                     conversation_context=conv_context,
-                    original_question=turn_text,
+                    original_question=answer_question,
                 )
+            if cause_reference:
+                focus_presentation_on_cause(contract, cause_reference)
+            _compose_conversational_reply(contract, answer_question, conv_context, cause_reference, asset, tenant)
             presentation = contract.get("presentation") or {}
             with execution_stage(
                 "customer_citation_assembly",

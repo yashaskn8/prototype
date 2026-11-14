@@ -38,7 +38,7 @@ def _create_doc(tenant, title, **kwargs):
         "content_text": title,
         "is_confidential": False,
         "is_rag_enabled": True,
-        "index_status": "completed",
+        "index_status": "INDEXED",  # a real status; "completed" made every document invisible
     }
     defaults.update(kwargs)
     return KnowledgeDocument.objects.create(**defaults)

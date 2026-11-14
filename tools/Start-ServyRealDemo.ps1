@@ -1,8 +1,11 @@
-# Reopen the existing localhost-only, read-only real-data demo.
-# No migrations, seeding, account creation, or company-data changes.
+# Start the localhost-only Customer RAG demo: the official Django APIs served by
+# the access-code gateway on 127.0.0.1:8002, backed only by the isolated servy_dev
+# MySQL database (servy_dev_app). No migrations, seeding or company-data changes.
 param([switch]$Watch, [switch]$NoWatch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
 $environmentNames = @(
-    'LOCALAPPDATA', 'SERVY_LOCAL_TICKET_DB_PATH', 'SERVY_REAL_DEMO_MODE', 'DJANGO_DEBUG',
+    'SERVY_DB_ENGINE', 'SERVY_MYSQL_ENV_FILE', 'SERVY_MEDIA_ROOT', 'SERVY_CHROMA_PERSIST_DIR',
+    'SERVY_SERVING_EMBEDDING_PROFILE', 'SERVY_DEMO_GATEWAY', 'SERVY_DEMO_ACCESS_FILE',
+    'SERVY_CUSTOMER_DATA_MODE', 'DJANGO_DEBUG',
     'SERVY_LLM_PROVIDER', 'SERVY_LLM_REQUIRE_OLLAMA', 'SERVY_OLLAMA_MODEL',
     'SERVY_CUSTOMER_ANSWER_GENERATION', 'SERVY_CUSTOMER_GENERATION_URL',
     'SERVY_CUSTOMER_GENERATION_MODEL', 'SERVY_CUSTOMER_GENERATION_TIMEOUT',
@@ -26,17 +29,12 @@ $viteOutLog = Join-Path $demoFolder 'vite.out'
 $viteErrLog = Join-Path $demoFolder 'vite.err'
 $activityLogPaths = @($backendOutLog, $backendErrLog, $viteOutLog, $viteErrLog)
 $accessFile = Join-Path $demoFolder 'real_demo_access.txt'
-$credentialFile = Join-Path $privateLocal 'Servy\private_evaluations\servy_eval_credentials\servy_eval_ro.dpapi'
-# Resolve the Windows known folder before redirecting LOCALAPPDATA to the
-# demo's private identity directory. This keeps the ticket SQLite path stable.
-$sharedLocalAppData = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
-if ([string]::IsNullOrWhiteSpace($sharedLocalAppData)) {
-    $sharedLocalAppData = Join-Path $env:USERPROFILE 'AppData\Local'
-}
-$env:SERVY_LOCAL_TICKET_DB_PATH = Join-Path $sharedLocalAppData 'Servy\local-ticket-workspace.sqlite3'
+$devEnvFile = Join-Path $projectRoot '.env.mysql.servy_dev'
+$devMedia = 'C:\Users\prana\AppData\Local\Servy\servy_dev_media'
+$devChroma = 'C:\Users\prana\AppData\Local\Servy\servy_dev_chroma'
 
-if (!(Test-Path -LiteralPath $accessFile) -or !(Test-Path -LiteralPath $credentialFile)) {
-    throw 'The existing private demo identity or SELECT-only database credential is unavailable.'
+if (!(Test-Path -LiteralPath $accessFile) -or !(Test-Path -LiteralPath $devEnvFile) -or !(Test-Path -LiteralPath $devChroma)) {
+    throw 'The existing demo access file, the servy_dev MySQL settings or the isolated development BGE index is unavailable.'
 }
 
 function Test-LocalPort([int]$port) {
@@ -64,12 +62,11 @@ if ($Restart) {
     $backendRoots = @($processes | Where-Object {
         $_.Name -match '^python(?:\.exe)?$' -and
         [string]::Equals($_.ExecutablePath, $expectedPython, [System.StringComparison]::OrdinalIgnoreCase) -and
-        $_.CommandLine -match 'servy_real_demo\.py' -and
-        $_.CommandLine -match [regex]::Escape($projectRoot)
+        $_.CommandLine -match 'manage\.py\S*\s+runserver\s+127\.0\.0\.1:8002\b'
     })
     $backendChildren = @($processes | Where-Object {
         $_.Name -match '^python(?:\.exe)?$' -and
-        $_.CommandLine -match 'servy_real_demo\.py' -and
+        $_.CommandLine -match 'manage\.py\S*\s+runserver\s+127\.0\.0\.1:8002\b' -and
         @($backendRoots | Select-Object -ExpandProperty ProcessId) -contains $_.ParentProcessId
     })
     $viteServers = @($processes | Where-Object {
@@ -138,14 +135,19 @@ if (!(Test-LocalPort 3306)) {
     if (!(Test-LocalPort 3306)) { throw 'Existing MySQL did not become ready; demo was not started.' }
 }
 
-$env:LOCALAPPDATA = $privateLocal
-$env:SERVY_REAL_DEMO_MODE = '1'
+$env:SERVY_DB_ENGINE = 'mysql'
+$env:SERVY_MYSQL_ENV_FILE = $devEnvFile
+$env:SERVY_MEDIA_ROOT = $devMedia
+$env:SERVY_CHROMA_PERSIST_DIR = $devChroma
+$env:SERVY_SERVING_EMBEDDING_PROFILE = 'bge-small'
+$env:SERVY_DEMO_GATEWAY = 'customer'
+$env:SERVY_DEMO_ACCESS_FILE = $accessFile
+$env:SERVY_CUSTOMER_DATA_MODE = 'demo_only'
 $env:DJANGO_DEBUG = '1'
 # Retrieval, evidence selection and safety remain deterministic. Qwen runs
 # only after claims and source citations are selected; it receives reauthorized
 # full source chunks and cannot add facts absent from those passages. Invalid
 # or unavailable output falls back to the exact cited source wording.
-$env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
 # Retrieval, ranking, evidence selection and safety remain deterministic.
 # Qwen writes customer-facing wording only from reauthorized cited source chunks.
@@ -176,32 +178,22 @@ if ($NoLocalChat) {
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
-# Prefer the guarded source-document reconstruction automatically when the frozen
-# Chroma bytes differ. The Python path verifies unchanged read-only MySQL records,
-# original document hashes, model weights and approved asset scope first. It builds
-# a disposable local BGE index and never repairs or writes production Chroma.
-$env:SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES = '1'
-if ($ReviewRequest -and $RebuildFromVerifiedDocs) {
-    throw 'Run either the read-only review diagnostic or the verified-source rebuild, not both.'
-}
-if ($RebuildFromVerifiedDocs -and (Test-LocalPort 8002)) {
-    throw 'The previous demo backend is running. Use -Restart -RebuildFromVerifiedDocs.'
-}
-
-if ($ReviewRequest) {
-    $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    Push-Location -LiteralPath $projectRoot
-    try {
-        & $python '-B' 'tools\servy_real_demo.py' '--index-review-request'
-        if ($LASTEXITCODE -ne 0) { throw 'Read-only Chroma review request failed.' }
-    } finally {
-        Pop-Location
-    }
-    return
+if ($ReviewRequest -or $RebuildFromVerifiedDocs) {
+    throw 'The legacy read-only index review and rebuild options are not used by the servy_dev gateway.'
 }
 
 if (!(Test-LocalPort 8002)) {
     $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
+    # Refuse to start unless the live connection is the isolated servy_dev database
+    # with the restricted servy_dev_app account.
+    Push-Location -LiteralPath $projectRoot
+    try {
+        & $pythonPath '-B' 'manage.py' 'check_dev_database' *> $null
+        if ($LASTEXITCODE -ne 0) { throw 'The servy_dev isolation check failed; the Customer gateway was not started. Run manage.py check_dev_database for details.' }
+    } finally {
+        Pop-Location
+    }
+    Write-Output 'servy_dev isolation check: PASS'
 
     # A previous invocation may have timed out while its model/index load was
     # still running. Reuse only this exact project's virtualenv Python process;
@@ -210,7 +202,7 @@ if (!(Test-LocalPort 8002)) {
         Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop |
         Where-Object {
             [string]::Equals([string]$_.ExecutablePath, $pythonPath, [System.StringComparison]::OrdinalIgnoreCase) -and
-            $_.CommandLine -match 'tools[\\/]servy_real_demo\.py'
+            $_.CommandLine -match 'manage\.py\S*\s+runserver\s+127\.0\.0\.1:8002\b'
         }
     )
     if ($matchingBackends.Count -gt 1) {
@@ -221,7 +213,7 @@ if (!(Test-LocalPort 8002)) {
         Write-Output "Reusing existing Servy real-demo backend process $backendProcessId while it finishes startup."
     } else {
         $backendProcess = Start-Process -FilePath $pythonPath `
-            -ArgumentList '-B','-u','tools\servy_real_demo.py' -WorkingDirectory $projectRoot `
+            -ArgumentList '-B','-u','manage.py','runserver','127.0.0.1:8002','--noreload' -WorkingDirectory $projectRoot `
             -WindowStyle Hidden -PassThru -RedirectStandardOutput $backendOutLog `
             -RedirectStandardError $backendErrLog
         $backendProcessId = [int]$backendProcess.Id
@@ -269,7 +261,7 @@ try {
     if ($healthProbe.StatusCode -ne 200 -or $healthPayload.status -ne 'ok') {
         throw 'The authenticated demo health check failed.'
     }
-    Write-Output 'Customer RAG API check: PASS (authenticated health endpoint; no inventory query)'
+    Write-Output 'Customer RAG API check: PASS (authenticated gateway health endpoint on servy_dev)'
 } catch {
     throw 'Customer RAG API readiness failed through the browser-facing Vite proxy. Inspect startup.err and vite.err before the demo.'
 } finally {
@@ -280,13 +272,13 @@ try {
 
 if (-not $NoWatch) {
     Write-Output ''
-    Write-Output 'Live customer RAG events: pipeline stages, Qwen generation outcome and request status.'
-    Write-Output 'Private stderr and Vite logs remain in the demo log folder for troubleshooting.'
+    Write-Output 'Live customer RAG events: gateway requests and status (Django request log).'
+    Write-Output 'Private stdout and Vite logs remain in the demo log folder for troubleshooting.'
     Write-Output 'Press Ctrl+C to close this log viewer only; the backend and frontend processes remain running.'
-    if (Test-Path -LiteralPath $backendOutLog -PathType Leaf) {
-        Get-Content -LiteralPath $backendOutLog -Tail 25 -Wait
+    if (Test-Path -LiteralPath $backendErrLog -PathType Leaf) {
+        Get-Content -LiteralPath $backendErrLog -Tail 25 -Wait
     } else {
-        Write-Warning "Customer RAG backend log is not available at: $backendOutLog"
+        Write-Warning "Customer RAG backend log is not available at: $backendErrLog"
     }
 }
 } finally {

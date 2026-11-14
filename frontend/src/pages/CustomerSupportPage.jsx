@@ -15,6 +15,10 @@ import { mergeRagExecutionEvent } from '../components/ragExecutionStream';
 import { useAuth } from '../AuthContext';
 import { customerHandoffMessage, handoffLabel } from './technicianHandoffState';
 import {
+  applyTicketSubmitError, canConfirmTicket, describeMissingFields,
+  interpretTicketResponse, previewIsStale, ticketReference,
+} from './ticketPreviewState';
+import {
   Bot,
   Send,
   CheckCircle2,
@@ -325,6 +329,25 @@ export function CustomerSupportPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Never show a stale service-call description: if the conversation changes
+  // while the review dialog is open, close it (different conversation) or fetch
+  // the server preview again once for the new saved-message count.
+  const previewRefreshSize = useRef(null);
+  useEffect(() => {
+    if (!ticketPreview || ticketPreviewLoading || ticketSubmitting) return;
+    if (ticketPreview.conversationUuid !== conversationUuid) {
+      setTicketPreview(null);
+      return;
+    }
+    const savedSize = messages.filter(message => ['customer', 'assistant'].includes(message.sender_role)
+      && !message.pending && !String(message.id || '').startsWith('temp-')).length;
+    if (previewIsStale(ticketPreview, conversationUuid, savedSize) && previewRefreshSize.current !== savedSize) {
+      previewRefreshSize.current = savedSize;
+      handleCreateTicketFromConversation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationUuid, messages, ticketPreview]);
 
   useEffect(() => {
     loadContext();
@@ -672,29 +695,30 @@ export function CustomerSupportPage() {
         api.get(`/api/customer-support/conversations/${conversationUuid}/messages/`),
         api.get(`/api/customer-support/conversations/${conversationUuid}/ticket/`),
       ]);
-      if (ticketResponse.ticket) {
-        setEscalationResult(ticketResponse.ticket);
+      const transcript = normalizeArray(conversation, 'messages')
+        .filter((message) => ['customer', 'assistant'].includes(message.sender_role));
+      // The server builds the exact description the service call will store,
+      // from the complete conversation. Show that, not a client-side summary.
+      const outcome = interpretTicketResponse(conversationUuid, transcript, ticketResponse);
+      if (outcome.kind === 'ticket') {
+        setTicketPreview(null);
+        setEscalationResult(outcome.ticket);
         setActiveTab('tickets');
         await loadTickets();
         return;
       }
-      const transcript = normalizeArray(conversation, 'messages')
-        .filter((message) => ['customer', 'assistant'].includes(message.sender_role));
-      const firstCustomerMessage = transcript.find((message) => message.sender_role === 'customer');
-      const lastRelevantMessage = transcript[transcript.length - 1];
-      const outstandingQuestion = lastRelevantMessage?.sender_role === 'assistant'
-        ? lastRelevantMessage.structured_contract?.clarification_question
-        : null;
-      setTicketPreview({ conversationUuid, messages: transcript, reportedIssue: firstCustomerMessage?.message_text || '', outstandingQuestion: outstandingQuestion || '' });
+      setTicketPreview(outcome.preview);
     } catch (loadError) {
-      setTicketError(loadError.detail || 'Could not prepare the full conversation for technician review. Please retry.');
+      setTicketError(loadError.detail || (loadError.status
+        ? 'Could not prepare the full conversation for technician review. Please retry.'
+        : 'Network error while preparing the service request. Please retry.'));
     } finally {
       setTicketPreviewLoading(false);
     }
   }
 
   async function confirmTicketCreation() {
-    if (!ticketPreview || ticketSubmitting) return;
+    if (!canConfirmTicket(ticketPreview, ticketSubmitting)) return;
     setTicketSubmitting(true);
     setTicketError(null);
     try {
@@ -707,8 +731,12 @@ export function CustomerSupportPage() {
       await loadConversationMessages(ticketPreview.conversationUuid);
       await loadTickets();
     } catch (submitError) {
-      // The endpoint is idempotent, so retrying after a lost response is safe.
-      setTicketError(submitError.detail || 'The service request was not confirmed. Retry to check its status.');
+      // Contact details are never invented; a 400 with missing_fields keeps
+      // confirmation disabled. The endpoint is idempotent, so a retry after a
+      // lost response returns the same ServiceCall.
+      const applied = applyTicketSubmitError(ticketPreview, submitError);
+      setTicketPreview(applied.preview);
+      setTicketError(applied.message);
     } finally {
       setTicketSubmitting(false);
     }
@@ -824,7 +852,7 @@ export function CustomerSupportPage() {
       {escalationResult && (
         <div className="alert alert-info" role="status" style={{ display: 'block' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, marginBottom: '6px' }}>
-            <Ticket size={18} /> Service Request {escalationResult.ticket_ref || `SRV-${escalationResult.servy_id}`}
+            <Ticket size={18} /> Service Request {ticketReference(escalationResult)}
           </div>
           <p style={{ fontSize: '0.85rem', marginBottom: '6px' }}>
             {customerHandoffMessage(escalationResult.handoff_state)}
@@ -1630,6 +1658,37 @@ export function CustomerSupportPage() {
               </div>
             )}
 
+            {ticketPreview.missingFields.length > 0 && (
+              <div className="alert alert-warning" role="alert" style={{ fontSize: '.82rem' }}>
+                <strong>Contact details needed before a technician can be dispatched:</strong>{' '}
+                {describeMissingFields(ticketPreview.missingFields)}.
+                {' '}Please update your customer contact record; Servy does not fill these in for you.
+              </div>
+            )}
+            {ticketPreview.previewDetail && (
+              <div className="alert alert-warning" role="alert" style={{ fontSize: '.82rem' }}>{ticketPreview.previewDetail}</div>
+            )}
+
+            {ticketPreview.sections && (
+              <div style={{ border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
+                <div style={{ padding: '10px 14px', background: 'var(--bg-app)', fontWeight: 700 }}>
+                  Service call description ({ticketPreview.messageCount ?? '?'} messages)
+                </div>
+                <div style={{ maxHeight: 340, overflowY: 'auto', padding: 14, display: 'grid', gap: 12 }} data-testid="ticket-description-preview">
+                  {Object.entries(ticketPreview.sections).map(([title, items]) => (
+                    <div key={title}>
+                      <strong style={{ display: 'block', fontSize: '.8rem', color: 'var(--text-main)', marginBottom: 4 }}>{title}</strong>
+                      <ul style={{ margin: 0, paddingLeft: 18, fontSize: '.82rem', color: '#334155' }}>
+                        {(items || []).map((item, index) => (
+                          <li key={index} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div style={{ border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
               <div style={{ padding: '10px 14px', background: 'var(--bg-app)', fontWeight: 700 }}>Conversation context</div>
               <div style={{ maxHeight: 310, overflowY: 'auto', padding: 14, display: 'grid', gap: 10 }}>
@@ -1651,7 +1710,7 @@ export function CustomerSupportPage() {
             {ticketError && <div className="alert alert-warning" role="alert">{ticketError}</div>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
               <button type="button" className="btn btn-outline-secondary" onClick={() => setTicketPreview(null)} disabled={ticketSubmitting}>Cancel</button>
-              <button type="button" className="btn btn-primary" onClick={confirmTicketCreation} disabled={ticketSubmitting || ticketPreview.messages.length === 0}>
+              <button type="button" className="btn btn-primary" onClick={confirmTicketCreation} disabled={!canConfirmTicket(ticketPreview, ticketSubmitting)}>
                 <Ticket size={15} /> {ticketSubmitting ? 'Creating ticket…' : 'Confirm and create ticket'}
               </button>
             </div>

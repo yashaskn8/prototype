@@ -2,11 +2,6 @@ from django.urls import path
 from . import api_views
 from .diagnostics import api_views as diag_views
 from .customer_sources import CustomerSourceView
-from .local_ticket_workspace import (
-    LocalTicketAttachmentView,
-    LocalTicketWorkspaceDetailView,
-    LocalTicketWorkspaceView,
-)
 from .technician_inbox import (
     TechnicianInboxDetailView,
     TechnicianInboxView,
@@ -43,9 +38,6 @@ urlpatterns = [
     path("technician/inbox/", TechnicianInboxView.as_view(), name="api_technician_inbox"),
     path("technician/inbox/<int:pk>/", TechnicianInboxDetailView.as_view(), name="api_technician_inbox_detail"),
     path("technician/inbox/<int:pk>/acknowledge/", TechnicianTicketAcknowledgeView.as_view(), name="api_technician_ticket_acknowledge"),
-    path("local-ticket-workspace/", LocalTicketWorkspaceView.as_view(), name="api_local_ticket_workspace"),
-    path("local-ticket-workspace/<str:ticket_id>/", LocalTicketWorkspaceDetailView.as_view(), name="api_local_ticket_workspace_detail"),
-    path("local-ticket-workspace/<str:ticket_id>/attachments/<str:attachment_id>/", LocalTicketAttachmentView.as_view(), name="api_local_ticket_workspace_attachment"),
 
     # Workflow 2: Engineer Copilot (Post-ticket)
     path("engineer-copilot/query/", api_views.EngineerCopilotQueryView.as_view(), name="api_engineer_copilot_query"),

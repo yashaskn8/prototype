@@ -41,9 +41,14 @@ class GuardOutsideTestRunnerTests(SimpleTestCase):
         # Plain unittest (not manage.py test) would use the configured database itself.
         # The class performs no writes; the guard must stop it before setUpClass opens
         # a transaction.
+        # SQLite is configurable only for test processes, so the probe presents as
+        # one, then points the connection at an ordinary (non-test) disposable file.
         code = (
-            "import os, unittest, django\n"
+            "import os, sys, tempfile, unittest, django\n"
+            "sys.argv = ['manage.py', 'test']\n"
             "django.setup()\n"
+            "from django.db import connections\n"
+            "connections['default'].settings_dict['NAME'] = os.path.join(tempfile.mkdtemp(), 'app.sqlite3')\n"
             "from django.test import TestCase\n"
             "class Probe(TestCase):\n"
             "    def test_probe(self):\n"

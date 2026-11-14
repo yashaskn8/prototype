@@ -33,7 +33,7 @@ class RetrievedChunk:
     source_url: str
     confidential: bool
     service_call_id: int | None = None
-    model_version: str = "minilm"
+    model_version: str = "bge-small"
     dense_score: float | None = None
     dense_similarity: float | None = None
     dense_rank: int | None = None
@@ -621,26 +621,11 @@ def _matches_current_bge_vector(meta, chunk, profile) -> bool:
     )
 
 
-def _matches_current_minilm_vector(meta, chunk, profile) -> bool:
-    """Reject stale legacy vectors before pairing them with current chunk text."""
-    import hashlib
-
-    return bool(
-        meta.get("chunk_id") == chunk.id
-        and meta.get("document_id") == chunk.document_id
-        and meta.get("chunk_index") == chunk.chunk_index
-        and meta.get("tenant_id") == chunk.tenant_id
-        and str(meta.get("document_version")) == str(chunk.document.index_version or "1.0")
-        and meta.get("content_sha256") == hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
-        and meta.get("embedding_model") == profile.model_id
-    )
-
-
 def _qwen3_profile_if_ready(settings_obj, is_real: bool) -> str:
     """Default-safe selector: three independent flags before Qwen3 serving.
 
-    Returning the MiniLM profile is intentional when the experimental index
-    has not been independently checked. This selector does not grant access to
+    Returning the approved BGE profile is intentional when the experimental
+    Qwen3 index has not been independently checked. This selector does not grant access to
     any document; authorization remains enforced in the retrieval query.
     """
     enabled = (
@@ -650,7 +635,7 @@ def _qwen3_profile_if_ready(settings_obj, is_real: bool) -> str:
     )
     if enabled:
         return "company-qwen3" if is_real else "qwen3"
-    return "company-minilm" if is_real else "minilm"
+    return "company-bge-small" if is_real else "bge-small"
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +659,6 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         from django.conf import settings
         from .customer_isolation import get_customer_data_mode, is_real_tenant
         mode = get_customer_data_mode()
-        use_experimental = getattr(settings, "SERVY_USE_EXPERIMENTAL_RAG", False)
         is_real = is_real_tenant(tenant)
         is_real_customer_query = (customer is not None) and (mode == "verified_real_only")
         if not staff_mode and is_real_customer_query and not is_real:
@@ -692,18 +676,10 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
             profile_key = _qwen3_profile_if_ready(settings, is_real)
         elif serving_profile in ("company-bge-ft", "bge-small-ft"):
             profile_key = "company-bge-ft"
-        elif serving_profile in ("company-bge-small", "bge-small"):
-            profile_key = "company-bge-small" if is_real else "bge-small"
-        elif serving_profile in ("company-minilm", "minilm"):
-            profile_key = "company-minilm" if is_real else "minilm"
-        elif is_real:
-            profile_key = "company-bge-small" if use_experimental else "company-minilm"
         else:
-            profile_key = (
-                getattr(settings, "SERVY_EXPERIMENTAL_EMBEDDING_MODEL", "bge-small")
-                if use_experimental
-                else getattr(settings, "SERVY_EMBEDDING_MODEL", "minilm")
-            )
+            # BGE-small is the only approved embedding model; "auto" and
+            # unknown values resolve to it.
+            profile_key = "company-bge-small" if is_real else "bge-small"
         from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
 
         profile = get_profile(profile_key)
@@ -711,10 +687,10 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
         if not getattr(profile, "promotion_eligible", False) and not staff_mode:
             logger.warning(
                 "Embedding profile '%s' is not promotion eligible (training_status='%s'). "
-                "Rejecting unpromoted model and falling back to authorized baseline profile.",
+                "Rejecting unpromoted model and using the approved BGE profile.",
                 profile.key, getattr(profile, "training_status", "unknown"),
             )
-            profile_key = "company-minilm" if is_real else "minilm"
+            profile_key = "company-bge-small" if is_real else "bge-small"
             profile = get_profile(profile_key)
 
         model = load_model(profile)
@@ -772,9 +748,8 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                     # A vector from an earlier chunk at the same document/index
                     # position must never be paired with today's source text.
                     identity_matches = (
-                        _matches_current_bge_vector(meta, current_chunk, profile)
-                        if profile.content_first
-                        else _matches_current_minilm_vector(meta, current_chunk, profile)
+                        profile.content_first
+                        and _matches_current_bge_vector(meta, current_chunk, profile)
                     )
                     if not identity_matches:
                         continue
@@ -809,16 +784,12 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
                 # Use per-request config gate (Op17 fix) — NOT the stale module-level constant.
                 _dense_gate = serving_config.dense_relevance_gate if serving_config else _get_dense_gate()
                 if getattr(profile, "query_document_encoder", False):
-                    # Qwen3's similarity scale differs from BGE/MiniLM. This
+                    # Qwen3's similarity scale differs from BGE. This
                     # gate is a tunable hypothesis, not a calibrated threshold.
                     # Relevance/answerability validation remains downstream.
                     _dense_gate = float(getattr(settings, "SERVY_QWEN3_DENSE_GATE", 0.35))
                     if not 0.0 <= _dense_gate <= 1.0:
                         raise ValueError("SERVY_QWEN3_DENSE_GATE must be in [0,1]")
-                if not getattr(profile, "content_first", False):
-                    # MiniLM vector similarities have a lower ceiling (~0.30-0.50) compared to BGE (~0.60-0.85).
-                    # Avoid pruning genuine semantic matches when using non-content-first profiles.
-                    _dense_gate = min(_dense_gate, 0.25)
                 if sim < _dense_gate and id_boost <= 0.0:
                     continue
 

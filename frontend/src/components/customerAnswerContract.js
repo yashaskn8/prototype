@@ -77,6 +77,23 @@ function validatedDocumentCoverage(value) {
   };
 }
 
+// The composed conversational reply. Defense in depth: every technical segment
+// cites exactly one evidence id already used by a validated section claim, and
+// connective segments cite nothing. Anything else falls back to the sections.
+function validatedResponse(value, usedEvidence) {
+  if (!value || !Array.isArray(value.segments) || !value.segments.length || value.segments.length > 30) return null;
+  const technical = new Set(['claim', 'list_item']);
+  const connective = new Set(['text', 'question']);
+  for (const segment of value.segments) {
+    if (!segment || typeof segment.text !== 'string' || !segment.text.trim() || segment.text.length > 600
+      || !Array.isArray(segment.citation_ids)) return null;
+    if (technical.has(segment.kind)) {
+      if (segment.citation_ids.length !== 1 || !usedEvidence.has(segment.citation_ids[0])) return null;
+    } else if (!connective.has(segment.kind) || segment.citation_ids.length) return null;
+  }
+  return { segments: value.segments };
+}
+
 export function validateCustomerPresentation(value) {
   if (!value || value.schema_version !== 'customer-answer-v1') return null;
   const onlineResearch = validatedOnlineResearch(value.online_research);
@@ -153,6 +170,7 @@ export function validateCustomerPresentation(value) {
   const used = new Set(value.sections.flatMap(s => s.claims.flatMap(c => c.evidence_ids)));
   return {
     sections: value.sections,
+    response: validatedResponse(value.response, used),
     citations: citations.filter(s => used.has(s.id)),
     hazard,
     focused,

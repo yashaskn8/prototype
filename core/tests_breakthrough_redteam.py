@@ -43,8 +43,8 @@ class BreakthroughRedTeamTests(TestCase):
         TenantMembership.objects.create(user=self.tech_user, tenant=self.tenant_a, role="technician")
         StaffProfile.objects.create(tenant=self.tenant_a, user=self.tech_user, full_name="Alpha Tech", role="technician", zone=self.zone_a)
 
-        self.cust_a1 = Customer.objects.create(tenant=self.tenant_a, name="Dairy Co Alpha 1")
-        self.cust_a2 = Customer.objects.create(tenant=self.tenant_a, name="Dairy Co Alpha 2")
+        self.cust_a1 = Customer.objects.create(tenant=self.tenant_a, name="Dairy Co Alpha 1", contact_name="Synthetic Contact", phone="+1 555 0100", email="contact@example.invalid")
+        self.cust_a2 = Customer.objects.create(tenant=self.tenant_a, name="Dairy Co Alpha 2", contact_name="Synthetic Contact", phone="+1 555 0100", email="contact@example.invalid")
         self.site_a1 = Site.objects.create(tenant=self.tenant_a, customer=self.cust_a1, name="Alpha Plant 1")
         self.site_a2 = Site.objects.create(tenant=self.tenant_a, customer=self.cust_a2, name="Alpha Plant 2")
 
@@ -691,10 +691,10 @@ class BreakthroughRedTeamTests(TestCase):
         self.assertFalse(p_ft.promotion_eligible)
         self.assertEqual(p_ft.training_status, "COMPANY_DATA_WEAKLY_SUPERVISED_EXPERIMENT")
 
-        # 6. Verify existing production models remain undisturbed
-        p_minilm = get_profile("minilm")
-        self.assertEqual(p_minilm.collection, "servy_dense_kb")
-        self.assertTrue(p_minilm.promotion_eligible)
+        # 6. The approved production embedding model is BGE-small (MiniLM retired)
+        p_bge = get_profile("company-bge-small")
+        self.assertEqual(p_bge.collection, "servy_company_bge_small_v1")
+        self.assertTrue(p_bge.promotion_eligible)
 
 
 

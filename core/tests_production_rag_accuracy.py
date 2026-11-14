@@ -25,7 +25,6 @@ from core.services.indexing import index_document
 from core.services.retriever import (
     RetrievedChunk,
     _matches_current_bge_vector,
-    _matches_current_minilm_vector,
     _reciprocal_rank_fusion,
     _sparse_index_text,
     get_serving_config,
@@ -164,11 +163,11 @@ class ConfigurableRRFAndTieBreakingTests(SimpleTestCase):
 class StaleVectorAndRerankerGuardTests(SimpleTestCase):
     def test_stale_vector_detection_rejects_mismatched_version_or_hash(self):
         profile = EmbeddingProfile(
-            key="minilm", model_id="all-MiniLM-L6-v2", revision=None, dim=384,
-            collection="servy_dense_kb", content_first=False, promotion_eligible=True,
+            key="bge-small", model_id="BAAI/bge-small-en-v1.5", revision="rev-1", dim=384,
+            collection="servy_dense_bge_small_v1", content_first=True, promotion_eligible=True,
         )
         chunk = SimpleNamespace(
-            id=55, document_id=7, chunk_index=0, tenant_id=1,
+            id=55, document_id=7, chunk_index=0, tenant_id=1, heading="Procedure",
             text="Updated technical procedure",
             document=SimpleNamespace(index_version="2.0"),
         )
@@ -179,9 +178,10 @@ class StaleVectorAndRerankerGuardTests(SimpleTestCase):
             "tenant_id": 1,
             "document_version": "1.0",  # Stale version
             "content_sha256": "deadbeef",
-            "embedding_model": "all-MiniLM-L6-v2",
+            "embedding_model": "BAAI/bge-small-en-v1.5",
+            "embedding_revision": "rev-1",
         }
-        self.assertFalse(_matches_current_minilm_vector(stale_meta, chunk, profile))
+        self.assertFalse(_matches_current_bge_vector(stale_meta, chunk, profile))
 
     @override_settings(
         SERVY_RERANKER_ENABLED=True,

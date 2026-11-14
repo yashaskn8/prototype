@@ -65,7 +65,7 @@ Key files:
 - Generation integration: `core/services/llm.py`
 - Strict serving diagnostic: `core/management/commands/check_rag_serving.py`
 
-Legacy MiniLM/Chroma functionality remains for compatibility and ingestion paths. It is not interchangeable with the configured BGE serving profile; do not remove it without verifying all ingestion and indexing dependencies.
+MiniLM has been retired (2026-11-14). BGE-small is the only document and query embedding model: ingestion, indexing and retrieval all use the stamped BGE collections, and there is no MiniLM profile, fallback or download path. See `docs/SERVY_MINILM_SQLITE_RETIREMENT_REPORT.md`.
 
 ## Isolated local demonstration workflow
 

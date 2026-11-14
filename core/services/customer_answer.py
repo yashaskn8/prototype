@@ -167,6 +167,19 @@ def _is_cause_coverage_review(question):
 
 
 _RESTRICTED_LEVELS = frozenset({"PROHIBITED", "TECHNICIAN_ONLY"})
+# A request for a stated value or specification ("What is the design static
+# pressure?"). Only a documented fact containing a number can answer it; a
+# possible cause that merely shares its words never does.
+_VALUE_QUESTION = re.compile(
+    r"\b(?:what|which)\s+(?:is|are)\s+(?:the\s+)?(?:[a-z0-9/-]+\s+){0,4}?"
+    r"(?:pressure|voltage|current|amperage|capacity|temperature|rating|size|setting|value|weight|"
+    r"dimensions?|tonnage|airflow|flow rate|clearance|torque|speed|charge|specification)s?\b"
+    r"|\bhow (?:much|many)\b", re.I)
+# A customer reporting a fault or symptom rather than asking a factual question.
+_SYMPTOM_REPORT = re.compile(
+    r"\b(?:alarms?|faults?|errors?|tripp\w*|leak\w*|nois\w*|vibrat\w*|ice|icing|frost\w*|smell\w*|"
+    r"not (?:cooling|heating|working|starting|draining)|(?:won'?t|doesn'?t|does not|will not) (?:start|cool|run|drain)|"
+    r"stopp\w*|weak|warm|hot air)\b", re.I)
 _FREQUENCY_QUESTION = re.compile(
     r"\b(?:how (?:often|frequently|regularly|many times)|"
     r"when (?:is|are|should|do|does|must)|every\s+\d+|intervals?|schedules?|"
@@ -750,7 +763,18 @@ def build_customer_answer(
         or _CAUSE_EXPLANATION_REQUEST.search(question)
     )
     asks_frequency = bool(_FREQUENCY_QUESTION.search(intent_text))
+    # A multi-part question ("what causes X, and how often should Y be done?")
+    # explicitly asks for a documented schedule as well as causes.
+    wants_facts = wants_facts or asks_frequency
+    asks_value = bool(_VALUE_QUESTION.search(intent_text)) and not _CAUSE_QUESTION.search(intent_text)
     asks_document_purpose = bool(_DOCUMENT_PURPOSE_QUESTION.search(intent_text))
+    # A reported fault ("the module shows a high-pressure alarm", "water is leaking")
+    # asks for its documented causes even without the word "cause"; it is not
+    # a fact question, so word-matched overview facts must not displace causes.
+    symptom_report = bool(_SYMPTOM_REPORT.search(intent_text)) and not (
+        asks_frequency or asks_value or asks_document_purpose)
+    if symptom_report and not asks_frequency:
+        wants_facts = False
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
     eligible = []
@@ -782,6 +806,8 @@ def build_customer_answer(
                 if kind == "possible_cause":
                     # A descriptive cause list is information, never an action.
                     if not _descriptive_cause(text):
+                        continue
+                    if asks_value and not wants_cause_details:
                         continue
                     if generic_section_cause:
                         # The customer asked for a broad overview, not a
@@ -864,6 +890,8 @@ def build_customer_answer(
                         # statement about frequency; it never stands in for a
                         # schedule entry otherwise.
                         continue
+                    if asks_value and not re.search(r"\d", text):
+                        continue
                     target = facts
                 else:
                     continue
@@ -921,6 +949,15 @@ def build_customer_answer(
             if target is facts:
                 target[-1]["disclosure"] = (
                     "maintenance_schedule" if _SCHEDULE_FACT.match(text) else "descriptive")
+    # A factual question (timing, value, document content) is answered by the
+    # documented facts that answer it. A cause that matched only by a shared
+    # word ("filter") does not displace them; cause questions are unaffected.
+    if (facts and causes and wants_facts and not wants_cause_details and not generic_cause_overview
+            and not symptom_report
+            and not _CAUSE_QUESTION.search(intent_text) and not _CAUSE_QUESTION.search(question)):
+        dropped = {e for claim in causes for e in claim.get("evidence_ids", [])}
+        causes = []
+        citations = [c for c in citations if c.get("id") not in dropped]
     # Headings of the authorized sections that contain a documented cause
     # list. They let the dialogue ask which documented condition applies
     # instead of a generic question when no cause matches the customer's words.

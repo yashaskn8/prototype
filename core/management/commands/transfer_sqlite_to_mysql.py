@@ -139,7 +139,9 @@ class Command(BaseCommand):
             f"=================================================="
         ))
 
-        src_conn = sqlite3.connect(sqlite_path)
+        # Read-only: the legacy SQLite file may hold unique company records and
+        # must never be modified by a transfer.
+        src_conn = sqlite3.connect(f"file:{sqlite_path.resolve().as_posix()}?mode=ro", uri=True)
         src_conn.row_factory = sqlite3.Row
         src_cur = src_conn.cursor()
 

@@ -5,7 +5,6 @@ import io
 import json
 import os
 import base64
-import sqlite3
 import tempfile
 from pathlib import Path
 from contextlib import redirect_stdout
@@ -319,8 +318,8 @@ class RealDemoBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 demo._ticket_fields({**body, "ticket_context": wrong_customer})
 
-    def test_local_ticket_fields_derive_customer_and_equipment_from_signed_scope(self):
-        question = "Synthetic local ticket handoff?"
+    def test_ticket_scope_derives_customer_and_equipment_from_signed_scope(self):
+        question = "Synthetic ticket handoff?"
         token = signing.dumps({"asset": 60, "customer": 13,
             "question_sha256": hashlib.sha256(question.encode()).hexdigest()},
             salt="servy-real-demo-ticket-preview-v1")
@@ -335,62 +334,27 @@ class RealDemoBoundaryTests(unittest.TestCase):
         tenant = SimpleNamespace(id=273)
         customer = SimpleNamespace(id=13, name="Synthetic customer")
         with patch.object(demo, "_asset", return_value=(tenant, customer, asset)):
-            fields = demo._local_ticket_fields(body)
-        self.assertEqual(fields["tenant_id"], 273)
-        self.assertEqual(fields["customer_id"], 13)
-        self.assertEqual(fields["asset_id"], 60)
-        self.assertEqual(fields["customer_name"], "Synthetic customer")
-        self.assertEqual(fields["complaint_text"], "Customer and Servy synthetic transcript")
+            scope = demo._validated_ticket_request(body)
+        # Client-supplied customer_id / asset_id (999) are ignored.
+        self.assertEqual(scope["tenant"].id, 273)
+        self.assertEqual(scope["customer"].id, 13)
+        self.assertEqual(scope["asset"].id, 60)
+        self.assertEqual(scope["complaint_text"], "Customer and Servy synthetic transcript")
 
-    def test_local_ticket_is_written_only_to_a_separate_sqlite_workspace(self):
-        with tempfile.TemporaryDirectory() as folder:
-            database = Path(folder) / "technician-tickets.sqlite3"
-            fields = {
-                "tenant_id": 273, "customer_id": 13, "customer_name": "Synthetic customer",
-                "site_id": 7, "site_name": "Synthetic site", "asset_id": 60,
-                "asset_name": "Synthetic asset", "asset_code": "SYN-60",
-                "call_type": "Breakdown Service", "complaint_type": "Cooling / performance",
-                "complaint_text": "Customer and Servy synthetic transcript", "contact_name": "",
-                "severity": "Medium", "priority": "normal", "machine_status": "Intermittent",
-                "status": "open", "technician_notes": "", "source_conversation_id": "",
-                "created_by": "synthetic-test",
-            }
-            with patch.object(settings, "DATABASES", {
-                    "default": {"ENGINE": "django.db.backends.mysql", "NAME": "unchanged_company_db"}},
-                    create=True), \
-                    patch.object(settings, "SERVY_LOCAL_TICKET_DB_PATH", database, create=True):
-                ticket = demo._store_local_ticket(fields, [{
-                    "name": "synthetic-note.txt", "content_type": "text/plain", "content": b"synthetic",
-                }])
-            self.assertTrue(ticket["id"].startswith("LOCAL-"))
-            self.assertEqual(ticket["customerId"], "13")
-            self.assertEqual(ticket["complaintText"], "Customer and Servy synthetic transcript")
-            self.assertEqual(ticket["attachments"][0]["name"], "synthetic-note.txt")
-            connection = sqlite3.connect(database)
-            try:
-                row = connection.execute(
-                    "SELECT tenant_id, customer_id, asset_id, complaint_text FROM local_tickets WHERE id = ?",
-                    (ticket["id"],),
-                ).fetchone()
-            finally:
-                connection.close()
-            self.assertEqual(row, (273, 13, 60, "Customer and Servy synthetic transcript"))
-            from core.local_ticket_store import list_tickets, open_local_store
-            with patch.object(settings, "DATABASES", {
-                    "default": {"ENGINE": "django.db.backends.mysql", "NAME": "unchanged_company_db"}}, create=True), \
-                    patch.object(settings, "SERVY_LOCAL_TICKET_DB_PATH", database, create=True):
-                technician_connection = open_local_store()
-                try:
-                    tenant_tickets = list_tickets(technician_connection, 273)
-                    other_tenant_tickets = list_tickets(technician_connection, 274)
-                    other_customer_tickets = list_tickets(technician_connection, 273, 14)
-                finally:
-                    technician_connection.close()
-            self.assertEqual([item["id"] for item in tenant_tickets], [ticket["id"]])
-            self.assertEqual(other_tenant_tickets, [])
-            self.assertEqual(other_customer_tickets, [])
+    def test_tickets_are_official_servicecalls_never_a_separate_sqlite_workspace(self):
+        # Ticket persistence moved to official ServiceCalls in the isolated
+        # servy_dev MySQL database, served by the Customer/Technician gateways
+        # (see core/tests_demo_gateway.py). No SQLite ticket store remains.
+        import importlib.util
+        for module in ("core.local_ticket_store", "core.local_ticket_workspace"):
+            self.assertIsNone(importlib.util.find_spec(module), module)
+        for name in ("_store_local_ticket", "_existing_local_ticket", "_local_ticket_fields"):
+            self.assertFalse(hasattr(demo, name), name)
+        self.assertFalse(hasattr(settings, "SERVY_LOCAL_TICKET_DB_PATH"))
+        gateway_settings = (demo.ROOT / "servy_rag" / "settings.py").read_text(encoding="utf-8")
+        self.assertIn('globals().get("MYSQL_DATABASE") != "servy_dev"', gateway_settings)
 
-    def test_local_create_route_writes_after_readonly_company_scope_validation(self):
+    def test_legacy_local_create_route_is_removed(self):
         handler = object.__new__(demo.Handler)
         handler.path = "/demo-api/tickets/create-local/"
         payload = json.dumps({"synthetic": "form"}).encode()
@@ -398,26 +362,9 @@ class RealDemoBoundaryTests(unittest.TestCase):
         handler.rfile = io.BytesIO(payload)
         handler._authorized = lambda: True
         handler._send = lambda status, value: (status, value)
-        state = {"readonly": False}
-
-        class ReadOnlyScope:
-            def __enter__(self):
-                state["readonly"] = True
-
-            def __exit__(self, *_args):
-                state["readonly"] = False
-
-        def store(_fields, _attachments):
-            self.assertFalse(state["readonly"])
-            return {"id": "LOCAL-SYNTHETIC"}
-
-        with patch.object(demo, "read_only_database", return_value=ReadOnlyScope()), \
-                patch.object(demo, "_local_ticket_fields", return_value={"asset_id": 60}), \
-                patch.object(demo, "_store_local_ticket", side_effect=store):
-            status, response = handler.do_POST()
-        self.assertEqual(status, 201)
-        self.assertEqual(response["mode"], "LOCAL_SQLITE")
-        self.assertEqual(response["ticket"]["id"], "LOCAL-SYNTHETIC")
+        status, response = handler.do_POST()
+        self.assertEqual(status, 404)
+        self.assertNotIn("LOCAL_SQLITE", json.dumps(response))
 
     def test_preview_never_claims_a_created_ticket(self):
         handler = object.__new__(demo.Handler)
@@ -976,8 +923,7 @@ class RealDemoBoundaryTests(unittest.TestCase):
              patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
              patch.object(demo, "plan_turn", return_value=None), \
              patch.object(demo, "search_all_approved_documents",
-                          side_effect=RuntimeError("synthetic scan unavailable")), \
-             patch.object(demo, "find_open_ticket", return_value=None):
+                          side_effect=RuntimeError("synthetic scan unavailable")):
             demo._answer(
                 60, "What possible causes are documented?",
                 continuation=continuation, thread_id=thread_id,
@@ -1028,7 +974,9 @@ class RealDemoBoundaryTests(unittest.TestCase):
         }
         with patch.dict("sys.modules", fake_modules), \
              patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
-             patch.object(demo, "plan_turn", return_value=None):
+             patch.object(demo, "plan_turn", return_value=None), \
+             patch.object(demo, "_attach_full_scope_scan",
+                          side_effect=lambda rag, **_kw: rag):
             result = demo._answer(60, question)
         self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
         self.assertEqual([item["chunk_id"] for item in result["citations"]], [9])
@@ -1090,7 +1038,9 @@ class RealDemoBoundaryTests(unittest.TestCase):
         }
         with patch.dict("sys.modules", fake_modules), \
              patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
-             patch.object(demo, "plan_turn", return_value=None):
+             patch.object(demo, "plan_turn", return_value=None), \
+             patch.object(demo, "_attach_full_scope_scan",
+                          side_effect=lambda rag, **_kw: rag):
             result = demo._answer(60, question, continuation=continuation)
 
         self.assertEqual(result["response_type"], "DIAGNOSTIC_GUIDANCE")
@@ -1190,6 +1140,8 @@ class RealDemoBoundaryTests(unittest.TestCase):
                     patch.dict("sys.modules", fake_modules),
                     patch.object(demo, "_asset", return_value=(tenant, customer, asset)),
                     patch.object(demo, "plan_turn", return_value=None),
+                    patch.object(demo, "_attach_full_scope_scan",
+                                 side_effect=lambda rag, **_kw: rag),
                 ):
                     result = demo._answer(
                         asset_id, question, continuation=continuation,
@@ -1253,7 +1205,9 @@ class RealDemoBoundaryTests(unittest.TestCase):
         }
         with patch.dict("sys.modules", mods), \
              patch.object(demo, "_asset", return_value=(tenant, customer, asset)), \
-             patch.object(demo, "plan_turn", return_value=None):
+             patch.object(demo, "plan_turn", return_value=None), \
+             patch.object(demo, "_attach_full_scope_scan",
+                          side_effect=lambda rag, **_kw: rag):
             result = demo._answer(60, "What causes involve the compressor?")
         self.assertEqual(result["response_type"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["citations"], [])

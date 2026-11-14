@@ -11,7 +11,8 @@ from threading import BoundedSemaphore, Event, Thread
 import json
 import logging
 
-from django.db import close_old_connections
+from django.core.serializers.json import DjangoJSONEncoder
+from django.db import close_old_connections, connections
 from django.http import JsonResponse, StreamingHttpResponse
 
 from .rag_execution_log import bind_execution_log
@@ -24,7 +25,7 @@ _STREAM_SLOTS = BoundedSemaphore(_MAX_ACTIVE_STREAMS)
 
 
 def _sse_frame(event_name: str, payload: dict) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), cls=DjangoJSONEncoder)
     return f"event: {event_name}\ndata: {data}\n\n"
 
 
@@ -86,7 +87,10 @@ def rag_execution_stream(work):
             }, terminal=True)
         finally:
             try:
-                close_old_connections()
+                # Django connections are per thread. This worker thread ends here,
+                # so close its connections outright; close_old_connections() keeps
+                # a healthy connection open for CONN_MAX_AGE and it would leak.
+                connections.close_all()
             finally:
                 _STREAM_SLOTS.release()
 

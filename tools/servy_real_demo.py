@@ -38,7 +38,7 @@ from tools.servy_real_demo_exhaustive import search_all_approved_documents
 from tools.servy_real_demo_assignment import (
     EXPLAIN_CAUSES_QUESTION, INSUFFICIENT, PARTIAL, add_limitation,
     build_issue_description, cause_reference, code_conflict, evidence_state,
-    find_open_ticket, focus_on_cause, issue_assignment, issue_key,
+    focus_on_cause, issue_assignment, issue_key,
     limitation_texts, listed_causes, valid_cause_state,
 )
 from tools.servy_real_demo_dialogue import (
@@ -108,9 +108,6 @@ def _asset_intent_guard(asset_id, question):
 MANUAL_READINESS = None
 DEMO_USER_ID = -27360
 MAX_BODY = 20000
-MAX_LOCAL_TICKET_BODY = 26 * 1024 * 1024
-MAX_LOCAL_TICKET_DESCRIPTION = 100_000
-MAX_LOCAL_TICKET_UPLOAD = 25 * 1024 * 1024
 # A signed, bounded continuation contains only customer-reported text. It
 # lives in the browser; the real-data demo never writes conversation records.
 DEMO_CONTEXT_SALT = "servy-real-demo-conversation-v1"
@@ -120,8 +117,7 @@ DEMO_CONTEXT_TEXT_LIMIT = 650
 logger = logging.getLogger(__name__)
 
 LOGGED_ROUTES = frozenset({"/demo-api/health/", "/demo-api/inventory/", "/demo-api/source/",
-    "/demo-api/query/", "/demo-api/query-stream/", "/demo-api/tickets/preview/",
-    "/demo-api/tickets/create-local/"})
+    "/demo-api/query/", "/demo-api/query-stream/", "/demo-api/tickets/preview/"})
 
 
 def _original_state():
@@ -1235,10 +1231,9 @@ def _answer(asset_id, question, continuation=None, thread_id=None):
                 question=asked_question, state=state, presentation=presentation,
                 selected_cause=selected_cause, conflict=conflict,
             ),
-            existing_ticket=find_open_ticket(
-                tenant.id, customer.id, asset.id,
-                issue_key(thread_id, getattr(context, "original_complaint", "")),
-            ),
+            # Tickets are official ServiceCalls in MySQL (servy_dev gateway), which
+            # performs its own duplicate check; this legacy demo stores none.
+            existing_ticket=None,
         )
     return {
         "response_type": response_type, "reason_code": contract.get("reason_code"),
@@ -1323,134 +1318,6 @@ def _ticket_fields(body):
             "complaint_text": validated["complaint_text"], "customer_id": customer.id,
             "site_id": asset.site_id, "asset_id": asset.id,
             "priority": "normal", "status": "open"}
-
-
-def _local_ticket_fields(body):
-    """Validate UI values and derive all ownership fields from signed server scope."""
-    from core.local_ticket_options import (
-        COMPLAINT_TYPES, MACHINE_STATUSES, PRIORITIES, SEVERITIES, TICKET_TYPES,
-    )
-    validated = _validated_ticket_request(body, max_description=MAX_LOCAL_TICKET_DESCRIPTION)
-    tenant, customer, asset = validated["tenant"], validated["customer"], validated["asset"]
-    site = asset.site
-    call_type = str(body.get("call_type", "")).strip()
-    contact_name = str(body.get("contact_name", "")).strip()
-    severity = str(body.get("severity", "")).strip()
-    priority = str(body.get("priority", "normal")).strip().lower()
-    machine_status = str(body.get("machine_status", "")).strip()
-    if call_type not in TICKET_TYPES:
-        raise ValueError("Unsupported ticket type")
-    if validated["complaint_type"] not in COMPLAINT_TYPES:
-        raise ValueError("Unsupported complaint type")
-    if not site or site.customer_id != customer.id or site.tenant_id != tenant.id:
-        raise ValueError("Facility is outside the approved customer scope")
-    if len(contact_name) > 150 or severity not in SEVERITIES \
-            or priority not in {value for value, _ in PRIORITIES} \
-            or machine_status not in MACHINE_STATUSES:
-        raise ValueError("Invalid ticket field")
-    return {"tenant_id": tenant.id, "customer_id": customer.id,
-            "customer_name": customer.name, "site_id": site.id, "site_name": site.name,
-            "asset_id": asset.id, "asset_name": asset.name, "asset_code": asset.asset_code,
-            "call_type": call_type, "complaint_type": validated["complaint_type"],
-            "complaint_text": validated["complaint_text"], "contact_name": contact_name,
-            "severity": severity, "priority": priority, "machine_status": machine_status,
-            "status": "open", "technician_notes": "",
-            "source_conversation_id": validated.get("conversation_key", ""),
-            "created_by": "servy-real-demo"}
-
-
-def _existing_local_ticket(fields):
-    """An unresolved ticket already raised for the same chat issue, if any."""
-    if not isinstance(fields, dict):
-        return None
-    return find_open_ticket(
-        fields.get("tenant_id"), fields.get("customer_id"), fields.get("asset_id"),
-        fields.get("source_conversation_id", ""),
-    )
-
-
-def _store_local_ticket(fields, attachments=()):
-    """Persist only to the separately configured SQLite technician workspace."""
-    from datetime import datetime, timezone
-    import uuid
-    from core.local_ticket_store import (
-        MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, open_local_store, serialize_ticket,
-    )
-    if len(attachments) > MAX_ATTACHMENTS:
-        raise ValueError("Too many local ticket attachments")
-    total_size = 0
-    for item in attachments:
-        content = item.get("content")
-        if not isinstance(content, bytes):
-            raise ValueError("Invalid ticket attachment")
-        if len(content) > MAX_ATTACHMENT_BYTES:
-            raise ValueError("Ticket attachment is too large")
-        total_size += len(content)
-    if total_size > MAX_LOCAL_TICKET_UPLOAD:
-        raise ValueError("Ticket attachments exceed the local upload limit")
-
-    now = datetime.now(timezone.utc).isoformat()
-    ticket_id = f"LOCAL-{now[:10].replace('-', '')}-{uuid.uuid4().hex[:8].upper()}"
-    record = {"id": ticket_id, **fields, "created_at": now, "updated_at": now}
-    connection = open_local_store()
-    try:
-        with connection:
-            columns = ", ".join(record.keys())
-            placeholders = ", ".join("?" for _ in record)
-            connection.execute(
-                f"INSERT INTO local_tickets ({columns}) VALUES ({placeholders})",
-                tuple(record.values()),
-            )
-            for uploaded in attachments:
-                safe_name = Path(str(uploaded.get("name", "attachment")).replace("\\", "/")).name[:255]
-                connection.execute(
-                    "INSERT INTO local_ticket_attachments "
-                    "(id, ticket_id, tenant_id, name, content_type, size, content) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (uuid.uuid4().hex, ticket_id, fields["tenant_id"], safe_name,
-                     str(uploaded.get("content_type") or "application/octet-stream")[:255],
-                     len(uploaded["content"]), uploaded["content"]),
-                )
-        saved = connection.execute("SELECT * FROM local_tickets WHERE id = ?", (ticket_id,)).fetchone()
-        return serialize_ticket(connection, saved)
-    finally:
-        connection.close()
-
-
-def _parse_local_ticket_request(content_type, raw):
-    """Parse a JSON ticket object or multipart JSON plus local-only files."""
-    if content_type.lower().startswith("application/json"):
-        body = json.loads(raw.decode("utf-8"))
-        if not isinstance(body, dict):
-            raise ValueError("Invalid local ticket")
-        return body, []
-    if not content_type.lower().startswith("multipart/form-data") \
-            or "\r" in content_type or "\n" in content_type or len(content_type) > 512:
-        raise ValueError("Unsupported local ticket form")
-    from email.parser import BytesParser
-    from email.policy import default
-    message = BytesParser(policy=default).parsebytes(
-        b"MIME-Version: 1.0\r\nContent-Type: " + content_type.encode("ascii")
-        + b"\r\n\r\n" + raw
-    )
-    if not message.is_multipart():
-        raise ValueError("Invalid local ticket form")
-    body = None
-    attachments = []
-    for part in message.iter_parts():
-        name = part.get_param("name", header="content-disposition")
-        filename = part.get_filename()
-        payload = part.get_payload(decode=True) or b""
-        if name == "ticket" and filename is None and body is None:
-            body = json.loads(payload.decode(part.get_content_charset() or "utf-8"))
-        elif name == "attachments" and filename is not None:
-            attachments.append({"name": filename, "content_type": part.get_content_type(),
-                                "content": payload})
-        else:
-            raise ValueError("Unexpected local ticket form field")
-    if not isinstance(body, dict):
-        raise ValueError("Invalid local ticket")
-    return body, attachments
 
 
 _TERMINAL_LOCK = Lock()
@@ -1690,35 +1557,14 @@ class Handler(BaseHTTPRequestHandler):
         if not authorized:
             return self._send(401, {"detail": "Demo identity required"})
         path = urlsplit(self.path).path
-        if path not in ("/demo-api/query/", "/demo-api/query-stream/",
-                        "/demo-api/tickets/preview/", "/demo-api/tickets/create-local/"):
+        if path not in ("/demo-api/query/", "/demo-api/query-stream/", "/demo-api/tickets/preview/"):
             return self._send(404, {"detail": "Not found"})
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            max_length = (MAX_BODY if path in {"/demo-api/query/", "/demo-api/query-stream/"} else
-                          MAX_LOCAL_TICKET_BODY if path == "/demo-api/tickets/create-local/" else 9000)
+            max_length = MAX_BODY if path in {"/demo-api/query/", "/demo-api/query-stream/"} else 9000
             if length < 1 or length > max_length:
                 return self._send(400, {"detail": "Invalid request size"})
             raw = self.rfile.read(length)
-            if path == "/demo-api/tickets/create-local/":
-                try:
-                    body, attachments = _parse_local_ticket_request(
-                        self.headers.get("Content-Type", "application/json"), raw
-                    )
-                    with read_only_database():
-                        fields = _local_ticket_fields(body)
-                except Exception:
-                    return self._send(400, {"detail": "Ticket details are invalid or authorization changed"})
-                existing = _existing_local_ticket(fields)
-                if existing:
-                    # Same unresolved issue in the same chat: never a second ticket.
-                    return self._send(200, {"mode": "LOCAL_SQLITE", "ticket": existing,
-                                            "duplicate": True})
-                try:
-                    ticket = _store_local_ticket(fields, attachments)
-                except Exception:
-                    return self._send(503, {"detail": "The local technician ticket could not be saved"})
-                return self._send(201, {"mode": "LOCAL_SQLITE", "ticket": ticket})
             body = json.loads(raw)
             if not isinstance(body, dict):
                 return self._send(400, {"detail": "Invalid request"})

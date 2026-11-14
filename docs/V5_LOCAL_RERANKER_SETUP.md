@@ -2,7 +2,7 @@
 
 This integrates the **V5 BGE cross-encoder reranker** into the already-authorized
 Django retrieval pipeline. It does NOT install Qwen3 as the serving embedding
-retriever; existing MiniLM/Chroma retrieval remains the default. A historical V5 diagnostic reported **88.10% Hit@1**, while the latest
+retriever; BGE-small dense retrieval (MiniLM has been retired) remains the default. A historical V5 diagnostic reported **88.10% Hit@1**, while the latest
 V5/V6 comparison reported **83.33% Hit@1 (35/42)** and **88.10% Hit@5 (37/42)**
 on the reused development set. The difference in evaluation configurations is
 not yet reconciled. Neither is an independent live-UI accuracy guarantee.

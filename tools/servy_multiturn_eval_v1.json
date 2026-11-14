@@ -1,0 +1,86 @@
+{
+  "version": "servy-multiturn-eval-v1",
+  "description": "Multi-turn conversational RAG scenarios for the three approved assets. Separate from, and never replacing, the protected 67-turn dataset. Expectations are taken from the approved manual text. 'include' phrases must appear in the shown answer or in the cited source sentence behind it; 'exclude' phrases must appear in neither; 'heading' must be among the cited sections; 'refuse' requires an answer with no technical claims; 'clarify' requires a clarifying question.",
+  "scenarios": [
+    {
+      "id": "MT-01", "asset": 59, "tests": ["follow-up", "ordinal-reference", "independent-after-symptom"],
+      "turns": [
+        {"say": "My split AC is not cooling.", "kind": "symptom",
+         "heading": "POOR COOLING", "include": ["Dirty filter or coil"]},
+        {"say": "What about the filters?", "kind": "follow-up",
+         "include_any": ["filter"], "heading_any": ["POOR COOLING", "MAINTENANCE INTERVALS", "CHECKLIST"]},
+        {"say": "Explain the second possible cause.", "kind": "ordinal",
+         "heading": "POOR COOLING", "include": ["Restricted airflow or blocked outdoor unit clearance"],
+         "exclude": ["Dirty filter or coil"]},
+        {"say": "What is the warranty period for the compressor in years?", "kind": "independent-unsupported",
+         "refuse": true, "exclude": ["Dirty filter or coil", "Restricted airflow"]}
+      ]
+    },
+    {
+      "id": "MT-02", "asset": 59, "tests": ["correction"],
+      "turns": [
+        {"say": "Water is leaking from the indoor unit.", "kind": "symptom",
+         "heading": "WATER LEAKAGE", "include": ["Blocked or incorrectly routed condensate drain"]},
+        {"say": "Sorry, I meant ice is forming on the coil, not water.", "kind": "correction",
+         "heading": "ICE ON COIL", "include": ["Restricted airflow, sensor issue, or refrigerant-system problem"],
+         "exclude": ["condensate drain"]}
+      ]
+    },
+    {
+      "id": "MT-03", "asset": 60, "tests": ["pronoun", "topic-change"],
+      "turns": [
+        {"say": "The VRF outdoor module shows a high-pressure alarm.", "kind": "symptom",
+         "heading": "HIGH-PRESSURE", "include": ["Blocked airflow, dirty coil, fan issue, or operating conditions outside design"]},
+        {"say": "What could cause it?", "kind": "pronoun",
+         "heading": "HIGH-PRESSURE", "include": ["Blocked airflow, dirty coil, fan issue, or operating conditions outside design"]},
+        {"say": "What about a communication fault instead?", "kind": "topic-change",
+         "heading": "COMMUNICATION", "include": ["Communication cable damage or incorrect topology"],
+         "exclude": ["Blocked airflow, dirty coil"]}
+      ]
+    },
+    {
+      "id": "MT-04", "asset": 61, "tests": ["ordinal-reference", "independent-after-symptom"],
+      "turns": [
+        {"say": "The airflow from the ducts is weak.", "kind": "symptom",
+         "heading": "WEAK AIRFLOW", "include": ["Dirty or incorrectly installed filters"]},
+        {"say": "Explain the third cause.", "kind": "ordinal",
+         "heading": "WEAK AIRFLOW", "include": ["Dirty coil, fan issue"],
+         "exclude": ["Blocked return grille or supply outlets"]},
+        {"say": "How often should the filters be inspected?", "kind": "independent",
+         "heading": "INTERVALS", "include": ["Monthly or more often in dusty environments"],
+         "exclude": ["Blocked return grille"]}
+      ]
+    },
+    {
+      "id": "MT-05", "asset": 61, "tests": ["multi-part"],
+      "turns": [
+        {"say": "What causes weak airflow, and how often should the filters be inspected?", "kind": "multi-part",
+         "include": ["Dirty or incorrectly installed filters", "Monthly or more often in dusty environments"]}
+      ]
+    },
+    {
+      "id": "MT-06", "asset": 60, "tests": ["unsupported-specification"],
+      "turns": [
+        {"say": "What is the refrigerant charge in kilograms for this module?", "kind": "unsupported", "refuse": true}
+      ]
+    },
+    {
+      "id": "MT-07", "asset": 59, "tests": ["ambiguous"],
+      "turns": [
+        {"say": "It is not working properly.", "kind": "ambiguous", "clarify": true}
+      ]
+    },
+    {
+      "id": "MT-08", "asset": 59, "tests": ["parallel-conversations", "no-mixing"],
+      "turns": [
+        {"conversation": "A", "asset": 59, "say": "The split AC is making a vibrating noise.", "kind": "symptom",
+         "heading": "NOISE OR VIBRATION", "include": ["Loose panel or mounting fastener"]},
+        {"conversation": "B", "asset": 61, "say": "The ductable unit is making excessive noise.", "kind": "symptom",
+         "heading": "NOISE OR VIBRATION", "include": ["Loose panels, unsupported ducts"]},
+        {"conversation": "A", "asset": 59, "say": "Explain the second cause.", "kind": "ordinal",
+         "heading": "NOISE OR VIBRATION", "include": ["Fan obstruction, worn bearing, or unstable base"],
+         "exclude": ["unsupported ducts", "Loose panel or mounting fastener"]}
+      ]
+    }
+  ]
+}

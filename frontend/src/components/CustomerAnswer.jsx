@@ -51,6 +51,29 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
       if (revision.current === current) setSource({ error: 'This source is unavailable or access has changed. Ask the question again.', citation });
     }
   }
+  function citationButtons(ids) {
+    return [...new Set(ids || [])].map(id => {
+      const citation = data.citations.find(s => s.id === id);
+      if (!citation) return null;
+      const number = data.citations.indexOf(citation) + 1;
+      return <button type="button" className="customer-answer-citation" key={id}
+        title={`Open source ${number}`}
+        aria-label={`Source ${number}: ${citation.title}${citation.heading ? `, ${citation.heading}` : ''}`}
+        onClick={event => open(event, citation)}>[{number}]</button>;
+    });
+  }
+  // Consecutive list items render as one list; other segments as one paragraph each,
+  // except that a claim joins the paragraph it continues.
+  function groupSegments(segments) {
+    const groups = [];
+    for (const segment of segments) {
+      const list = segment.kind === 'list_item';
+      const last = groups.at(-1);
+      if (last && last.list && list) last.items.push(segment);
+      else groups.push({ list, items: [segment] });
+    }
+    return groups;
+  }
   if (!data || (presentation.equipment?.id && String(presentation.equipment.id) !== String(assetId))) {
     return <p role="status">No validated answer is available for the selected equipment. Please ask again.</p>;
   }
@@ -61,7 +84,16 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
         title={`Open source ${index + 1}`}
         aria-label={`Source ${index + 1}: ${citation.title}${citation.heading ? `, ${citation.heading}` : ''}`}
         onClick={event => open(event, citation)}>[{index + 1}]</button>)}</p>}
-    {!!data.sections.length && <div className="customer-answer-points">
+    {data.response && <div className="customer-answer-conversation">
+      {groupSegments(data.response.segments).map((group, groupIndex) => group.list
+        ? <ul key={groupIndex}>{group.items.map((segment, index) => <li key={index}>
+            {segment.text}{citationButtons(segment.citation_ids)}</li>)}</ul>
+        : <p key={groupIndex} className={group.items[0].kind === 'question' ? 'customer-answer-followup' : undefined}>
+            {group.items.map((segment, index) => <React.Fragment key={index}>
+              {index > 0 && ' '}{segment.text}{citationButtons(segment.citation_ids)}</React.Fragment>)}
+          </p>)}
+    </div>}
+    {!data.response && !!data.sections.length && <div className="customer-answer-points">
       {data.sections.map(section => <section className="customer-answer-point" key={section.number}>
         {!data.focused && <h3><span aria-hidden="true">{section.number}</span>{section.title}</h3>}
         {section.claims.map((claim, index) => <div className="customer-answer-claim" key={claim.id || index}>

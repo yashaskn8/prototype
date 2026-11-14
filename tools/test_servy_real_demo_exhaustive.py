@@ -180,6 +180,76 @@ class ExhaustiveApprovedDocumentScanTests(unittest.TestCase):
         self.assertFalse(result["coverage"]["complete"])
         self.assertEqual(result["references"], [])
 
+    def test_exhaustive_scan_retrieves_authorized_documents_for_demo_assets(self):
+        """Integration: exhaustive scan returns references with correct scope for assets 59, 60, 61."""
+        cases = (
+            (59, "Split AC Unit 2T", 14, "SKY-AST-00001"),
+            (60, "VRF Outdoor Module", 13, "SKY-AST-00002"),
+            (61, "Ductable AC 5T", 14, "SKY-AST-00003"),
+        )
+        for asset_id, asset_name, customer_id, asset_code in cases:
+            with self.subTest(asset_id=asset_id):
+                tenant = SimpleNamespace(id=273)
+                customer = SimpleNamespace(id=customer_id)
+                asset = SimpleNamespace(
+                    id=asset_id, name=asset_name, model_number=f"SYN-{asset_id}",
+                    asset_code=asset_code,
+                    product=SimpleNamespace(name=asset_name, category=SimpleNamespace(name="HVAC")),
+                )
+                doc = SimpleNamespace(
+                    id=100 + asset_id, tenant_id=273,
+                    title=f"Approved {asset_name} manual",
+                    is_confidential=False, disable_sharing=False, is_rag_enabled=True,
+                )
+                chunk = SimpleNamespace(
+                    id=1000 + asset_id, document_id=doc.id, tenant_id=273,
+                    text=f"Troubleshooting guidance for {asset_name}.",
+                    heading="Troubleshooting", document=doc, is_quarantined=False,
+                )
+                ranked = [SimpleNamespace(
+                    document_id=chunk.document_id, chunk_id=chunk.id, score=0.6,
+                )]
+                with patch("core.services.knowledge_scope.get_applicable_knowledge_queryset",
+                           return_value=_DocumentQuery([doc])), \
+                     patch("core.services.retriever._knowledge_candidates", return_value=[chunk]), \
+                     patch("core.services.retriever._sparse_score_candidates", return_value=ranked), \
+                     patch("core.services.retriever.get_serving_config", return_value=object()), \
+                     patch("core.services.vectors.embed_text", side_effect=lambda _text: {"v": 1}), \
+                     patch("core.services.identifiers.extract_identifiers", return_value=set()), \
+                     patch("core.services.customer_isolation.is_verified_real_document", return_value=True), \
+                     patch("core.services.content_safety.detect_document_prompt_injection", return_value=False):
+                    result = scan.search_all_approved_documents(
+                        tenant=tenant, customer=customer, asset=asset,
+                        question=f"The {asset_name} is not working",
+                        original_complaint=f"The {asset_name} is not working",
+                    )
+                self.assertGreater(len(result["references"]), 0,
+                    f"Exhaustive scan returned no references for asset {asset_id}")
+                self.assertTrue(
+                    all(ref["document_id"] == doc.id for ref in result["references"]),
+                    f"References for asset {asset_id} include unauthorized documents",
+                )
+                self.assertEqual(result["coverage"]["approved_documents"], 1)
+                self.assertTrue(result["coverage"]["complete"])
+
+    def test_graceful_fallback_coverage_when_scan_raises(self):
+        """The _attach_full_scope_scan wrapper degrades gracefully when the scan fails."""
+        from tools import servy_real_demo as demo
+        rag = {"engine": "extractive", "references": []}
+        asset = SimpleNamespace(id=60, name="Synthetic AC")
+        tenant = SimpleNamespace(id=273)
+        customer = SimpleNamespace(id=13)
+        with patch.object(demo, "search_all_approved_documents",
+                          side_effect=RuntimeError("Simulated scan failure")):
+            result = demo._attach_full_scope_scan(
+                rag, tenant=tenant, customer=customer, asset=asset,
+                question="Not cooling",
+            )
+        self.assertIs(result, rag)
+        self.assertFalse(result["document_coverage"]["scan_completed"])
+        self.assertFalse(result["document_coverage"]["complete"])
+        self.assertIn("did not finish", result["document_coverage"]["note"])
+
 
 if __name__ == "__main__":
     unittest.main()

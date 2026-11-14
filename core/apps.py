@@ -20,7 +20,4 @@ class CoreConfig(AppConfig):
             require_verified_v5_reranker()
 
         # No embedding model is loaded here. Active serving uses the verified
-        # local BGE profile, loaded on first use by core.ml.embeddings. The old
-        # unconditional warm-up loaded the legacy MiniLM model in every Django
-        # process (management commands and tests included) and could attempt a
-        # network download; the legacy MiniLM path still loads it on demand.
+        # local BGE profile, loaded offline on first use by core.ml.embeddings.

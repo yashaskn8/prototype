@@ -11,7 +11,8 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
         )
 
     def test_retrieval_and_dialogue_remain_deterministic_while_qwen_is_enabled(self):
-        self.assertIn("$env:SERVY_REAL_DEMO_DIALOGUE_MODE = 'rules'", self.launcher)
+        # The customer demo is the official Django gateway on servy_dev.
+        self.assertIn("$env:SERVY_DEMO_GATEWAY = 'customer'", self.launcher)
         self.assertIn("$env:SERVY_ALLOW_REMOTE_LLM = '0'", self.launcher)
         self.assertIn("$env:SERVY_LLM_PROVIDER = 'extractive'", self.launcher)
         self.assertNotIn("$env:SERVY_LLM_PROVIDER = 'ollama'", self.launcher)

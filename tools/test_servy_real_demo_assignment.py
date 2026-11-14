@@ -474,20 +474,20 @@ class SourceBoundaryTests(unittest.TestCase):
 
 
 class AssignmentWorkflowTests(unittest.TestCase):
-    def _post(self, fields, store):
+    def test_legacy_demo_stores_no_tickets(self):
+        """Tickets are official ServiceCalls in servy_dev (gateway); no SQLite store remains."""
+        for name in ("_store_local_ticket", "_existing_local_ticket", "_local_ticket_fields",
+                     "_parse_local_ticket_request"):
+            self.assertFalse(hasattr(demo, name), name)
+        self.assertFalse(hasattr(assignment, "find_open_ticket"))
         handler = object.__new__(demo.Handler)
         handler.path = "/demo-api/tickets/create-local/"
-        payload = json.dumps({"synthetic": "form"}).encode()
-        handler.headers = {"Content-Length": str(len(payload)),
-                           "Content-Type": "application/json"}
-        handler.rfile = io.BytesIO(payload)
+        handler.headers = {"Content-Length": "2", "Content-Type": "application/json"}
+        handler.rfile = io.BytesIO(b"{}")
         handler._authorized = lambda: True
         handler._send = lambda status, value: (status, value)
-        with patch.object(demo, "read_only_database", return_value=nullcontext()), \
-                patch.object(demo, "_local_ticket_fields", return_value=fields), \
-                patch.object(demo, "_store_local_ticket", side_effect=store) as stored:
-            status, response = handler.do_POST()
-        return status, response, stored
+        status, _ = handler.do_POST()
+        self.assertEqual(status, 404)
 
     def test_answer_never_claims_an_assignment_before_the_workflow_confirms(self):
         result, _, _ = _run("What causes involve the compressor?",
@@ -498,68 +498,6 @@ class AssignmentWorkflowTests(unittest.TestCase):
         self.assertIn("Nothing has been submitted yet", block["notice"])
         self.assertNotIn("LOCAL-", json.dumps(result))
         self.assertTrue(result["ticket_context"])
-
-    def test_assignment_success_is_reported_only_from_the_store_result(self):
-        status, response, stored = self._post(
-            {"asset_id": 60}, lambda *_: {"id": "LOCAL-SYNTHETIC", "status": "open"})
-        self.assertEqual(status, 201)
-        self.assertEqual(response["ticket"]["id"], "LOCAL-SYNTHETIC")
-        self.assertNotIn("duplicate", response)
-        self.assertEqual(stored.call_count, 1)
-
-    def test_assignment_failure_is_reported_honestly(self):
-        def fail(*_):
-            raise OSError("synthetic store failure")
-        status, response, _ = self._post({"asset_id": 60}, fail)
-        self.assertEqual(status, 503)
-        self.assertNotIn("ticket", response)
-        self.assertIn("could not be saved", response["detail"])
-
-    def test_already_assigned_issue_does_not_create_a_duplicate(self):
-        key = assignment.issue_key(THREAD, "What causes involve the compressor?")
-        fields = {
-            "tenant_id": 273, "customer_id": 13, "customer_name": "Synthetic customer",
-            "site_id": 7, "site_name": "Synthetic site", "asset_id": 60,
-            "asset_name": "Synthetic asset", "asset_code": "SYN-60",
-            "call_type": "Breakdown Service", "complaint_type": "Cooling / performance",
-            "complaint_text": "Synthetic escalation", "contact_name": "",
-            "severity": "Medium", "priority": "normal", "machine_status": "Intermittent",
-            "status": "open", "technician_notes": "", "source_conversation_id": key,
-            "created_by": "synthetic-test",
-        }
-        with tempfile.TemporaryDirectory() as folder:
-            database = Path(folder) / "technician-tickets.sqlite3"
-            with patch.object(settings, "DATABASES", {"default": {
-                    "ENGINE": "django.db.backends.mysql", "NAME": "unchanged"}},
-                    create=True), \
-                    patch.object(settings, "SERVY_LOCAL_TICKET_DB_PATH", database,
-                                 create=True):
-                self.assertIsNone(demo._existing_local_ticket(fields))
-                self.assertFalse(database.exists())  # the lookup never creates a store
-                ticket = demo._store_local_ticket(fields)
-
-                status, response, stored = self._post(
-                    fields, AssertionError("a duplicate ticket must not be stored"))
-                self.assertEqual(status, 200)
-                self.assertTrue(response["duplicate"])
-                self.assertEqual(response["ticket"]["id"], ticket["id"])
-                self.assertEqual(stored.call_count, 0)
-
-                # A further follow-up on the same unresolved issue reports the
-                # existing assignment instead of asking for another ticket.
-                result, _, _ = _run("What causes involve the compressor?",
-                                    [contract(), contract()], thread_id=THREAD)
-                block = result["issue_assignment"]
-                self.assertEqual(block["status"], "ALREADY_ASSIGNED")
-                self.assertEqual(block["existing_ticket"],
-                                 {"id": ticket["id"], "status": "open"})
-                self.assertIn("No duplicate ticket", block["notice"])
-
-                # Another customer, asset or chat never sees that ticket.
-                self.assertIsNone(assignment.find_open_ticket(273, 14, 60, key))
-                self.assertIsNone(assignment.find_open_ticket(273, 13, 59, key))
-                self.assertIsNone(assignment.find_open_ticket(
-                    273, 13, 60, assignment.issue_key("thread-other-0002", "x")))
 
     def test_ticket_binding_is_signed_and_rejects_a_forged_issue_key(self):
         from django.core import signing
@@ -585,11 +523,11 @@ class AssignmentWorkflowTests(unittest.TestCase):
         key = assignment.issue_key(THREAD, COMPLAINT)
         with patch.object(demo, "_asset", return_value=scope):
             self.assertEqual(
-                demo._local_ticket_fields(body(key))["source_conversation_id"], key)
+                demo._validated_ticket_request(body(key))["conversation_key"], key)
             self.assertEqual(
-                demo._local_ticket_fields(body(""))["source_conversation_id"], "")
+                demo._validated_ticket_request(body(""))["conversation_key"], "")
             with self.assertRaises(ValueError):
-                demo._local_ticket_fields(body("another-conversation"))
+                demo._validated_ticket_request(body("another-conversation"))
 
 
 if __name__ == "__main__":

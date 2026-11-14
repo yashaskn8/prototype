@@ -113,19 +113,14 @@ def _conversation_ticket_evidence(interaction):
                     or conv.customer_id != interaction.customer_id
                     or conv.asset_id != interaction.asset_id):
         return "", ""
-    first = conv.messages.filter(sender_role="customer").order_by("created_at", "id").first()
-    authentic = (first.message_text or "").strip()[:4000] if first else ""
-    messages = list(conv.messages.order_by("-created_at", "-id")[:24])
-    messages.reverse()
-    excerpts = []
-    for message in messages:
-        if message.sender_role not in ("customer", "assistant"):
-            continue
-        role = "Customer reported" if message.sender_role == "customer" else "Assistant guidance (not confirmed performed)"
-        sanitized = " ".join((message.message_text or "").split())[:450]
-        if sanitized:
-            excerpts.append(f"{role}: {sanitized}")
-    return authentic, "\n".join(excerpts)[:9000]
+    # The complete conversation, chronological and untruncated, in the same
+    # structured form the ticket preview shows the customer.
+    from core.services.conversation_ticket import build_conversation_ticket_description
+    try:
+        built = build_conversation_ticket_description(conv)
+    except ValueError:
+        return "", ""
+    return built["complaint"], built["description"]
 
 
 def create_call_from_interaction(interaction, customer_note: str = "", session_id: str = None):
@@ -248,6 +243,13 @@ def create_call_from_interaction(interaction, customer_note: str = "", session_i
                     f"Conversation evidence (customer statements and assistant guidance; no checks independently verified):\n"
                     f"{conversation_evidence or 'No linked conversation transcript.'}"
                 )
+                if conversation_evidence:
+                    # The technician receives exactly the description the customer
+                    # reviewed in the preview (it already carries the transcript,
+                    # cited sources and assistant answers). The customer's own
+                    # confirmation note is the only, clearly labelled addition.
+                    tech_notes = conversation_evidence + (
+                        f"\n\nCustomer note at confirmation:\n- {clean_note}" if clean_note else "")
 
                 call = create_service_call_record(
                     tenant=tenant,

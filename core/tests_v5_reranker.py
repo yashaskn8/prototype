@@ -11,7 +11,8 @@ from unittest import mock
 from django.test import SimpleTestCase, override_settings
 
 from core.ml import reranker
-from core.services.retriever import _matches_current_minilm_vector
+from core.ml.embeddings import EmbeddingProfile
+from core.services.retriever import _matches_current_bge_vector
 
 
 def chunk(name, kind="knowledge_document", score=0.3):
@@ -204,25 +205,26 @@ class V5RerankerTests(SimpleTestCase):
             "servy_v5_bge_verified",
         )
 
-    def test_stale_minilm_vector_cannot_supply_a_v5_candidate(self):
+    def test_stale_bge_vector_cannot_supply_a_v5_candidate(self):
         source = SimpleNamespace(
-            id=7, document_id=5, chunk_index=0, tenant_id=2,
+            id=7, document_id=5, chunk_index=0, tenant_id=2, heading="Procedure",
             text="Current authorized manual passage",
             document=SimpleNamespace(index_version=3),
         )
-        profile = SimpleNamespace(model_id="all-MiniLM-L6-v2")
+        profile = EmbeddingProfile("test-bge", "BAAI/bge-small-en-v1.5", "rev-1", 384,
+                                   "test-collection", content_first=True)
         metadata = {
             "chunk_id": 7, "document_id": 5, "chunk_index": 0,
-            "tenant_id": 2, "document_version": "3",
-            "content_sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest(),
-            "embedding_model": profile.model_id,
+            "tenant_id": 2, "document_version": 3,
+            "content_sha256": hashlib.sha256(b"Procedure" + bytes([10]) + b"Current authorized manual passage").hexdigest(),
+            "embedding_model": profile.model_id, "embedding_revision": "rev-1",
         }
-        self.assertTrue(_matches_current_minilm_vector(metadata, source, profile))
-        self.assertFalse(_matches_current_minilm_vector(
+        self.assertTrue(_matches_current_bge_vector(metadata, source, profile))
+        self.assertFalse(_matches_current_bge_vector(
             {**metadata, "content_sha256": hashlib.sha256(b"stale passage").hexdigest()},
             source, profile,
         ))
-        self.assertFalse(_matches_current_minilm_vector(
+        self.assertFalse(_matches_current_bge_vector(
             {**metadata, "chunk_id": 999}, source, profile,
         ))
 

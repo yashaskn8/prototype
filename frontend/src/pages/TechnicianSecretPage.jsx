@@ -4,6 +4,10 @@ import {
   Inbox, KeyRound, LogOut, RefreshCw, ShieldCheck, Ticket, Wrench,
 } from 'lucide-react';
 import './TechnicianSecretPage.css';
+import {
+  INBOX_PATH, TECHNICIAN_STATUS_OPTIONS, attachmentPath, defaultUpdateStatus, normalizeTicket,
+  normalizeTickets, ticketPath,
+} from './technicianGatewayClient';
 
 async function technicianCall(path, token, options = {}) {
   const headers = {
@@ -21,14 +25,6 @@ async function technicianCall(path, token, options = {}) {
   }
   return response;
 }
-
-const STATUS_OPTIONS = [
-  ['open', 'Open'],
-  ['assigned', 'Assigned'],
-  ['in_progress', 'In progress'],
-  ['marked_for_closure', 'Marked for closure'],
-  ['closed', 'Closed'],
-];
 
 function formatDate(value) {
   if (!value) return 'Not recorded';
@@ -59,9 +55,9 @@ export function TechnicianSecretPage() {
       if (inFlight) return;
       inFlight = true;
       try {
-        const response = await technicianCall('/tech-api/tickets/', token);
+        const response = await technicianCall(INBOX_PATH, token);
         const data = await response.json();
-        if (!stopped) setTickets(Array.isArray(data.tickets) ? data.tickets : []);
+        if (!stopped) setTickets(normalizeTickets(data));
       } catch {
         // Keep the last successful queue visible; the manual refresh reports errors.
       } finally {
@@ -80,9 +76,9 @@ export function TechnicianSecretPage() {
     setLoading(true);
     setError('');
     try {
-      const response = await technicianCall('/tech-api/tickets/', accessCode);
+      const response = await technicianCall(INBOX_PATH, accessCode);
       const data = await response.json();
-      setTickets(Array.isArray(data.tickets) ? data.tickets : []);
+      setTickets(normalizeTickets(data));
     } catch (requestError) {
       setError(requestError.message || 'Could not load the technician queue.');
       throw requestError;
@@ -98,11 +94,11 @@ export function TechnicianSecretPage() {
     setLoading(true);
     setError('');
     try {
-      const response = await technicianCall('/tech-api/tickets/', code);
+      const response = await technicianCall(INBOX_PATH, code);
       const data = await response.json();
       setToken(code);
       setEntry('');
-      setTickets(Array.isArray(data.tickets) ? data.tickets : []);
+      setTickets(normalizeTickets(data));
       setSelected(null);
       setNotice('Technician access verified.');
     } catch (requestError) {
@@ -116,13 +112,12 @@ export function TechnicianSecretPage() {
     setError('');
     setNotice('');
     try {
-      const response = await technicianCall(
-        `/tech-api/tickets/${encodeURIComponent(ticket.id)}/`, token,
-      );
+      const response = await technicianCall(ticketPath(ticket.id), token);
       const data = await response.json();
-      setSelected(data.ticket || null);
-      setStatus(data.ticket?.status || 'open');
-      setNotes(data.ticket?.technicianNotes || '');
+      const detail = normalizeTicket(data.ticket);
+      setSelected(detail);
+      setStatus(defaultUpdateStatus(detail?.status));
+      setNotes('');
     } catch (requestError) {
       setError(requestError.message || 'Could not open this ticket.');
     }
@@ -135,17 +130,18 @@ export function TechnicianSecretPage() {
     setError('');
     setNotice('');
     try {
-      const response = await technicianCall(
-        `/tech-api/tickets/${encodeURIComponent(selected.id)}/`,
-        token,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ status, technicianNotes: notes }),
-        },
-      );
-      const data = await response.json();
-      setSelected(data.ticket || null);
-      setNotice('Ticket update saved to the local technician workspace.');
+      // Each update is an append-only service-call record; the generated
+      // description is never overwritten.
+      await technicianCall(ticketPath(selected.id, 'update/'), token, {
+        method: 'POST',
+        body: JSON.stringify({ status, note: notes.trim() }),
+      });
+      const detail = await technicianCall(ticketPath(selected.id), token);
+      const refreshed = normalizeTicket((await detail.json()).ticket);
+      setSelected(refreshed);
+      setStatus(defaultUpdateStatus(refreshed?.status));
+      setNotes('');
+      setNotice('Ticket update saved to the local development database.');
       await loadQueue();
     } catch (requestError) {
       setError(requestError.message || 'Could not save the ticket update.');
@@ -159,7 +155,7 @@ export function TechnicianSecretPage() {
     setError('');
     try {
       const response = await technicianCall(
-        `/tech-api/tickets/${encodeURIComponent(selected.id)}/attachments/${encodeURIComponent(attachment.id)}/`,
+        attachmentPath(selected.id, attachment.id),
         token,
       );
       const blob = await response.blob();
@@ -298,16 +294,16 @@ export function TechnicianSecretPage() {
                       className={`technician-secret-ticket ${selected?.id === ticket.id ? 'selected' : ''}`}
                       onClick={() => openTicket(ticket)}>
                       <span className="technician-secret-ticket-top">
-                        <strong>{ticket.id}</strong>
+                        <strong>{ticket.ref}</strong>
                         <em className={`status-${ticket.status}`}>{ticket.status.replaceAll('_', ' ')}</em>
                       </span>
-                      <b>{ticket.complaintType || ticket.callType}</b>
+                      <b>{ticket.complaintType || 'Service request'}</b>
                       <span>{ticket.assetName} · {ticket.customerName}</span>
                       <small><Clock3 size={13} /> {formatDate(ticket.createdAt)}</small>
                     </button>
                   ))}
             </div>
-            <div className="technician-secret-queue-foot">Updates are stored only in the local RAG ticket workspace.</div>
+            <div className="technician-secret-queue-foot">Service calls and updates are stored in the local development database.</div>
           </section>
 
           <section className="technician-secret-detail">
@@ -320,7 +316,7 @@ export function TechnicianSecretPage() {
             ) : (
               <article>
                 <header className="technician-secret-detail-heading">
-                  <div><span className="technician-secret-eyebrow">CUSTOMER HANDOFF</span><h2>{selected.id}</h2></div>
+                  <div><span className="technician-secret-eyebrow">CUSTOMER HANDOFF</span><h2>{selected.ref}</h2></div>
                   <em className={`status-${selected.status}`}>{selected.status.replaceAll('_', ' ')}</em>
                 </header>
                 <div className="technician-secret-metadata">
@@ -328,14 +324,34 @@ export function TechnicianSecretPage() {
                   <div><span>Facility</span><strong>{selected.siteName || 'Not recorded'}</strong></div>
                   <div><span>Equipment</span><strong>{selected.assetName || 'Not recorded'}{selected.assetCode ? ` · ${selected.assetCode}` : ''}</strong></div>
                   <div><span>Priority</span><strong>{selected.priority || 'Normal'}</strong></div>
-                  <div><span>Severity</span><strong>{selected.severity || 'Not recorded'}</strong></div>
-                  <div><span>Machine status</span><strong>{selected.machineStatus || 'Not recorded'}</strong></div>
+                  <div><span>Contact</span><strong>{selected.contactName || 'Not recorded'}</strong></div>
                   <div><span>Received</span><strong>{formatDate(selected.createdAt)}</strong></div>
                 </div>
                 <section className="technician-secret-report">
-                  <h3><FileText size={17} /> Customer report and RAG conversation</h3>
-                  <pre>{selected.complaintText || 'No description was provided.'}</pre>
+                  <h3><FileText size={17} /> Service call description</h3>
+                  <pre>{selected.description || selected.complaintText || 'No description was provided.'}</pre>
                 </section>
+                {selected.conversation.length > 0 && (
+                  <section className="technician-secret-report">
+                    <h3><FileText size={17} /> Customer conversation</h3>
+                    <pre>{selected.conversation.map(message => (message.sender_role === 'customer' ? 'Customer' : 'Servy')
+                      + ' (' + message.confirmation + '):\n' + message.message_text).join('\n\n')}</pre>
+                  </section>
+                )}
+                {selected.supportingDocuments.length > 0 && (
+                  <section className="technician-secret-report">
+                    <h3><FileText size={17} /> Cited approved sources</h3>
+                    <ul>{selected.supportingDocuments.map(doc => <li key={doc.document_id + ':' + doc.chunk_id}>
+                      {doc.title}{doc.heading ? ' - ' + doc.heading : ''}</li>)}</ul>
+                  </section>
+                )}
+                {selected.updates.length > 0 && (
+                  <section className="technician-secret-report">
+                    <h3><ClipboardList size={17} /> Technician updates</h3>
+                    <ul>{selected.updates.map(update => <li key={update.id}>
+                      {formatDate(update.created_at)} · {String(update.status || '').replaceAll('_', ' ')} · {update.note}</li>)}</ul>
+                  </section>
+                )}
                 {selected.attachments?.length > 0 && (
                   <section className="technician-secret-attachments">
                     <h3>Issue documentation</h3>
@@ -350,14 +366,14 @@ export function TechnicianSecretPage() {
                   <h3>Technician update</h3>
                   <label>Status
                     <select value={status} onChange={event => setStatus(event.target.value)}>
-                      {STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                      {TECHNICIAN_STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                   </label>
-                  <label>Internal technician notes
+                  <label>Add a technician note
                     <textarea value={notes} onChange={event => setNotes(event.target.value)}
-                      maxLength={8000} rows={4} placeholder="Record inspection findings or the next service action…" />
+                      maxLength={4000} rows={4} placeholder="Record inspection findings or the next service action…" />
                   </label>
-                  <button type="submit" className="technician-secret-primary" disabled={saving}>
+                  <button type="submit" className="technician-secret-primary" disabled={saving || selected.status === 'closed'}>
                     {saving ? <RefreshCw size={16} className="technician-secret-spin" /> : <Check size={16} />}
                     {saving ? 'Saving update…' : 'Save technician update'}
                   </button>
@@ -367,7 +383,7 @@ export function TechnicianSecretPage() {
           </section>
         </div>
         <footer className="technician-secret-footer">
-          <ShieldCheck size={14} /> Local code-gated instance · separate from operational MySQL service calls
+          <ShieldCheck size={14} /> Local code-gated instance · isolated development database, separate from company records
         </footer>
       </main>
     </div>

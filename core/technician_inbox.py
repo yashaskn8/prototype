@@ -245,3 +245,55 @@ class TechnicianTicketAcknowledgeView(APIView):
                 "ticket": _ticket_summary(call, ctx),
                 "detail": "Ticket acknowledged.",
             }, status=status.HTTP_200_OK)
+
+
+TECHNICIAN_STATUSES = {"assigned", "in_progress", "marked_for_closure", "closed"}
+
+
+class TechnicianTicketUpdateView(APIView):
+    """Record a technician status change and/or note as an official CallUpdate.
+
+    The ServiceCall's generated description (technician_notes) is never edited;
+    every note is an append-only CallUpdate row.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        ctx = _authorized_context(request, require_technician=True)
+        profile = ctx["staff_profile"]
+        new_status = str(request.data.get("status") or "").strip()
+        note = " ".join(str(request.data.get("note") or "").split())[:4000]
+        if not new_status and not note:
+            return Response({"detail": "Provide a status, a note, or both."}, status=status.HTTP_400_BAD_REQUEST)
+        if new_status and new_status not in TECHNICIAN_STATUSES:
+            return Response({"detail": "Ticket status is invalid."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            call = _ticket_queryset(ctx).select_for_update().filter(pk=pk).first()
+            if not call:
+                raise NotFound("Ticket not found.")
+            if call.technician_id and call.technician_id != profile.id:
+                return Response({"detail": "This ticket is assigned to another technician."},
+                                status=status.HTTP_409_CONFLICT)
+            if call.status == "closed":
+                return Response({"detail": "This ticket is closed."}, status=status.HTTP_409_CONFLICT)
+            changed = []
+            if not call.technician_id:
+                call.technician = profile
+                changed.append("technician")
+            if new_status and new_status != call.status:
+                call.status = new_status
+                changed.append("status")
+                if new_status == "closed":
+                    call.closed_at = timezone.now()
+                    changed.append("closed_at")
+            if changed:
+                call.save(update_fields=(*changed, "updated_at"))
+            event = CallUpdate.objects.create(
+                tenant_id=call.tenant_id, service_call=call, author=profile,
+                status=new_status or call.status, note=note or f"Status changed to {new_status}.")
+            audit_event(request, "technician_ticket_updated", tenant=call.tenant, object_type="ServiceCall",
+                        object_id=call.id, metadata={"servy_id": call.servy_id, "update_id": event.id,
+                                                     "status": call.status})
+        return Response({"ticket": _ticket_summary(call, ctx), "update": {
+            "id": event.id, "status": event.status, "note": event.note, "created_at": event.created_at}})

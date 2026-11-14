@@ -31,7 +31,7 @@ class TechnicianHandoffFlowTests(TestCase):
         self.branch = Branch.objects.create(tenant=self.tenant, name="North Branch")
         self.zone = OperationalZone.objects.create(tenant=self.tenant, branch=self.branch, name="North Zone")
         self.other_zone = OperationalZone.objects.create(tenant=self.tenant, name="South Zone")
-        self.customer = Customer.objects.create(tenant=self.tenant, name="North Customer")
+        self.customer = Customer.objects.create(tenant=self.tenant, name="North Customer", contact_name="Synthetic Contact", phone="+1 555 0100", email="contact@example.invalid")
         self.other_customer = Customer.objects.create(tenant=self.tenant, name="Other Customer")
         self.site = Site.objects.create(tenant=self.tenant, customer=self.customer, zone=self.zone, name="Plant North")
         self.asset = Asset.objects.create(

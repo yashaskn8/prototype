@@ -28,7 +28,7 @@ class ServingReadinessTests(SimpleTestCase):
         self.assertEqual(serving_configuration_issues(get_serving_config(), settings), [])
 
     @override_settings(
-        SERVY_SERVING_EMBEDDING_PROFILE="minilm",
+        SERVY_SERVING_EMBEDDING_PROFILE="company-bge-ft",
         SERVY_RETRIEVAL_MODE="sparse_only",
         SERVY_RERANKER_ENABLED=False,
     )

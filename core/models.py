@@ -461,6 +461,27 @@ class CallUpdate(TenantOwnedModel):
         ordering = ["created_at"]
 
 
+class ServiceCallAttachment(TenantOwnedModel):
+    """A customer-supplied file attached to a ServiceCall (stored under MEDIA_ROOT)."""
+    service_call = models.ForeignKey(ServiceCall, on_delete=models.CASCADE, related_name="attachments")
+    file = models.FileField(upload_to="service_call_attachments/%Y/%m/")
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    size = models.PositiveIntegerField()
+    sha256 = models.CharField(max_length=64)
+    uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="service_call_attachments")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["tenant", "service_call"], name="core_scattach_tenant_call")]
+
+    def save(self, *args, **kwargs):
+        self._validate_tenant_relations()
+        super().save(*args, **kwargs)
+
+
 class ServiceResolutionIndex(TenantOwnedModel):
     service_call = models.OneToOneField(ServiceCall, on_delete=models.CASCADE, related_name="resolution_index")
     text = models.TextField()

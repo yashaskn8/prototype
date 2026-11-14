@@ -378,3 +378,52 @@ class LocalQwenTransportTests(TestCase):
             presentation["sections"][0]["claims"][0]["text"],
             "Possible documented cause: A blocked filter may reduce airflow.",
         )
+
+
+class EvidenceGroundedParaphraseTests(TestCase):
+    """Legitimate paraphrases pass; unsupported or altered claims are still rejected."""
+
+    def accepted(self, source, text, kind="information"):
+        return generation._validate_paraphrase(source, generation._compose_display(text, kind), kind)
+
+    def test_possible_cause_is_hedged_by_the_server_not_rejected(self):
+        display = generation._compose_display("Dirty filter or coil.", "possible_cause")
+        self.assertTrue(display.startswith("Possible cause: "))
+        self.assertTrue(self.accepted("Dirty filter or coil.", "Dirty filter or coil.", "possible_cause"))
+        self.assertTrue(self.accepted("Dirty filter or coil.", "A dirty coil or filter.", "possible_cause"))
+
+    def test_reordering_and_inflection_of_source_terms_are_accepted(self):
+        self.assertTrue(self.accepted("Quarterly: clean filters", "Clean the filters quarterly."))
+        self.assertTrue(self.accepted("Blocked or incorrectly routed condensate drain",
+                                      "A condensate drain that is blocked or incorrectly routed.",
+                                      "possible_cause"))
+
+    def test_unsupported_additions_are_rejected(self):
+        source = "Dirty filter or coil."
+        for text in ("Dirty filter, coil or low refrigerant charge.",      # invented cause
+                     "Dirty filter or coil after 3 months of use.",        # invented number
+                     "The cause is a dirty filter or coil.",               # certainty
+                     "Dirty filter or coil; replace the compressor."):     # invented action
+            with self.subTest(text=text):
+                self.assertFalse(self.accepted(source, text, "possible_cause"))
+
+    def test_source_terms_cannot_be_dropped_or_negated(self):
+        self.assertFalse(self.accepted("Dirty filter or coil.", "A dirty filter.", "possible_cause"))
+        self.assertFalse(self.accepted("Quarterly: clean filters", "Do not clean the filters quarterly."))
+
+    def test_model_cannot_create_or_address_instructions(self):
+        # A statement may not become an instruction ...
+        self.assertFalse(self.accepted("Filters are cleaned quarterly by technicians",
+                                       "Check the filters, which are cleaned quarterly by technicians."))
+        # ... and the customer may never be addressed directly, even for a source imperative.
+        self.assertFalse(self.accepted("Quarterly: clean filters", "You should clean the filters quarterly."))
+
+    def test_sequences_keep_their_order(self):
+        source = "Isolate power before opening the access panel"
+        self.assertFalse(self.accepted(source, "Open the access panel before isolating the power."))
+
+    def test_spelled_numbers_match_but_changed_numbers_do_not(self):
+        source = "Every 6 months: document airflow and static pressure"
+        self.assertTrue(self.accepted(source, "Every six months, document airflow and static pressure."))
+        self.assertFalse(self.accepted(source, "Every 3 months, document airflow and static pressure."))
+        self.assertFalse(self.accepted(source, "Every twelve months, document airflow and static pressure."))

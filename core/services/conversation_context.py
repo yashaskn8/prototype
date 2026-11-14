@@ -105,6 +105,32 @@ NEXT_STEP_PATTERNS = [
 ]
 
 
+_QUESTION_START = re.compile(
+    r"^\s*(?:what|which|when|where|why|how|who|is|are|does|do|did|can|could|should|will|would|may|must)\b", re.I)
+# References to the selected equipment itself are not references to the earlier topic.
+_EQUIPMENT_REFERENCE = re.compile(
+    r"\b(?:this|that|the|my|our)\s+(?:unit|equipment|ac|a/c|system|machine|module|model|device|appliance)\b", re.I)
+_BACK_REFERENCE = re.compile(
+    r"\b(?:it|that|this|they|them|its|those|these|already|still|again|else|also|instead)\b"
+    r"|\b(?:what|how)\s+about\b|\bthe\s+(?:same|other|first|second|previous|last)\b", re.I)
+_CONTENT_STOPWORDS = frozenset(
+    "what which when where why how who is are does do did can could should will would may must the a an "
+    "for in on of to and or with my our your any there their be been being have has had get i we you me "
+    "unit equipment system machine".split())
+
+
+def is_self_contained_question(text: str) -> bool:
+    """A complete new question that names its own subject and does not refer back."""
+    value = " ".join(str(text or "").split())
+    if not _QUESTION_START.match(value):
+        return False
+    without_equipment = _EQUIPMENT_REFERENCE.sub(" ", value)
+    if _BACK_REFERENCE.search(without_equipment):
+        return False
+    content = [w for w in re.findall(r"[a-z]{3,}", without_equipment.lower()) if w not in _CONTENT_STOPWORDS]
+    return len(content) >= 3
+
+
 @dataclass
 class ConversationContext:
     conversation_uuid: str
@@ -334,11 +360,45 @@ def extract_conversation_context(
         lacks_explicit_equipment = target_asset and target_asset.name.lower() not in current_lower
         is_clarif_reply = bool(ctx.pending_question)
 
-        if has_next_pattern or (is_short and (has_pronoun or lacks_explicit_equipment)) or is_clarif_reply:
+        # A complete new question ("How many years will the blower motor
+        # last?") is not a follow-up merely because it is short or omits the
+        # asset name: merging the earlier symptoms into it would answer the
+        # previous topic instead of this question.
+        if is_self_contained_question(clean_input) and not has_next_pattern:
+            is_followup = False
+        elif has_next_pattern or (is_short and (has_pronoun or lacks_explicit_equipment)) or is_clarif_reply:
             is_followup = True
 
     ctx.is_followup = is_followup
     return ctx
+
+
+_TOPIC_SHIFT = re.compile(
+    r"\b(?:i meant|i mean|sorry|actually|correction|instead|rather than|not that one|"
+    r"different (?:issue|problem|fault|symptom))\b", re.I)
+_SHIFT_PREFIX = re.compile(r"^\s*(?:(?:sorry|actually|correction|no)\s*[,:-]?\s*)*(?:i\s+meant?\s*(?:that\s*)?)?", re.I)
+_NEGATED_TAIL = re.compile(
+    r"[,;]?\s*(?:and\s+)?not\s+(?:the\s+|a\s+|an\s+)?[a-z/-]+(?:\s+[a-z/-]+)?\s*[.!?]?\s*$", re.I)
+_INSTEAD = re.compile(r"\s*\b(?:instead|rather)\b\s*", re.I)
+
+
+def topic_shift_query(text: str) -> Optional[str]:
+    """For a correction or explicit topic change, the new subject alone; otherwise None.
+
+    "Sorry, I meant ice is forming on the coil, not water." -> "ice is forming on the coil"
+    "What about a communication fault instead?"             -> "What about a communication fault?"
+    The customer's own words are not altered elsewhere; this is only the retrieval
+    and claim-selection wording, and it never adds terms.
+    """
+    value = " ".join(str(text or "").split())
+    if not _TOPIC_SHIFT.search(value):
+        return None
+    cleaned = _NEGATED_TAIL.sub("", value)
+    cleaned = _SHIFT_PREFIX.sub("", cleaned)
+    cleaned = _INSTEAD.sub(" ", cleaned).strip(" ,;")
+    cleaned = re.sub(r"\s+([?.!])", r"\1", cleaned)
+    words = [w for w in re.findall(r"[a-z]{3,}", cleaned.lower()) if w not in _CONTENT_STOPWORDS]
+    return cleaned if len(words) >= 2 else None
 
 
 def contextualize_customer_query(
@@ -370,6 +430,11 @@ def contextualize_customer_query(
 
     if not context.is_followup or context.turn_count == 0:
         return query_input
+
+    # A correction or explicit change of topic replaces the earlier subject.
+    shifted = topic_shift_query(clean_input)
+    if shifted:
+        return shifted[:450]
 
     target_asset = asset or (context.asset_name if context else None)
     asset_str = context.asset_name or (target_asset.name if hasattr(target_asset, "name") else "equipment")
@@ -414,3 +479,84 @@ def contextualize_customer_query(
     # Bound query length
     return rewritten[:450]
 
+
+
+# ---------------------------------------------------------------------------
+# Ordinal references to a previously listed cause ("Explain the second cause.")
+# ---------------------------------------------------------------------------
+_ORDINALS = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2,
+             "fourth": 3, "4th": 3, "fifth": 4, "5th": 4, "sixth": 5, "6th": 5, "last": -1}
+_CAUSE_WORDS = r"(?:cause|causes|reason|reasons|possibility|option|item|one|point)"
+_ORDINAL_REFERENCE = re.compile(
+    r"\b(?P<ordinal>" + "|".join(_ORDINALS) + r")\s+(?:(?:possible|documented|listed|probable)\s+)?"
+    + _CAUSE_WORDS + r"\b"
+    r"|\b(?:cause|reason|item|option)\s*(?:number\s*|#\s*|no\.?\s*)?(?P<number>[1-6])\b",
+    re.I,
+)
+
+
+def listed_causes(contract: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The possible causes in the order the customer saw them in a previous answer."""
+    presentation = (contract or {}).get("presentation") or {}
+    ordered = []
+    for section in presentation.get("sections") or []:
+        ordered.extend(section.get("claims") or [])
+    ordered.extend(presentation.get("supporting_claims") or [])
+    causes, seen = [], set()
+    for claim in ordered:
+        if not isinstance(claim, dict) or claim.get("kind") != "possible_cause":
+            continue
+        source = " ".join(str(claim.get("source_text") or "").split())
+        if not source or source.casefold() in seen:
+            continue
+        seen.add(source.casefold())
+        causes.append({"source_text": source, "heading": str(claim.get("source_heading") or "")})
+    return causes
+
+
+def resolve_cause_reference(text: str, context: "ConversationContext") -> Optional[Dict[str, Any]]:
+    """Resolve "the second cause" against the causes listed in the previous answer.
+
+    Returns the selected cause and the other listed causes, or None when the
+    message has no positional reference, the previous answer listed no causes,
+    or the position does not exist (never guessed).
+    """
+    if not context or not context.is_followup:
+        return None
+    match = _ORDINAL_REFERENCE.search(str(text or ""))
+    if not match:
+        return None
+    causes = listed_causes(context.last_contract)
+    if not causes:
+        return None
+    index = (_ORDINALS[match.group("ordinal").casefold()] if match.group("ordinal")
+             else int(match.group("number")) - 1)
+    if index >= len(causes):
+        return None
+    selected = causes[index]
+    return {"selected": selected, "position": index if index >= 0 else len(causes) - 1,
+            "others": [c["source_text"] for c in causes if c is not selected]}
+
+
+def focus_presentation_on_cause(contract: Dict[str, Any], reference: Dict[str, Any]) -> None:
+    """Drop the *other* previously listed causes from a follow-up answer about one cause."""
+    others = {" ".join(o.split()).casefold() for o in reference.get("others") or []}
+    if not others:
+        return
+    presentation = contract.get("presentation") or {}
+
+    def keep(claim):
+        return not (isinstance(claim, dict) and claim.get("kind") == "possible_cause"
+                    and " ".join(str(claim.get("source_text") or "").split()).casefold() in others)
+
+    presentation["supporting_claims"] = [c for c in presentation.get("supporting_claims") or [] if keep(c)]
+    for section in presentation.get("sections") or []:
+        if isinstance(section, dict) and isinstance(section.get("claims"), list):
+            section["claims"] = [c for c in section["claims"] if keep(c)]
+    # The stored message text was assembled before focusing; rebuild it from the
+    # focused sections so the saved answer never lists the other causes.
+    sections = [s for s in presentation.get("sections") or [] if isinstance(s, dict)]
+    if sections and contract.get("answer"):
+        contract["answer"] = "\n\n".join(
+            f"{s.get('number')}. {s.get('title')}\n" + " ".join(str(c.get("text") or "") for c in s.get("claims") or [])
+            for s in sections)

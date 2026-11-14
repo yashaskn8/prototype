@@ -7,15 +7,16 @@ TRACK A — EMBEDDING-ONLY RESEARCH (Standardized Candidate Universe)
     Tenant, Customer, Asset, Product/model applicability, Source provenance,
     Document versions, Confidentiality, Quarantine, Relevant ground truth, and Candidate count.
   Evaluates:
-    - Candidate A: Pure Dense MiniLM
     - Candidate B: Pure Dense Base BGE-small
+    (Candidate A, pure dense MiniLM, was retired with MiniLM; its historical
+    results remain in ml_artifacts/benchmark_evaluation_report.json.)
     - Candidate C: Pure Dense Fine-Tuned BGE-small (Tenant 9 only, N=30 relevance queries)
 
 TRACK B — FULL CUSTOMER SERVING (Production Application Pipeline)
   Calls real application retrieval, evidence validation, safety policy, and answer generation:
-    - Candidate D: Production Baseline Hybrid RRF (MiniLM + BM25/Lexical)
+    - Candidate D: Production Baseline Hybrid RRF (BGE-small + BM25/Lexical)
     - Candidate E: Experimental BGE Hybrid RRF (BGE-small + BM25/Lexical)
-    - Candidate F: Corrected Production Hybrid RRF (MiniLM + BM25/Lexical + Calibrated Gate + Typo Normalizer)
+    - Candidate F: Corrected Production Hybrid RRF (BGE-small + BM25/Lexical + Calibrated Gate + Typo Normalizer)
 
 Comprehensive Metrics & Denominators:
   - 43 Relevance Queries (Hit@1, Hit@5, Hit@10, MRR@10, nDCG@10)
@@ -95,9 +96,7 @@ def _build_chunk_metadata_cache() -> Dict[int, Dict[str, Any]]:
 def _resolve_profile_for_tenant(model_family: str, tenant: Tenant) -> Optional[str]:
     """Dynamically resolve embedding profile key without hardcoding tenant IDs."""
     is_real = is_real_tenant(tenant)
-    if model_family == "minilm":
-        return "company-minilm" if is_real else "minilm"
-    elif model_family == "bge-small":
+    if model_family == "bge-small":
         return "company-bge-small" if is_real else "bge-small"
     elif model_family == "bge-ft":
         # Fine-tuned checkpoint is specifically bound to the Skydream real corpus
@@ -732,10 +731,6 @@ def main():
     print("TRACK A: EMBEDDING-ONLY RESEARCH (Standardized Candidate Universe)")
     print("#" * 60)
 
-    print("\n--- Candidate A: Pure Dense MiniLM ---")
-    results["track_a_minilm"] = evaluate_track_a_dense("minilm", cases, chunk_meta, chunk_lookup, k_max=10)
-    print(f"  Hit@1: {results['track_a_minilm']['hit@1']} | Hit@5: {results['track_a_minilm']['hit@5']} | MRR@10: {results['track_a_minilm']['mrr@10']}")
-
     print("\n--- Candidate B: Pure Dense Base BGE-small ---")
     results["track_a_bge_base"] = evaluate_track_a_dense("bge-small", cases, chunk_meta, chunk_lookup, k_max=10)
     print(f"  Hit@1: {results['track_a_bge_base']['hit@1']} | Hit@5: {results['track_a_bge_base']['hit@5']} | MRR@10: {results['track_a_bge_base']['mrr@10']}")
@@ -790,7 +785,7 @@ def main():
 
     # Summary table
     print("\n" + "=" * 125)
-    print(f"{'Metric':<28} | {'Track A: MiniLM':<16} | {'Track A: BGE':<16} | {'Track A: FT(T9)':<16} | {'Track B: Baseline':<16} | {'Track B: Corrected':<16}")
+    print(f"{'Metric':<28} | {'Track A: BGE':<16} | {'Track A: FT(T9)':<16} | {'Track B: Baseline':<16} | {'Track B: Corrected':<16}")
     print("-" * 125)
     metrics_list = [
         ("hit@1", "Hit@1"),
@@ -810,12 +805,11 @@ def main():
         ("peak_memory_mb", "Peak Memory (MB)"),
     ]
     for key, label in metrics_list:
-        v_a = results["track_a_minilm"].get(key, "N/A")
         v_b = results["track_a_bge_base"].get(key, "N/A")
         v_c = results["track_a_bge_ft_t9"].get(key, "N/A")
         v_d = results["track_b_baseline_hybrid"].get(key, "N/A")
         v_f = results["track_b_corrected_hybrid"].get(key, "N/A")
-        print(f"{label:<28} | {str(v_a):<16} | {str(v_b):<16} | {str(v_c):<16} | {str(v_d):<16} | {str(v_f):<16}")
+        print(f"{label:<28} | {str(v_b):<16} | {str(v_c):<16} | {str(v_d):<16} | {str(v_f):<16}")
     print("=" * 125)
 
 

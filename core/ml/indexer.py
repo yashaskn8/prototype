@@ -5,7 +5,7 @@ Usage:
 
 Safety:
 - Writes ONLY to the profile's own stamped collection.
-- Refuses to write to the legacy MiniLM collection (servy_dense_kb).
+- Refuses to write to the retired legacy MiniLM collection (servy_dense_kb).
 - Uses the same eligibility rules as production indexing: RAG-enabled,
   INDEXED, non-quarantined chunks with non-empty text.
 - Chunk IDs and metadata preserve tenant/document/chunk identity.

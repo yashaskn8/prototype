@@ -7,7 +7,7 @@ Implements:
    procedural completeness metadata.
 
 2. Multi-Channel Candidate Retrieval (Experiment B):
-   Combines MiniLM dense semantic similarity, BM25 lexical retrieval over
+   Combines dense semantic similarity (BGE), BM25 lexical retrieval over
    answer-unit representations, character n-gram matching for typo tolerance,
    and exact technical identifier matching.
 

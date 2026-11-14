@@ -68,3 +68,9 @@
   border-left: 3px solid var(--bs-border-color, #d8dee8);
   overflow-wrap: anywhere;
 }
+
+/* Composed conversational reply */
+.customer-answer-conversation { max-width: 75ch; line-height: 1.55; }
+.customer-answer-conversation p { margin: 0 0 10px; }
+.customer-answer-conversation ul { margin: 0 0 10px; padding-left: 1.25rem; }
+.customer-answer-conversation li { margin: 2px 0; }

@@ -27,15 +27,15 @@ test('technician inbox polls the authenticated backend and persists acknowledgem
     assert.ok(page.includes(heading), `missing ticket section: ${heading}`);
   }
   assert.match(app, /TechnicianInboxPage/);
-  assert.match(app, /TicketWorkspacePage/);
   assert.match(app, /technician\/inbox/);
-  assert.match(app, /technician\/rag-tickets/);
   assert.match(navigation, /show: isTechnician/);
-  assert.match(navigation, /id: 'rag-ticket-workspace'/);
   assert.match(navigation, /http:\/\/127\.0\.0\.1:5175\//);
 
-  const workspace = await readSource('../src/pages/TicketWorkspacePage.jsx');
-  assert.match(workspace, /listLocalTickets/);
-  assert.match(workspace, /Technician Ticket Inbox/);
-  assert.match(workspace, /local ticket workspace/i);
+  // The SQLite "RAG Ticket Workspace" was retired: RAG tickets are official MySQL
+  // ServiceCalls in the Technician Inbox, and old workspace links open that inbox.
+  assert.doesNotMatch(app, /TicketWorkspacePage/);
+  assert.doesNotMatch(navigation, /rag-ticket-workspace/);
+  assert.match(app, /INBOX_LOCATIONS = \['\/technician\/inbox', '\/technician\/rag-tickets'\]/);
+  await assert.rejects(readSource('../src/pages/TicketWorkspacePage.jsx'));
+  await assert.rejects(readSource('../src/pages/localTicketStore.js'));
 });

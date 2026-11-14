@@ -4,15 +4,13 @@ This module never retrieves, generates technical content, or writes a ticket.
 It classifies an already validated answer contract into one of three evidence
 states, resolves "the second cause" style references against the signed list
 of causes from the previous answer, and prepares a customer-visible issue
-description for the existing local ticket workflow. The customer still
+description for the official ServiceCall workflow. The customer still
 confirms and submits that ticket through the existing form.
 """
 from __future__ import annotations
 
 import hashlib
 import re
-import sqlite3
-from pathlib import Path
 
 SUFFICIENT = "SUFFICIENT"
 PARTIAL = "PARTIAL"
@@ -287,36 +285,6 @@ def issue_key(thread_id, original_complaint):
         return ""
     digest = hashlib.sha256(_norm(original_complaint).encode("utf-8")).hexdigest()[:16]
     return thread_id + ":" + digest
-
-
-def find_open_ticket(tenant_id, customer_id, asset_id, conversation_key):
-    """Read-only lookup of an unresolved ticket already raised for this issue.
-
-    Never creates the store and never writes. Any failure means "unknown",
-    which callers treat as no existing ticket.
-    """
-    if not conversation_key:
-        return None
-    try:
-        from django.conf import settings
-        path = Path(settings.SERVY_LOCAL_TICKET_DB_PATH).expanduser().resolve()
-        if not path.is_file():
-            return None
-        connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
-        try:
-            row = connection.execute(
-                "SELECT id, status FROM local_tickets WHERE tenant_id = ? "
-                "AND customer_id = ? AND asset_id = ? AND source_conversation_id = ? "
-                "AND status != 'closed' ORDER BY created_at DESC LIMIT 1",
-                (tenant_id, customer_id, asset_id, conversation_key),
-            ).fetchone()
-        finally:
-            connection.close()
-    except Exception:
-        return None
-    if not row:
-        return None
-    return {"id": str(row[0]), "status": str(row[1])}
 
 
 def build_issue_description(*, asset, context, history, question, state,

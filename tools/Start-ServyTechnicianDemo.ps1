@@ -1,5 +1,6 @@
-<# Start the separate code-gated technician view for authorized RAG tickets.
-   Uses only the dedicated local SQLite ticket workspace; never connects to MySQL. #>
+<# Start the separate code-gated technician view. The official technician inbox
+   APIs are served by the access-code gateway on 127.0.0.1:8003, backed only by the
+   isolated servy_dev MySQL database (servy_dev_app). Never production servy. #>
 [CmdletBinding()]
 param([ValidateRange(10, 120)][int]$ReadinessTimeoutSeconds = 45, [switch]$NoWatch)
 
@@ -15,21 +16,15 @@ $instanceRoot = Join-Path $privateLocal 'Servy\private_evaluations\servy_technic
 $accessFile = Join-Path $instanceRoot 'technician_access.txt'
 $logRoot = Join-Path $instanceRoot 'logs'
 
-# Match the exact local ticket database path used by Start-ServyRealDemo.ps1.
-# Resolve the actual Windows known folder, not a LOCALAPPDATA value that
-# Start-ServyRealDemo.ps1 may have temporarily overridden in this shell.
-$sharedLocalAppData = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)
-if ([string]::IsNullOrWhiteSpace($sharedLocalAppData)) {
-    $sharedLocalAppData = Join-Path $env:USERPROFILE 'AppData\Local'
-}
-$ticketDb = Join-Path $sharedLocalAppData 'Servy\local-ticket-workspace.sqlite3'
+$devEnvFile = Join-Path $projectRoot '.env.mysql.servy_dev'
+$devMedia = 'C:\Users\prana\AppData\Local\Servy\servy_dev_media'
+# The isolated development index; the gateway must never default to production Chroma.
+$devChroma = 'C:\Users\prana\AppData\Local\Servy\servy_dev_chroma'
 
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Project virtualenv Python is missing: $python" }
 if (-not (Test-Path -LiteralPath $viteEntry -PathType Leaf)) { throw 'Installed Vite dependencies are missing; no package reinstall was attempted.' }
-$workspaceExists = Test-Path -LiteralPath $ticketDb -PathType Leaf
-if (-not $workspaceExists) {
-    Write-Warning "No customer RAG ticket workspace exists yet. The technician portal will start with an empty queue without creating a database. After the first customer ticket is confirmed, use Refresh queue."
-}
+if (-not (Test-Path -LiteralPath $devEnvFile -PathType Leaf)) { throw 'The servy_dev MySQL settings file is missing.' }
+if (-not (Test-Path -LiteralPath $accessFile -PathType Leaf)) { throw 'The existing technician access-code file is missing.' }
 
 function Test-LocalPort([int]$Port) {
     $client = [System.Net.Sockets.TcpClient]::new()
@@ -48,6 +43,7 @@ function Test-LocalPort([int]$Port) {
 
 }
 
+if (-not (Test-LocalPort 3306)) { throw 'Local MySQL is not reachable on port 3306. Start it (or run Start-ServyRealDemo.ps1) first.' }
 foreach ($port in 8003, 5176) {
     if (Test-LocalPort $port) {
         throw "Technician demo port $port is already in use. No process was stopped or duplicated. Inspect the existing listener before retrying."
@@ -62,20 +58,34 @@ $backendErr = Join-Path $logRoot "$runId.backend.stderr.log"
 $frontendOut = Join-Path $logRoot "$runId.frontend.stdout.log"
 $frontendErr = Join-Path $logRoot "$runId.frontend.stderr.log"
 
-$names = @('LOCALAPPDATA', 'SERVY_LOCAL_TICKET_DB_PATH', 'VITE_SERVY_REAL_DEMO', 'VITE_SERVY_TECH_DEMO')
+$names = @('SERVY_DB_ENGINE', 'SERVY_MYSQL_ENV_FILE', 'SERVY_MEDIA_ROOT', 'SERVY_CHROMA_PERSIST_DIR', 'SERVY_DEMO_GATEWAY',
+    'SERVY_TECHNICIAN_ACCESS_FILE', 'DJANGO_DEBUG', 'VITE_SERVY_REAL_DEMO', 'VITE_SERVY_TECH_DEMO')
 $old = @{}
 foreach ($name in $names) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $backend = $null
 $frontend = $null
 
 try {
-    # The technician service reads only this existing file. It does not bootstrap
-    # or initialize SQLite, Django, MySQL, migrations, or company records.
-    [Environment]::SetEnvironmentVariable('LOCALAPPDATA', $privateLocal, 'Process')
-    [Environment]::SetEnvironmentVariable('SERVY_LOCAL_TICKET_DB_PATH', $ticketDb, 'Process')
+    # No migrations, seeding or company-record writes; servy_dev only.
+    [Environment]::SetEnvironmentVariable('SERVY_DB_ENGINE', 'mysql', 'Process')
+    [Environment]::SetEnvironmentVariable('SERVY_MYSQL_ENV_FILE', $devEnvFile, 'Process')
+    [Environment]::SetEnvironmentVariable('SERVY_MEDIA_ROOT', $devMedia, 'Process')
+    [Environment]::SetEnvironmentVariable('SERVY_CHROMA_PERSIST_DIR', $devChroma, 'Process')
+    [Environment]::SetEnvironmentVariable('SERVY_DEMO_GATEWAY', 'technician', 'Process')
+    [Environment]::SetEnvironmentVariable('SERVY_TECHNICIAN_ACCESS_FILE', $accessFile, 'Process')
+    [Environment]::SetEnvironmentVariable('DJANGO_DEBUG', '1', 'Process')
 
-    Write-Host 'Starting the private technician ticket service on 127.0.0.1:8003...'
-    $backend = Start-Process -FilePath $python -ArgumentList @('-B', '-u', 'tools\servy_technician_demo.py') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $backendOut -RedirectStandardError $backendErr
+    Push-Location -LiteralPath $projectRoot
+    try {
+        & $python '-B' 'manage.py' 'check_dev_database' *> $null
+        if ($LASTEXITCODE -ne 0) { throw 'The servy_dev isolation check failed; the Technician gateway was not started. Run manage.py check_dev_database for details.' }
+    } finally {
+        Pop-Location
+    }
+    Write-Host 'servy_dev isolation check: PASS'
+
+    Write-Host 'Starting the technician gateway on 127.0.0.1:8003...'
+    $backend = Start-Process -FilePath $python -ArgumentList @('-B', '-u', 'manage.py', 'runserver', '127.0.0.1:8003', '--noreload') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $backendOut -RedirectStandardError $backendErr
 
     $deadline = [DateTime]::UtcNow.AddSeconds($ReadinessTimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline -and -not (Test-LocalPort 8003)) {
@@ -87,13 +97,6 @@ try {
     }
     if (-not (Test-LocalPort 8003)) { throw "Technician ticket service did not open port 8003. Inspect $backendErr." }
 
-    $accessDeadline = [DateTime]::UtcNow.AddSeconds(5)
-    while ([DateTime]::UtcNow -lt $accessDeadline -and -not (Test-Path -LiteralPath $accessFile -PathType Leaf)) {
-        Start-Sleep -Milliseconds 200
-    }
-    if (-not (Test-Path -LiteralPath $accessFile -PathType Leaf)) {
-        throw "Technician service started but its private access-code file was not created. Inspect $backendErr."
-    }
 
     [Environment]::SetEnvironmentVariable('VITE_SERVY_REAL_DEMO', '0', 'Process')
     [Environment]::SetEnvironmentVariable('VITE_SERVY_TECH_DEMO', '1', 'Process')
@@ -114,7 +117,7 @@ try {
     # A listening port alone does not prove that the ticket API is reachable.
     $technicianCode = (Get-Content -LiteralPath $accessFile -Raw).Trim()
     try {
-        $queueProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5176/tech-api/tickets/' -Headers @{ Authorization = "Technician $technicianCode" } -Method Get -UseBasicParsing -TimeoutSec 15
+        $queueProbe = Invoke-WebRequest -Uri 'http://127.0.0.1:5176/tech-api/technician/inbox/' -Headers @{ Authorization = "Technician $technicianCode" } -Method Get -UseBasicParsing -TimeoutSec 15
         $queuePayload = $queueProbe.Content | ConvertFrom-Json
         if ($queueProbe.StatusCode -ne 200 -or $null -eq $queuePayload -or $null -eq $queuePayload.PSObject.Properties['tickets']) {
             throw 'The technician ticket queue response was empty or invalid.'
@@ -133,14 +136,9 @@ try {
     Write-Host 'Technician UI:  http://127.0.0.1:5176/'
     Write-Host 'Access code:    open the separate local file below'
     Write-Host "Access file:    $accessFile"
-    Write-Host "Ticket storage: $ticketDb (separate local SQLite workspace)"
-    if (-not $workspaceExists) {
-        Write-Host 'Queue state:     Waiting for the first customer RAG ticket; refresh the portal after submission.'
-    } else {
-        Write-Host 'Queue state:     Existing local RAG ticket workspace detected.'
-    }
+    Write-Host 'Ticket storage: servy_dev (isolated local development MySQL database)'
     Write-Host "Logs:           $logRoot"
-    Write-Host 'No MySQL connection, migration, company record write, or service-call creation was performed.'
+    Write-Host 'No migration, seeding or company record write was performed.'
 } catch {
     # Do not force-stop processes. If startup partially succeeded, report their
     # PIDs and logs so the owner can inspect and stop the verified instance.
@@ -154,8 +152,7 @@ try {
 
 if (-not $NoWatch) {
     Write-Host ''
-    Write-Host 'Live technician events: ticket arrivals, ticket reads/updates and authorization failures.'
-    Write-Host 'Routine successful queue polls are suppressed to avoid repeated duplicate-looking lines.'
+    Write-Host 'Live technician events: queue polls, ticket reads/updates, downloads and authorization failures.'
     Write-Host 'Press Ctrl+C to close this log viewer only; the technician backend and UI remain running.'
-    Get-Content -LiteralPath $backendOut -Tail 20 -Wait
+    Get-Content -LiteralPath $backendErr -Tail 20 -Wait
 }

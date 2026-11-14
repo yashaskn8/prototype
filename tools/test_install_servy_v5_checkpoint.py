@@ -1,5 +1,6 @@
 """Synthetic-only tests for the atomic, offline V5 checkpoint installer."""
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -49,6 +50,29 @@ class InstallV5CheckpointTests(unittest.TestCase):
         (self.source / "config.json").unlink()
         with self.assertRaisesRegex(ValueError, "missing config.json"):
             install_checkpoint(self.source, self.target, self.expected)
+
+    @unittest.skipUnless(os.name == "nt", "directory junctions exist only on Windows")
+    def test_rejects_directory_junction_without_symlink_privilege(self):
+        # A junction needs no SeCreateSymbolicLinkPrivilege and Path.is_symlink()
+        # reports it as False; the installer must still refuse it.
+        import _winapi
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("outside the checkpoint", encoding="utf-8")
+        junction = self.source / "linked_dir"
+        _winapi.CreateJunction(str(outside), str(junction))
+        self.assertFalse(junction.is_symlink())          # the gap being guarded
+        with self.assertRaisesRegex(ValueError, "symlinks"):
+            install_checkpoint(self.source, self.target, self.expected)
+        self.assertFalse(self.target.exists())
+
+    @unittest.skipUnless(os.name == "nt", "directory junctions exist only on Windows")
+    def test_rejects_junction_as_source(self):
+        import _winapi
+        junction = self.root / "junction_source"
+        _winapi.CreateJunction(str(self.source), str(junction))
+        with self.assertRaisesRegex(ValueError, "real directory"):
+            install_checkpoint(junction, self.target, self.expected)
 
     def test_rejects_symlink(self):
         link = self.source / "linked.bin"
