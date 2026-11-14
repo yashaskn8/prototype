@@ -1,103 +1,151 @@
 # Servy RAG
 
-Servy is a source-grounded customer RAG application with a separate technician workflow. The supported local demonstration uses approved company manuals and asset-scoped data; it is not the earlier screenshot-driven dashboard with synthetic business records.
+## Architecture
 
-## Run the current customer and technician applications
+Servy answers customer equipment questions from the approved manuals of one selected
+asset and hands unresolved issues to technicians as official MySQL ServiceCalls.
+Django/DRF backend (`core/`, `servy_rag/`), React/Vite frontend (`frontend/`).
 
-Run both launchers from the repository root in separate Windows PowerShell windows.
+**Models**
 
-**Customer RAG**
-
-```powershell
-.\tools\Start-ServyRealDemo.ps1
-```
-
-Open `http://127.0.0.1:5175/`. The launcher starts the customer demo backend on port 8002 and the Vite customer UI on port 5175. Use the existing private customer access code. Keep the terminal open to see the live request and RAG pipeline logs.
-
-**Technician portal**
-
-```powershell
-.\tools\Start-ServyTechnicianDemo.ps1
-```
-
-Open `http://127.0.0.1:5176/`. The launcher starts the technician backend on port 8003 and the Vite technician UI on port 5176. Use the separate private technician access code printed by the launcher.
-
-Do not put access codes, credentials, customer details, signed URLs or private log contents into GitHub.
-
-## Current demo data and ticket handoff
-
-The customer RAG demo reads approved company data in read-only mode. Its local demonstration handoff uses a dedicated SQLite workspace at:
-
-```text
-%LOCALAPPDATA%\Servy\local-ticket-workspace.sqlite3
-```
-
-The technician portal reads the same workspace. This is part of the **current customer-to-technician demo**; it is not the retired dummy review database. Do not delete or reset this workspace as a cleanup shortcut.
-
-The local demo handoff is intentionally separate from an official Servy service call. It does not write company MySQL `ServiceCall` records.
-
-## Normal authenticated application (MySQL)
-
-```powershell
-.\tools\Start-ServyApp.ps1
-```
-
-This starts the authenticated Django/DRF backend on port 8000 against the configured MySQL database (read-only readiness check, no data initialization) and the React application on port 5173 (`frontend/src/App.jsx`, without the demo `VITE_*` flags). Customers sign in and use Customer AI Support, which stores conversations and creates official service calls through the API below; technicians use `http://127.0.0.1:5173/technician/inbox`. Its other screens (calls, knowledge base, assets, projects, inventory, staff) read live application data through the DRF API. It is a separate application from the two demos above and is retained.
-
-## Application-layer conversation-to-service-call API
-
-The Django/DRF application also exposes the official database-backed workflow:
-
-```http
-POST /api/customer-support/conversations/{conversation_uuid}/ticket/
-GET  /api/technician/inbox/{service_call_id}/
-```
-
-The first endpoint requires an authenticated customer and explicit `confirm_ticket_creation: true`; it creates or returns the Servy service call linked to the stored conversation. The technician detail endpoint returns the authorized call and conversation context.
-
-Route registration is in `core/api_urls.py`. Implementations are in `core/api_views.py` and `core/technician_inbox.py`. These routes are distinct from the local demo proxies `/demo-api/*` and `/tech-api/*`.
-
-## RAG implementation map
-
-| Area | Main files |
+| Stage | Implementation |
 |---|---|
-| Customer question, conversation and ticket API | `core/api_views.py`, `core/api_urls.py` |
-| Technician service-call inbox API | `core/technician_inbox.py` |
-| Retrieval and asset/customer scope | `core/services/retriever.py` |
-| Embeddings and dense indexing | `core/ml/embeddings.py`, `core/ml/indexer.py` |
-| V5 reranking and checkpoint verification | `core/ml/reranker.py` |
-| Answer generation and citation validation | `core/services/customer_answer.py`, `core/services/llm.py` |
-| Django configuration | `servy_rag/settings.py` |
-| Customer and technician React views | `frontend/src/pages/RealDemoPage.jsx`, `frontend/src/pages/TechnicianSecretPage.jsx` |
-| Current launchers | `tools/Start-ServyRealDemo.ps1`, `tools/Start-ServyTechnicianDemo.ps1` |
+| Embeddings | BGE-small (`BAAI/bge-small-en-v1.5`, pinned revision) for documents and queries — `core/ml/embeddings.py`, `core/ml/indexer.py`; vectors in a stamped ChromaDB collection |
+| Retrieval | Hybrid: BGE dense + lexical retrieval, merged by rank fusion — `core/services/retriever.py` |
+| Reranking | V5 local cross-encoder, weights SHA-256-pinned (`SERVY_RERANKER_MODEL_PATH`, `SERVY_RERANKER_EXPECTED_SHA256`) — `core/ml/reranker.py` |
+| Generation | Qwen `qwen3.5:2b-q4_K_M` through local Ollama, used only to reword already-selected claims — `core/services/customer_answer_generation.py` |
 
-The three-asset evaluation scope is Split AC Unit 2T (asset 59), VRF Outdoor Module (asset 60), and Ductable AC 5T (asset 61), with approved manuals bound to their respective assets. A plausible HVAC answer is not accepted as correct unless the approved source material supports it.
+**Answer pipeline** (`core/services/customer_conversation.py`)
 
-## Verification
+1. *Conversation context* (`core/services/conversation_context.py`): the stored conversation
+   is read from MySQL; follow-ups are rewritten into a retrieval query using the earlier
+   complaint and symptoms; references such as "the second cause" resolve against the
+   previous answer's cited list; corrections and explicit topic changes replace the earlier
+   subject. The customer's message is stored unchanged.
+2. *Retrieval and isolation*: candidates are restricted to the authorized tenant, customer
+   and selected asset before ranking, then reranked by V5.
+3. *Claim selection and citations* (`core/services/customer_answer.py`): each technical claim
+   is an exact sentence from a retrieved manual passage, bound to one citation (document,
+   section, signed source link re-authorized when opened). Unsupported questions are refused.
+4. *Qwen validation*: a Qwen paraphrase is accepted only if it keeps every source term,
+   number, negation and uncertainty and adds no new term, instruction or certainty;
+   otherwise the exact source sentence is used.
+5. *Composed reply* (`core/services/customer_response_composer.py`): the validated, cited claims
+   are arranged by intent (cause list, direct fact, single selected cause, clarifying
+   question for an ambiguous message). Nothing is added to the claims.
 
-Run the strict serving diagnostic in the configured Python environment:
+**API 1 — Conversational RAG** (`core/api_views.py`)
+
+| Route | Purpose |
+|---|---|
+| `POST /api/customer-support/conversations/` | Start a conversation for an authorized asset |
+| `POST …/conversations/{uuid}/messages/` | Ask a question (JSON); optional `X-Idempotency-Key` |
+| `POST …/conversations/{uuid}/messages-stream/` | Same, as server-sent events (`log` stages, then `result`) |
+| `GET …/conversations/`, `GET …/conversations/{uuid}/` | List and reopen stored conversations |
+
+**API 2 — Conversation to ServiceCall** (`core/services/conversation_ticket.py`, `core/services/ticketing.py`)
+
+| Route | Purpose |
+|---|---|
+| `GET …/conversations/{uuid}/ticket/` | Read-only preview: nine-section description built from the full conversation, message count, missing contact fields, `can_create` |
+| `POST …/conversations/{uuid}/ticket/` | Create the ServiceCall with `confirm_ticket_creation: true`; row-locked and idempotent (`created: true/false`); the stored description equals the preview |
+
+**Technician workflow** (`core/technician_inbox.py`): technicians list authorized open
+ServiceCalls, read the description, conversation and citations, download attachments and
+record status changes and notes as append-only `CallUpdate` records on the same MySQL
+ServiceCall. The generated description is never overwritten.
+
+**Customer and Technician applications** (`core/demo_gateway.py`, `servy_rag/demo_*_urls.py`):
+two access-code gateways serve the official APIs above under `/demo-api/` (Customer) and
+`/tech-api/` (Technician). Each accepts loopback requests only, checks its access code in
+constant time and maps it to one synthetic user. Both run only on the isolated `servy_dev`
+MySQL database (account `servy_dev_app`) and refuse any other database. Customer
+attachments (0–10 files, ≤ 25 MB each and in total; JPEG, PNG, GIF, WebP, PDF, text;
+content-validated) are stored as MySQL metadata plus files in an isolated media directory.
+Automated tests use `test_servy_dev` (account `servy_dev_test`) or in-memory SQLite, and a
+temporary ChromaDB directory.
+
+## Commands
+
+Prerequisites: Windows PowerShell, Python virtualenv at `.venv` (`pip install -r requirements.txt`),
+Node 20 with `frontend/node_modules` installed, local MySQL 8 on port 3306, Ollama on port
+11434 with `qwen3.5:2b-q4_K_M`, the local BGE-small and V5 checkpoints, and the private
+Customer and Technician access-code files (outside the repository).
+
+**Configure the development database (one time)**
 
 ```powershell
-python manage.py check_rag_serving --strict
+.\tools\Provision-ServyDevMySQL.ps1          # creates servy_dev / servy_dev_app and test_servy_dev / servy_dev_test
+$env:SERVY_DB_ENGINE = 'mysql'
+$env:SERVY_MYSQL_ENV_FILE = '.env.mysql.servy_dev'
+$env:SERVY_MEDIA_ROOT = '<private media directory>'
+$env:SERVY_CHROMA_PERSIST_DIR = '<private development ChromaDB directory>'
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py seed_servy_dev        # synthetic records + nine approved manuals (BGE vectors)
+.\.venv\Scripts\python.exe manage.py check_dev_database    # verifies servy_dev isolation
 ```
 
-The GitHub Actions workflow at `.github/workflows/ci.yml` runs the backend security/regression suite, three-asset checks, customer RAG tests, technician isolation tests, frontend contract tests, lint and production build. Use the result for the exact commit being reviewed; historical reports are not proof that the current commit passes.
+**Launch the applications** (each in its own PowerShell window, from the repository root)
 
-## Repository layout
+```powershell
+.\tools\Start-ServyRealDemo.ps1          # Customer RAG: backend 127.0.0.1:8002, UI http://127.0.0.1:5175/
+.\tools\Start-ServyTechnicianDemo.ps1    # Technician:   backend 127.0.0.1:8003, UI http://127.0.0.1:5176/
+```
 
-| Path | Contents |
-|---|---|
-| `core/`, `servy_rag/`, `manage.py` | Django project: models, DRF APIs, RAG services, management commands, tests |
-| `frontend/` | React/Vite apps: customer RAG (`VITE_SERVY_REAL_DEMO=1`), technician portal (`VITE_SERVY_TECH_DEMO=1`) and the normal authenticated app |
-| `tools/Start-Servy*.ps1` | Supported launchers for the three applications |
-| `tools/security/` | `red_team_static.py` and `red_team_offline.py` (run by CI from the repository root) |
-| `tools/diagnostics/` | Directly executed diagnostics, e.g. `test_rag_handoff_regression.py` |
-| `tools/launchers/` | Environment setup (`setup_windows.bat`, `setup_linux.sh`) and the Linux runner (`run_linux.sh`); these run `migrate`. On Windows start the app with `tools/Start-ServyApp.ps1` |
-| `tools/` (other) | Evaluation, research and maintenance utilities; most are run directly |
-| `docs/` | Architecture, decision records and design notes; `docs/archive/` holds historical reports |
+Options: `-NoWatch` (return after startup), `-Restart` (Customer only: replace a running
+instance), `-NoLocalChat` (Customer only: no Qwen, source wording only).
 
-## Repository cleanup boundary
+**Start backend and frontend manually** (what the launchers run)
 
-The retired server-rendered Django dashboard, its project templates and Bootstrap assets, the high-volume synthetic `seed_demo` command, and the standalone dummy SQLite/Excel review dataset have been removed. The current React customer RAG and technician portals, DRF APIs, RAG services, approved knowledge assets, launchers, isolated test fixtures and current local technician handoff remain.
+```powershell
+# Customer backend (8002); the Technician backend uses SERVY_DEMO_GATEWAY='technician',
+# SERVY_TECHNICIAN_ACCESS_FILE and port 8003
+$env:SERVY_DB_ENGINE = 'mysql'
+$env:SERVY_MYSQL_ENV_FILE = '.env.mysql.servy_dev'
+$env:SERVY_MEDIA_ROOT = '<private media directory>'
+$env:SERVY_CHROMA_PERSIST_DIR = '<private development ChromaDB directory>'
+$env:SERVY_SERVING_EMBEDDING_PROFILE = 'bge-small'
+$env:SERVY_DEMO_GATEWAY = 'customer'
+$env:SERVY_DEMO_ACCESS_FILE = '<private customer access-code file>'
+$env:SERVY_CUSTOMER_DATA_MODE = 'demo_only'
+$env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'
+$env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
+$env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
+$env:HF_HUB_OFFLINE = '1'
+.\.venv\Scripts\python.exe manage.py check_dev_database
+.\.venv\Scripts\python.exe manage.py runserver 127.0.0.1:8002 --noreload
 
-The ignored local `db.sqlite3` file is not tracked by GitHub. Do not delete it until you have checked whether your local environment still uses it and made any required backup. The active technician demo workspace above is a different file and must be preserved.
+# Customer UI (5175); the Technician UI uses VITE_SERVY_TECH_DEMO='1' and port 5176
+cd frontend
+$env:VITE_SERVY_REAL_DEMO = '1'
+npm run dev -- --host 127.0.0.1 --port 5175 --strictPort
+```
+
+**Test**
+
+```powershell
+# Backend, isolated MySQL test database
+$env:SERVY_DB_ENGINE = 'mysql'
+$env:SERVY_MYSQL_ENV_FILE = '.env.mysql.servy_dev_test'
+.\.venv\Scripts\python.exe manage.py test core --keepdb
+
+# Relevant backend suites only
+.\.venv\Scripts\python.exe manage.py test core.tests_demo_gateway core.tests_conversation_ticket_workflow core.tests_customer_response_composer core.tests_customer_answer_generation core.tests_call_attachments --keepdb
+
+# Frontend tests
+cd frontend
+node --test test/*.test.mjs test/*.test.js
+
+# Live checks against the running gateways (real models over HTTP)
+.\.venv\Scripts\python.exe tools\servy_three_asset_gateway_eval.py --access-file '<customer access-code file>' --report-dir '<private report directory>'
+.\.venv\Scripts\python.exe tools\servy_multiturn_eval.py --access-file '<customer access-code file>' --report-dir '<private report directory>'
+.\.venv\Scripts\python.exe tools\servy_api_acceptance.py --private-root '<folder containing both access-code folders>'
+```
+
+**Lint and build**
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
