@@ -255,18 +255,34 @@ export function RealDemoPage() {
       setError('That conversation is not available for the selected equipment.');
       return;
     }
+
+    const openRevision = ++requestRevision.current;
+    const requestedAssetId = String(assetId);
     let snapshot = threadCache.current.get(id);
     if (!snapshot && thread.conversationUuid) {
       try {
         const data = await call(conversationPath(thread.conversationUuid, 'messages/'), token);
-        snapshot = { assetId: String(assetId), messages: messagesFromServer(data.messages),
+        snapshot = { assetId: requestedAssetId, messages: messagesFromServer(data.messages),
           continuation: thread.conversationUuid };
       } catch {
-        setError('That saved conversation could not be loaded.');
+        if (openRevision === requestRevision.current
+          && requestedAssetId === String(assetIdRef.current)) {
+          setError('That saved conversation could not be loaded.');
+        }
         return;
       }
     }
-    if (!snapshot || String(snapshot.assetId) !== String(assetId)) {
+
+    // A deletion, asset switch, newer chat selection or lock may have happened
+    // while the messages request was in flight. Never activate a stale row.
+    if (openRevision !== requestRevision.current
+      || requestedAssetId !== String(assetIdRef.current)
+      || !threadListRef.current.some(item => item.id === id)
+      || (thread.conversationUuid
+        && deletedConversationUuids.current.has(thread.conversationUuid))) {
+      return;
+    }
+    if (!snapshot || String(snapshot.assetId) !== requestedAssetId) {
       setError('That conversation was cleared or its equipment scope changed.');
       return;
     }
@@ -323,6 +339,8 @@ export function RealDemoPage() {
       }
     }
 
+    // Invalidate pending conversation-open requests even when this row was inactive.
+    requestRevision.current += 1;
     threadCache.current.delete(id);
     const remaining = removeDemoThread(threadListRef.current, id);
     replaceThreadList(remaining);
