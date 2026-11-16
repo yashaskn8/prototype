@@ -94,8 +94,8 @@ export function RealDemoPage() {
   const [entry, setEntry] = useState('');
   const [assets, setAssets] = useState(null);
   const [assetId, setAssetId] = useState('');
-  const assetIdRef = useRef(assetId);
-  assetIdRef.current = assetId;
+  const assetIdRef = useRef('');
+  const messageSequence = useRef(0);
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState([]);
   const [continuation, setContinuation] = useState(null);
@@ -121,7 +121,6 @@ export function RealDemoPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [view, setView] = useState('chat');
-  activeThreadIdRef.current = activeThreadId;
 
   function replaceThreadList(next) {
     threadListRef.current = next;
@@ -137,6 +136,11 @@ export function RealDemoPage() {
   function setCurrentActiveThreadId(next) {
     activeThreadIdRef.current = next;
     setActiveThreadId(next);
+  }
+
+  function setCurrentAssetId(next) {
+    assetIdRef.current = next == null ? '' : String(next);
+    setAssetId(next);
   }
 
   function createLocalEmptyChat(forAssetId) {
@@ -408,7 +412,7 @@ export function RealDemoPage() {
       setToken(value);
       setEntry('');
       setAssets(data.assets);
-      setAssetId(selected);
+      setCurrentAssetId(selected);
     } catch (err) {
       setError(err.message === 'Demo identity required'
         ? 'Use the separate code in real_demo_access.txt. The servy_ui_tester password is only for the synthetic test site.'
@@ -425,8 +429,9 @@ export function RealDemoPage() {
       setError('Select the intended equipment and start a new chat before asking a question.');
       return;
     }
-    const messageId = `user-${Date.now()}-${Math.random()}`;
-    const responseId = `assistant-${Date.now()}-${Math.random()}`;
+    const turnId = ++messageSequence.current;
+    const messageId = `user-${turnId}`;
+    const responseId = `assistant-${turnId}`;
     if (!tryBeginRequest(requestInFlight, responseId)) return;
     const activeRevision = requestRevision.current;
     const activeAsset = assetId;
@@ -607,7 +612,7 @@ export function RealDemoPage() {
       <div className="sidebar-footer"><div className="user-profile-badge"><div className="avatar">RD</div>
         <div className="user-meta"><div className="user-name">Real-data demo</div><div className="user-role">Local · development data</div></div></div>
         {assets && <button type="button" className="btn btn-secondary btn-sm real-demo-lock" onClick={() => {
-          initializeThreads(''); deletedConversationUuids.current.clear(); setToken(''); setAssets(null); setAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
+          initializeThreads(''); deletedConversationUuids.current.clear(); setToken(''); setAssets(null); setCurrentAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
     </aside>
     <main className="main-area">
       <header className="top-bar"><div className="top-bar-title"><h2>{view === 'assets' && assets ? 'Company Equipment' : 'Customer AI Self-Service'}</h2>
@@ -638,7 +643,7 @@ export function RealDemoPage() {
           <section className="card"><div className="card-header"><h2 className="card-title"><Package size={20} /> Company Equipment</h2>
             <span className="badge badge-indexed">Read-only inventory</span></div>
             <div className="real-demo-inventory">{assets.map(item => <button className="real-demo-inventory-item" type="button" key={item.id}
-              onClick={() => { initializeThreads(String(item.id)); setAssetId(String(item.id)); setView('chat'); }}>
+              onClick={() => { initializeThreads(String(item.id)); setCurrentAssetId(String(item.id)); setView('chat'); }}>
               <span className="real-demo-icon"><Package size={18} /></span><span><strong>{item.name}</strong><small>{item.code} · {item.model || 'Model not listed'}</small></span>
               <em>{manualStatus(item)}</em></button>)}</div></section>
         </> : <>
@@ -646,7 +651,7 @@ export function RealDemoPage() {
             <h2 className="card-title"><Building2 size={20} /> Equipment Selection</h2>
             <div className="form-group"><label className="form-label" htmlFor="demo-asset">Equipment / Asset</label>
               <select className="form-control" id="demo-asset" value={assetId}
-                onChange={event => { initializeThreads(event.target.value); setAssetId(event.target.value); }}>
+                onChange={event => { initializeThreads(event.target.value); setCurrentAssetId(event.target.value); }}>
                 <option value="">Select equipment before asking questions</option>
                 {assets.map(item => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}</select></div>
             {!asset && <p className="real-demo-doc-status" role="status">
@@ -681,7 +686,7 @@ export function RealDemoPage() {
                     <button type="button" className="real-demo-thread-switch"
                       title={item.title} aria-current={item.id === activeThreadId ? 'true' : undefined}
                       disabled={busy} onClick={() => openThread(item.id)}>{item.title}</button>
-                    <button type="button" className="real-demo-thread-delete" disabled={busy}
+                    <button type="button" className="real-demo-thread-delete"
                       title={deletingThreadIds.includes(item.id) ? 'Deleting conversation' : 'Delete ' + item.title}
                       aria-label={'Delete conversation: ' + item.title}
                       onClick={() => deleteThread(item.id)}
