@@ -289,6 +289,9 @@ export function RealDemoPage() {
     if (activeThreadIdRef.current) {
       threadCache.current.set(activeThreadIdRef.current, snapshotThread());
     }
+    // Cache the newly opened server snapshot so selecting it after another
+    // chat is deleted does not leave the conversation pane blank.
+    threadCache.current.set(id, snapshot);
     setCurrentActiveThreadId(id);
     hydrateThread(snapshot);
   }
@@ -351,7 +354,30 @@ export function RealDemoPage() {
       if (remaining.length) {
         const next = remaining.at(-1);
         setCurrentActiveThreadId(next.id);
-        hydrateThread(threadCache.current.get(next.id));
+        let nextSnapshot = threadCache.current.get(next.id);
+        if (!nextSnapshot && next.conversationUuid) {
+          try {
+            const data = await call(conversationPath(next.conversationUuid, 'messages/'), token);
+            if (activeThreadIdRef.current !== next.id
+              || String(assetIdRef.current) !== String(next.assetId)
+              || deletedConversationUuids.current.has(next.conversationUuid)) {
+              return;
+            }
+            nextSnapshot = {
+              assetId: String(next.assetId),
+              messages: messagesFromServer(data.messages),
+              continuation: next.conversationUuid,
+            };
+            threadCache.current.set(next.id, nextSnapshot);
+          } catch {
+            if (activeThreadIdRef.current === next.id) {
+              setError('The remaining conversation could not be loaded.');
+            }
+          }
+        }
+        if (activeThreadIdRef.current === next.id) {
+          hydrateThread(nextSnapshot);
+        }
       } else {
         createLocalEmptyChat(assetId);
       }
