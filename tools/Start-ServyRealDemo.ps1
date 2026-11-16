@@ -21,6 +21,10 @@ foreach ($name in $environmentNames) {
 
 try {
 $ErrorActionPreference = 'Stop'
+
+# Clear stale terminal output from any previous launch.
+Clear-Host
+
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $privateLocal = 'C:\Users\prana\AppData\Local\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local'
 $demoFolder = Join-Path $privateLocal 'Servy\private_evaluations\servy_real_demo_20261031_01'
@@ -156,13 +160,11 @@ $env:SERVY_LLM_PROVIDER = 'extractive'
 if ($NoLocalChat) {
     $env:SERVY_LLM_PROVIDER = 'extractive'
     $env:SERVY_CUSTOMER_ANSWER_GENERATION = 'disabled'
-    Write-Output 'Qwen generation disabled; using deterministic source wording.'
 } else {
     $env:SERVY_CUSTOMER_ANSWER_GENERATION = 'ollama'
     $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
     $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
     $env:SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'
-    Write-Output 'Qwen local generation: enabled.'
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
     } catch {
@@ -174,7 +176,6 @@ if ($NoLocalChat) {
     if (!$qwenReady) {
         throw 'Qwen is enabled but qwen3.5:2b-q4_K_M is not installed. Run: ollama pull qwen3.5:2b-q4_K_M'
     }
-    Write-Output 'Qwen model check: PASS.'
 }
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
@@ -198,7 +199,6 @@ if (!(Test-LocalPort 8002)) {
     } finally {
         Pop-Location
     }
-    Write-Output 'servy_dev isolation check: PASS'
 
     # A previous invocation may have timed out while its model/index load was
     # still running. Reuse only this exact project's virtualenv Python process;
@@ -215,7 +215,6 @@ if (!(Test-LocalPort 8002)) {
     }
     if ($matchingBackends.Count -eq 1) {
         $backendProcessId = [int]$matchingBackends[0].ProcessId
-        Write-Output "Reusing existing Servy real-demo backend process $backendProcessId while it finishes startup."
     } else {
         $backendProcess = Start-Process -FilePath $pythonPath `
             -ArgumentList '-B','-u','manage.py','runserver','127.0.0.1:8002','--noreload' -WorkingDirectory $projectRoot `
@@ -237,6 +236,9 @@ if (!(Test-LocalPort 8002)) {
         } else {
             "Python backend process $backendProcessId is still running but did not open port 8002 within $backendChecks seconds."
         }
+        Write-Output ''
+        Write-Output 'Servy Real-data Demo: FAILED'
+        Write-Output 'Check private diagnostic logs.'
         throw "$processState Inspect the private logs: stdout=$backendOutLog ; stderr=$backendErrLog"
     }
 }
@@ -248,11 +250,13 @@ if (!(Test-LocalPort 5175)) {
         -RedirectStandardOutput $viteOutLog `
         -RedirectStandardError $viteErrLog | Out-Null
     for ($i = 0; $i -lt 15 -and !(Test-LocalPort 5175); $i++) { Start-Sleep -Seconds 1 }
-    if (!(Test-LocalPort 5175)) { throw "Demo frontend failed; inspect private vite.err locally." }
+    if (!(Test-LocalPort 5175)) {
+        Write-Output ''
+        Write-Output 'Servy Real-data Demo: FAILED'
+        Write-Output 'Check private diagnostic logs.'
+        throw "Demo frontend failed; inspect private vite.err locally."
+    }
 }
-
-Write-Output 'Real-data demo ready: http://127.0.0.1:5175/'
-Write-Output 'Enter the access code displayed at initial setup.'
 
 # Verify the browser-facing Vite proxy and the authenticated customer API, not
 # just open TCP ports. This also emits a safe HTTP 200 entry in the backend log.
@@ -266,14 +270,20 @@ try {
     if ($healthProbe.StatusCode -ne 200 -or $healthPayload.status -ne 'ok') {
         throw 'The authenticated demo health check failed.'
     }
-    Write-Output 'Customer RAG API check: PASS'
 } catch {
+    Write-Output ''
+    Write-Output 'Servy Real-data Demo: FAILED'
+    Write-Output 'Check private diagnostic logs.'
     throw 'Customer RAG API readiness failed through the browser-facing Vite proxy. Inspect startup.err and vite.err before the demo.'
 } finally {
     $demoToken = $null
     $healthPayload = $null
     $healthProbe = $null
 }
+
+Write-Output ''
+Write-Output 'Servy Customer Demo: http://127.0.0.1:5175/'
+Write-Output 'Servy Real-data Demo: STARTED'
 
 if (-not $NoWatch) {
     Write-Output ''

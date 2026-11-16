@@ -252,14 +252,18 @@ export function RealDemoPage() {
     // If this conversation was persisted on the server, delete it there too.
     if (uuid && token) {
       try {
-        await fetch(conversationPath(uuid), {
+        const response = await fetch(conversationPath(uuid), {
           method: 'DELETE',
           headers: { 'Authorization': `Demo ${token}` },
           cache: 'no-store',
         });
+        if (!response.ok && response.status !== 404) {
+          // Server rejection — the conversation will reappear on next reload.
+          // Surface the failure so the customer is aware.
+          setError('The conversation could not be removed permanently. It may reappear after a refresh.');
+        }
       } catch {
-        // Server deletion failed — the conversation will reappear on next
-        // reload. We do not undo the optimistic UI removal to avoid flicker.
+        setError('The conversation could not be removed permanently. It may reappear after a refresh.');
       }
     }
   }
