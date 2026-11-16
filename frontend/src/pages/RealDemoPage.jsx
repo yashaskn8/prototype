@@ -94,6 +94,8 @@ export function RealDemoPage() {
   const [entry, setEntry] = useState('');
   const [assets, setAssets] = useState(null);
   const [assetId, setAssetId] = useState('');
+  const assetIdRef = useRef(assetId);
+  assetIdRef.current = assetId;
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState([]);
   const [continuation, setContinuation] = useState(null);
@@ -288,7 +290,9 @@ export function RealDemoPage() {
       }
       deletingThreadIdsRef.current.add(id);
       setDeletingThreadIds(previous => previous.includes(id) ? previous : [...previous, id]);
-      historyRequestRevision.current += 1;
+      if (String(assetIdRef.current) === String(thread.assetId)) {
+        historyRequestRevision.current += 1;
+      }
       try {
         const response = await fetch(conversationPath(uuid), {
           method: 'DELETE',
@@ -312,7 +316,11 @@ export function RealDemoPage() {
         return;
       }
       deletedConversationUuids.current.add(uuid);
-      historyRequestRevision.current += 1;
+      // Do not invalidate a different asset's newer history request if the user
+      // changed equipment while this DELETE was in flight.
+      if (String(assetIdRef.current) === String(thread.assetId)) {
+        historyRequestRevision.current += 1;
+      }
     }
 
     threadCache.current.delete(id);
