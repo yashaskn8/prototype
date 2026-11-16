@@ -100,7 +100,6 @@ export const api = {
     const res = await request(endpoint, {
       method: 'POST',
       body: data,
-      headers: { Accept: 'text/event-stream' },
       signal: options.signal,
     });
     return consumeRagEventStream(res, onLog);

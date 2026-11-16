@@ -41,7 +41,6 @@ async function callRagStream(path, token, payload, onLog, signal) {
     headers: {
       Authorization: `Demo ${token}`,
       'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
     },
     body: JSON.stringify(payload),
     cache: 'no-store',

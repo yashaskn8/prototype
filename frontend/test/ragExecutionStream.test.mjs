@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   consumeRagEventStream,
   mergeRagExecutionEvent,
@@ -84,4 +85,19 @@ test('non-stage events are ignored by the stage reducer', () => {
     mergeRagExecutionEvent(original, { type: 'result', data: { answer: 'ok' } }),
     original,
   );
+});
+
+
+test('customer streaming requests avoid unsupported text/event-stream Accept negotiation', async () => {
+  const [apiClient, demoPage] = await Promise.all([
+    readFile(new URL('../src/api.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/pages/RealDemoPage.jsx', import.meta.url), 'utf8'),
+  ]);
+
+  // The shared client keeps its JSON Accept default; the browser page relies on
+  // fetch's */* default. Both responses are still consumed as SSE by the client.
+  assert.match(apiClient, /Accept:\s*'application\\/json'/);
+  assert.doesNotMatch(apiClient, /Accept:\s*['"]text\\/event-stream['"]/);
+  assert.match(demoPage, /['"]Content-Type['"]:\s*['"]application\\/json['"]/);
+  assert.doesNotMatch(demoPage, /Accept:\s*['"]text\\/event-stream['"]/);
 });

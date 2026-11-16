@@ -347,6 +347,7 @@ class CustomerRAGStreamAccessTests(SimpleTestCase):
             f"/api/customer-support/conversations/{conversation_uuid}/messages-stream/",
             {"message": "synthetic follow-up"},
             format="json",
+            HTTP_ACCEPT="*/*",
         )
         with patch.object(
             CustomerConversationMessagesStreamView,
@@ -358,7 +359,7 @@ class CustomerRAGStreamAccessTests(SimpleTestCase):
             )
         self.assertEqual(response.status_code, 403)
 
-    def test_authenticated_customer_conversation_followup_stream_forwards_result(self):
+    def test_authenticated_customer_conversation_followup_stream_accepts_browser_wildcard(self):
         conversation_uuid = uuid4()
         request = APIRequestFactory().post(
             f"/api/customer-support/conversations/{conversation_uuid}/messages-stream/",
