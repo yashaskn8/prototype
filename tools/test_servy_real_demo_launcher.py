@@ -13,7 +13,7 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
         # Only inspect commands that can write to the visible PowerShell console.
         cls.visible_output = "\n".join(
             line for line in cls.launcher.splitlines()
-            if re.search(r"\\b(?:Write-Output|Write-Host|Write-Warning|Write-Information)\\b", line)
+            if re.search(r"\b(?:Write-Output|Write-Host|Write-Warning|Write-Information)\b", line)
         )
 
     def test_retrieval_and_dialogue_remain_deterministic_while_qwen_is_enabled(self):
@@ -49,8 +49,7 @@ class RealDemoLauncherConfigurationTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.launcher)
 
-        # The previous visible status line was intentionally removed; validation
-        # and fallback behavior are exercised by the dedicated generation tests.
+        # Validation and fallback behavior are exercised by the dedicated generation tests.
         self.assertNotIn(
             "cited-source validation and extractive fallback retained",
             self.visible_output,
