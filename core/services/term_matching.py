@@ -84,6 +84,36 @@ SYMPTOM_CONCEPTS = {
             re.I),
         re.compile(r"\bcommunication\b", re.I),
     ),
+    # A generic equipment failure ("not working", "stopped working") does not
+    # name one symptom.  It matches any operational-failure heading so the
+    # evidence check can reach the documented cause lists inside those sections.
+    "generic_failure": (
+        re.compile(
+            # <negation> + <functional verb>
+            r"\b(?:not|isn'?t|doesn'?t|won'?t|can'?t|cannot)\s+"
+            r"(?:work(?:ing)?|function(?:ing)?|operat(?:e|ing)|run(?:ning)?"
+            r"|starting|turning on)\b"
+            # stopped/quit/ceased + optional modifier
+            r"|\b(?:stopped|quit|ceased|has\s+stopped|suddenly\s+stopped"
+            r"|stopped\s+suddenly)\s*(?:working|functioning|running|operating)?\b"
+            # "not work" bare
+            r"|\bnot\s+work(?:ing)?\b"
+            # "broke down / broken / malfunctioning / failed / failure / defective"
+            r"|\b(?:broke\s+down|broken\s+down|broken|malfunctioning|malfunction(?:ed)?"
+            r"|failed|failure|defective|inoperative|dead)\b"
+            # "what could be wrong / what's wrong / something is wrong / going wrong"
+            r"|\b(?:what(?:'s|\s+is|\s+could\s+be)\s+wrong"
+            r"|something\s+(?:is|seems?)\s+wrong|going\s+wrong)\b"
+            # "won't turn on / shut down / shut off"
+            r"|\b(?:won'?t|doesn'?t|will\s+not|does\s+not)\s+(?:turn\s+on|power\s+on|switch\s+on)\b"
+            r"|\b(?:shut\s+down|shut\s+off|turned?\s+off)\s*(?:on\s+its\s+own|by\s+itself|unexpectedly|suddenly)?\b",
+            re.I),
+        re.compile(
+            r"\b(?:does\s+not\s+start|not\s+start|poor\s+cooling|not\s+cooling"
+            r"|fault|symptom|troubleshoot|failure|malfunction|cause|diagnostic"
+            r"|problem|abnormal|error)\b",
+            re.I),
+    ),
 }
 
 
@@ -136,7 +166,9 @@ def question_states_heading(question: str, heading: str) -> bool:
     try:
         from core.ml.conditional_rerank import _extract_symptom_keys, _heading_matches_symptom
         # "pressure" alone carries no polarity and is decided above.
-        keys = _extract_symptom_keys(str(question or "")) - {"pressure"}
+        # "generic_failure" is not a specific symptom — exclude it so a
+        # "not working" history does not match every fault heading.
+        keys = _extract_symptom_keys(str(question or "")) - {"pressure", "generic_failure"}
         return bool(keys) and _heading_matches_symptom(heading or "", keys, str(question or ""))
     except Exception:
         return False

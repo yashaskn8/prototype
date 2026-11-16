@@ -263,6 +263,71 @@ REST_FRAMEWORK = {
     },
 }
 
+# ----------------------------------------------------------------------
+# Logging: demo terminal shows only Django request log; all other output
+# goes to the private log files via stdout/stderr redirection in the
+# launcher.  This keeps the visible console clean for customer demos.
+# ----------------------------------------------------------------------
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "request": {
+            "format": "%(message)s",
+        },
+    },
+    "filters": {
+        "require_debug_true": {
+            "()": "django.utils.log.RequireDebugTrue",
+        },
+    },
+    "handlers": {
+        "console_requests": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+            "formatter": "request",
+        },
+        "null": {
+            "class": "logging.NullHandler",
+        },
+    },
+    "loggers": {
+        # Django's built-in request logger → stderr (visible in demo terminal)
+        "django.server": {
+            "handlers": ["console_requests"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # Suppress verbose framework output from the demo terminal.
+        # Full output is still captured in the private stdout/stderr log files.
+        "django": {
+            "handlers": ["null"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "core": {
+            "handlers": ["null"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "sentence_transformers": {
+            "handlers": ["null"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "transformers": {
+            "handlers": ["null"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "chromadb": {
+            "handlers": ["null"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}
+
 PRODUCTION_CHROMA_DIR = (BASE_DIR / "chroma_db").resolve()
 CHROMA_PERSIST_DIR = Path(os.getenv("SERVY_CHROMA_PERSIST_DIR", str(PRODUCTION_CHROMA_DIR))).resolve()
 

@@ -100,7 +100,8 @@ REQUIREMENTS = {
 }
 
 REQUIREMENT_TERMS = frozenset({
-    "possible", "potential", "likely", "cause", "causes", "check", "checks", "procedure",
+    "possible", "potential", "likely", "cause", "causes", "reason", "reasons",
+    "check", "checks", "procedure",
     "procedures", "step", "steps", "safe", "technician", "technician-only", "non-invasive",
     "physical", "next", "action", "actions", "code", "codes", "value", "values", "limit",
     "numerical", "units", "exact", "perform", "require", "requires", "required", "repair",

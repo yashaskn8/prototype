@@ -11,7 +11,8 @@ $environmentNames = @(
     'SERVY_CUSTOMER_GENERATION_MODEL', 'SERVY_CUSTOMER_GENERATION_TIMEOUT',
     'SERVY_REAL_DEMO_DIALOGUE_MODE',
     'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'SERVY_ALLOW_REMOTE_LLM',
-    'SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES', 'VITE_SERVY_REAL_DEMO'
+    'SERVY_REAL_DEMO_REBUILD_VERIFIED_SOURCES', 'VITE_SERVY_REAL_DEMO',
+    'PYTHONWARNINGS', 'TQDM_DISABLE'
 )
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -161,7 +162,7 @@ if ($NoLocalChat) {
     $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
     $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
     $env:SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'
-    Write-Output 'Customer RAG answer generation: local Qwen enabled; cited-source validation and extractive fallback retained.'
+    Write-Output 'Qwen local generation: enabled.'
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
     } catch {
@@ -173,11 +174,15 @@ if ($NoLocalChat) {
     if (!$qwenReady) {
         throw 'Qwen is enabled but qwen3.5:2b-q4_K_M is not installed. Run: ollama pull qwen3.5:2b-q4_K_M'
     }
-    Write-Output 'Qwen model check: PASS (qwen3.5:2b-q4_K_M present locally).'
+    Write-Output 'Qwen model check: PASS.'
 }
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
 $env:SERVY_ALLOW_REMOTE_LLM = '0'
+# Suppress Python warnings and tqdm progress bars from the visible terminal.
+# Full output is captured in the private log files for troubleshooting.
+$env:PYTHONWARNINGS = 'ignore'
+$env:TQDM_DISABLE = '1'
 if ($ReviewRequest -or $RebuildFromVerifiedDocs) {
     throw 'The legacy read-only index review and rebuild options are not used by the servy_dev gateway.'
 }
@@ -247,7 +252,7 @@ if (!(Test-LocalPort 5175)) {
 }
 
 Write-Output 'Real-data demo ready: http://127.0.0.1:5175/'
-Write-Output ('Enter the separate code from: ' + $accessFile)
+Write-Output 'Enter the access code displayed at initial setup.'
 
 # Verify the browser-facing Vite proxy and the authenticated customer API, not
 # just open TCP ports. This also emits a safe HTTP 200 entry in the backend log.
@@ -261,7 +266,7 @@ try {
     if ($healthProbe.StatusCode -ne 200 -or $healthPayload.status -ne 'ok') {
         throw 'The authenticated demo health check failed.'
     }
-    Write-Output 'Customer RAG API check: PASS (authenticated gateway health endpoint on servy_dev)'
+    Write-Output 'Customer RAG API check: PASS'
 } catch {
     throw 'Customer RAG API readiness failed through the browser-facing Vite proxy. Inspect startup.err and vite.err before the demo.'
 } finally {
@@ -272,9 +277,7 @@ try {
 
 if (-not $NoWatch) {
     Write-Output ''
-    Write-Output 'Live customer RAG events: gateway requests and status (Django request log).'
-    Write-Output 'Private stdout and Vite logs remain in the demo log folder for troubleshooting.'
-    Write-Output 'Press Ctrl+C to close this log viewer only; the backend and frontend processes remain running.'
+    Write-Output 'Live request log (Ctrl+C to close this viewer only):'
     if (Test-Path -LiteralPath $backendErrLog -PathType Leaf) {
         Get-Content -LiteralPath $backendErrLog -Tail 25 -Wait
     } else {

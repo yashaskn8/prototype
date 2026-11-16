@@ -122,12 +122,21 @@ _CAUSE_QUESTION = re.compile(
     r"malfunction\w*|not working|(?:isn'?t|doesn'?t|won'?t|stopped) work\w*)\b", re.I)
 
 _GENERIC_FAILURE_QUERY = re.compile(
-    r"\b(?:not working|does(?:n'?t| not) work|won'?t work|"
-    r"isn'?t functioning|not functioning|stopped working|not operational)\b", re.I)
+    r"\b(?:not working|does(?:n'?t| not) work|won'?t work|can'?t work|cannot work|"
+    r"isn'?t functioning|not functioning|stopped working|not operational|"
+    r"not running|not operating|not turning on|won'?t turn on|"
+    r"doesn'?t turn on|"
+    r"broke down|broken down|broken|malfunctioning|malfunction(?:ed)?|"
+    r"failed|defective|inoperative|dead|"
+    r"stopped suddenly|suddenly stopped|has stopped|quit working|ceased|"
+    r"shut down|shut off|"
+    r"what(?:'s|\s+is|\s+could\s+be)\s+wrong|something\s+(?:is|seems?)\s+wrong|"
+    r"going wrong)\b", re.I)
 _SPECIFIC_FAULT_QUERY = re.compile(
     r"\b(?:not cooling|poor cooling|weak cooling|no cooling|"
     r"not heating|no heating|weak airflow|low airflow|water leak\w*|"
     r"leakage|rattl\w*|vibrat\w*|nois\w*|communication fault|"
+    r"not start\w*|won'?t start|doesn'?t start|does not start|will not start|"
     r"address(?:ing)? fault|low[ -]?pressure|high[ -]?pressure|"
     r"capacity fault|compressor fault|inverter fault|fan fault|"
     r"temperature[- ]sensor fault|fault code|error code|alarm code)\b", re.I)
@@ -305,8 +314,11 @@ def _question_guard(question):
         return "unsupported"
     if re.search(r"\b(?:what should be clarified|which details are missing|is (?:that|this) enough to tell which|or something else)\b", lower):
         return "clarify"
-    if (re.fullmatch(r"why is\s+.{3,80}\s+not working\??", lower)
-            or re.fullmatch(r"why isn't\s+.{3,80}\s+working\??", lower)):
+    if (re.fullmatch(r"why is\s+.{3,80}\s+(?:not working|broken|dead|malfunctioning|"
+                     r"not functioning|not operating|not running|not starting)\??", lower)
+            or re.fullmatch(r"why isn't\s+.{3,80}\s+working\??", lower)
+            or re.fullmatch(r"why (?:has|did)\s+.{3,80}\s+(?:stopped|failed|broken down|"
+                            r"shut down|shut off)\??", lower)):
         return "clarify"
     words = re.findall(r"[a-z0-9]+", lower)
     if len(words) <= 7 and re.search(r"\b(?:help|what happened|what first|due yet)\b", lower):

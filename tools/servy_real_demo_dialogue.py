@@ -668,8 +668,16 @@ def is_generic_cause_overview(question):
     q = _words(question)
     return bool(
         re.search(
-            r"\b(?:not working|does(?:n'?t| not) work|won't work|"
-            r"isn't functioning|not functioning|stopped working|not operational)\b", q)
+            r"\b(?:not working|does(?:n'?t| not) work|won'?t work|can'?t work|cannot work|"
+            r"isn'?t functioning|not functioning|stopped working|not operational|"
+            r"not running|not operating|not turning on|won'?t turn on|"
+            r"doesn'?t turn on|"
+            r"broke down|broken down|broken|malfunctioning|malfunction(?:ed)?|"
+            r"failed|defective|inoperative|dead|"
+            r"stopped suddenly|suddenly stopped|has stopped|quit working|ceased|"
+            r"shut down|shut off|"
+            r"what(?:'s|\s+is|\s+could\s+be)\s+wrong|something\s+(?:is|seems?)\s+wrong|"
+            r"going wrong)\b", q)
         and re.search(
             r"\b(?:possible\s+causes?|possible\s+reasons?|causes?|reasons?|"
             r"issues?|problems?|why)\b", q)
@@ -677,6 +685,7 @@ def is_generic_cause_overview(question):
             r"\b(?:not cooling|poor cooling|weak cooling|no cooling|"
             r"not heating|no heating|weak airflow|low airflow|water leak\w*|"
             r"leakage|rattl\w*|vibrat\w*|nois\w*|communication fault|"
+            r"not start\w*|won'?t start|doesn'?t start|does not start|will not start|"
             r"address(?:ing)? fault|low[ -]?pressure|high[ -]?pressure|"
             r"capacity fault|compressor fault|inverter fault|fan fault|"
             r"temperature[- ]sensor fault|fault code|error code|alarm code)\b", q)
@@ -1585,7 +1594,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
     # asking for an overview of every documented fault section, even when the
     # same message also says the unit is "not working". The named symptom
     # must then be supported by the cited source like any other question.
-    names_specific_symptom = bool(symptom_concepts(question)) or any(
+    names_specific_symptom = bool(symptom_concepts(question) - {"generic_failure"}) or any(
         asked.search(_words(focus.relevant))
         for asked, _evidence in SPECIFIC_EVIDENCE.values()
     )
@@ -1858,7 +1867,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
             if (section and len(section) <= 80
                     and not question_states_heading(reported, citation.get("heading"))
                     and not heading_states_symptom(
-                        citation.get("heading"), symptom_concepts(reported))):
+                        citation.get("heading"), symptom_concepts(reported) - {"generic_failure"})):
                 claim["text"] = "Listed for \u201c" + section.capitalize() + "\u201d: " + claim["text"]
                 sectioned_observations = True
         selected_claims.append(claim)
