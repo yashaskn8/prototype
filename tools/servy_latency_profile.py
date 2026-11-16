@@ -56,6 +56,22 @@ def summarize(values):
     }
 
 
+def soft_delete_created_conversation(session, headers, conversation_uuid, cleaned_uuids):
+    """Delete one profiler-owned UUID, accepting a retry after an earlier deletion."""
+    if conversation_uuid in cleaned_uuids:
+        return 204
+    response = session.delete(
+        f"{BASE}{conversation_uuid}/",
+        headers=headers,
+        timeout=(10, 30),
+    )
+    if response.status_code not in SUCCESSFUL_DELETE_STATUSES:
+        response.raise_for_status()
+        raise RuntimeError(f"Unexpected cleanup HTTP status {response.status_code}")
+    cleaned_uuids.add(conversation_uuid)
+    return response.status_code
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--access-file", required=True)
@@ -71,23 +87,16 @@ def main():
     created_uuids = []
     cleaned_uuids = set()
     cleanup_failures = {}
+    turns_by_uuid = {}
     session = requests.Session()
 
     def cleanup_conversation(conversation_uuid):
-        """Soft-delete only a UUID created by this invocation; safe to retry."""
-        if conversation_uuid in cleaned_uuids:
-            return 204
-        response = session.delete(
-            f"{BASE}{conversation_uuid}/",
-            headers=headers,
-            timeout=(10, 30),
+        # The caller supplies only UUIDs captured from this run's create responses.
+        result = soft_delete_created_conversation(
+            session, headers, conversation_uuid, cleaned_uuids,
         )
-        if response.status_code not in SUCCESSFUL_DELETE_STATUSES:
-            response.raise_for_status()
-            raise RuntimeError(f"Unexpected cleanup HTTP status {response.status_code}")
-        cleaned_uuids.add(conversation_uuid)
         cleanup_failures.pop(conversation_uuid, None)
-        return response.status_code
+        return result
 
     try:
         for index, (asset_id, question) in enumerate(QUESTIONS, start=1):
@@ -125,6 +134,7 @@ def main():
                 if not conversation_uuid:
                     raise RuntimeError("Conversation creation returned no conversation_uuid.")
                 created_uuids.append(conversation_uuid)
+                turns_by_uuid[conversation_uuid] = turn
                 turn["conversation_create_ms"] = round(
                     (time.perf_counter() - create_started) * 1000, 1
                 )
@@ -212,7 +222,11 @@ def main():
             if conversation_uuid in cleaned_uuids:
                 continue
             try:
-                cleanup_conversation(conversation_uuid)
+                cleanup_status = cleanup_conversation(conversation_uuid)
+                turn = turns_by_uuid.get(conversation_uuid)
+                if turn is not None:
+                    turn["cleanup_http_status"] = cleanup_status
+                    turn.pop("cleanup_error", None)
             except Exception as exc:
                 cleanup_failures[conversation_uuid] = (
                     f"{type(exc).__name__}: {str(exc)[:200]}"
