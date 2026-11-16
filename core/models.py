@@ -897,6 +897,11 @@ class CustomerConversation(TenantOwnedModel):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     closed_at = models.DateTimeField(null=True, blank=True)
+    customer_deleted_at = models.DateTimeField(null=True, blank=True, default=None)
+    customer_deleted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, default=None,
+        related_name="deleted_customer_conversations",
+    )
 
     class Meta:
         ordering = ["-updated_at"]

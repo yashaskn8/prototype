@@ -139,15 +139,23 @@ def _conversation_scope_is_consistent(ctx, conversation):
     return True
 
 
-def _can_read_customer_conversation(ctx, conversation):
+def _can_read_customer_conversation(ctx, conversation, *, allow_deleted=False):
     if not _conversation_scope_is_consistent(ctx, conversation):
         return False
 
     role = ctx["role"]
     if role in CUSTOMER_ROLES:
         customer = ctx.get("customer")
-        return bool(customer and conversation.customer_id == customer.id)
+        if not (customer and conversation.customer_id == customer.id):
+            return False
+        # Customer-deleted conversations are invisible to the customer unless
+        # the caller explicitly opts in (e.g. for idempotent re-deletion).
+        if not allow_deleted and conversation.customer_deleted_at is not None:
+            return False
+        return True
     if role == "technician":
+        # Technicians retain access via linked service calls regardless of
+        # customer-level deletion — the operational record is preserved.
         call = conversation.linked_service_call
         return bool(
             call
@@ -2449,7 +2457,9 @@ class CustomerConversationsListView(APIView):
                 return Response({"detail": "Customer profile not found."}, status=status.HTTP_404_NOT_FOUND)
             qs = CustomerConversation.objects.filter(tenant=tenant, customer=customer)
         elif role in CUSTOMER_ROLES:
-            qs = CustomerConversation.objects.filter(tenant=tenant, customer=customer)
+            qs = CustomerConversation.objects.filter(
+                tenant=tenant, customer=customer, customer_deleted_at__isnull=True,
+            )
         else:
             return Response({"detail": "Customer conversation access is not available."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -2735,6 +2745,41 @@ class CustomerConversationDetailView(APIView):
             "updated_at": conv.updated_at,
             "closed_at": conv.closed_at,
         })
+
+    def delete(self, request, conversation_uuid):
+        """Soft-delete a conversation from the customer's perspective."""
+        ctx = require_api_context(request)
+        tenant = ctx["tenant"]
+        customer = ctx["customer"]
+        role = ctx["role"]
+
+        if role not in CUSTOMER_ROLES or not customer:
+            return Response(
+                {"detail": "Only an authenticated customer can delete a conversation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            conv = CustomerConversation.objects.select_related(
+                "customer", "site", "asset", "linked_service_call"
+            ).get(tenant=tenant, conversation_uuid=conversation_uuid)
+        except CustomerConversation.DoesNotExist:
+            # Uniform 404 regardless of existence to prevent enumeration.
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _can_read_customer_conversation(ctx, conv, allow_deleted=True):
+            return Response({"detail": "Conversation not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Idempotent: if already deleted, succeed silently.
+        if conv.customer_deleted_at is None:
+            with transaction.atomic():
+                conv = CustomerConversation.objects.select_for_update().get(pk=conv.pk, tenant=tenant)
+                if conv.customer_deleted_at is None:
+                    conv.customer_deleted_at = timezone.now()
+                    conv.customer_deleted_by = request.user
+                    conv.save(update_fields=["customer_deleted_at", "customer_deleted_by"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CustomerConversationMessagesView(APIView):

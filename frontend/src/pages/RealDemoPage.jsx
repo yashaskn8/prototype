@@ -227,22 +227,41 @@ export function RealDemoPage() {
     hydrateThread(snapshot);
   }
 
-  function deleteThread(id) {
+  async function deleteThread(id) {
     if (busy) return;
+
+    // Find the thread to check if it has a server-backed conversation UUID.
+    const thread = threads.find(item => item.id === id);
+    const uuid = thread?.conversationUuid;
+
+    // Optimistically remove from UI immediately.
     const remaining = threads.filter(item => item.id !== id);
     threadCache.current.delete(id);
+
     if (id !== activeThreadId) {
       setThreads(remaining);
-      return;
-    }
-    if (!remaining.length) {
+    } else if (!remaining.length) {
       initializeThreads(assetId);
-      return;
+    } else {
+      const next = remaining.at(-1);
+      setThreads(remaining);
+      setActiveThreadId(next.id);
+      hydrateThread(threadCache.current.get(next.id));
     }
-    const next = remaining.at(-1);
-    setThreads(remaining);
-    setActiveThreadId(next.id);
-    hydrateThread(threadCache.current.get(next.id));
+
+    // If this conversation was persisted on the server, delete it there too.
+    if (uuid && token) {
+      try {
+        await fetch(conversationPath(uuid), {
+          method: 'DELETE',
+          headers: { 'Authorization': `Demo ${token}` },
+          cache: 'no-store',
+        });
+      } catch {
+        // Server deletion failed — the conversation will reappear on next
+        // reload. We do not undo the optimistic UI removal to avoid flicker.
+      }
+    }
   }
 
   useEffect(() => {
