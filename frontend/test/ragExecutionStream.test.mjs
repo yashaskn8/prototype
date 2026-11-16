@@ -96,8 +96,8 @@ test('customer streaming requests avoid unsupported text/event-stream Accept neg
 
   // The shared client keeps its JSON Accept default; the browser page relies on
   // fetch's */* default. Both responses are still consumed as SSE by the client.
-  assert.match(apiClient, /Accept:\s*'application\\/json'/);
-  assert.doesNotMatch(apiClient, /Accept:\s*['"]text\\/event-stream['"]/);
-  assert.match(demoPage, /['"]Content-Type['"]:\s*['"]application\\/json['"]/);
-  assert.doesNotMatch(demoPage, /Accept:\s*['"]text\\/event-stream['"]/);
+  assert.equal(apiClient.includes("Accept: 'application/json'"), true);
+  assert.equal(apiClient.includes("Accept: 'text/event-stream'"), false);
+  assert.equal(demoPage.includes("'Content-Type': 'application/json'"), true);
+  assert.equal(demoPage.includes("Accept: 'text/event-stream'"), false);
 });

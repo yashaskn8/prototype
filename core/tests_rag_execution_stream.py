@@ -347,7 +347,6 @@ class CustomerRAGStreamAccessTests(SimpleTestCase):
             f"/api/customer-support/conversations/{conversation_uuid}/messages-stream/",
             {"message": "synthetic follow-up"},
             format="json",
-            HTTP_ACCEPT="*/*",
         )
         with patch.object(
             CustomerConversationMessagesStreamView,
@@ -365,6 +364,7 @@ class CustomerRAGStreamAccessTests(SimpleTestCase):
             f"/api/customer-support/conversations/{conversation_uuid}/messages-stream/",
             {"message": "synthetic follow-up"},
             format="json",
+            HTTP_ACCEPT="*/*",
         )
         user = User(username="customer-followup-stream-test", is_active=True)
         force_authenticate(request, user=user)
