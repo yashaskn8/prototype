@@ -287,7 +287,7 @@ Write-Output 'Servy Real-data Demo: STARTED'
 
 if (-not $NoWatch) {
     Write-Output ''
-    Write-Output 'Live request log (Ctrl+C to close this viewer only):'
+    Write-Output 'Live customer RAG events (Ctrl+C to close this viewer only):'
     if (Test-Path -LiteralPath $backendErrLog -PathType Leaf) {
         Get-Content -LiteralPath $backendErrLog -Tail 25 -Wait
     } else {
