@@ -14,6 +14,7 @@ import {
 import '../components/AssistantTypingIndicator.css';
 import {
   appendDemoThread, canOpenDemoThread, chatTitle, isDemoAssetThreadBound,
+  mergeSavedThreads, removeDemoThread,
 } from './demoThreadState';
 import './RealDemoPage.css';
 import {
@@ -93,11 +94,19 @@ export function RealDemoPage() {
   const [entry, setEntry] = useState('');
   const [assets, setAssets] = useState(null);
   const [assetId, setAssetId] = useState('');
+  const assetIdRef = useRef('');
+  const messageSequence = useRef(0);
   const [question, setQuestion] = useState('');
   const [messages, setMessages] = useState([]);
   const [continuation, setContinuation] = useState(null);
   const [threads, setThreads] = useState([]);
   const [activeThreadId, setActiveThreadId] = useState('');
+  const threadListRef = useRef([]);
+  const activeThreadIdRef = useRef('');
+  const historyRequestRevision = useRef(0);
+  const deletedConversationUuids = useRef(new Set());
+  const deletingThreadIdsRef = useRef(new Set());
+  const [deletingThreadIds, setDeletingThreadIds] = useState([]);
   const threadCache = useRef(new Map());
   const threadSequence = useRef(0);
   const chatEndRef = useRef(null);
@@ -112,6 +121,38 @@ export function RealDemoPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [view, setView] = useState('chat');
+
+  function replaceThreadList(next) {
+    threadListRef.current = next;
+    setThreads(next);
+  }
+
+  function updateThreadList(updater) {
+    const next = updater(threadListRef.current);
+    replaceThreadList(next);
+    return next;
+  }
+
+  function setCurrentActiveThreadId(next) {
+    activeThreadIdRef.current = next;
+    setActiveThreadId(next);
+  }
+
+  function setCurrentAssetId(next) {
+    assetIdRef.current = next == null ? '' : String(next);
+    setAssetId(next);
+  }
+
+  function createLocalEmptyChat(forAssetId) {
+    threadCache.current.clear();
+    threadSequence.current = forAssetId ? 1 : 0;
+    const id = forAssetId ? 'thread-' + crypto.randomUUID() : '';
+    setCurrentActiveThreadId(id);
+    replaceThreadList(forAssetId
+      ? [{ id, assetId: String(forAssetId), title: 'New chat' }]
+      : []);
+    resetConversation();
+  }
 
   useEffect(() => () => requestStreamController.current?.abort(), []);
 
@@ -157,100 +198,124 @@ export function RealDemoPage() {
   }
 
   function initializeThreads(nextAssetId, accessToken = token) {
+    historyRequestRevision.current += 1;
     threadCache.current.clear();
     threadSequence.current = nextAssetId ? 1 : 0;
     const initialId = nextAssetId ? 'thread-' + crypto.randomUUID() : '';
-    setActiveThreadId(initialId);
-    setThreads(nextAssetId
+    setCurrentActiveThreadId(initialId);
+    replaceThreadList(nextAssetId
       ? [{ id: initialId, assetId: String(nextAssetId), title: 'New chat' }]
       : []);
     resetConversation();
     if (nextAssetId && accessToken) loadSavedThreads(String(nextAssetId), accessToken);
   }
 
-  // Previously saved conversations for this equipment (survive a refresh).
+  // Reject history responses that started before a newer load, asset switch or deletion.
   async function loadSavedThreads(forAssetId, accessToken) {
+    const revision = ++historyRequestRevision.current;
     try {
       const data = await call(`${CONVERSATIONS_PATH}?asset_id=${encodeURIComponent(forAssetId)}&limit=50`, accessToken);
+      if (revision !== historyRequestRevision.current) return;
       const saved = (data.conversations || [])
         .filter(item => String(item.asset_id ?? item.asset?.id ?? forAssetId) === forAssetId)
+        .filter(item => item.conversation_uuid
+          && !deletedConversationUuids.current.has(item.conversation_uuid))
         .map(item => ({
           id: 'conv-' + item.conversation_uuid, assetId: forAssetId,
           conversationUuid: item.conversation_uuid, title: item.title || 'Saved chat',
         }));
-      setThreads(previous => [...previous.filter(item => !item.conversationUuid
-        || !saved.some(entry => entry.conversationUuid === item.conversationUuid)), ...saved]);
+      replaceThreadList(mergeSavedThreads(
+        threadListRef.current, saved, deletedConversationUuids.current,
+      ));
     } catch {
-      setError('Saved conversations could not be loaded. New questions still work.');
+      if (revision === historyRequestRevision.current) {
+        setError('Saved conversations could not be loaded. New questions still work.');
+      }
     }
   }
 
   function startNewChat() {
     if (busy || !assetId) return;
-    if (activeThreadId) threadCache.current.set(activeThreadId, snapshotThread());
+    const currentThreads = threadListRef.current;
+    if (activeThreadIdRef.current) {
+      threadCache.current.set(activeThreadIdRef.current, snapshotThread());
+    }
     const id = 'thread-' + crypto.randomUUID();
-    const next = appendDemoThread(threads, {
+    const next = appendDemoThread(currentThreads, {
       id, assetId: String(assetId), title: 'New chat',
     });
-    for (const saved of threads) {
+    for (const saved of currentThreads) {
       if (!next.some(item => item.id === saved.id)) threadCache.current.delete(saved.id);
     }
-    setThreads(next);
-    setActiveThreadId(id);
+    replaceThreadList(next);
+    setCurrentActiveThreadId(id);
     resetConversation();
   }
 
   async function openThread(id) {
-    if (busy || id === activeThreadId) return;
-    const thread = threads.find(item => item.id === id);
+    if (busy || id === activeThreadIdRef.current) return;
+    const thread = threadListRef.current.find(item => item.id === id);
     if (!canOpenDemoThread(thread, assetId)) {
       setError('That conversation is not available for the selected equipment.');
       return;
     }
+
+    const openRevision = ++requestRevision.current;
+    const requestedAssetId = String(assetId);
     let snapshot = threadCache.current.get(id);
     if (!snapshot && thread.conversationUuid) {
       try {
         const data = await call(conversationPath(thread.conversationUuid, 'messages/'), token);
-        snapshot = { assetId: String(assetId), messages: messagesFromServer(data.messages),
+        snapshot = { assetId: requestedAssetId, messages: messagesFromServer(data.messages),
           continuation: thread.conversationUuid };
       } catch {
-        setError('That saved conversation could not be loaded.');
+        if (openRevision === requestRevision.current
+          && requestedAssetId === String(assetIdRef.current)) {
+          setError('That saved conversation could not be loaded.');
+        }
         return;
       }
     }
-    if (!snapshot || String(snapshot.assetId) !== String(assetId)) {
+
+    // A deletion, asset switch, newer chat selection or lock may have happened
+    // while the messages request was in flight. Never activate a stale row.
+    if (openRevision !== requestRevision.current
+      || requestedAssetId !== String(assetIdRef.current)
+      || !threadListRef.current.some(item => item.id === id)
+      || (thread.conversationUuid
+        && deletedConversationUuids.current.has(thread.conversationUuid))) {
+      return;
+    }
+    if (!snapshot || String(snapshot.assetId) !== requestedAssetId) {
       setError('That conversation was cleared or its equipment scope changed.');
       return;
     }
-    if (activeThreadId) threadCache.current.set(activeThreadId, snapshotThread());
-    setActiveThreadId(id);
+    if (activeThreadIdRef.current) {
+      threadCache.current.set(activeThreadIdRef.current, snapshotThread());
+    }
+    // Cache the newly opened server snapshot so selecting it after another
+    // chat is deleted does not leave the conversation pane blank.
+    threadCache.current.set(id, snapshot);
+    setCurrentActiveThreadId(id);
     hydrateThread(snapshot);
   }
 
   async function deleteThread(id) {
-    if (busy) return;
+    if (busy || deletingThreadIdsRef.current.has(id)) return;
+    const thread = threadListRef.current.find(item => item.id === id);
+    if (!thread) return;
 
-    // Find the thread to check if it has a server-backed conversation UUID.
-    const thread = threads.find(item => item.id === id);
-    const uuid = thread?.conversationUuid;
-
-    // Optimistically remove from UI immediately.
-    const remaining = threads.filter(item => item.id !== id);
-    threadCache.current.delete(id);
-
-    if (id !== activeThreadId) {
-      setThreads(remaining);
-    } else if (!remaining.length) {
-      initializeThreads(assetId);
-    } else {
-      const next = remaining.at(-1);
-      setThreads(remaining);
-      setActiveThreadId(next.id);
-      hydrateThread(threadCache.current.get(next.id));
-    }
-
-    // If this conversation was persisted on the server, delete it there too.
-    if (uuid && token) {
+    const uuid = thread.conversationUuid;
+    if (uuid) {
+      if (!token) {
+        setError('The conversation cannot be deleted because the demo session is no longer active.');
+        return;
+      }
+      deletingThreadIdsRef.current.add(id);
+      setDeletingThreadIds(previous => previous.includes(id) ? previous : [...previous, id]);
+      if (String(assetIdRef.current) === String(thread.assetId)) {
+        historyRequestRevision.current += 1;
+      }
       try {
         const response = await fetch(conversationPath(uuid), {
           method: 'DELETE',
@@ -258,13 +323,73 @@ export function RealDemoPage() {
           cache: 'no-store',
         });
         if (!response.ok && response.status !== 404) {
-          // Server rejection — the conversation will reappear on next reload.
-          // Surface the failure so the customer is aware.
-          setError('The conversation could not be removed permanently. It may reappear after a refresh.');
+          let detail = '';
+          try {
+            const payload = await response.json();
+            detail = typeof payload?.detail === 'string' ? payload.detail : '';
+          } catch {
+            // DELETE errors may have an empty or non-JSON response body.
+          }
+          throw new Error(detail || `HTTP ${response.status}`);
         }
-      } catch {
-        setError('The conversation could not be removed permanently. It may reappear after a refresh.');
+      } catch (err) {
+        setError(`The conversation was not removed: ${err?.message || 'server request failed'}. Please retry.`);
+        deletingThreadIdsRef.current.delete(id);
+        setDeletingThreadIds(previous => previous.filter(value => value !== id));
+        return;
       }
+      deletedConversationUuids.current.add(uuid);
+      // Do not invalidate a different asset's newer history request if the user
+      // changed equipment while this DELETE was in flight.
+      if (String(assetIdRef.current) === String(thread.assetId)) {
+        historyRequestRevision.current += 1;
+      }
+    }
+
+    // Invalidate pending conversation-open requests even when this row was inactive.
+    requestRevision.current += 1;
+    threadCache.current.delete(id);
+    const remaining = removeDemoThread(threadListRef.current, id);
+    replaceThreadList(remaining);
+    if (activeThreadIdRef.current === id) {
+      requestRevision.current += 1;
+      requestStreamController.current?.abort();
+      requestStreamController.current = null;
+      if (remaining.length) {
+        const next = remaining.at(-1);
+        setCurrentActiveThreadId(next.id);
+        let nextSnapshot = threadCache.current.get(next.id);
+        if (!nextSnapshot && next.conversationUuid) {
+          try {
+            const data = await call(conversationPath(next.conversationUuid, 'messages/'), token);
+            if (activeThreadIdRef.current !== next.id
+              || String(assetIdRef.current) !== String(next.assetId)
+              || deletedConversationUuids.current.has(next.conversationUuid)) {
+              return;
+            }
+            nextSnapshot = {
+              assetId: String(next.assetId),
+              messages: messagesFromServer(data.messages),
+              continuation: next.conversationUuid,
+            };
+            threadCache.current.set(next.id, nextSnapshot);
+          } catch {
+            if (activeThreadIdRef.current === next.id) {
+              setError('The remaining conversation could not be loaded.');
+            }
+          }
+        }
+        if (activeThreadIdRef.current === next.id) {
+          hydrateThread(nextSnapshot);
+        }
+      } else {
+        createLocalEmptyChat(assetId);
+      }
+    }
+
+    if (uuid) {
+      deletingThreadIdsRef.current.delete(id);
+      setDeletingThreadIds(previous => previous.filter(value => value !== id));
     }
   }
 
@@ -281,11 +406,13 @@ export function RealDemoPage() {
       // Never choose equipment silently. Every conversation must begin with
       // the customer explicitly selecting the asset they are asking about.
       const selected = '';
+      historyRequestRevision.current += 1;
+      deletedConversationUuids.current.clear();
       initializeThreads(selected);
       setToken(value);
       setEntry('');
       setAssets(data.assets);
-      setAssetId(selected);
+      setCurrentAssetId(selected);
     } catch (err) {
       setError(err.message === 'Demo identity required'
         ? 'Use the separate code in real_demo_access.txt. The servy_ui_tester password is only for the synthetic test site.'
@@ -302,8 +429,9 @@ export function RealDemoPage() {
       setError('Select the intended equipment and start a new chat before asking a question.');
       return;
     }
-    const messageId = `user-${Date.now()}-${Math.random()}`;
-    const responseId = `assistant-${Date.now()}-${Math.random()}`;
+    const turnId = ++messageSequence.current;
+    const messageId = `user-${turnId}`;
+    const responseId = `assistant-${turnId}`;
     if (!tryBeginRequest(requestInFlight, responseId)) return;
     const activeRevision = requestRevision.current;
     const activeAsset = assetId;
@@ -319,7 +447,7 @@ export function RealDemoPage() {
       { id: messageId, role: 'user', text: submittedQuestion },
       createAssistantTypingMessage(responseId),
     ]);
-    setThreads(previous => previous.map(item =>
+    updateThreadList(previous => previous.map(item =>
       item.id === activeThreadId && item.title === 'New chat'
         ? { ...item, title: chatTitle(submittedQuestion) } : item
     ));
@@ -335,7 +463,7 @@ export function RealDemoPage() {
         conversationUuid = created.conversation_uuid;
         if (!conversationUuid) throw new Error('The conversation could not be started.');
         setContinuation(conversationUuid);
-        setThreads(previous => previous.map(item => item.id === activeThreadId
+        updateThreadList(previous => previous.map(item => item.id === activeThreadId
           ? { ...item, conversationUuid } : item));
       }
       const turn = await callRagStream(
@@ -484,7 +612,7 @@ export function RealDemoPage() {
       <div className="sidebar-footer"><div className="user-profile-badge"><div className="avatar">RD</div>
         <div className="user-meta"><div className="user-name">Real-data demo</div><div className="user-role">Local · development data</div></div></div>
         {assets && <button type="button" className="btn btn-secondary btn-sm real-demo-lock" onClick={() => {
-          initializeThreads(''); setToken(''); setAssets(null); setAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
+          initializeThreads(''); deletedConversationUuids.current.clear(); setToken(''); setAssets(null); setCurrentAssetId(''); setView('chat'); }}><LogOut size={14} /> Lock Demo</button>}</div>
     </aside>
     <main className="main-area">
       <header className="top-bar"><div className="top-bar-title"><h2>{view === 'assets' && assets ? 'Company Equipment' : 'Customer AI Self-Service'}</h2>
@@ -515,7 +643,7 @@ export function RealDemoPage() {
           <section className="card"><div className="card-header"><h2 className="card-title"><Package size={20} /> Company Equipment</h2>
             <span className="badge badge-indexed">Read-only inventory</span></div>
             <div className="real-demo-inventory">{assets.map(item => <button className="real-demo-inventory-item" type="button" key={item.id}
-              onClick={() => { initializeThreads(String(item.id)); setAssetId(String(item.id)); setView('chat'); }}>
+              onClick={() => { initializeThreads(String(item.id)); setCurrentAssetId(String(item.id)); setView('chat'); }}>
               <span className="real-demo-icon"><Package size={18} /></span><span><strong>{item.name}</strong><small>{item.code} · {item.model || 'Model not listed'}</small></span>
               <em>{manualStatus(item)}</em></button>)}</div></section>
         </> : <>
@@ -523,7 +651,7 @@ export function RealDemoPage() {
             <h2 className="card-title"><Building2 size={20} /> Equipment Selection</h2>
             <div className="form-group"><label className="form-label" htmlFor="demo-asset">Equipment / Asset</label>
               <select className="form-control" id="demo-asset" value={assetId}
-                onChange={event => { initializeThreads(event.target.value); setAssetId(event.target.value); }}>
+                onChange={event => { initializeThreads(event.target.value); setCurrentAssetId(event.target.value); }}>
                 <option value="">Select equipment before asking questions</option>
                 {assets.map(item => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}</select></div>
             {!asset && <p className="real-demo-doc-status" role="status">
@@ -558,9 +686,11 @@ export function RealDemoPage() {
                     <button type="button" className="real-demo-thread-switch"
                       title={item.title} aria-current={item.id === activeThreadId ? 'true' : undefined}
                       disabled={busy} onClick={() => openThread(item.id)}>{item.title}</button>
-                    <button type="button" className="real-demo-thread-delete" disabled={busy}
-                      title={'Delete ' + item.title} aria-label={'Delete conversation: ' + item.title}
-                      onClick={() => deleteThread(item.id)}><Trash2 size={13} /></button>
+                    <button type="button" className="real-demo-thread-delete"
+                      title={deletingThreadIds.includes(item.id) ? 'Deleting conversation' : 'Delete ' + item.title}
+                      aria-label={'Delete conversation: ' + item.title}
+                      onClick={() => deleteThread(item.id)}
+                      disabled={busy || deletingThreadIds.includes(item.id)}><Trash2 size={13} /></button>
                   </div>)}
                 </div>
               </div>

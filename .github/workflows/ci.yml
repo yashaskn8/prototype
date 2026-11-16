@@ -60,6 +60,9 @@ jobs:
           python -m pip install --upgrade pip --disable-pip-version-check
           pip install --prefer-binary --disable-pip-version-check -r requirements.txt
 
+      - name: RAG Latency Profiler Helper Tests (no network)
+        run: python -m unittest tools.test_servy_latency_profile -v
+
       - name: Six-Role Production RAG Multi-Agent Red-Team
         run: python -m unittest tools.test_servy_rag_multiagent_redteam -v
 
@@ -222,7 +225,7 @@ jobs:
 
       - name: Test Customer Answer Contract
         working-directory: frontend
-        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs test/assistantTypingIndicator.test.mjs test/documentCoverage.test.mjs test/technicianHandoffState.test.mjs test/technicianHandoffUI.test.mjs test/ticketPreviewContract.test.mjs test/composedResponseContract.test.mjs
+        run: node --test test/customerAnswerContract.test.mjs test/customer-answer-contract.test.js test/demoThreadState.test.mjs test/demoThreadDeletionState.test.mjs test/onlineResearchContract.test.mjs test/ragExecutionStream.test.mjs test/assistantTypingIndicator.test.mjs test/documentCoverage.test.mjs test/technicianHandoffState.test.mjs test/technicianHandoffUI.test.mjs test/ticketPreviewContract.test.mjs test/composedResponseContract.test.mjs
 
       - name: Test Private Technician Access-code Instance
         working-directory: frontend

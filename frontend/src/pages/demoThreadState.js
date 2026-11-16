@@ -27,3 +27,24 @@ export function isDemoAssetThreadBound(threads, activeThreadId, selectedAssetId)
   const active = threads.find(thread => thread?.id === activeThreadId);
   return Boolean(active && String(active.assetId) === String(selectedAssetId));
 }
+
+/**
+ * Merge a customer-history response without restoring UUIDs deleted during
+ * this browser session. Existing local drafts and unreturned saved rows remain.
+ */
+export function mergeSavedThreads(current, saved, deletedUuids = new Set()) {
+  const deleted = deletedUuids instanceof Set ? deletedUuids : new Set(deletedUuids || []);
+  const visibleCurrent = (Array.isArray(current) ? current : [])
+    .filter(item => !item?.conversationUuid || !deleted.has(item.conversationUuid));
+  const visibleSaved = (Array.isArray(saved) ? saved : [])
+    .filter(item => item?.conversationUuid && !deleted.has(item.conversationUuid));
+  const savedUuids = new Set(visibleSaved.map(item => item.conversationUuid));
+  return [
+    ...visibleCurrent.filter(item => !item.conversationUuid || !savedUuids.has(item.conversationUuid)),
+    ...visibleSaved,
+  ];
+}
+
+export function removeDemoThread(current, threadId) {
+  return (Array.isArray(current) ? current : []).filter(item => item?.id !== threadId);
+}
