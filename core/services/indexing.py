@@ -21,6 +21,27 @@ def _doc_embedding_text(document, heading, body):
     return f"{metadata}\n{body}".strip()
 
 
+def _source_checksum(document, text):
+    """checksum_sha256 identifies the original source.
+
+    For a file-backed document it is the SHA-256 of the file bytes, the value
+    ingestion and provenance records store and the original-document gate
+    verifies; hashing the extracted text here made every re-indexed attachment
+    fail that check. Text documents keep the hash of their text.
+    """
+    if getattr(document, "source_type", "") == "file" and getattr(document, "file", None):
+        try:
+            digest = hashlib.sha256()
+            with document.file.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+            return digest.hexdigest()
+        except (OSError, ValueError):
+            # Unreadable now: keep the recorded source checksum, never substitute a text hash.
+            return document.checksum_sha256 or ""
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else ""
+
+
 def index_document(document, *, authorized: bool = False):
     from django.conf import settings
     # Protect verified/company documents from unauthorized destructive chunk deletion
@@ -44,7 +65,7 @@ def index_document(document, *, authorized: bool = False):
     # Stage 1 (no destructive effects): extract, chunk, and embed. Any failure
     # here propagates with existing chunks untouched.
     text = extract_document_text(document)
-    new_checksum = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest() if text else ""
+    new_checksum = _source_checksum(document, text)
     index_enabled = bool(document.is_rag_enabled and text.strip())
     objects = []
     if index_enabled:

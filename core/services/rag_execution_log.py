@@ -71,6 +71,37 @@ def bind_execution_log(sink: _EventSink) -> Iterator[None]:
         _CURRENT_SINK.reset(token)
 
 
+_CAPTURED: ContextVar[list | None] = ContextVar("servy_rag_captured_events", default=None)
+
+
+@contextmanager
+def capture_execution_events() -> Iterator[list]:
+    """Also record this execution's events (forwarding to any bound sink).
+
+    Lets the pipeline report what actually ran (retrieval passes, candidate
+    counts, Qwen outcome) in its own response instead of assumed defaults.
+    """
+    events: list = []
+    previous = _CURRENT_SINK.get()
+
+    def sink(event):
+        events.append(event)
+        if previous is not None:
+            previous(event)
+
+    sink_token = _CURRENT_SINK.set(sink)
+    capture_token = _CAPTURED.set(events)
+    try:
+        yield events
+    finally:
+        _CAPTURED.reset(capture_token)
+        _CURRENT_SINK.reset(sink_token)
+
+
+def captured_events() -> list:
+    return list(_CAPTURED.get() or [])
+
+
 def emit_execution_event(
     stage: str,
     label: str,

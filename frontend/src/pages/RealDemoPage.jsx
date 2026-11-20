@@ -20,6 +20,7 @@ import './RealDemoPage.css';
 import {
   CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
 } from './demoGatewayClient';
+import { diagnosticsSummary } from '../components/turnDiagnostics.js';
 
 async function call(path, token, options = {}) {
   const headers = { 'Authorization': `Demo ${token}` };
@@ -798,12 +799,7 @@ export function RealDemoPage() {
                                       : ''}
                                   </p>
                                 )}
-                                <p>
-                                  Retrieval: {message.data.retrieval_attempts ?? 0} pass(es)
-                                  {message.data.retrieval_backend ? ' via ' + message.data.retrieval_backend : ''}.
-                                  {' '}Reranking: {message.data.reranker_applied ? 'applied' : 'not applied'}.
-                                  {' '}Citation-backed passages shown: {message.data.presentation?.citations?.length ?? message.data.citations?.length ?? 0}.
-                                </p>
+                                <p>{diagnosticsSummary(message.data)}</p>
                                 {message.data.presentation?.document_coverage && (
                                   <p>
                                     Approved-document scan: {message.data.presentation.document_coverage.scan_completed === false

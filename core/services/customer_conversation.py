@@ -74,7 +74,105 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
         logger.exception("Conversational composition failed; keeping the structured answer")
 
 
-def process_customer_diagnostic_turn(
+def process_customer_diagnostic_turn(**kwargs) -> Dict[str, Any]:
+    """Run one turn while recording what executed, for truthful per-turn diagnostics."""
+    from core.services.rag_execution_log import capture_execution_events
+    with capture_execution_events():
+        return _process_customer_diagnostic_turn(**kwargs)
+
+
+def _attach_diagnostics(contract):
+    from core.services.rag_execution_log import captured_events
+    from core.services.turn_diagnostics import summarize_turn
+    try:
+        contract["diagnostics"] = summarize_turn(captured_events(), contract)
+    except Exception:
+        logger.exception("Turn diagnostics could not be summarized")
+
+
+def _greeting_contract(asset, session, has_previous_answer):
+    name = getattr(asset, "name", None) or "your equipment"
+    message = (
+        f"Hello again. You can ask me to explain any of the causes above, or describe a new symptom of the {name}."
+        if has_previous_answer else
+        f"Hello! Tell me what the {name} is doing, such as a symptom, alarm or error code, "
+        "and I will look it up in its approved manuals."
+    )
+    return {
+        "response_mode": "GREETING", "response_type": "GREETING",
+        "session_id": str(session.session_id) if session else None,
+        "session_status": session.status if session else "ACTIVE",
+        "summary": message, "answer": message, "citations": [], "references": [],
+        "customer_safe_actions": [], "check_first": [], "technician_only_actions": [],
+        "clarification_question": None, "can_resolve": False, "can_escalate": True,
+        "engine": "conversation-greeting",
+        "presentation": {"schema_version": "customer-answer-v1", "response_type": "GREETING",
+                         "sections": [], "citations": [], "supporting_claims": [], "message": message,
+                         "hazard": {"severity": "none", "message": ""}},
+    }
+
+
+def _explanation_contract(interaction, session, asset, built):
+    from core.services.cause_explanations import explanation_response
+    equipment = {"id": asset.id, "name": asset.name, "model_number": asset.model_number} if asset else {}
+    presentation = {
+        "schema_version": "customer-answer-v1", "response_type": "DIAGNOSTIC_GUIDANCE",
+        "equipment": equipment, "sections": built["sections"], "citations": built["citations"],
+        "hazard": {"severity": "none", "message": ""}, "supporting_claims": built["supporting_claims"],
+        "customer_permitted_observations": [], "customer_authorized_actions": [], "message": "",
+        "technician_only_warnings": ["Physical procedures require separate customer approval or an authorized technician."],
+        "known_limitations": ["No physical inspection or confirmed diagnosis."],
+        "authorized_user_actions": {"can_resolve": False, "can_escalate": True},
+    }
+    response = explanation_response(equipment.get("name") or "equipment", built)
+    presentation["response"] = response
+    return {
+        "presentation": presentation, "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
+        "response_type": "DIAGNOSTIC_GUIDANCE", "interaction_id": interaction.id,
+        "session_id": str(session.session_id) if session else None,
+        "session_status": session.status if session else "ACTIVE",
+        "session_version": session.version if session else 1, "asset": equipment,
+        "summary": "Each previously listed cause with its documented explanation.",
+        "answer": response["text"], "citations": built["citations"], "references": built["citations"],
+        "customer_safe_actions": [], "check_first": [], "technician_only_actions": [],
+        "stop_conditions": [], "expected_result": "", "clarification_question": None,
+        "can_resolve": False, "can_escalate": True, "engine": "source-structured-cause-explanations",
+        "reason_code": None,
+    }
+
+
+def _persist_direct_reply(*, tenant, customer, user, site, asset, conv, session, turn_text,
+                          idem_record, contract, source_refs=None):
+    """Store one customer and one assistant message for a turn answered without ask_rag."""
+    with transaction.atomic():
+        user_msg = CustomerMessage.objects.create(
+            tenant=tenant, conversation=conv, sender_role="customer", message_text=turn_text)
+        contract["conversation_uuid"] = str(conv.conversation_uuid)
+        _attach_diagnostics(contract)
+        asst_msg = CustomerMessage.objects.create(
+            tenant=tenant, conversation=conv, sender_role="assistant", message_text=contract["answer"],
+            structured_contract=contract, source_refs=source_refs or [])
+        conv.updated_at = timezone.now()
+        conv.save(update_fields=["updated_at"])
+        if idem_record:
+            idem_record.processing_status = "COMPLETED"
+            idem_record.user_message = user_msg
+            idem_record.assistant_message = asst_msg
+            idem_record.response_payload = {"contract": contract}
+            idem_record.updated_at = timezone.now()
+            idem_record.save(update_fields=["processing_status", "user_message", "assistant_message",
+                                            "response_payload", "updated_at"])
+    return {
+        "user_message": {"id": user_msg.id, "sender_role": "customer", "message_text": user_msg.message_text,
+                         "created_at": user_msg.created_at},
+        "assistant_message": {"id": asst_msg.id, "sender_role": "assistant", "message_text": asst_msg.message_text,
+                              "structured_contract": contract, "created_at": asst_msg.created_at},
+        "contract": contract,
+        "conversation": conv,
+    }
+
+
+def _process_customer_diagnostic_turn(
     *,
     tenant: Tenant,
     customer: Customer,
@@ -469,6 +567,53 @@ def process_customer_diagnostic_turn(
                 "conversation": conv,
             }
 
+        # 4b. Conversational routing that needs no new retrieval for the original question.
+        from core.services.cause_explanations import (
+            causes_for_request, explain_causes, previous_answer_texts)
+        from core.services.conversation_context import (
+            is_explain_all_request, is_greeting, split_pasted_history)
+        request_text, quoted_items = split_pasted_history(turn_text, previous_answer_texts(conv_context))
+        if is_greeting(request_text or turn_text):
+            for stage, label in (("customer_rag_execution", "Manual retrieval skipped: greeting only"),
+                                 ("customer_evidence_validation", "No technical claim to validate for a greeting"),
+                                 ("customer_qwen_generation", "Local Qwen generation skipped for a greeting")):
+                emit_execution_event(stage, label, "skipped")
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_greeting_contract(asset, session, bool(conv_context.last_supported_contract)))
+
+        from core.services.customer_answer import _CAUSE_EXPLANATION_REQUEST
+        wants_all_explained = conv_context.turn_count > 0 and (
+            is_explain_all_request(request_text)
+            or (quoted_items and _CAUSE_EXPLANATION_REQUEST.search(request_text or "")))
+        listed = causes_for_request(conv_context, quoted_items) if wants_all_explained else []
+        if listed:
+            with transaction.atomic():
+                interaction = CustomerInteraction.objects.create(
+                    tenant=tenant, created_by=user, customer=customer, site=site, asset=asset,
+                    conversation=conv, question=request_text or turn_text, answer="", source_refs=[])
+                try:
+                    with execution_stage("customer_rag_execution",
+                                         "Retrieving evidence separately for each listed cause"):
+                        built = explain_causes(interaction=interaction, causes=listed)
+                except ValueError:
+                    built = None
+                if built is not None:
+                    emit_execution_event("customer_qwen_generation",
+                                         "Exact cited source wording used for per-cause explanations",
+                                         "skipped")
+                    contract = _explanation_contract(interaction, session, asset, built)
+                    interaction.answer = contract["answer"]
+                    interaction.source_refs = built["citations"]
+                    interaction.save(update_fields=["answer", "source_refs"])
+                    return _persist_direct_reply(
+                        tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                        session=session, turn_text=turn_text, idem_record=idem_record,
+                        contract=contract, source_refs=built["citations"])
+                # No listed cause is citable any more: answer the message normally.
+                interaction.delete()
+
         # 5. Ambiguity & Clarification Evaluation
         # Only evaluate vague complaint at start of issue when no symptoms/history are established
         is_vague, clarif_q, clarif_opts = False, None, None
@@ -576,16 +721,19 @@ def process_customer_diagnostic_turn(
         # 6. Grounded RAG Retrieval & Safe Response Construction
         from core.services.rag import ask_rag
 
-        retrieval_query = contextualize_customer_query(turn_text, conv_context, asset=asset)
+        # Pasted earlier answers are context, not the request: guards, intent and
+        # retrieval use the customer's own words; the stored message stays verbatim.
+        routed_text = request_text if (quoted_items and request_text) else turn_text
+        retrieval_query = contextualize_customer_query(routed_text, conv_context, asset=asset)
         # "Explain the second cause." refers to the previous answer's listed causes:
         # search for that one cause in its own manual section.
         from core.services.conversation_context import focus_presentation_on_cause, resolve_cause_reference
-        cause_reference = resolve_cause_reference(turn_text, conv_context)
+        cause_reference = resolve_cause_reference(routed_text, conv_context)
         # A correction or explicit topic change ("Sorry, I meant ice, not water")
         # is answered for the new subject; the stored message keeps the exact words.
         from core.services.conversation_context import topic_shift_query
-        answer_question = (topic_shift_query(turn_text) if conv_context.is_followup and not cause_reference
-                           else None) or turn_text
+        answer_question = (topic_shift_query(routed_text) if conv_context.is_followup and not cause_reference
+                           else None) or routed_text
         if cause_reference:
             selected = cause_reference["selected"]
             retrieval_query = f"{selected['heading']}: {selected['source_text']}".strip(": ")
@@ -715,6 +863,7 @@ def process_customer_diagnostic_turn(
             contract["retrieval_backend"] = rag_res.get("retrieval_backend", "dense_chroma")
             contract["reranker_applied"] = rag_res.get("reranker_applied", False)
             contract["reranker_model"] = rag_res.get("reranker_model")
+            _attach_diagnostics(contract)
 
             asst_msg = CustomerMessage.objects.create(
                 tenant=tenant,
