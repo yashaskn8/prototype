@@ -77,8 +77,9 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
 def process_customer_diagnostic_turn(**kwargs) -> Dict[str, Any]:
     """Run one turn while recording what executed, for truthful per-turn diagnostics."""
     from core.services.rag_execution_log import capture_execution_events
+    from core.services.rag_admission import rag_request
     from core.services.request_deadline import request_deadline
-    with request_deadline(), capture_execution_events():
+    with rag_request(), request_deadline(), capture_execution_events():
         return _process_customer_diagnostic_turn(**kwargs)
 
 

@@ -17,7 +17,7 @@ from django.conf import settings
 logger = logging.getLogger("servy.rag.preload")
 _started = False
 _lock = threading.Lock()
-status = {"bge": "pending", "v5": "pending", "qwen": "pending"}
+status = {"bge": "not_started", "v5": "not_started", "qwen": "not_started"}
 
 
 def _warm_bge():
@@ -90,5 +90,7 @@ def start_preload() -> bool:
         if _started:
             return False
         _started = True
+        for name in status:
+            status[name] = "pending"
     threading.Thread(target=_run, name="servy-model-preload", daemon=True).start()
     return True

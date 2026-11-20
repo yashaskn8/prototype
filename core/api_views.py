@@ -755,8 +755,12 @@ class CustomerSupportQueryView(APIView):
         error, prepared = self._prepare(request)
         if error is not None:
             return error
+        from core.services.rag_admission import RagBusy
         try:
             return Response(self._execute(prepared))
+        except RagBusy as exc:
+            return Response({"detail": str(exc.detail), "code": "rag_busy"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except PermissionDenied as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except ValidationError as exc:
@@ -2960,8 +2964,12 @@ class CustomerConversationMessagesView(APIView):
         error, prepared = self._prepare_post(request, conversation_uuid)
         if error is not None:
             return error
+        from core.services.rag_admission import RagBusy
         try:
             return Response(self._execute_post(prepared))
+        except RagBusy as exc:
+            return Response({"detail": str(exc.detail), "code": "rag_busy"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except PermissionDenied as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
         except ValidationError as exc:

@@ -27,7 +27,21 @@ def _health(authentication_class, gateway):
         permission_classes = [permissions.IsAuthenticated]
 
         def get(self, request):
-            return Response({"status": "ok", "gateway": gateway, "database": settings.SERVY_DEMO_EXPECTED_DATABASE})
+            # Readiness for the single-user prototype: model warm-up state, whether
+            # a RAG request is running, and this process's memory (no tenant data).
+            from core.ml import preload
+            from core.services import rag_admission
+            import psutil
+            memory = psutil.Process().memory_info()
+            models = dict(preload.status)
+            return Response({
+                "status": "ok", "gateway": gateway, "database": settings.SERVY_DEMO_EXPECTED_DATABASE,
+                "models": models,
+                "models_ready": all(v in ("ready", "disabled") for v in models.values()),
+                "rag_busy": rag_admission.busy(),
+                "process_memory_mb": {"working_set": round(memory.rss / 2**20),
+                                      "private": round(getattr(memory, "private", 0) / 2**20)},
+            })
     return Health.as_view()
 
 

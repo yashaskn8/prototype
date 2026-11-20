@@ -290,6 +290,17 @@ try {
     if ($healthProbe.StatusCode -ne 200 -or $healthPayload.status -ne 'ok') {
         throw 'The authenticated demo health check failed.'
     }
+    # Wait for BGE, V5 and Qwen to finish warming so the first answers are not fallbacks.
+    $modelsReady = [bool]$healthPayload.models_ready
+    for ($attempt = 0; $attempt -lt 75 -and !$modelsReady; $attempt++) {
+        Start-Sleep -Seconds 2
+        $healthPayload = (Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/health/' -Headers @{
+            Authorization = "Demo $demoToken"
+            'X-Servy-Request-Source' = 'launcher-readiness'
+        } -Method Get -UseBasicParsing -TimeoutSec 30).Content | ConvertFrom-Json
+        $modelsReady = [bool]$healthPayload.models_ready
+    }
+    $modelReadiness = if ($modelsReady) { 'READY' } else { 'STILL WARMING (first answers may use exact manual wording)' }
 } catch {
     Write-Output ''
     Write-Output 'Servy Real-data Demo: FAILED'
@@ -304,6 +315,7 @@ try {
 Write-Output ''
 Write-Output 'Servy Customer Demo: http://127.0.0.1:5175/'
 Write-Output 'Servy Real-data Demo: STARTED'
+Write-Output "Servy models: $modelReadiness"
 
 if (-not $NoWatch) {
     Write-Output ''

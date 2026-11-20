@@ -459,6 +459,8 @@ SERVY_RERANKER_POOL_SIZE = int(os.getenv("SERVY_RERANKER_POOL_SIZE", "5"))
 # time always kept for mandatory validation, persistence and serialization.
 SERVY_RAG_DEADLINE_SECONDS = float(os.getenv("SERVY_RAG_DEADLINE_SECONDS", "5.0"))
 SERVY_RAG_DEADLINE_RESERVE_SECONDS = float(os.getenv("SERVY_RAG_DEADLINE_RESERVE_SECONDS", "0.4"))
+# Single-user prototype: one active RAG request per process; others get HTTP 503 rag_busy.
+SERVY_RAG_SINGLE_REQUEST = os.getenv("SERVY_RAG_SINGLE_REQUEST", "1") == "1"
 SERVY_CUSTOMER_GENERATION_KEEP_ALIVE = os.getenv("SERVY_CUSTOMER_GENERATION_KEEP_ALIVE", "30m")
 # Experimental evidence + section-intent reranking. OFF by default; isolate for evaluation.
 SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK = os.getenv("SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK", "0") == "1"

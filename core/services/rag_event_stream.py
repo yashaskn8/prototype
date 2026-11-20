@@ -34,7 +34,14 @@ def rag_execution_stream(work):
     if not callable(work):
         raise TypeError("RAG stream work must be callable.")
 
+    from . import rag_admission
+    # One active RAG request per process: refuse (never queue) a second one.
+    if not rag_admission.try_acquire():
+        return JsonResponse(
+            {"detail": rag_admission.BUSY_MESSAGE, "code": "rag_busy"}, status=503,
+        )
     if not _STREAM_SLOTS.acquire(blocking=False):
+        rag_admission.release()
         return JsonResponse(
             {"detail": "RAG streaming is at capacity. Please retry shortly."},
             status=503,
@@ -76,7 +83,7 @@ def rag_execution_stream(work):
     def run_work() -> None:
         try:
             close_old_connections()
-            with bind_execution_log(publish):
+            with bind_execution_log(publish), rag_admission.admitted_work():
                 result = work()
             publish({"type": "result", "data": result}, terminal=True)
         except Exception as exc:
@@ -93,12 +100,14 @@ def rag_execution_stream(work):
                 connections.close_all()
             finally:
                 _STREAM_SLOTS.release()
+                rag_admission.release()
 
     worker = Thread(target=run_work, name="servy-rag-stream", daemon=True)
     try:
         worker.start()
     except Exception:
         _STREAM_SLOTS.release()
+        rag_admission.release()
         logger.exception("Could not start the RAG stream worker")
         return JsonResponse(
             {"detail": "RAG streaming could not be started. Please retry."},
