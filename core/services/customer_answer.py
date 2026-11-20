@@ -22,6 +22,9 @@ TITLES = (
     "What is still unknown?", "What should I do next?",
 )
 SALT = "servy.customer-evidence.v1"
+# The customer answer contract (frontend customerAnswerContract.js) accepts at most
+# this many claims per section; a larger section makes the whole answer invalid.
+MAX_SECTION_CLAIMS = 12
 
 # A sentence is not an observation merely because it contains "check".
 # Compound instructions and physical operations require separate approval.
@@ -943,8 +946,12 @@ def build_customer_answer(
                                             "text": text, "start": start, "end": end,
                                             "result": result})
         # Preserve up to four separately grounded claims per answer section.
-        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:20 if generic_cause_overview else 10]
-                  + fact_choice
+        # Each list is capped to the per-section contract limit (section 1 holds
+        # causes or facts; section 2 observations and procedures), keeping the
+        # most relevant claims. A generic failure overview previously kept 20
+        # causes, which the client rejected as an invalid answer.
+        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:MAX_SECTION_CLAIMS if generic_cause_overview else 10]
+                  + fact_choice[:MAX_SECTION_CLAIMS]
                   + sorted(action_pool, key=lambda i: -_relevance(i))[:8])
         chosen.sort(key=lambda i: i["order"])
         for item in chosen:

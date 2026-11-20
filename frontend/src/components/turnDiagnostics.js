@@ -23,3 +23,36 @@ export function diagnosticsSummary(data) {
     : `Qwen: ${q.status === 'skipped' ? 'skipped' : 'not run'}; exact source wording shown.`);
   return parts.join(' ');
 }
+
+// One short, nontechnical line saying how this answer was produced. It reflects
+// only the server-reported outcome; nothing is labelled generated or cited unless
+// the server says so for this request.
+const GENERATION_REASONS = {
+  timeout: 'the wording step ran out of time',
+  deadline_skipped: 'there was not enough time left for the wording step',
+  ollama_unreachable: 'the local wording model was unavailable',
+  request_failed: 'the local wording model was unavailable',
+  rejected_by_source_validator: 'the reworded text did not match the manual closely enough',
+  invalid_model_json: 'the local wording model returned an unusable reply',
+  invalid_model_response: 'the local wording model returned an unusable reply',
+};
+
+export function outcomeLabel(data) {
+  const o = data?.outcome;
+  if (!o || typeof o !== 'object') return '';
+  if (o.status === 'success' || o.status === 'degraded') {
+    if (o.response_mode === 'grounded_generated') {
+      return o.status === 'success'
+        ? 'Answer worded by the local assistant from the cited manual sentences.'
+        : 'Answer worded by the local assistant from the cited manual sentences (reduced search ranking was used to stay fast).';
+    }
+    const why = GENERATION_REASONS[o.generation_status];
+    return why
+      ? `Exact cited manual wording is shown because ${why}.`
+      : 'Exact cited manual wording is shown.';
+  }
+  if (o.status === 'insufficient_evidence') {
+    return 'No answer from the approved manuals could be confirmed for this question. Please describe the symptom in more detail or request a technician.';
+  }
+  return '';
+}

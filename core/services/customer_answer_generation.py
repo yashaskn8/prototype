@@ -16,6 +16,16 @@ MAX_PROMPT_BYTES = 12_000
 MAX_RESPONSE_BYTES = 12_000
 MAX_SOURCE_CHARS = 700
 MAX_DISPLAY_CHARS = 600
+# Measured on the development GPU (RTX 3050 Ti, ~80 tokens/s, model resident):
+# 6 claims -> ~304 output tokens in 3.7-4.0 s, 4 claims in ~2.75 s, i.e. ~0.55 s
+# per rewritten claim (paraphrase plus exact source quote).
+MIN_GENERATION_SECONDS = 0.8
+GENERATION_OVERHEAD_SECONDS = 0.3
+TOKENS_PER_CLAIM = 96
+# Measured decode rate on the development GPU (79-81 tokens/s); planning uses a
+# slightly lower rate and 85% of the budget so a request is rarely cut off.
+GENERATION_TOKENS_PER_SECOND = 70.0
+GENERATION_SAFETY_FRACTION = 0.85
 
 _TOKEN = re.compile(r"[a-z0-9]+", re.I)
 _NUMBER_OR_CODE = re.compile(r"\b(?:\d+(?:\.\d+)?|(?:E|F|ERR)[- ]?\d{1,3})\b", re.I)
@@ -256,6 +266,24 @@ def _compose_display(text: str, kind: str) -> str:
     return text
 
 
+def _estimated_seconds(claim: dict) -> float:
+    """Generation time for one claim: paraphrase + exact quote are each ~1 token per
+    4 source characters, plus ~15 tokens of JSON framing, at the measured rate."""
+    tokens = 2 * len(claim["source_text"]) / 4 + 15
+    return tokens / GENERATION_TOKENS_PER_SECOND
+
+
+def _affordable_claims(candidates: list[dict], budget: float) -> list[dict]:
+    """The leading claims whose estimated generation fits the budget (at least one)."""
+    selected, spent = [], GENERATION_OVERHEAD_SECONDS
+    for claim in candidates:
+        spent += _estimated_seconds(claim)
+        if selected and spent > budget * GENERATION_SAFETY_FRACTION:
+            break
+        selected.append(claim)
+    return selected
+
+
 def _validate_paraphrase(source: str, text: str, kind: str) -> bool:
     text = (text or "").strip()
     if (not 25 <= len(text) <= MAX_DISPLAY_CHARS
@@ -319,6 +347,9 @@ def _validate_response(raw, candidates) -> dict:
     expected = {item["id"]: item for item in candidates}
     output, seen = {}, set()
     for row in rows:
+        # Echoing the exact source quote costs ~0.1 s per claim but anchors the
+        # model: in a paired test without it, source-validated acceptance fell
+        # from 9/12 to 3/12. It is kept and must match exactly.
         if not isinstance(row, dict) or set(row) != {"claim_id", "display_text", "source_quote"}:
             return {}
         ident = row.get("claim_id")
@@ -383,6 +414,17 @@ def generate_customer_claim_texts_with_status(question: str, presentation: dict)
         report["eligible_claims"] = len(candidates)
         if not candidates:
             return finish("no_eligible_claims")
+        from .request_deadline import stage_budget
+        configured_timeout = float(getattr(settings, "SERVY_CUSTOMER_GENERATION_TIMEOUT", 45))
+        budget = stage_budget("customer_qwen_generation")
+        if budget is not None:
+            # Under the request deadline: never start without a realistic budget,
+            # and only ask for as many claims as the remaining time can generate.
+            if budget < MIN_GENERATION_SECONDS:
+                return finish("deadline_skipped")
+            candidates = _affordable_claims(candidates, budget)
+            report["eligible_claims"] = len(candidates)
+            configured_timeout = min(configured_timeout, budget)
 
         url = _endpoint()
         if not _server_online(url):
@@ -440,14 +482,15 @@ def generate_customer_claim_texts_with_status(question: str, presentation: dict)
                     "format": schema,
                     "stream": False,
                     "think": False,
+                    # Keep the model resident between requests (no reload latency).
+                    "keep_alive": str(getattr(settings, "SERVY_CUSTOMER_GENERATION_KEEP_ALIVE", "30m")),
                     "options": {
                         "temperature": 0, "top_p": 0.8,
-                        "num_ctx": 4096, "num_predict": 384,
+                        "num_ctx": 4096,
+                        "num_predict": min(384, 32 + TOKENS_PER_CLAIM * len(candidates)),
                     },
                 },
-                timeout=(1.0, float(getattr(
-                    settings, "SERVY_CUSTOMER_GENERATION_TIMEOUT", 45
-                ))),
+                timeout=(min(1.0, configured_timeout), configured_timeout),
                 allow_redirects=False,
             )
             if 300 <= response.status_code < 400:
@@ -472,6 +515,10 @@ def generate_customer_claim_texts_with_status(question: str, presentation: dict)
             return finish(status, validated)
         finally:
             client.close()
+    except requests.Timeout:
+        # The client closes the connection; Ollama stops generating for it.
+        logger.info("Servy customer answer generation timed out; retaining approved source wording")
+        return finish("timeout", error_type="Timeout")
     except Exception as exc:
         logger.warning(
             "Servy customer answer generation failed (%s); retaining approved source wording",

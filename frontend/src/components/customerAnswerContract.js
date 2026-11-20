@@ -80,6 +80,10 @@ function validatedDocumentCoverage(value) {
 // The composed conversational reply. Defense in depth: every technical segment
 // cites exactly one evidence id already used by a validated section claim, and
 // connective segments cite nothing. Anything else falls back to the sections.
+// Must equal MAX_SECTION_CLAIMS in core/services/customer_answer.py (a backend
+// test enforces this): a section with more claims invalidates the whole answer.
+export const MAX_SECTION_CLAIMS = 12;
+
 function validatedResponse(value, usedEvidence) {
   if (!value || !Array.isArray(value.segments) || !value.segments.length || value.segments.length > 30) return null;
   const technical = new Set(['claim', 'list_item']);
@@ -153,7 +157,7 @@ export function validateCustomerPresentation(value) {
       ? focusedAnswerTitles.includes(section?.title)
       : (section?.title === answerTitles[i] || (i === 0 && section?.title === 'What the document says'));
     if (!section || section.number !== i + 1 || !validTitle || !Array.isArray(section.claims)
-      || !section.claims.length || section.claims.length > 12) return invalid();
+      || !section.claims.length || section.claims.length > MAX_SECTION_CLAIMS) return invalid();
     const allowedKinds = kindsBySectionTitle[section.title];
     for (const claim of section.claims) {
       if (!claim || (allowedKinds && !allowedKinds.has(claim.kind))

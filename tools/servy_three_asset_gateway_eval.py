@@ -47,6 +47,16 @@ class GatewayClient:
         self._auth = "Demo " + token
 
     def _call(self, path, body=None, *, stream=False):
+        # The Customer gateway allows 20 RAG requests per minute. Honour HTTP 429
+        # (bounded retries) so the evaluation measures answers, not the limiter.
+        for attempt in range(4):
+            status, data = self._call_once(path, body, stream=stream)
+            if status != 429 or attempt == 3:
+                return status, data
+            time.sleep(min(65.0, float(data.get("retry_after") or data.get("wait") or 20)))
+        return status, data
+
+    def _call_once(self, path, body=None, *, stream=False):
         request = urllib.request.Request(
             GATEWAY + path, data=None if body is None else json.dumps(body).encode(),
             headers={"Authorization": self._auth, "Content-Type": "application/json"},

@@ -160,8 +160,10 @@ def load_model(profile: EmbeddingProfile, allow_download: bool = False):
         if profile.revision:
             kwargs["revision"] = profile.revision
         model_target = profile.local_path or profile.model_id
+        from core.ml.model_lock import MODEL_LOAD_LOCK
         try:
-            m = SentenceTransformer(model_target, local_files_only=not allow_download, **kwargs)
+            with MODEL_LOAD_LOCK:
+                m = SentenceTransformer(model_target, local_files_only=not allow_download, **kwargs)
         except Exception as exc:
             raise EmbeddingConfigError(
                 f"Model '{profile.model_id}' not available locally. "

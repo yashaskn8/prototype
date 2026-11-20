@@ -104,7 +104,13 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
     from .customer_answer import _citation, TITLES
     from .rag_execution_log import emit_execution_event, execution_stage
 
+    from .customer_answer import MAX_SECTION_CLAIMS
     tenant, customer, asset = interaction.tenant, interaction.customer, interaction.asset
+    # Each explained cause uses up to 1 + MAX_EXPLANATIONS_PER_CAUSE claims in one
+    # section; stay within the client's per-section contract limit.
+    max_causes = MAX_SECTION_CLAIMS // (1 + MAX_EXPLANATIONS_PER_CAUSE)
+    omitted = max(0, len(causes) - max_causes)
+    causes = causes[:max_causes]
     retrieve_fn = retrieve_fn or _retrieve_for_cause
     all_cause_texts = {_norm(c["source_text"]) for c in causes}
     citations: List[Dict[str, Any]] = []
@@ -189,6 +195,10 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
 
     unknown = gap_claims + ([{"text": UNVERIFIED_TEXT, "kind": "uncertainty", "evidence_ids": []}]
                             if unverified else [])
+    if omitted:
+        unknown.append({"text": f"{omitted} more listed cause(s) were not expanded here; "
+                                "ask about them by number (for example, \"Explain the fifth cause.\").",
+                        "kind": "uncertainty", "evidence_ids": []})
     unknown = unknown or [{"text": "This chat has not verified which documented possibility applies to your unit.",
                            "kind": "uncertainty", "evidence_ids": []}]
     sections = [
@@ -202,7 +212,7 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
                     "No ticket has been created.", "kind": "next_step", "evidence_ids": []}]},
     ]
     return {"sections": sections, "citations": citations, "explanations": explanations,
-            "supporting_claims": cause_claims + fact_claims}
+            "supporting_claims": cause_claims + fact_claims, "omitted": omitted}
 
 
 def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any]:
@@ -219,6 +229,9 @@ def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any
                 segments.append(_segment("claim", evidence["text"], evidence["citation_ids"]))
         else:
             segments.append(_segment("text", GAP_TEXT))
+    if built.get("omitted"):
+        segments.append(_segment("text", f"{built['omitted']} more listed cause(s) were not expanded here; "
+                                         "ask about them by number."))
     segments.append(_segment("text", LIMITATION))
     segments = segments[:30]
     explanations = [e for e in built["explanations"] if e["status"] != "unverified"]

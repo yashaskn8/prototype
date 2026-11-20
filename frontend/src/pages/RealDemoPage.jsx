@@ -20,7 +20,7 @@ import './RealDemoPage.css';
 import {
   CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
 } from './demoGatewayClient';
-import { diagnosticsSummary } from '../components/turnDiagnostics.js';
+import { diagnosticsSummary, outcomeLabel } from '../components/turnDiagnostics.js';
 
 async function call(path, token, options = {}) {
   const headers = { 'Authorization': `Demo ${token}` };
@@ -768,6 +768,11 @@ export function RealDemoPage() {
                               presentation={message.data.presentation}
                               loadSource={url => call(gatewaySourceUrl(url), token)}
                             /> : <p>{message.data?.message || 'No response is available.'}</p>}
+                            {outcomeLabel(message.data) && (
+                              <p className="real-demo-dialogue-meta" data-outcome={message.data?.outcome?.status}>
+                                {outcomeLabel(message.data)}
+                              </p>
+                            )}
                             {message.data?.reason_code === 'CUSTOMER_REPORT_CAPTURED' && (
                               <p className="real-demo-dialogue-meta">
                                 This is a conversation-state acknowledgement, not a new knowledge-base answer or a diagnosis. The next follow-up question is shown above.

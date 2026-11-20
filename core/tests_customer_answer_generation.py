@@ -299,7 +299,8 @@ class LocalQwenTransportTests(TestCase):
         self.assertFalse(kwargs["allow_redirects"])
         self.assertEqual(kwargs["json"]["model"], "qwen3.5:2b-q4_K_M")
         self.assertEqual(kwargs["json"]["options"]["num_ctx"], 4096)
-        self.assertEqual(kwargs["json"]["options"]["num_predict"], 384)
+        # Output is bounded by the number of claims requested (one here).
+        self.assertEqual(kwargs["json"]["options"]["num_predict"], 32 + generation.TOKENS_PER_CLAIM)
         self.assertIn("A blocked filter may reduce airflow.", kwargs["json"]["messages"][1]["content"])
         self.assertNotIn("customer_id", kwargs["json"]["messages"][1]["content"])
         session.close.assert_called_once_with()

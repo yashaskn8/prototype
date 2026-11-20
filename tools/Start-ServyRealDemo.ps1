@@ -165,6 +165,9 @@ if ($NoLocalChat) {
     $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
     $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
     $env:SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'
+    # Warm BGE, V5 and Qwen in the server process at startup (not in the first request).
+    $env:SERVY_PRELOAD_MODELS = '1'
+    $env:SERVY_RAG_DEADLINE_SECONDS = '5'
     $qwenTags = $null
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3

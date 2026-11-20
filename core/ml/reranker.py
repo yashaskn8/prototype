@@ -71,10 +71,12 @@ def get_reranker():
                         raise ValueError("Invalid SERVY_RERANKER_EXPECTED_SHA256")
                     if _sha256_file(weights) != expected_sha:
                         raise ValueError("V5 weights SHA-256 mismatch")
-                model = CrossEncoder(
-                    str(path), device=device, max_length=length,
-                    local_files_only=True,
-                )
+                from core.ml.model_lock import MODEL_LOAD_LOCK
+                with MODEL_LOAD_LOCK:
+                    model = CrossEncoder(
+                        str(path), device=device, max_length=length,
+                        local_files_only=True,
+                    )
             else:
                 # V5 is the only reranker. Without its local checkpoint path
                 # there is no network or legacy-model fallback.
@@ -172,6 +174,16 @@ def build_contextual_candidate_text(candidate, asset_context: str = "") -> str:
     return f"{prefix}\nPassage: {passage}" if prefix else passage
 
 
+def _predict(model, pairs):
+    """Score pairs with V5 (loading it first when not yet loaded). Pure computation."""
+    import torch
+    model = model or get_reranker()
+    if model is None:
+        raise RuntimeError("V5 reranker failed to load")
+    with torch.inference_mode():
+        return model.predict(pairs, activation_fn=torch.nn.Identity(), show_progress_bar=False)
+
+
 def rerank_candidates(query: str, candidates: List, top_k: int = 8, *, context_aware: bool = False, asset_context: str = "") -> List:
     """Rerank only pre-authorized technical chunks in a bounded top-N pool.
 
@@ -184,11 +196,17 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8, *, context_a
         if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
             raise RuntimeError("Required V5 reranker is disabled")
         return candidates[:top_k]
-    model = get_reranker()
-    if model is None:
-        if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
-            raise RuntimeError("Required V5 reranker failed to load")
-        return candidates[:top_k]
+    from core.services.request_deadline import StageBusy, StageTimeout, run_bounded, stage_budget
+    if stage_budget("v5_reranking") is None:
+        model = get_reranker()
+        if model is None:
+            if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
+                raise RuntimeError("Required V5 reranker failed to load")
+            return candidates[:top_k]
+    else:
+        # Under a request deadline, loading happens inside the bounded scorer so
+        # a cold (unloaded) model cannot block the request for its full load time.
+        model = None
     try:
         t0 = time.perf_counter()
         docs = [c for c in candidates if c.source_kind == "knowledge_document"]
@@ -209,10 +227,15 @@ def rerank_candidates(query: str, candidates: List, top_k: int = 8, *, context_a
             # For one-label CrossEncoders, predict() commonly defaults to
             # sigmoid; applying calibrated_sigmoid_score again would distort
             # the diagnostic score scale even though rank order is monotone.
-            import torch
-            raw = model.predict(
-                pairs, activation_fn=torch.nn.Identity(), show_progress_bar=False
-            )
+            try:
+                raw = run_bounded("v5_reranking", _predict, model, pairs)
+            except (StageTimeout, StageBusy) as exc:
+                # Keep the authorized pre-rerank order; report V5 as not applied.
+                from core.services.rag_execution_log import emit_execution_event
+                emit_execution_event("v5_reranking_outcome", "Passage reranker deadline", "skipped",
+                                     error_type=type(exc).__name__)
+                logger.info("V5 reranking not applied (%s); keeping retrieval order", type(exc).__name__)
+                return candidates[:top_k]
             scores = [float(x) for x in raw]
             if len(scores) != len(pool) or not all(math.isfinite(x) for x in scores):
                 raise ValueError("Invalid or non-finite CrossEncoder scores")

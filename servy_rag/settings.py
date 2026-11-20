@@ -133,7 +133,12 @@ if SERVY_DB_ENGINE == "mysql":
         "init_command": (
             "SET sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION,STRICT_ALL_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ZERO_DATE,NO_ZERO_IN_DATE';"
             "SET default_storage_engine=INNODB;"
+            # Bound every read statement (milliseconds); a slow SELECT fails instead
+            # of consuming the whole request deadline. Writes are unaffected.
+            f"SET SESSION max_execution_time={int(os.getenv('SERVY_MYSQL_MAX_EXECUTION_MS', '3000'))};"
         ),
+        "read_timeout": int(os.getenv("MYSQL_READ_TIMEOUT", "30")),
+        "write_timeout": int(os.getenv("MYSQL_WRITE_TIMEOUT", "30")),
         "connect_timeout": int(os.getenv("MYSQL_CONNECT_TIMEOUT", "10")),
     }
 
@@ -305,6 +310,12 @@ LOGGING = {
             "level": "WARNING",
             "propagate": False,
         },
+        # Model warm-up progress (startup only) goes to the private stderr log.
+        "servy.rag.preload": {
+            "handlers": ["console_requests"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "core": {
             "handlers": ["null"],
             "level": "WARNING",
@@ -444,6 +455,11 @@ SERVY_RERANKER_EXPECTED_SHA256 = os.getenv("SERVY_RERANKER_EXPECTED_SHA256", "")
 SERVY_RERANKER_DEVICE = os.getenv("SERVY_RERANKER_DEVICE", SERVY_EMBEDDING_DEVICE)
 # The evaluated BGE+V5 dev configuration used a head pool of five candidates.
 SERVY_RERANKER_POOL_SIZE = int(os.getenv("SERVY_RERANKER_POOL_SIZE", "5"))
+# One monotonic end-to-end deadline per customer RAG request (seconds), and the
+# time always kept for mandatory validation, persistence and serialization.
+SERVY_RAG_DEADLINE_SECONDS = float(os.getenv("SERVY_RAG_DEADLINE_SECONDS", "5.0"))
+SERVY_RAG_DEADLINE_RESERVE_SECONDS = float(os.getenv("SERVY_RAG_DEADLINE_RESERVE_SECONDS", "0.4"))
+SERVY_CUSTOMER_GENERATION_KEEP_ALIVE = os.getenv("SERVY_CUSTOMER_GENERATION_KEEP_ALIVE", "30m")
 # Experimental evidence + section-intent reranking. OFF by default; isolate for evaluation.
 SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK = os.getenv("SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK", "0") == "1"
 SERVY_ML_ARTIFACTS_DIR = BASE_DIR / "ml_artifacts"

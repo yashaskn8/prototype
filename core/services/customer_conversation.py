@@ -77,15 +77,20 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
 def process_customer_diagnostic_turn(**kwargs) -> Dict[str, Any]:
     """Run one turn while recording what executed, for truthful per-turn diagnostics."""
     from core.services.rag_execution_log import capture_execution_events
-    with capture_execution_events():
+    from core.services.request_deadline import request_deadline
+    with request_deadline(), capture_execution_events():
         return _process_customer_diagnostic_turn(**kwargs)
 
 
 def _attach_diagnostics(contract):
     from core.services.rag_execution_log import captured_events
     from core.services.turn_diagnostics import summarize_turn
+    from core.services.request_deadline import current_deadline
+    from core.services.turn_diagnostics import build_outcome
     try:
-        contract["diagnostics"] = summarize_turn(captured_events(), contract)
+        events = captured_events()
+        contract["diagnostics"] = summarize_turn(events, contract)
+        contract["outcome"] = build_outcome(events, contract, current_deadline())
     except Exception:
         logger.exception("Turn diagnostics could not be summarized")
 
@@ -532,6 +537,7 @@ def _process_customer_diagnostic_turn(
                 )
                 contract["conversation_uuid"] = str(conv.conversation_uuid)
 
+                _attach_diagnostics(contract)
                 asst_msg = CustomerMessage.objects.create(
                     tenant=tenant,
                     conversation=conv,
@@ -681,6 +687,7 @@ def _process_customer_diagnostic_turn(
                 )
                 contract["conversation_uuid"] = str(conv.conversation_uuid)
 
+                _attach_diagnostics(contract)
                 asst_msg = CustomerMessage.objects.create(
                     tenant=tenant,
                     conversation=conv,

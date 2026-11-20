@@ -1106,7 +1106,11 @@ def retrieve(
             "Searching the approved vector index",
         ):
             try:
-                dense_results = _dense_score_candidates(
+                # Bounded by the request deadline; on timeout only the already
+                # authorized sparse results below are used.
+                from .request_deadline import run_bounded
+                dense_results = run_bounded(
+                    "dense_retrieval", _dense_score_candidates,
                     dense_candidates, dense_doc_ids, dense_chunks_by_id,
                     evidence_text, query_identifiers, asset, customer,
                     tenant, top_k, min_score,

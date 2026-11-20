@@ -19,5 +19,13 @@ class CoreConfig(AppConfig):
             from core.ml.reranker import require_verified_v5_reranker
             require_verified_v5_reranker()
 
+        # Serving processes opt in to warming BGE, V5 and Qwen in the background so
+        # model loading never happens inside a customer request.
+        import os
+        import sys
+        if os.getenv("SERVY_PRELOAD_MODELS") == "1" and "runserver" in sys.argv:
+            from core.ml.preload import start_preload
+            start_preload()
+
         # No embedding model is loaded here. Active serving uses the verified
         # local BGE profile, loaded offline on first use by core.ml.embeddings.
