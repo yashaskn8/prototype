@@ -165,9 +165,26 @@ if ($NoLocalChat) {
     $env:SERVY_CUSTOMER_GENERATION_URL = 'http://127.0.0.1:11434/api/chat'
     $env:SERVY_CUSTOMER_GENERATION_MODEL = 'qwen3.5:2b-q4_K_M'
     $env:SERVY_CUSTOMER_GENERATION_TIMEOUT = '45'
+    $qwenTags = $null
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3
     } catch {
+        # Ollama is installed but not running: start the local server (loopback only) and wait for it.
+        $ollamaExe = (Get-Command ollama -ErrorAction SilentlyContinue).Source
+        if (!$ollamaExe) {
+            $candidate = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
+            if (Test-Path -LiteralPath $candidate) { $ollamaExe = $candidate }
+        }
+        if ($ollamaExe) {
+            $env:OLLAMA_HOST = '127.0.0.1:11434'
+            Start-Process -FilePath $ollamaExe -ArgumentList 'serve' -WindowStyle Hidden | Out-Null
+            for ($attempt = 0; $attempt -lt 30 -and !$qwenTags; $attempt++) {
+                Start-Sleep -Seconds 1
+                try { $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2 } catch { }
+            }
+        }
+    }
+    if (!$qwenTags) {
         throw 'Qwen is enabled but local Ollama is not reachable. Start Ollama, then rerun this launcher; use -NoLocalChat only when intentionally selecting extractive-only mode.'
     }
     $qwenReady = @($qwenTags.models | Where-Object {
