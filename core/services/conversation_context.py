@@ -131,6 +131,88 @@ def is_self_contained_question(text: str) -> bool:
     return len(content) >= 3
 
 
+_GREETING = re.compile(
+    r"^\s*(?:(?:hi|hii+|hello|hey|hiya|greetings|good\s+(?:morning|afternoon|evening|day)|"
+    r"thanks?|thank\s+you|thank\s+you\s+very\s+much|thanks\s+a\s+lot|ok(?:ay)?|cool|great|"
+    r"bye|goodbye|see\s+you)(?:\s+(?:there|servy|again|so\s+much|very\s+much))?[\s!.,]*)+$",
+    re.I)
+
+
+def is_greeting(text: str) -> bool:
+    """A message that is only a greeting, thanks or sign-off, with no request."""
+    value = " ".join(str(text or "").split())
+    return bool(value) and len(value) <= 60 and bool(_GREETING.match(value))
+
+
+def is_supported_answer(contract: Dict[str, Any]) -> bool:
+    """A stored assistant answer that showed cited, validated guidance."""
+    presentation = (contract or {}).get("presentation") or {}
+    return (presentation.get("response_type") == "DIAGNOSTIC_GUIDANCE"
+            and bool(presentation.get("citations"))
+            and bool(presentation.get("supporting_claims")))
+
+
+# "Explain each issue", "explain them all", "explain the causes mentioned above",
+# "please explain these issues": a request to explain every previously listed cause.
+_EXPLAIN_VERB = r"(?:explain|elaborate(?:\s+on)?|describe|detail|break\s+down|tell\s+me\s+(?:more\s+)?about|go\s+through)"
+_ALL_REFERENCE = (
+    r"(?:each|every|all|all\s+of|each\s+of|both|these|those|the\s+above|them|them\s+all|all\s+of\s+them|"
+    r"each\s+one|one\s+by\s+one)")
+_ITEM_WORDS = r"(?:issues?|causes?|reasons?|problems?|possibilities|points?|items?|ones?|them|of\s+them|of\s+these|of\s+those)"
+_EXPLAIN_ALL = re.compile(
+    rf"\b{_EXPLAIN_VERB}\s+(?:the\s+)?{_ALL_REFERENCE}\b(?:\s+(?:the\s+)?(?:listed\s+|possible\s+|above\s+)?{_ITEM_WORDS})?"
+    rf"|\b{_EXPLAIN_VERB}\s+(?:the\s+)?(?:listed|possible|above|previous|mentioned)\s+{_ITEM_WORDS}"
+    rf"|\b{_EXPLAIN_VERB}\s+(?:the\s+)?{_ITEM_WORDS}\s+(?:mentioned|listed|given|shown)\s+(?:above|earlier|before)"
+    rf"|\b{_ALL_REFERENCE}\s+{_ITEM_WORDS}\s*,?\s*(?:explained|in\s+detail)\b",
+    re.I)
+
+
+def is_explain_all_request(text: str) -> bool:
+    return bool(_EXPLAIN_ALL.search(" ".join(str(text or "").split())))
+
+
+_LIST_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)]|\(\d+\))\s+(?P<body>.+?)\s*$")
+_CITATION_MARK = re.compile(r"\s*\[\d+\]")
+
+
+def _norm_line(text: str) -> str:
+    return " ".join(_CITATION_MARK.sub("", str(text or "")).split()).strip(" .").casefold()
+
+
+def split_pasted_history(text: str, previous_texts: List[str]) -> Tuple[str, List[str]]:
+    """Separate the customer's own request from text pasted from an earlier answer.
+
+    Returns ``(request, quoted_items)``. A line is treated as pasted history when
+    it is a list item or it repeats a line of a previous assistant reply; the
+    remaining lines are the actual request. Without pasted content the message
+    is returned unchanged with no quoted items.
+    """
+    value = str(text or "")
+    lines = [line for line in value.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return value.strip(), []
+    previous = set()
+    for block in previous_texts or []:
+        for line in str(block or "").splitlines():
+            body = _LIST_LINE.match(line)
+            normalized = _norm_line(body.group("body") if body else line)
+            if normalized:
+                previous.add(normalized)
+    request, quoted = [], []
+    for line in lines:
+        body = _LIST_LINE.match(line)
+        normalized = _norm_line(body.group("body") if body else line)
+        if body:
+            quoted.append(_CITATION_MARK.sub("", body.group("body")).strip())
+        elif normalized in previous or line.lstrip().startswith(">"):
+            continue
+        else:
+            request.append(line.strip())
+    if not quoted and len(request) == len(lines):
+        return value.strip(), []
+    return " ".join(request).strip(), quoted
+
+
 @dataclass
 class ConversationContext:
     conversation_uuid: str
@@ -149,6 +231,12 @@ class ConversationContext:
     is_followup: bool = False
     last_assistant_answer: str = ""
     last_contract: Dict[str, Any] = field(default_factory=dict)
+    # The most recent assistant answer that was citation-backed guidance. A later
+    # greeting, refusal or clarification does not erase what the customer was shown.
+    last_supported_contract: Dict[str, Any] = field(default_factory=dict)
+    # The most recent supported answer that listed two or more causes: "explain
+    # each" and "the third cause" refer to that list even after a single-cause reply.
+    last_cause_list_contract: Dict[str, Any] = field(default_factory=dict)
     history_turns: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -284,9 +372,14 @@ def extract_conversation_context(
 
     # Limit the database query rather than loading an unbounded transcript.
     ctx.turn_count = conv.messages.filter(sender_role="customer").count()
-    first_customer_msg = conv.messages.filter(sender_role="customer").order_by("created_at", "id").first()
+    # The complaint is the first substantive customer message; a greeting is not one.
+    first_customer_msg = next(
+        (m for m in conv.messages.filter(sender_role="customer").order_by("created_at", "id")[:20]
+         if not is_greeting(m.message_text)),
+        None,
+    )
     if not first_customer_msg:
-        ctx.original_complaint = clean_input
+        ctx.original_complaint = "" if is_greeting(clean_input) else clean_input
         ctx.reported_symptoms = extract_symptoms_from_text(clean_input)
         return ctx
     ctx.original_complaint = first_customer_msg.message_text.strip()
@@ -322,6 +415,10 @@ def extract_conversation_context(
             ctx.last_assistant_answer = text
             contract = msg.structured_contract or {}
             ctx.last_contract = contract
+            if is_supported_answer(contract):
+                ctx.last_supported_contract = contract
+                if len(listed_causes(contract)) >= 2:
+                    ctx.last_cause_list_contract = contract
 
             # Extract suggested checks from assistant's structured contract
             suggested = extract_suggested_actions(contract, text)
@@ -368,6 +465,18 @@ def extract_conversation_context(
             is_followup = False
         elif has_next_pattern or (is_short and (has_pronoun or lacks_explicit_equipment)) or is_clarif_reply:
             is_followup = True
+
+    if not ctx.last_supported_contract or not ctx.last_cause_list_contract:
+        # The supported answer or cause list may be older than the recent-turn window.
+        for older in conv.messages.filter(sender_role="assistant").order_by("-created_at", "-id")[:30]:
+            contract = older.structured_contract or {}
+            if not is_supported_answer(contract):
+                continue
+            ctx.last_supported_contract = ctx.last_supported_contract or contract
+            if not ctx.last_cause_list_contract and len(listed_causes(contract)) >= 2:
+                ctx.last_cause_list_contract = contract
+            if ctx.last_cause_list_contract:
+                break
 
     ctx.is_followup = is_followup
     return ctx
@@ -498,6 +607,7 @@ _ORDINAL_REFERENCE = re.compile(
 def listed_causes(contract: Dict[str, Any]) -> List[Dict[str, str]]:
     """The possible causes in the order the customer saw them in a previous answer."""
     presentation = (contract or {}).get("presentation") or {}
+    citations = {c.get("id"): c for c in presentation.get("citations") or [] if isinstance(c, dict)}
     ordered = []
     for section in presentation.get("sections") or []:
         ordered.extend(section.get("claims") or [])
@@ -510,7 +620,9 @@ def listed_causes(contract: Dict[str, Any]) -> List[Dict[str, str]]:
         if not source or source.casefold() in seen:
             continue
         seen.add(source.casefold())
-        causes.append({"source_text": source, "heading": str(claim.get("source_heading") or "")})
+        evidence = citations.get((claim.get("evidence_ids") or [None])[0]) or {}
+        causes.append({"source_text": source, "heading": str(claim.get("source_heading") or ""),
+                       "document_id": evidence.get("document_id"), "chunk_id": evidence.get("chunk_id")})
     return causes
 
 
@@ -526,10 +638,11 @@ def resolve_cause_reference(text: str, context: "ConversationContext") -> Option
     match = _ORDINAL_REFERENCE.search(str(text or ""))
     if not match:
         return None
-    causes = listed_causes(context.last_contract)
+    causes = listed_causes(context.last_cause_list_contract or context.last_supported_contract
+                           or context.last_contract)
     if not causes:
         return None
-    index = (_ORDINALS[match.group("ordinal").casefold()] if match.group("ordinal")
+    index =(_ORDINALS[match.group("ordinal").casefold()] if match.group("ordinal")
              else int(match.group("number")) - 1)
     if index >= len(causes):
         return None

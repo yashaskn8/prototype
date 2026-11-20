@@ -23,6 +23,11 @@ def _find_split_point(cut, min_pos):
     return -1
 
 
+# "6. POWER SUPPLY INTERRUPTION", "3. SYMPTOM: POOR COOLING", "4.2 FAULT CODES":
+# a numbered, upper-case section title is a heading even without "#" or a colon.
+_NUMBERED_HEADING = re.compile(r"^\d+(?:\.\d+)*[.)]?\s+[A-Z][A-Z0-9 /&:()',-]{2,80}$")
+
+
 def chunk_markdownish(text, max_chars=1100, overlap=140):
     """Chunk text while preserving simple section headings for citations."""
     text = (text or "").replace("\r\n", "\n").strip()
@@ -35,9 +40,15 @@ def chunk_markdownish(text, max_chars=1100, overlap=140):
     buffer = []
     for line in lines:
         stripped = line.strip()
-        is_heading = bool(re.match(r"^#{1,4}\s+", stripped)) or (
+        numbered = bool(_NUMBERED_HEADING.match(stripped))
+        is_heading = numbered or bool(re.match(r"^#{1,4}\s+", stripped)) or (
             stripped and len(stripped) < 90 and stripped.endswith(":")
         )
+        if is_heading and not numbered and not buffer and _NUMBERED_HEADING.match(heading or ""):
+            # A label such as "Possible causes:" directly under a numbered section
+            # heading stays in that section's body; the section keeps its own name.
+            buffer.append(line)
+            continue
         if is_heading:
             if buffer:
                 sections.append((heading, "\n".join(buffer).strip()))
