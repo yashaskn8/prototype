@@ -816,6 +816,9 @@ def _process_customer_diagnostic_turn(
             if cause_reference:
                 focus_presentation_on_cause(contract, cause_reference)
             _compose_conversational_reply(contract, answer_question, conv_context, cause_reference, asset, tenant)
+            from core.services.followup_suggestions import suggest
+            asked = [t.get("text") or "" for t in conv_context.history_turns if t.get("role") == "customer"]
+            contract["suggested_follow_ups"] = suggest(contract, asked + [turn_text])
             presentation = contract.get("presentation") or {}
             with execution_stage(
                 "customer_citation_assembly",

@@ -262,6 +262,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_THROTTLE_RATES": {
         "customer_rag": "20/minute",
+        "customer_feedback": "30/minute",
         "engineer_rag": "30/minute",
         "login": "10/minute",
         "upload": "10/hour",

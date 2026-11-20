@@ -32,6 +32,7 @@ urlpatterns = [
     path("customer-support/conversations/<uuid:conversation_uuid>/", api_views.CustomerConversationDetailView.as_view(), name="api_customer_conversation_detail"),
     path("customer-support/conversations/<uuid:conversation_uuid>/messages/", api_views.CustomerConversationMessagesView.as_view(), name="api_customer_conversation_messages"),
     path("customer-support/conversations/<uuid:conversation_uuid>/messages-stream/", api_views.CustomerConversationMessagesStreamView.as_view(), name="api_customer_conversation_messages_stream"),
+    path("customer-support/conversations/<uuid:conversation_uuid>/messages/<int:message_id>/feedback/", api_views.CustomerAnswerFeedbackView.as_view(), name="api_customer_answer_feedback"),
     path("customer-support/conversations/<uuid:conversation_uuid>/ticket/", api_views.CustomerConversationTicketView.as_view(), name="api_customer_conversation_ticket"),
     path("customer-support/tickets/", api_views.CustomerTicketsListView.as_view(), name="api_customer_tickets"),
     path("customer-support/tickets/<int:pk>/", api_views.CustomerTicketDetailView.as_view(), name="api_customer_ticket_detail"),

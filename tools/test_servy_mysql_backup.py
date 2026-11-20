@@ -85,6 +85,18 @@ class BackupToolTests(unittest.TestCase):
             tool.backup(args)
         run.assert_not_called()
 
+    def test_a_hung_dump_is_stopped_and_reported_as_failed(self):
+        import subprocess
+        argv = ["servy_mysql_backup.py", "backup", "--env-file", self.env_file("servy_dev"),
+                "--out", str(self.root / "out")]
+        hung = subprocess.TimeoutExpired(cmd=["mysqldump.exe"], timeout=tool.DUMP_TIMEOUT)
+        with (mock.patch.object(tool.sys, "argv", argv),
+              mock.patch.object(tool.subprocess, "run", side_effect=hung)):
+            with self.assertRaises(SystemExit) as stopped:
+                tool.main()
+        self.assertIn("FAILED", str(stopped.exception))
+        self.assertIn("mysqldump.exe exceeded", str(stopped.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

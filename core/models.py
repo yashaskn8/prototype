@@ -1066,3 +1066,42 @@ class CustomerTurnIdempotency(TenantOwnedModel):
         return f"Idempotency {self.tenant.slug}:{self.customer_id}:{self.idempotency_key} [{self.processing_status}]"
 
 
+
+
+class AnswerFeedback(TenantOwnedModel):
+    """A customer's rating of one assistant answer (one row per answer, updatable).
+
+    Never changes documents, prompts or models. Negative feedback is reviewed in
+    the admin; only a reviewer-written, sanitized question is exported as an
+    evaluation case (customer text is never exported).
+    """
+    RATINGS = [("helpful", "Helpful"), ("not_helpful", "Not helpful")]
+    REASONS = [("", "No reason"), ("incorrect", "Incorrect information"), ("missing", "Missing information"),
+               ("unclear", "Unclear explanation"), ("wrong_source", "Wrong supporting source")]
+    REVIEW = [("new", "New"), ("reviewed", "Reviewed"), ("dismissed", "Dismissed")]
+
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="answer_feedback")
+    conversation = models.ForeignKey(CustomerConversation, on_delete=models.CASCADE, related_name="answer_feedback")
+    assistant_message = models.OneToOneField(CustomerMessage, on_delete=models.CASCADE, related_name="feedback")
+    asset = models.ForeignKey(Asset, on_delete=models.SET_NULL, null=True, blank=True)
+    rating = models.CharField(max_length=20, choices=RATINGS)
+    reason = models.CharField(max_length=20, choices=REASONS, blank=True, default="")
+    comment = models.CharField(max_length=500, blank=True, default="")
+    response_status = models.CharField(max_length=40, blank=True, default="")
+    response_mode = models.CharField(max_length=40, blank=True, default="")
+    model_versions = models.JSONField(default=dict, blank=True)
+    cited_document_versions = models.JSONField(default=list, blank=True)
+    review_status = models.CharField(max_length=20, choices=REVIEW, default="new")
+    reviewer_note = models.CharField(max_length=500, blank=True, default="")
+    eval_question = models.CharField(max_length=400, blank=True, default="",
+                                     help_text="Reviewer-written, de-identified question for a regression case.")
+    export_approved = models.BooleanField(default=False)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["tenant", "rating", "review_status"])]
+
+    def __str__(self):
+        return f"Feedback {self.rating} on message {self.assistant_message_id}"

@@ -27,6 +27,7 @@ from core.security import (
     STAFF_ROLES, TECH_ROLES, ADMIN_ROLES, CUSTOMER_ROLES, ALL_ROLES
 )
 from core.services.rag import ask_rag
+from core.services.answer_feedback import as_dict as feedback_as_dict
 from core.services.customer_diagnostic import check_for_safety_hazard
 from core.services.ticketing import create_call_from_interaction
 from core.services.ticket_handoff import (
@@ -2817,8 +2818,10 @@ class CustomerConversationMessagesView(APIView):
                 "structured_contract": m.structured_contract,
                 "source_refs": m.source_refs,
                 "created_at": m.created_at,
+                **({"feedback": feedback_as_dict(getattr(m, "feedback", None))}
+                   if m.sender_role == "assistant" else {}),
             }
-            for m in conv.messages.all().order_by("created_at")
+            for m in conv.messages.select_related("feedback").order_by("created_at")
         ]
         return Response({"messages": messages})
 
@@ -3263,3 +3266,44 @@ class CustomerTicketDetailView(APIView):
             **customer_ticket_state(call),
             "resolution_text": call.resolution_text if call.status in ("resolved", "closed") else None,
         })
+
+
+class CustomerFeedbackThrottle(throttling.UserRateThrottle):
+    scope = "customer_feedback"
+
+
+class CustomerAnswerFeedbackView(APIView):
+    """GET or PUT the signed-in customer's feedback on one assistant answer."""
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [CustomerFeedbackThrottle]
+
+    def _resolve(self, request, conversation_uuid, message_id):
+        ctx = require_api_context(request)
+        if ctx["role"] not in CUSTOMER_ROLES or not ctx.get("customer"):
+            return ctx, None, None
+        conv = CustomerConversation.objects.select_related("asset").filter(
+            tenant=ctx["tenant"], conversation_uuid=conversation_uuid).first()
+        if conv is None or not _can_read_customer_conversation(ctx, conv):
+            return ctx, None, None
+        message = CustomerMessage.objects.filter(
+            tenant=ctx["tenant"], conversation=conv, pk=message_id, sender_role="assistant").first()
+        return ctx, conv, message
+
+    def get(self, request, conversation_uuid, message_id):
+        ctx, conv, message = self._resolve(request, conversation_uuid, message_id)
+        if message is None:
+            return Response({"detail": "Answer not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"feedback": feedback_as_dict(getattr(message, "feedback", None))})
+
+    def put(self, request, conversation_uuid, message_id):
+        from core.services.answer_feedback import save_feedback
+        ctx, conv, message = self._resolve(request, conversation_uuid, message_id)
+        if message is None:
+            return Response({"detail": "Answer not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            feedback = save_feedback(tenant=ctx["tenant"], customer=ctx["customer"], conversation=conv,
+                                     message=message, data=request.data if isinstance(request.data, dict) else {})
+        except ValidationError as exc:
+            return Response({"detail": exc.messages[0] if hasattr(exc, "messages") else str(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response({"feedback": feedback_as_dict(feedback)})

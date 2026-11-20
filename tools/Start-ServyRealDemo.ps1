@@ -280,7 +280,8 @@ if (!(Test-LocalPort 5175)) {
         -WorkingDirectory (Join-Path $projectRoot 'frontend') -WindowStyle Hidden `
         -RedirectStandardOutput $viteOutLog `
         -RedirectStandardError $viteErrLog | Out-Null
-    for ($i = 0; $i -lt 15 -and !(Test-LocalPort 5175); $i++) { Start-Sleep -Seconds 1 }
+    # npm + Vite took 32 s to start under memory pressure on the dev laptop; 15 s was too short.
+    for ($i = 0; $i -lt 60 -and !(Test-LocalPort 5175); $i++) { Start-Sleep -Seconds 1 }
     if (!(Test-LocalPort 5175)) {
         Write-Output ''
         Write-Output 'Servy Real-data Demo: FAILED'

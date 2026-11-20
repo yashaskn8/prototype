@@ -222,3 +222,15 @@
   .real-demo-thread-index { display: block; padding: 10px 12px; }
   .real-demo-thread-label { display: block; padding-bottom: 5px; }
 }
+
+/* Answer feedback: small, keyboard-accessible, consistent with chat options. */
+.answer-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.5rem; font-size: 0.85rem; }
+.answer-feedback > button, .answer-feedback-details button {
+  border: 1px solid #cbd5e1; background: #fff; border-radius: 999px; padding: 0.15rem 0.6rem; cursor: pointer;
+}
+.answer-feedback > button[aria-pressed="true"] { background: #e0f2fe; border-color: #0284c7; }
+.answer-feedback > button:focus-visible, .answer-feedback-details :focus-visible { outline: 2px solid #0284c7; outline-offset: 2px; }
+.answer-feedback-details { display: flex; flex-wrap: wrap; gap: 0.5rem; width: 100%; align-items: flex-end; }
+.answer-feedback-details label { display: flex; flex-direction: column; gap: 0.2rem; }
+.answer-feedback-details textarea { min-width: min(18rem, 100%); }
+.answer-feedback-status { color: #475569; }

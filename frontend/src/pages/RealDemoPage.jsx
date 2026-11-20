@@ -21,6 +21,7 @@ import {
   CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
 } from './demoGatewayClient';
 import { busyMessage, diagnosticsSummary, outcomeLabel } from '../components/turnDiagnostics.js';
+import { AnswerFeedback } from '../components/AnswerFeedback.jsx';
 
 async function call(path, token, options = {}) {
   const headers = { 'Authorization': `Demo ${token}` };
@@ -474,7 +475,8 @@ export function RealDemoPage() {
         undefined,
         streamController.signal,
       );
-      const data = { ...(turn?.contract || {}), continuation: conversationUuid };
+      const data = { ...(turn?.contract || {}), continuation: conversationUuid,
+        assistant_message_id: turn?.assistant_message?.id ?? null, feedback: null };
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
       const responseAssetId = data?.presentation?.equipment?.id ?? data?.asset?.id;
       if (responseAssetId != null && String(responseAssetId) !== String(activeAsset)) {
@@ -768,6 +770,14 @@ export function RealDemoPage() {
                               presentation={message.data.presentation}
                               loadSource={url => call(gatewaySourceUrl(url), token)}
                             /> : <p>{message.data?.message || 'No response is available.'}</p>}
+                            {Number.isInteger(message.data?.assistant_message_id)
+                              && (message.data?.continuation || continuation)
+                              && message.data?.presentation?.response_type === 'DIAGNOSTIC_GUIDANCE' && (
+                              <AnswerFeedback initial={message.data.feedback || null}
+                                save={async body => (await call(conversationPath(message.data.continuation || continuation,
+                                  `messages/${message.data.assistant_message_id}/feedback/`), token,
+                                  { method: 'PUT', body: JSON.stringify(body) })).feedback} />
+                            )}
                             {outcomeLabel(message.data) && (
                               <p className="real-demo-dialogue-meta" data-outcome={message.data?.outcome?.status}>
                                 {outcomeLabel(message.data)}

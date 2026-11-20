@@ -11,8 +11,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.api_views import (
-    CustomerConversationDetailView, CustomerConversationMessagesStreamView, CustomerConversationMessagesView,
-    CustomerConversationsListView)
+    CustomerAnswerFeedbackView, CustomerConversationDetailView, CustomerConversationMessagesStreamView,
+    CustomerConversationMessagesView, CustomerConversationsListView)
 from core.customer_sources import CustomerSourceView
 from core.demo_gateway import (
     CustomerAccessCodeAuthentication, CustomerAttachmentView, CustomerConversationTicketGatewayView,
@@ -58,6 +58,8 @@ customer_patterns = [
          bind(CustomerConversationMessagesView, C)),
     path("demo-api/customer-support/conversations/<uuid:conversation_uuid>/messages-stream/",
          bind(CustomerConversationMessagesStreamView, C)),
+    path("demo-api/customer-support/conversations/<uuid:conversation_uuid>/messages/<int:message_id>/feedback/",
+         bind(CustomerAnswerFeedbackView, C)),
     path("demo-api/customer-support/conversations/<uuid:conversation_uuid>/ticket/",
          CustomerConversationTicketGatewayView.as_view()),
     path("demo-api/tickets/<int:call_id>/attachments/<int:attachment_id>/", CustomerAttachmentView.as_view()),

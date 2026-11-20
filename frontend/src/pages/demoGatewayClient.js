@@ -13,7 +13,8 @@ export function messagesFromServer(list) {
     .map(message => message.sender_role === 'customer'
       ? { id: `server-${message.id}`, role: 'user', text: message.message_text }
       : { id: `server-${message.id}`, role: 'assistant',
-        data: message.structured_contract || { answer: message.message_text } });
+        data: { ...(message.structured_contract || { answer: message.message_text }),
+          assistant_message_id: message.id, feedback: message.feedback || null } });
 }
 
 // Citation links from the official API point at /api/...; the gateway serves them under /demo-api/.
