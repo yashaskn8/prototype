@@ -46,3 +46,10 @@ test('outcome labels distinguish generated, extractive fallback and insufficient
   assert.equal(outcomeLabel({ outcome: { status: 'safety_escalation' } }), '');
   assert.equal(outcomeLabel({ outcome: { status: 'conversational' } }), '');
 });
+
+test('a busy (503) refusal is shown as busy, other failures are not', async () => {
+  const { busyMessage } = await import('../src/components/turnDiagnostics.js');
+  assert.match(busyMessage({ status: 503 }), /still answering your previous question/);
+  assert.equal(busyMessage({ status: 500 }), '');
+  assert.equal(busyMessage(undefined), '');
+});

@@ -172,8 +172,12 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"Evaluated BGE+V5 configuration is not active ({len(issues)} issue(s))."
                 )
+            from core.ml.heavy_job import HeavyJobBusy, heavy_job
             try:
-                verify_local_serving_artifacts()
+                with heavy_job("check_rag_serving --strict"):
+                    verify_local_serving_artifacts()
+            except HeavyJobBusy as exc:
+                raise CommandError(str(exc)) from None
             except Exception as exc:
                 # Never include raw model paths, customer documents or secret-bearing errors.
                 raise CommandError(

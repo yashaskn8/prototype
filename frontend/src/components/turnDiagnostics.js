@@ -56,3 +56,12 @@ export function outcomeLabel(data) {
   }
   return '';
 }
+
+// The server runs one answer at a time and refuses another with HTTP 503
+// (code rag_busy). Show that plainly instead of a generic failure; the
+// question stays in the input so the customer can resend it.
+export function busyMessage(err) {
+  return err?.status === 503
+    ? 'Servy is still answering your previous question. Please wait for it to finish, then send this again.'
+    : '';
+}

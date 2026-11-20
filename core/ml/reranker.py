@@ -44,6 +44,65 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
+class OnnxV5:
+    """The verified V5 checkpoint exported to ONNX fp32 (see export_v5_onnx).
+
+    Same tokenizer, max_length and raw logits as the PyTorch CrossEncoder; the
+    export was accepted only with identical ranking and |logit diff| <= 1e-3.
+    """
+
+    def __init__(self, directory: Path, threads: int):
+        import onnxruntime as ort
+        from transformers import AutoTokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(str(directory), local_files_only=True)
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = threads
+        options.inter_op_num_threads = 1
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.session = ort.InferenceSession(str(directory / "model.onnx"), options,
+                                            providers=["CPUExecutionProvider"])
+
+    def predict(self, pairs, activation_fn=None, show_progress_bar=False, **_):
+        import numpy as np
+        encoded = self.tokenizer([list(p) for p in pairs], padding=True, truncation=True, max_length=256,
+                                 return_tensors="np")
+        logits = self.session.run(["logits"], {"input_ids": encoded["input_ids"].astype(np.int64),
+                                               "attention_mask": encoded["attention_mask"].astype(np.int64)})[0]
+        return logits[:, 0]
+
+
+def _verified_onnx_dir(expected_sha: str):
+    """The configured ONNX export directory, only if its manifest and every file hash verify."""
+    import json
+    configured = str(getattr(settings, "SERVY_RERANKER_ONNX_DIR", "") or "").strip()
+    if not configured:
+        raise FileNotFoundError("SERVY_RERANKER_ONNX_DIR is not configured")
+    directory = Path(configured).expanduser().resolve()
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if (manifest.get("format") != "servy-v5-onnx-v1" or manifest.get("precision") != "fp32"
+            or manifest.get("source_weights_sha256") != expected_sha):
+        raise ValueError("V5 ONNX manifest does not match the pinned V5 weights")
+    for name, digest in (manifest.get("files") or {}).items():
+        if _sha256_file(directory / name) != digest:
+            raise ValueError(f"V5 ONNX file hash mismatch: {name}")
+    if "model.onnx.data" not in (manifest.get("files") or {}):
+        raise ValueError("V5 ONNX manifest is incomplete")
+    return directory
+
+
+def reranker_runtime() -> str:
+    """The configured V5 runtime (what get_reranker will try first)."""
+    backend = str(getattr(settings, "SERVY_RERANKER_BACKEND", "torch") or "torch").lower()
+    return "onnx-fp32" if backend == "onnx" else "torch-fp32"
+
+
+def active_runtime() -> str | None:
+    """The V5 runtime actually loaded, or None before loading."""
+    if _cross_encoder is None:
+        return None
+    return "onnx-fp32" if isinstance(_cross_encoder, OnnxV5) else "torch-fp32"
+
+
 def get_reranker():
     """Cache by configuration, verify optional weights digest, load offline."""
     global _cross_encoder, _loaded_config
@@ -51,7 +110,9 @@ def get_reranker():
     device = str(getattr(settings, "SERVY_RERANKER_DEVICE", "cpu"))
     expected_sha = str(getattr(settings, "SERVY_RERANKER_EXPECTED_SHA256", "") or "").lower().strip()
     length = 256
-    key = (str(path) if path else "", device, length, expected_sha)
+    backend = reranker_runtime()
+    key = (str(path) if path else "", device, length, expected_sha, backend,
+           str(getattr(settings, "SERVY_RERANKER_ONNX_DIR", "") or ""))
     if _loaded_config == key and _cross_encoder is not None:
         return _cross_encoder
     with _lock:
@@ -72,11 +133,23 @@ def get_reranker():
                     if _sha256_file(weights) != expected_sha:
                         raise ValueError("V5 weights SHA-256 mismatch")
                 from core.ml.model_lock import MODEL_LOAD_LOCK
-                with MODEL_LOAD_LOCK:
-                    model = CrossEncoder(
-                        str(path), device=device, max_length=length,
-                        local_files_only=True,
-                    )
+                model = None
+                if backend == "onnx-fp32":
+                    try:
+                        onnx_dir = _verified_onnx_dir(expected_sha or SERVY_V5_WEIGHTS_SHA256)
+                        with MODEL_LOAD_LOCK:
+                            model = OnnxV5(onnx_dir, int(getattr(settings, "SERVY_RERANKER_THREADS", 8)))
+                    except Exception as exc:
+                        # Correctness first: the verified PyTorch checkpoint is the rollback.
+                        logger.warning("V5 ONNX runtime unavailable (%s); using the PyTorch checkpoint",
+                                       type(exc).__name__)
+                        model = None
+                if model is None:
+                    with MODEL_LOAD_LOCK:
+                        model = CrossEncoder(
+                            str(path), device=device, max_length=length,
+                            local_files_only=True,
+                        )
             else:
                 # V5 is the only reranker. Without its local checkpoint path
                 # there is no network or legacy-model fallback.

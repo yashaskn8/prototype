@@ -168,6 +168,17 @@ if ($NoLocalChat) {
     # Warm BGE, V5 and Qwen in the server process at startup (not in the first request).
     $env:SERVY_PRELOAD_MODELS = '1'
     $env:SERVY_RAG_DEADLINE_SECONDS = '5'
+    # V5 runs on ONNX Runtime when the verified export exists (identical ranking,
+    # ~30% faster on CPU); serving re-checks every file hash and falls back to PyTorch.
+    # Bounded per-request metrics (no customer text) in the private demo folder.
+    $env:SERVY_RAG_METRICS_LOG = Join-Path $demoFolder 'rag_metrics.jsonl'
+    $v5Onnx = 'C:\Users\prana\AppData\Local\Servy\servy_v5_onnx'
+    if (Test-Path -LiteralPath (Join-Path $v5Onnx 'manifest.json')) {
+        $env:SERVY_RERANKER_BACKEND = 'onnx'
+        $env:SERVY_RERANKER_ONNX_DIR = $v5Onnx
+    } else {
+        $env:SERVY_RERANKER_BACKEND = 'torch'
+    }
     $qwenTags = $null
     try {
         $qwenTags = Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 3

@@ -92,6 +92,9 @@ def _attach_diagnostics(contract):
         events = captured_events()
         contract["diagnostics"] = summarize_turn(events, contract)
         contract["outcome"] = build_outcome(events, contract, current_deadline())
+        from core.services.rag_metrics import record
+        record(contract, events, asset_id=(contract.get("asset") or {}).get("id")
+               or ((contract.get("presentation") or {}).get("equipment") or {}).get("id"))
     except Exception:
         logger.exception("Turn diagnostics could not be summarized")
 

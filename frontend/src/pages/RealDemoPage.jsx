@@ -20,7 +20,7 @@ import './RealDemoPage.css';
 import {
   CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
 } from './demoGatewayClient';
-import { diagnosticsSummary, outcomeLabel } from '../components/turnDiagnostics.js';
+import { busyMessage, diagnosticsSummary, outcomeLabel } from '../components/turnDiagnostics.js';
 
 async function call(path, token, options = {}) {
   const headers = { 'Authorization': `Demo ${token}` };
@@ -496,7 +496,7 @@ export function RealDemoPage() {
       if (requestRevision.current !== activeRevision || activeAsset !== assetId) return;
       const errorMessage = err?.message === 'Servy response equipment scope mismatch'
         ? 'Servy returned information for different equipment. The response was blocked. Select the intended asset and start a new chat.'
-        : 'Servy could not complete that response. Please try again.';
+        : busyMessage(err) || 'Servy could not complete that response. Please try again.';
       setMessages(previous => replaceMessageById(previous, responseId,
         { id: responseId, role: 'assistant', errorMessage }));
       setQuestion(submittedQuestion);

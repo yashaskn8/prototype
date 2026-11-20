@@ -39,6 +39,7 @@ def _health(authentication_class, gateway):
                 "models": models,
                 "models_ready": all(v in ("ready", "disabled") for v in models.values()),
                 "rag_busy": rag_admission.busy(),
+                "v5_runtime": __import__("core.ml.reranker", fromlist=["active_runtime"]).active_runtime(),
                 "process_memory_mb": {"working_set": round(memory.rss / 2**20),
                                       "private": round(getattr(memory, "private", 0) / 2**20)},
             })

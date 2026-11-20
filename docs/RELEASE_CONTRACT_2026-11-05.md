@@ -35,3 +35,19 @@ The repository's README identifies itself as a standalone prototype, not the pri
 ## Freeze / amendments
 
 This initial matrix is the minimum release contract. Any later added discovery requirement remains mandatory; do not weaken thresholds, change denominator, or label blocked dependencies PASS. Thresholds for probabilistic scoring must be declared before executing the held-out suite. Zero unauthorized disclosure, unsafe customer instructions, unauthorized writes, unconfirmed ticket writes, or duplicate committed tickets in the declared security/action suite.
+
+## Evidence log (implementer-run, 2026-11-20) — not independent sign-off
+
+Recorded on the development laptop (i7-10870H, 15.8 GB RAM, RTX 3050 Ti 4 GB) against the isolated
+`servy_dev` stack, commit range `99f9c5c`..HEAD on `main`. Under the gate policy above these are
+**implementer results only**: no row changes to PASS until an independent reviewer repeats them.
+
+| ID | Evidence recorded | Result | Status |
+| --- | --- | --- | --- |
+| R01 | Original Split AC question through the live gateway: 12 cited causes, 14 citations, equipment 1, accepted by the client contract (`customerAnswerContract.js`) | Answer valid; was rejected before (14 claims > 12 limit) | NOT RUN (independent review pending) |
+| R03 | `tools/servy_multiturn_eval.py` 18 turns; `core.tests_conversational_gateway` | 0 failures, 0 cross-asset leaks | NOT RUN (independent review pending) |
+| R04 | `tools/servy_three_asset_gateway_eval.py` 67 turns, every citation opened and compared verbatim | 67/67, 0 citation-open failures, 0 non-verbatim claims | BLOCKED (requires approved-corpus human claim review) |
+| R05 | `core.tests_customer_answer` revocation test (confidential, disabled, sharing off, foreign customer, quarantine, edit, delete) | Citation denied in every case | NOT RUN (independent adversarial suite pending) |
+| R06 | `tools/servy_mysql_backup.py` backup → verify (30 files SHA-256) → restore into `test_servy_dev` → row counts equal → restored retrieval + citation opens | Restore verified; tool refuses `servy`, the source DB and unconfirmed targets | NOT RUN (rollback/revocation lifecycle suite pending) |
+| R08 | `core.tests_latency_deadline` (dense/V5/Qwen timeouts, invalid JSON, deadline expiry, outcome states) | Pass; fallbacks keep exact cited wording | NOT RUN (independent review pending) |
+| R12 | 50 sequential warm questions (3 assets): p50 3.14 s, p95 4.16 s, max 4.25 s, 0 over 5 s, V5 applied 50/50; single-request admission returns 503 `rag_busy` in 31 ms | Within the 5 s deadline | NOT RUN (load/restart suite pending) |

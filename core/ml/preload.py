@@ -89,6 +89,17 @@ def start_preload() -> bool:
     with _lock:
         if _started:
             return False
+        # The serving process holds the machine-wide model-job lock for its
+        # lifetime so an export or strict check cannot load a second copy.
+        from core.ml.heavy_job import HeavyJobBusy, acquire
+        try:
+            acquire("servy gateway")
+        except HeavyJobBusy as exc:
+            logger.warning("Model preload skipped: %s", exc)
+            for name in status:
+                status[name] = "blocked_by_other_model_job"
+            _started = True
+            return False
         _started = True
         for name in status:
             status[name] = "pending"

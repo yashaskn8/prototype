@@ -455,12 +455,19 @@ SERVY_RERANKER_EXPECTED_SHA256 = os.getenv("SERVY_RERANKER_EXPECTED_SHA256", "")
 SERVY_RERANKER_DEVICE = os.getenv("SERVY_RERANKER_DEVICE", SERVY_EMBEDDING_DEVICE)
 # The evaluated BGE+V5 dev configuration used a head pool of five candidates.
 SERVY_RERANKER_POOL_SIZE = int(os.getenv("SERVY_RERANKER_POOL_SIZE", "5"))
+# V5 runtime: "torch" (default, rollback) or "onnx" (the same verified weights
+# exported by `manage.py export_v5_onnx`; identical ranking, ~30% faster on CPU).
+SERVY_RERANKER_BACKEND = os.getenv("SERVY_RERANKER_BACKEND", "torch").strip().lower()
+SERVY_RERANKER_ONNX_DIR = os.getenv("SERVY_RERANKER_ONNX_DIR", "").strip()
+SERVY_RERANKER_THREADS = int(os.getenv("SERVY_RERANKER_THREADS", "8"))
 # One monotonic end-to-end deadline per customer RAG request (seconds), and the
 # time always kept for mandatory validation, persistence and serialization.
 SERVY_RAG_DEADLINE_SECONDS = float(os.getenv("SERVY_RAG_DEADLINE_SECONDS", "5.0"))
 SERVY_RAG_DEADLINE_RESERVE_SECONDS = float(os.getenv("SERVY_RAG_DEADLINE_RESERVE_SECONDS", "0.4"))
 # Single-user prototype: one active RAG request per process; others get HTTP 503 rag_busy.
 SERVY_RAG_SINGLE_REQUEST = os.getenv("SERVY_RAG_SINGLE_REQUEST", "1") == "1"
+# Optional bounded per-request metrics log (JSON lines, no customer text); empty = off.
+SERVY_RAG_METRICS_LOG = os.getenv("SERVY_RAG_METRICS_LOG", "").strip()
 SERVY_CUSTOMER_GENERATION_KEEP_ALIVE = os.getenv("SERVY_CUSTOMER_GENERATION_KEEP_ALIVE", "30m")
 # Experimental evidence + section-intent reranking. OFF by default; isolate for evaluation.
 SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK = os.getenv("SERVY_EXPERIMENTAL_SECTION_AWARE_RERANK", "0") == "1"
