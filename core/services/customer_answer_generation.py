@@ -268,8 +268,9 @@ def _compose_display(text: str, kind: str) -> str:
 
 def _estimated_seconds(claim: dict) -> float:
     """Generation time for one claim: paraphrase + exact quote are each ~1 token per
-    4 source characters, plus ~15 tokens of JSON framing, at the measured rate."""
-    tokens = 2 * len(claim["source_text"]) / 4 + 15
+    4 source characters, plus ~30 tokens of JSON keys and framing. Calibrated on the
+    live Split AC answer: 6 short causes -> 304 output tokens (~51 per claim)."""
+    tokens = 2 * len(claim["source_text"]) / 4 + 30
     return tokens / GENERATION_TOKENS_PER_SECOND
 
 

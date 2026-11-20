@@ -179,9 +179,9 @@ class QwenDeadlineTests(SimpleTestCase):
 
     def test_claims_are_planned_by_estimated_generation_time(self):
         short = {"source_text": "Fan stops."}
-        long = {"source_text": "x" * 100}  # ~0.93 s each
+        long = {"source_text": "x" * 100}  # ~1.14 s each
         self.assertEqual(len(generation._affordable_claims([short] * 6, 5.0)), 6)
-        self.assertEqual(len(generation._affordable_claims([long] * 6, 3.0)), 2)
+        self.assertEqual(len(generation._affordable_claims([long] * 6, 3.2)), 2)
         # At least one claim is always attempted when generation starts at all.
         self.assertEqual(len(generation._affordable_claims([long] * 3, 0.9)), 1)
 
