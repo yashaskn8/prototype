@@ -24,9 +24,9 @@ export function diagnosticsSummary(data) {
   return parts.join(' ');
 }
 
-// One short, nontechnical line saying how this answer was produced. It reflects
-// only the server-reported outcome; nothing is labelled generated or cited unless
-// the server says so for this request.
+// One short, nontechnical line for answers that fell back to exact manual wording
+// or found no confirmed answer. It reflects only the server-reported outcome;
+// assistant-worded answers carry no label.
 const GENERATION_REASONS = {
   timeout: 'the wording step ran out of time',
   deadline_skipped: 'there was not enough time left for the wording step',
@@ -41,11 +41,7 @@ export function outcomeLabel(data) {
   const o = data?.outcome;
   if (!o || typeof o !== 'object') return '';
   if (o.status === 'success' || o.status === 'degraded') {
-    if (o.response_mode === 'grounded_generated') {
-      return o.status === 'success'
-        ? 'Answer worded by the local assistant from the cited manual sentences.'
-        : 'Answer worded by the local assistant from the cited manual sentences (reduced search ranking was used to stay fast).';
-    }
+    if (o.response_mode === 'grounded_generated') return '';
     const why = GENERATION_REASONS[o.generation_status];
     return why
       ? `Exact cited manual wording is shown because ${why}.`

@@ -20,7 +20,7 @@ import './RealDemoPage.css';
 import {
   CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
 } from './demoGatewayClient';
-import { busyMessage, diagnosticsSummary, outcomeLabel } from '../components/turnDiagnostics.js';
+import { busyMessage, outcomeLabel } from '../components/turnDiagnostics.js';
 import { AnswerFeedback } from '../components/AnswerFeedback.jsx';
 
 async function call(path, token, options = {}) {
@@ -792,46 +792,6 @@ export function RealDemoPage() {
                               <p className="real-demo-dialogue-meta">
                                 This is a conversation-state acknowledgement, not a new knowledge-base answer or a diagnosis. The next follow-up question is shown above.
                               </p>
-                            )}
-                            {message.data?.response_type === 'DIAGNOSTIC_GUIDANCE' && (
-                              <details className="real-demo-dialogue-meta">
-                                <summary>How this answer was prepared</summary>
-                                <p>The technical statements are drawn from approved company sources.
-                                  {message.data.engine === 'source-grounded-qwen'
-                                    ? ' Local Qwen generated plain-language explanations using complete, reauthorized approved-manual passages. Original claim sentences remain intact, and each generated explanation links to both its sentence citation and the full source-passage citation. Output that fails source validation falls back to the extractive answer.'
-                                    : message.data.engine === 'source-structured-qwen'
-                                      ? ' Local Qwen helped phrase already-approved factual and possible-cause claims. Their exact source sentences and citations are retained; customer procedures and observations remain source-exact.'
-                                      : message.data.engine === 'source-structured-extractive'
-                                        ? ' The displayed technical claims are extracted from authorized passages and linked to exact citations; a generative language model did not rewrite them.'
-                                        : message.data.dialogue_planner === 'local-ollama-structured'
-                                          ? ' A local language model helped select the order of source-backed claims and a pre-approved follow-up.'
-                                          : ' No generative language model rewrote the technical claims.'}
-                                </p>
-                                {message.data.answer_generation && (
-                                  <p>
-                                    Qwen answer generation: {message.data.answer_generation.status}.
-                                    {message.data.answer_generation.model
-                                      ? ' Model: ' + message.data.answer_generation.model + '.'
-                                      : ''}
-                                    {' '}Explanations applied: {message.data.answer_generation.applied_claims ?? 0}.
-                                    {message.data.answer_generation.error_type
-                                      ? ' Error type: ' + message.data.answer_generation.error_type + '.'
-                                      : ''}
-                                  </p>
-                                )}
-                                <p>{diagnosticsSummary(message.data)}</p>
-                                {message.data.presentation?.document_coverage && (
-                                  <p>
-                                    Approved-document scan: {message.data.presentation.document_coverage.scan_completed === false
-                                      ? 'not completed; no complete-coverage claim is made.'
-                                      : (message.data.presentation.document_coverage.documents_searched ?? 0) + ' of ' +
-                                        (message.data.presentation.document_coverage.approved_documents ?? 0) +
-                                        ' approved documents; ' +
-                                        (message.data.presentation.document_coverage.passages_searched ?? 0) +
-                                        ' passages searched.'}
-                                  </p>
-                                )}
-                              </details>
                             )}
                             {Array.isArray(message.data?.clarification_options)
                               && message.data.clarification_options.length > 0

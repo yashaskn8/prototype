@@ -32,8 +32,9 @@ test('real counts, cited evidence, limitations and Qwen acceptance are shown', (
   assert.match(text, /Qwen: applied; accepted 3 of 4 claim\(s\)\./);
 });
 
-test('the demo page no longer defaults retrieval passes to zero', () => {
+test('the demo page shows no answer-preparation disclosure', () => {
   const page = readFileSync(new URL('../src/pages/RealDemoPage.jsx', import.meta.url), 'utf8');
   assert.equal(page.includes('retrieval_attempts ?? 0'), false);
-  assert.equal(page.includes('diagnosticsSummary(message.data)'), true);
+  assert.equal(page.includes('How this answer was prepared'), false);
+  assert.equal(page.includes('worded by the local assistant'), false);
 });

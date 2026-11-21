@@ -33,10 +33,11 @@ test('more claims than the limit, or a claim citing a missing source, is rejecte
   assert.equal(validateCustomerPresentation(bad), null);
 });
 
-test('outcome labels distinguish generated, extractive fallback and insufficient evidence', () => {
+test('outcome labels cover extractive fallback and insufficient evidence; worded answers have none', () => {
   assert.equal(outcomeLabel({}), '');
-  assert.match(outcomeLabel({ outcome: { status: 'success', response_mode: 'grounded_generated' } }),
-    /worded by the local assistant from the cited manual sentences\.$/);
+  for (const status of ['success', 'degraded']) {
+    assert.equal(outcomeLabel({ outcome: { status, response_mode: 'grounded_generated' } }), '');
+  }
   assert.match(outcomeLabel({ outcome: { status: 'degraded', response_mode: 'grounded_extractive', generation_status: 'timeout' } }),
     /Exact cited manual wording is shown because the wording step ran out of time\./);
   assert.match(outcomeLabel({ outcome: { status: 'success', response_mode: 'grounded_extractive', generation_status: 'disabled' } }),
