@@ -108,10 +108,30 @@ def require_api_context(request):
     }
 
 
+def customer_visible_documents(qs, ctx):
+    """Restrict a tenant-scoped KnowledgeDocument queryset to what a customer may see.
+
+    Shared manuals (no customer, no asset) and documents of the customer's own
+    assets; never confidential, sharing-disabled or provenance-revoked documents.
+    """
+    from .models import SourceProvenanceRecord
+    customer = ctx.get("customer")
+    if not customer:
+        return qs.none()
+    revoked = SourceProvenanceRecord.objects.filter(
+        tenant=ctx["tenant"], local_object_type="KnowledgeDocument",
+    ).filter(Q(verification_status="REVOKED") | Q(revoked_at__isnull=False)).values("local_object_id")
+    return qs.filter(
+        Q(customer__isnull=True) | Q(customer=customer),
+        Q(asset__isnull=True) | Q(asset__customer=customer),
+        is_confidential=False, disable_sharing=False,
+    ).exclude(id__in=revoked)
+
+
 def authorized_knowledge_queryset(ctx):
     """Return KnowledgeDocument queryset scoped strictly to the authorized context.
 
-    - Customer: tenant matches, is_confidential=False, document customer is NULL or current customer.
+    - Customer: tenant matches and ``customer_visible_documents`` allows it.
     - Staff: tenant matches. If can_view_confidential is False and not superuser: is_confidential=False.
     """
     from .models import KnowledgeDocument
@@ -120,12 +140,7 @@ def authorized_knowledge_queryset(ctx):
     qs = KnowledgeDocument.objects.filter(tenant=tenant)
 
     if role == "customer":
-        qs = qs.filter(is_confidential=False)
-        customer = ctx.get("customer")
-        if customer:
-            qs = qs.filter(Q(customer__isnull=True) | Q(customer=customer))
-        else:
-            qs = qs.none()
+        qs = customer_visible_documents(qs, ctx)
     elif not ctx.get("can_view_confidential", False) and role != "superuser":
         qs = qs.filter(is_confidential=False)
 

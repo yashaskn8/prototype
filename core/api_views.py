@@ -769,7 +769,9 @@ class CustomerSupportQueryView(APIView):
             return Response({"detail": detail_msg}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             logger.exception("Error processing customer diagnostic query: %s", exc)
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            # Details stay in the server log; customers get a generic message.
+            return Response({"detail": "Support request failed. Please retry."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class CustomerSupportQueryStreamView(CustomerSupportQueryView):
@@ -1430,8 +1432,8 @@ class AssetDocumentsView(APIView):
 
 class AssetDocumentUploadView(APIView):
     """Upload a document attached directly to an asset.
-    Customer uploads are strictly created with is_rag_enabled=False to prevent prompt injection.
-    Staff uploads can trigger immediate indexing."""
+    Only managers/admins may publish to RAG (immediate indexing); every other
+    upload is staged with is_rag_enabled=False until approved for RAG."""
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [UploadThrottle]
 
@@ -1491,8 +1493,8 @@ class AssetDocumentUploadView(APIView):
                 if b"\x00" in sample:
                     return Response({"detail": "Binary data or null bytes detected in text file."}, status=status.HTTP_400_BAD_REQUEST)
 
-        is_customer = role in CUSTOMER_ROLES
-        is_rag_enabled = False if is_customer else str(request.data.get("is_rag_enabled", "true")).lower() in {"1", "true", "yes"}
+        can_publish = role in (ADMIN_ROLES | {"superuser"})
+        is_rag_enabled = can_publish and str(request.data.get("is_rag_enabled", "true")).lower() in {"1", "true", "yes"}
 
         doc = None
         chunks_indexed = 0
@@ -1530,7 +1532,7 @@ class AssetDocumentUploadView(APIView):
             "chunks_count": chunks_indexed,
             "index_status": doc.index_status,
             "is_rag_enabled": doc.is_rag_enabled,
-            "message": "Document uploaded successfully. It is pending staff approval before AI RAG ingestion." if is_customer else f"Document indexed ({chunks_indexed} chunks)."
+            "message": f"Document indexed ({chunks_indexed} chunks)." if is_rag_enabled else "Document uploaded successfully. It is pending staff approval before AI RAG ingestion."
         }, status=status.HTTP_201_CREATED)
 
 
@@ -2981,7 +2983,9 @@ class CustomerConversationMessagesView(APIView):
             return Response({"detail": detail_msg}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             logger.exception("Error processing customer conversation message turn: %s", exc)
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            # Details stay in the server log; customers get a generic message.
+            return Response({"detail": "Support request failed. Please retry."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class CustomerConversationMessagesStreamView(CustomerConversationMessagesView):
@@ -3174,7 +3178,10 @@ class CustomerTicketsListView(APIView):
         if not customer:
             return Response({"detail": "Customer context required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        qs = ServiceCall.objects.filter(tenant=tenant, customer=customer).select_related(
+        # Staff see a customer's tickets only within their own ticket scope
+        # (technicians: assigned or eligible incoming calls).
+        calls = ServiceCall.objects.filter(tenant=tenant) if role in CUSTOMER_ROLES else authorized_service_calls(ctx)
+        qs = calls.filter(customer=customer).select_related(
             "asset", "site", "site__zone", "zone", "technician"
         ).order_by("-created_at")
 
@@ -3233,14 +3240,14 @@ class CustomerTicketDetailView(APIView):
         customer = ctx["customer"]
         role = ctx["role"]
 
-        try:
-            call = ServiceCall.objects.select_related("asset", "site", "technician", "customer").get(
-                tenant=tenant, id=pk
-            )
-        except ServiceCall.DoesNotExist:
-            return Response({"detail": "Ticket not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        if role in CUSTOMER_ROLES and call.customer_id != customer.id:
+        if role in {"store_admin", "store_operator"}:
+            return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+        if role in CUSTOMER_ROLES:
+            calls = ServiceCall.objects.filter(tenant=tenant, customer=customer) if customer else ServiceCall.objects.none()
+        else:
+            calls = authorized_service_calls(ctx)
+        call = calls.select_related("asset", "site", "technician", "customer").filter(id=pk).first()
+        if call is None:
             return Response({"detail": "Ticket not found."}, status=status.HTTP_404_NOT_FOUND)
 
         return Response({

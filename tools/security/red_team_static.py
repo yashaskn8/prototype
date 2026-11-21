@@ -8,6 +8,9 @@ import ast
 import re
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from eval_rule import builtin_eval_lines  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]   # repository root (this file is tools/security/)
 FAILURES = []
 PASSES = []
@@ -48,14 +51,9 @@ for source_path in application_paths:
         source_tree = ast.parse(source_path.read_text(encoding="utf-8", errors="ignore"))
     except SyntaxError:
         continue
-    for node in ast.walk(source_tree):
-        if not isinstance(node, ast.Call):
-            continue
-        called = node.func
-        if (isinstance(called, ast.Name) and called.id == "eval") or (
-            isinstance(called, ast.Attribute) and called.attr == "eval"
-        ):
-            unsafe_eval_calls.append(f"{source_path.relative_to(ROOT)}:{node.lineno}")
+    # Built-in eval only; methods such as PyTorch's model.eval() are not evaluators.
+    for lineno in builtin_eval_lines(source_tree):
+        unsafe_eval_calls.append(f"{source_path.relative_to(ROOT)}:{lineno}")
 check("forbidden:eval(", not unsafe_eval_calls, ", ".join(unsafe_eval_calls) or "unsafe eval call not found")
 
 # 3) Django exposes the React app and API, not the retired server-rendered prototype.

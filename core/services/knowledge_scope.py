@@ -31,8 +31,8 @@ def get_applicable_knowledge_queryset(asset: Optional[Any], ctx: Dict[str, Any])
     """Return KnowledgeDocument queryset applicable to an asset obeying canonical 5-level hierarchy.
 
     Tenant isolation: document.tenant == ctx["tenant"]
-    Confidentiality: if role is 'customer' or ctx['can_view_confidential'] is False, is_confidential=False
-    Customer isolation: if role is 'customer', document.customer is NULL or document.customer == ctx['customer']
+    Confidentiality: if ctx['can_view_confidential'] is False (and not superuser), is_confidential=False
+    Customer isolation: if role is 'customer', core.security.customer_visible_documents applies
     """
     tenant = ctx["tenant"]
     role = ctx.get("role", "customer")
@@ -45,11 +45,10 @@ def get_applicable_knowledge_queryset(asset: Optional[Any], ctx: Dict[str, Any])
     )
 
     if role == "customer":
-        qs = qs.filter(is_confidential=False)
-        if customer:
-            qs = qs.filter(Q(customer__isnull=True) | Q(customer=customer))
-        else:
+        if not customer:
             return KnowledgeDocument.objects.none()
+        from core.security import customer_visible_documents
+        qs = customer_visible_documents(qs, ctx)
     elif not can_view_confidential and role != "superuser":
         qs = qs.filter(is_confidential=False)
 

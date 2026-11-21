@@ -182,6 +182,9 @@ jobs:
       - name: Red Team Static Analysis (AST & Security Rules)
         run: python tools/security/red_team_static.py
 
+      - name: Red Team Built-in eval Rule Tests
+        run: python -m unittest tools.test_red_team_eval_rule -v
+
       - name: Red Team Offline Checks (Roles & Scoping)
         run: python tools/security/red_team_offline.py
 

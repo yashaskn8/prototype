@@ -49,6 +49,7 @@ attachments, model identities and the git commit, with SHA-256 for every file.
 | Failed document re-index | `index_document` swaps chunks atomically; a failure leaves the previous chunks. Re-run indexing after fixing the source. |
 | V5 ONNX export damaged | Serving detects the hash mismatch and uses the PyTorch checkpoint. Re-run `manage.py export_v5_onnx --out <dir>`. |
 | Startup does not reach READY | Check `/demo-api/health/` (`models`, `v5_runtime`) and the private `startup.err`; Ollama not running is started by the launcher; a model failing to load leaves requests on their bounded fallbacks. |
+| Cold start takes minutes with the backend near 0 % CPU | Measured cause: the workspace is inside a OneDrive-synced folder, and cloud-only placeholders / active sync stall Python imports and model reads. Keep the active workspace outside a synced folder, or pause OneDrive sync and set the folder to "Always keep on this device" before a demo. Not changed automatically by any script. |
 
 ### Clearing the demo chat history (one-time, manual)
 
@@ -74,6 +75,16 @@ not part of this procedure and would need separate approval.
 - **Rollback**: previous commit + previous backup; V5 `SERVY_RERANKER_BACKEND=torch`.
 - **Monitoring**: `rag_metrics_report` p95 and fallback rates; alert thresholds to be agreed.
 - **Privacy/retention**: conversation retention period and deletion policy to be agreed.
+- **Provenance registry** (`VERIFIED_REAL_PROVENANCE_REGISTRY` in
+  `core/services/customer_isolation.py`, committed in history since 2026-10-14, public
+  repository): holds source-company identifiers (tenant slug, source org, external asset
+  IDs, asset codes, equipment models, document SHA-256) and six customer display names,
+  one of which appears to be an individual's name. No contact details, credentials or
+  document text. Remediation, pending owner approval: confirm with the data owner whether
+  the names are real; if so, key verification by local/external ID and load the registry
+  from private configuration (or the existing `SourceProvenanceRecord` table) instead of
+  source; consider making the repository private. Rewriting Git history would need a
+  force-push and separate explicit authorization.
 - **Capacity**: one request at a time per process; more users need a separate inference host
   (the RAG entry point is `process_customer_diagnostic_turn`; model access is isolated in
   `core/ml`), not more Django workers on this laptop.
