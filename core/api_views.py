@@ -2961,6 +2961,7 @@ class CustomerConversationMessagesView(APIView):
             "user_message": turn_result["user_message"],
             "assistant_message": turn_result["assistant_message"],
             "contract": turn_result["contract"],
+            "conversation_title": getattr(turn_result.get("conversation"), "title", None),
         }
 
     def post(self, request, conversation_uuid):

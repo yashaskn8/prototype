@@ -50,6 +50,17 @@ attachments, model identities and the git commit, with SHA-256 for every file.
 | V5 ONNX export damaged | Serving detects the hash mismatch and uses the PyTorch checkpoint. Re-run `manage.py export_v5_onnx --out <dir>`. |
 | Startup does not reach READY | Check `/demo-api/health/` (`models`, `v5_runtime`) and the private `startup.err`; Ollama not running is started by the launcher; a model failing to load leaves requests on their bounded fallbacks. |
 
+### Clearing the demo chat history (one-time, manual)
+
+The customer chat list is cleared with the official soft-delete endpoint
+(`DELETE /demo-api/customer-support/conversations/{uuid}/`), called for every listed
+conversation while authenticated as the demo customer. Soft delete sets
+`customer_deleted_at`/`customer_deleted_by`: the conversation disappears from the
+customer's list and cannot be reopened by them, while its immutable messages, feedback
+and any linked service call stay in the database for technicians and audit. Take a
+verified backup first. This is never run automatically; permanent deletion of rows is
+not part of this procedure and would need separate approval.
+
 ## 3. Before any production deployment (P2 — not implemented)
 
 - **Server**: a production WSGI server (e.g. waitress on Windows or gunicorn on Linux) with

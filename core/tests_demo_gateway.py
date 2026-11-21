@@ -121,6 +121,26 @@ class CustomerGatewayTests(GatewayTestBase):
         messages = self.as_customer("get", f"/demo-api/customer-support/conversations/{uuid}/messages/").json()["messages"]
         self.assertEqual([m["sender_role"] for m in messages], ["customer", "assistant", "customer", "assistant"])
 
+    def test_first_real_question_sets_a_short_title_once(self):
+        r = self.as_customer("post", "/demo-api/customer-support/conversations/",
+                             data={"asset_id": self.asset.id}, content_type="application/json")
+        uuid = r.json()["conversation_uuid"]
+        self.assertEqual(r.json()["title"], "Inquiry for Split AC Unit 2T")
+        path = f"/demo-api/customer-support/conversations/{uuid}/messages/"
+        self.as_customer("post", path, data={"message": "Hi"}, content_type="application/json")
+        self.assertEqual(CustomerConversation.objects.get(conversation_uuid=uuid).title, "Inquiry for Split AC Unit 2T")
+        self.as_customer("post", path, data={"message": "Why is the AC leaking water?"}, content_type="application/json")
+        self.as_customer("post", path, data={"message": "What causes weak airflow?"}, content_type="application/json")
+        listed = self.as_customer("get", "/demo-api/customer-support/conversations/").json()["conversations"]
+        self.assertEqual([c["title"] for c in listed if c["conversation_uuid"] == uuid], ["AC water leakage"])
+
+    def test_a_non_default_title_is_never_replaced(self):
+        uuid = self.start_conversation()
+        CustomerConversation.objects.filter(conversation_uuid=uuid).update(title="Kitchen unit")
+        self.as_customer("post", f"/demo-api/customer-support/conversations/{uuid}/messages/",
+                         data={"message": "Why is the AC leaking water?"}, content_type="application/json")
+        self.assertEqual(CustomerConversation.objects.get(conversation_uuid=uuid).title, "Kitchen unit")
+
     def test_other_customers_asset_is_refused(self):
         r = self.as_customer("post", "/demo-api/customer-support/conversations/",
                           data={"asset_id": self.other_asset.id, "message": "help"}, content_type="application/json")

@@ -80,7 +80,20 @@ def process_customer_diagnostic_turn(**kwargs) -> Dict[str, Any]:
     from core.services.rag_admission import rag_request
     from core.services.request_deadline import request_deadline
     with rag_request(), request_deadline(), capture_execution_events():
-        return _process_customer_diagnostic_turn(**kwargs)
+        result = _process_customer_diagnostic_turn(**kwargs)
+    _title_from_first_question(result.get("conversation"), result.get("user_message", {}).get("message_text"))
+    return result
+
+
+def _title_from_first_question(conv, question):
+    """Replace the default "Inquiry for ..." title once, from the first real question."""
+    from core.services.conversation_context import conversation_title, is_default_title, is_greeting
+    if conv is None or not is_default_title(conv.title) or is_greeting(question):
+        return
+    title = conversation_title(question)
+    if title:
+        CustomerConversation.objects.filter(pk=conv.pk, title=conv.title).update(title=title[:80])
+        conv.title = title[:80]
 
 
 def _attach_diagnostics(contract):

@@ -2,7 +2,8 @@
 from django.test import SimpleTestCase
 
 from core.services.conversation_context import (
-    is_explain_all_request, is_greeting, is_supported_answer, listed_causes, split_pasted_history)
+    conversation_title, is_default_title, is_explain_all_request, is_greeting, is_supported_answer, listed_causes,
+    split_pasted_history)
 from core.services.turn_diagnostics import summarize_turn
 
 
@@ -109,3 +110,27 @@ class TurnDiagnosticsTests(SimpleTestCase):
         self.assertEqual([c["id"] for c in summary["cited_evidence"]], ["s1"])
         self.assertIn("cause_without_explaining_evidence", summary["rejection_reasons"])
         self.assertEqual(summary["qwen"]["accepted_claims"], 2)
+
+
+class ConversationTitleTests(SimpleTestCase):
+    def test_titles_use_the_customers_own_words(self):
+        for question, title in (
+                ("What are the possible causes of my Split AC not working?", "Split AC not working"),
+                ("Why is the VRF showing an error code?", "VRF error code"),
+                ("Why is the AC leaking water?", "AC water leakage"),
+                ("What causes weak airflow?", "Weak airflow"),
+                ("What does a low-pressure fault mean?", "Low-pressure fault"),
+                ("The display shows E4 after startup", "Display E4 after startup")):
+            with self.subTest(question=question):
+                self.assertEqual(conversation_title(question), title)
+
+    def test_contact_details_are_removed_and_length_is_bounded(self):
+        title = conversation_title("AC stops, call +1 555 0100 2222 or mail me at a.person@example.com " + "x " * 60)
+        self.assertNotIn("555", title)
+        self.assertNotIn("@", title)
+        self.assertLessEqual(len(title), 60)
+
+    def test_only_default_titles_are_replaced(self):
+        self.assertTrue(is_default_title("Inquiry for Split AC Unit 2T"))
+        self.assertTrue(is_default_title("Support Inquiry"))
+        self.assertFalse(is_default_title("Kitchen unit noise"))

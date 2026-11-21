@@ -673,3 +673,52 @@ def focus_presentation_on_cause(contract: Dict[str, Any], reference: Dict[str, A
         contract["answer"] = "\n\n".join(
             f"{s.get('number')}. {s.get('title')}\n" + " ".join(str(c.get("text") or "") for c in s.get("claims") or [])
             for s in sections)
+
+
+# ---------------------------------------------------------------------------
+# Conversation titles from the customer's first real question (no model call)
+# ---------------------------------------------------------------------------
+_DEFAULT_TITLE = re.compile(r"^(?:Inquiry for .*|Support Inquiry)$")
+_TITLE_LEAD = re.compile(
+    r"^(?:(?:hi|hello|hey|please|so|ok)[,!.\s]+)*"
+    r"(?:(?:what|which)\s+(?:are|is|could\s+be|might\s+be|can\s+be)\s+(?:the\s+)?(?:possible\s+|likely\s+|common\s+)?"
+    r"(?:causes?|reasons?)\s+(?:of\s+|for\s+|why\s+)?"
+    r"|what\s+(?:can\s+|could\s+|might\s+)?causes?\s+"
+    r"|what\s+(?:does|do|is|are)\s+"
+    r"|why\s+(?:is|are|does|do|did|would|has|have)\s+"
+    r"|how\s+(?:often\s+)?(?:do|should|can|could)\s+(?:i|we)\s+"
+    r"|(?:can|could)\s+you\s+(?:tell\s+me\s+|explain\s+)?"
+    r"|(?:tell\s+me\s+about|explain)\s+)", re.I)
+_TITLE_FILLER = re.compile(r"\b(?:my|our|the|a|an|showing|show|shows|this)\b", re.I)
+_TITLE_PHRASES = ((re.compile(r"\bleaking water\b", re.I), "water leakage"),
+                  (re.compile(r"\bleaking\b", re.I), "leakage"))
+_ACRONYMS = {"ac": "AC", "vrf": "VRF", "hvac": "HVAC", "pcb": "PCB", "led": "LED"}
+
+
+def is_default_title(title: str) -> bool:
+    return bool(_DEFAULT_TITLE.match(str(title or "").strip()))
+
+
+def conversation_title(question: str, max_chars: int = 60) -> str:
+    """Short title from the customer's own words: drop question openers and filler.
+
+    Only words from the question are kept (plus "leaking" -> "leakage"); fault
+    codes keep their case; long digit runs (phone-like numbers) and e-mail
+    addresses are removed. Returns "" when nothing meaningful remains.
+    """
+    text = " ".join(str(question or "").split())
+    text = re.sub(r"\S+@\S+", " ", text)
+    text = re.sub(r"\+?\d[\d\s-]{6,}\d", " ", text)
+    text = re.sub(r"[?!.]+$", "", text).strip()
+    text = _TITLE_LEAD.sub("", text)
+    text = re.sub(r"\s+mean$", "", text, flags=re.I)
+    for pattern, replacement in _TITLE_PHRASES:
+        text = pattern.sub(replacement, text)
+    text = _TITLE_FILLER.sub(" ", text)
+    words = [_ACRONYMS.get(w.casefold(), w) for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9/-]*", text)]
+    title = ""
+    for word in words:
+        if len(title) + len(word) + 1 > max_chars:
+            break
+        title = f"{title} {word}".strip()
+    return title[:1].upper() + title[1:] if title else ""

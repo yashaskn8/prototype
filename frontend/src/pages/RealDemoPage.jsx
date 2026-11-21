@@ -492,6 +492,11 @@ export function RealDemoPage() {
         setQuestion(submittedQuestion);
       }
       setContinuation(data.continuation || null);
+      // Show the title the server stored, so the list matches it after a refresh.
+      if (typeof turn?.conversation_title === 'string' && turn.conversation_title.trim()) {
+        updateThreadList(previous => previous.map(item =>
+          item.id === activeThreadId ? { ...item, title: turn.conversation_title.slice(0, 80) } : item));
+      }
       setResult(hasAssistantResponse(data) ? data : null);
       if (hasAssistantResponse(data)) setAnsweredQuestion(submittedQuestion);
     } catch (err) {
