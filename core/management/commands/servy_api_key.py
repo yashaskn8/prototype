@@ -35,8 +35,10 @@ class Command(BaseCommand):
             if len(memberships) != 1:
                 raise CommandError("The account must have exactly one active tenant membership.")
             membership = memberships[0]
-            if membership.role == "customer" and not membership.customer_id:
-                raise CommandError("The customer account is not linked to a customer profile.")
+            if membership.role != "customer" or not membership.customer_id:
+                # One key = one customer. Staff/admin accounts can see many customers'
+                # data, so they are never given a portal key.
+                raise CommandError("API keys are issued only to customer accounts linked to one customer profile.")
             expires = timezone.now() + timedelta(days=days) if days > 0 else None
             record, key = issue_key(tenant=membership.tenant, user=user, name=name, expires_at=expires)
             self.stdout.write(f"Issued key {record.key_prefix} for {username} (role {membership.role}), "

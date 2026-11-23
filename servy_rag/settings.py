@@ -286,6 +286,8 @@ REST_FRAMEWORK = {
         "engineer_rag": "30/minute",
         "login": "10/minute",
         "upload": "10/hour",
+        "ticket_create": "10/hour",
+        "conversation_write": "60/hour",
     },
 }
 

@@ -1,3 +1,4 @@
+import uuid
 import os
 import logging
 from django.conf import settings
@@ -187,6 +188,22 @@ class EngineerRAGThrottle(throttling.UserRateThrottle):
 
 class UploadThrottle(throttling.UserRateThrottle):
     scope = "upload"
+
+class TicketCreateThrottle(throttling.UserRateThrottle):
+    scope = "ticket_create"
+
+class ConversationWriteThrottle(throttling.UserRateThrottle):
+    scope = "conversation_write"
+
+
+class _WriteThrottledMixin:
+    """Throttle only unsafe methods: reading history never uses up a write budget."""
+    write_throttle_classes = ()
+
+    def get_throttles(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return []
+        return [cls() for cls in self.write_throttle_classes]
 
 
 # ----------------------------------------------------------------------
@@ -786,7 +803,8 @@ class CustomerSupportQueryStreamView(CustomerSupportQueryView):
         return rag_execution_stream(lambda: self._execute(prepared))
 
 
-class CustomerSupportResolveView(APIView):
+class CustomerSupportResolveView(_WriteThrottledMixin, APIView):
+    write_throttle_classes = (ConversationWriteThrottle,)
     """Mark customer interaction as resolved with clear distinction between customer-reported and verified repair."""
     permission_classes = [permissions.IsAuthenticated]
 
@@ -886,7 +904,8 @@ class CustomerSupportResolveView(APIView):
         })
 
 
-class CustomerSupportEscalateView(APIView):
+class CustomerSupportEscalateView(_WriteThrottledMixin, APIView):
+    write_throttle_classes = (TicketCreateThrottle,)
     """Escalate unresolved customer interaction to exactly one Service Call."""
     permission_classes = [permissions.IsAuthenticated]
 
@@ -921,6 +940,11 @@ class CustomerSupportEscalateView(APIView):
 
         note = _clean_input(request.data.get("note") or request.data.get("customer_note"))
         session_id = _clean_input(request.data.get("session_id"))
+        if session_id:
+            try:
+                session_id = str(uuid.UUID(session_id))
+            except ValueError:
+                return Response({"detail": "session_id must be a valid UUID."}, status=400)
 
         # Serialize ticket creation across all interactions in this conversation.
         # Row-locking before creation closes the concurrent double-escalation race.
@@ -1444,6 +1468,10 @@ class AssetDocumentUploadView(APIView):
         role = ctx["role"]
         customer = ctx["customer"]
 
+        if role in {"store_admin", "store_operator"}:
+            # Store roles never publish or stage manuals for customers.
+            return Response({"detail": "Document upload is not permitted for store roles."},
+                            status=status.HTTP_403_FORBIDDEN)
         qs = Asset.objects.filter(tenant=tenant).select_related("customer", "product")
         if role in CUSTOMER_ROLES:
             if not customer:
@@ -1503,6 +1531,7 @@ class AssetDocumentUploadView(APIView):
             with transaction.atomic():
                 doc = KnowledgeDocument.objects.create(
                     tenant=tenant,
+                    uploaded_by=request.user,
                     customer=asset.customer,
                     asset=asset,
                     product=asset.product,
@@ -2447,7 +2476,8 @@ class ExternalAssetsListView(APIView):
 # Customer Interaction Platform: Conversations & Service Tracking
 # ----------------------------------------------------------------------
 
-class CustomerConversationsListView(APIView):
+class CustomerConversationsListView(_WriteThrottledMixin, APIView):
+    write_throttle_classes = (ConversationWriteThrottle,)
     """List or create persistent customer support conversations."""
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2802,10 +2832,11 @@ class CustomerConversationDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class CustomerConversationMessagesView(APIView):
+class CustomerConversationMessagesView(_WriteThrottledMixin, APIView):
     """Retrieve immutable messages or post a new customer message within a conversation."""
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [CustomerRAGThrottle]
+    # Only sending a message counts against the AI budget; reading does not.
+    write_throttle_classes = (CustomerRAGThrottle,)
 
     def get(self, request, conversation_uuid):
         ctx = require_api_context(request)
@@ -3017,7 +3048,8 @@ class CustomerConversationMessagesStreamView(CustomerConversationMessagesView):
         return rag_execution_stream(lambda: self._execute_post(prepared))
 
 
-class CustomerConversationTicketView(APIView):
+class CustomerConversationTicketView(_WriteThrottledMixin, APIView):
+    write_throttle_classes = (TicketCreateThrottle,)
     """Fetch or escalate linked ticket for this conversation."""
     permission_classes = [permissions.IsAuthenticated]
 

@@ -122,12 +122,19 @@ def customer_visible_documents(qs, ctx):
     customer = ctx.get("customer")
     if not customer:
         return qs.none()
+    user = ctx.get("user")
+    if user is not None and getattr(user, "pk", None) is None:
+        user = None
     revoked = SourceProvenanceRecord.objects.filter(
         tenant=ctx["tenant"], local_object_type="KnowledgeDocument",
     ).filter(Q(verification_status="REVOKED") | Q(revoked_at__isnull=False)).values("local_object_id")
     return qs.filter(
         Q(customer__isnull=True) | Q(customer=customer),
         Q(asset__isnull=True) | Q(asset__customer=customer),
+        # Staff-staged uploads awaiting approval (uploaded_by set, not RAG-enabled) are
+        # never shown to customers; the customer's own pending uploads are. Documents
+        # created by administrators keep their existing visibility.
+        Q(is_rag_enabled=True) | Q(uploaded_by__isnull=True) | (Q(uploaded_by=user) if user is not None else Q(pk__in=[])),
         is_confidential=False, disable_sharing=False,
     ).exclude(id__in=revoked)
 

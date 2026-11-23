@@ -328,6 +328,10 @@ class KnowledgeDocument(TenantOwnedModel):
     is_confidential = models.BooleanField(default=False)
     disable_sharing = models.BooleanField(default=False)
     is_rag_enabled = models.BooleanField(default=True)
+    # Who uploaded it (staged uploads are shown to a customer only when that
+    # customer's own account uploaded them).
+    uploaded_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="uploaded_knowledge_documents")
     INDEX_STATUS_CHOICES = [
         ("NOT_INDEXED", "Not Indexed"),
         ("INDEXING", "Indexing"),

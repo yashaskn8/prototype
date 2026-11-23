@@ -12,7 +12,7 @@ def serve_react_app(request, path=""):
     if path:
         target = (dist_dir / path).resolve()
         # Path traversal guard
-        if str(target).startswith(str(dist_dir.resolve())) and target.exists() and not target.is_dir():
+        if target.is_relative_to(dist_dir.resolve()) and target.exists() and not target.is_dir():
             return FileResponse(target.open("rb"))
     index_file = dist_dir / "index.html"
     if index_file.exists():

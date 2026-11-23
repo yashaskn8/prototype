@@ -32,10 +32,10 @@ class ReadyView(APIView):
         except Exception:
             database = "unavailable"
         from core.ml import preload
-        from core.services import rag_admission
         models = dict(preload.status)
         models_ready = all(v in ("ready", "disabled") for v in models.values())
         ready = database == "ok" and models_ready
+        # No live usage signal (rag_busy) on this unauthenticated probe.
         return Response({"status": "ready" if ready else "not_ready", "database": database,
-                         "models": models, "rag_busy": rag_admission.busy()},
+                         "models": models},
                         status=200 if ready else 503)

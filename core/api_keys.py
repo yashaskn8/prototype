@@ -64,8 +64,12 @@ class ApiKeyAuthentication(authentication.BaseAuthentication):
         # One uniform message: never reveal whether a key exists, expired or was revoked.
         if record is None or not record.is_usable or not record.user.is_active:
             raise exceptions.AuthenticationFailed("Invalid or inactive API key.")
+        # A key acts for exactly one customer: the account must still be an active
+        # customer-role member of the key's tenant, linked to a customer profile.
+        # Staff/admin accounts (which can see many customers) never use keys.
         if (record.user.is_superuser or not record.tenant.is_active
-                or not record.user.tenant_memberships.filter(tenant=record.tenant, is_active=True).exists()):
+                or not record.user.tenant_memberships.filter(
+                    tenant=record.tenant, is_active=True, role="customer", customer__isnull=False).exists()):
             raise exceptions.AuthenticationFailed("Invalid or inactive API key.")
         now = timezone.now()
         if record.last_used_at is None or (now - record.last_used_at).total_seconds() > 60:
