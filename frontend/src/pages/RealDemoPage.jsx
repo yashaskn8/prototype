@@ -728,7 +728,7 @@ export function RealDemoPage() {
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
                                 {({
                                   DIAGNOSTIC_GUIDANCE: 'Cited answer',
-                                  TECHNICIAN_HANDOFF: 'Technician handoff',
+                                  TECHNICIAN_HANDOFF: 'Technician advice',
                                   CLARIFICATION: message.data?.reason_code === 'CUSTOMER_REPORT_CAPTURED'
                                     ? 'Customer detail captured' : 'Clarification',
                                   INSUFFICIENT_EVIDENCE: message.data?.reason_code === 'OUT_OF_SCOPE_QUERY'

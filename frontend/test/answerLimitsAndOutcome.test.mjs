@@ -33,15 +33,19 @@ test('more claims than the limit, or a claim citing a missing source, is rejecte
   assert.equal(validateCustomerPresentation(bad), null);
 });
 
-test('outcome labels cover extractive fallback and insufficient evidence; worded answers have none', () => {
+test('customer chat labels only unconfirmed answers; generation fallbacks stay internal', async () => {
+  const { generationFallbackNote } = await import('../src/components/turnDiagnostics.js');
   assert.equal(outcomeLabel({}), '');
   for (const status of ['success', 'degraded']) {
-    assert.equal(outcomeLabel({ outcome: { status, response_mode: 'grounded_generated' } }), '');
+    for (const response_mode of ['grounded_generated', 'grounded_extractive']) {
+      const label = outcomeLabel({ outcome: { status, response_mode, generation_status: 'timeout' } });
+      assert.equal(label, '');
+    }
   }
-  assert.match(outcomeLabel({ outcome: { status: 'degraded', response_mode: 'grounded_extractive', generation_status: 'timeout' } }),
-    /Exact cited manual wording is shown because the wording step ran out of time\./);
-  assert.match(outcomeLabel({ outcome: { status: 'success', response_mode: 'grounded_extractive', generation_status: 'disabled' } }),
-    /^Exact cited manual wording is shown\.$/);
+  // The truthful fallback reason is still derivable for diagnostics views.
+  assert.equal(generationFallbackNote({ outcome: { status: 'degraded', response_mode: 'grounded_extractive', generation_status: 'timeout' } }),
+    'Source wording used because the wording step ran out of time.');
+  assert.equal(generationFallbackNote({ outcome: { status: 'success', response_mode: 'grounded_generated' } }), '');
   assert.match(outcomeLabel({ outcome: { status: 'insufficient_evidence', response_mode: 'no_validated_evidence' } }),
     /No answer from the approved manuals could be confirmed/);
   assert.equal(outcomeLabel({ outcome: { status: 'safety_escalation' } }), '');

@@ -24,9 +24,9 @@ export function diagnosticsSummary(data) {
   return parts.join(' ');
 }
 
-// One short, nontechnical line for answers that fell back to exact manual wording
-// or found no confirmed answer. It reflects only the server-reported outcome;
-// assistant-worded answers carry no label.
+// Why the answer used exact source wording instead of assistant wording. This is
+// operational detail for diagnostics and technician views; it is not shown in the
+// customer chat (the server still records generation_status and fallback_reason).
 const GENERATION_REASONS = {
   timeout: 'the wording step ran out of time',
   deadline_skipped: 'there was not enough time left for the wording step',
@@ -37,16 +37,18 @@ const GENERATION_REASONS = {
   invalid_model_response: 'the local wording model returned an unusable reply',
 };
 
+export function generationFallbackNote(data) {
+  const o = data?.outcome;
+  if (!o || typeof o !== 'object' || o.response_mode !== 'grounded_extractive') return '';
+  const why = GENERATION_REASONS[o.generation_status];
+  return why ? `Source wording used because ${why}.` : 'Source wording used.';
+}
+
+// One short customer-facing line, only when no answer could be confirmed. Answers
+// shown in assistant or exact source wording carry no label in the chat.
 export function outcomeLabel(data) {
   const o = data?.outcome;
   if (!o || typeof o !== 'object') return '';
-  if (o.status === 'success' || o.status === 'degraded') {
-    if (o.response_mode === 'grounded_generated') return '';
-    const why = GENERATION_REASONS[o.generation_status];
-    return why
-      ? `Exact cited manual wording is shown because ${why}.`
-      : 'Exact cited manual wording is shown.';
-  }
   if (o.status === 'insufficient_evidence') {
     return 'No answer from the approved manuals could be confirmed for this question. Please describe the symptom in more detail or request a technician.';
   }
