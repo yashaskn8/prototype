@@ -21,7 +21,8 @@ from typing import Any, Dict, List, Optional
 
 from django.conf import settings
 
-MAX_EXPLANATIONS_PER_CAUSE = 2
+MAX_EXPLANATIONS_PER_CAUSE = 1
+RESPONSE_LIMIT_TEXT = "More explanation may exist in the approved manuals; ask about this cause separately for details."
 GAP_TEXT = "The approved manuals do not explain this cause further."
 UNVERIFIED_TEXT = "One previously listed cause could not be re-verified in the currently authorized manuals."
 LIMITATION = "These are documented possibilities, not a confirmed diagnosis of your unit."
@@ -108,11 +109,12 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
 
     from .customer_answer import MAX_SECTION_CLAIMS
     tenant, customer, asset = interaction.tenant, interaction.customer, interaction.asset
-    # Each explained cause uses up to 1 + MAX_EXPLANATIONS_PER_CAUSE claims in one
-    # section; stay within the client's per-section contract limit.
-    max_causes = MAX_SECTION_CLAIMS // (1 + MAX_EXPLANATIONS_PER_CAUSE)
-    omitted = max(0, len(causes) - max_causes)
-    causes = causes[:max_causes]
+    # Preserve the complete visible list up to the client claim limit.
+    # Explanations use remaining section slots; do not silently discard
+    # causes just because the manual contains more detail for earlier ones.
+    omitted = max(0, len(causes) - MAX_SECTION_CLAIMS)
+    causes = causes[:MAX_SECTION_CLAIMS]
+    detail_budget = MAX_SECTION_CLAIMS - len(causes)
     retrieve_fn = retrieve_fn or _retrieve_for_cause
     all_cause_texts = {_norm(c["source_text"]) for c in causes}
     citations: List[Dict[str, Any]] = []
@@ -173,19 +175,22 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
                 ranked.append((-(overlap + heading_bonus), rank, start, chunk, text, end))
         ranked.sort(key=lambda item: item[:3])
         evidence = []
-        for _neg, _rank, start, chunk, text, end in ranked[:MAX_EXPLANATIONS_PER_CAUSE]:
+        for _neg, _rank, start, chunk, text, end in ranked[:min(MAX_EXPLANATIONS_PER_CAUSE, detail_budget)]:
+            detail_budget -= 1
             used_sentences.add(_norm(text))
             evidence_id = cite(chunk, start, end, "information")
             fact_claims.append({"id": f"c{len(citations)}", "text": text, "source_text": text,
                                 "kind": "information", "disclosure": "descriptive",
                                 "evidence_ids": [evidence_id]})
             evidence.append({"text": text, "citation_ids": [evidence_id]})
+        status = ("explained" if evidence else
+                  "response_limit" if ranked and detail_budget == 0 else "insufficient_evidence")
         if not evidence:
-            gap_claims.append({"text": f"{GAP_TEXT} ({cause['source_text'].rstrip('.')})",
+            gap = RESPONSE_LIMIT_TEXT if status == "response_limit" else GAP_TEXT
+            gap_claims.append({"text": f"{gap} ({cause['source_text'].rstrip('.')})",
                                "kind": "uncertainty", "evidence_ids": []})
         explanations.append({"cause": cause["source_text"], "cause_citation_ids": [cause_id],
-                             "status": "explained" if evidence else "insufficient_evidence",
-                             "evidence": evidence})
+                             "status": status, "evidence": evidence})
 
     if not cause_claims:
         raise ValueError("No previously listed cause could be re-verified.")
@@ -230,7 +235,9 @@ def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any
             for evidence in item["evidence"]:
                 segments.append(_segment("claim", evidence["text"], evidence["citation_ids"]))
         else:
-            segments.append(_segment("text", GAP_TEXT))
+            segments.append(_segment("text",
+                                     RESPONSE_LIMIT_TEXT if item["status"] == "response_limit"
+                                     else GAP_TEXT))
     if built.get("omitted"):
         segments.append(_segment("text", f"{built['omitted']} more listed cause(s) were not expanded here; "
                                          "ask about them by number."))
