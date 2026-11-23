@@ -28,6 +28,7 @@ from core.security import (
 )
 from core.services.rag import ask_rag
 from core.services.answer_feedback import as_dict as feedback_as_dict
+from core.services.customer_answer import refresh_citation_urls
 from core.services.customer_diagnostic import check_for_safety_hazard
 from core.services.ticketing import create_call_from_interaction
 from core.services.ticket_handoff import (
@@ -1925,7 +1926,15 @@ class KnowledgeDetailView(APIView):
         except KnowledgeDocument.DoesNotExist:
             return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        chunks = list(doc.chunks.order_by("chunk_index").values("id", "chunk_index", "heading", "text", "is_quarantined"))
+        chunk_qs = doc.chunks.order_by("chunk_index")
+        content_text = doc.content_text
+        if ctx["role"] in CUSTOMER_ROLES:
+            # Quarantined chunks (e.g. detected prompt injection) are never shown to
+            # customers, nor is the full text that contains them.
+            if chunk_qs.filter(is_quarantined=True).exists():
+                content_text = ""
+            chunk_qs = chunk_qs.filter(is_quarantined=False)
+        chunks = list(chunk_qs.values("id", "chunk_index", "heading", "text", "is_quarantined"))
 
         return Response({
             "document": {
@@ -1934,7 +1943,7 @@ class KnowledgeDetailView(APIView):
                 "description": doc.description,
                 "doc_type": doc.doc_type,
                 "tags": doc.tags,
-                "content_text": doc.content_text,
+                "content_text": content_text,
                 "has_file": bool(doc.file),
                 "original_filename": doc.original_filename,
                 "is_confidential": doc.is_confidential,
@@ -2144,6 +2153,9 @@ class KnowledgeDownloadView(APIView):
 
         if not doc.file:
             return Response({"detail": "No file attached to this document."}, status=status.HTTP_404_NOT_FOUND)
+        if ctx["role"] in CUSTOMER_ROLES and doc.chunks.filter(is_quarantined=True).exists():
+            # The original file contains quarantined content; customers never receive it.
+            raise Http404("Document not found.")
 
         return FileResponse(doc.file.open("rb"), as_attachment=True, filename=doc.original_filename or doc.file.name)
 
@@ -2718,7 +2730,8 @@ class CustomerConversationDetailView(APIView):
                 "id": m.id,
                 "sender_role": m.sender_role,
                 "message_text": m.message_text,
-                "structured_contract": m.structured_contract,
+                # Stored answers get fresh citation links for this same user (R19).
+                "structured_contract": refresh_citation_urls(m.structured_contract, ctx),
                 "source_refs": m.source_refs,
                 "created_at": m.created_at,
             }
@@ -2817,7 +2830,8 @@ class CustomerConversationMessagesView(APIView):
                 "id": m.id,
                 "sender_role": m.sender_role,
                 "message_text": m.message_text,
-                "structured_contract": m.structured_contract,
+                # Stored answers get fresh citation links for this same user (R19).
+                "structured_contract": refresh_citation_urls(m.structured_contract, ctx),
                 "source_refs": m.source_refs,
                 "created_at": m.created_at,
                 **({"feedback": feedback_as_dict(getattr(m, "feedback", None))}
@@ -2861,10 +2875,14 @@ class CustomerConversationMessagesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             ), None
 
-        message_text = _clean_input(
-            request.data.get("message") or request.data.get("text") or request.data.get("question"),
-            max_len=4000,
-        )
+        raw_message = request.data.get("message") or request.data.get("text") or request.data.get("question")
+        if isinstance(raw_message, str) and len(raw_message.strip()) > 4000:
+            # Reject rather than silently truncate an integrating client's request.
+            return Response(
+                {"detail": "Message is too long (maximum 4000 characters).", "code": "message_too_long"},
+                status=status.HTTP_400_BAD_REQUEST,
+            ), None
+        message_text = _clean_input(raw_message, max_len=4000)
         clarification_response = _clean_input(request.data.get("clarification_response"))
         observation = _clean_input(request.data.get("observation"))
         if not message_text and not clarification_response and not observation:

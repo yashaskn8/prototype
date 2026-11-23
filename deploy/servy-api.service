@@ -1,0 +1,26 @@
+# systemd unit for the Servy Django API (backend only, no React, no Docker).
+# Install: sudo cp deploy/servy-api.service /etc/systemd/system/ && sudo systemctl daemon-reload
+[Unit]
+Description=Servy RAG Django API
+After=network-online.target mysql.service ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=servy
+Group=servy
+WorkingDirectory=/opt/servy/prototype
+# Secrets and settings live outside the repository, readable only by the servy user.
+EnvironmentFile=/etc/servy/servy-api.env
+ExecStart=/opt/servy/venv/bin/gunicorn -c deploy/gunicorn.conf.py servy_rag.wsgi:application
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/servy/data
+
+[Install]
+WantedBy=multi-user.target

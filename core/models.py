@@ -1105,3 +1105,33 @@ class AnswerFeedback(TenantOwnedModel):
 
     def __str__(self):
         return f"Feedback {self.rating} on message {self.assistant_message_id}"
+
+
+class ApiClientKey(TenantOwnedModel):
+    """A server-to-server API key for an external portal integration.
+
+    The key acts as exactly one Servy user (normally a customer-role integration
+    account), so every existing tenant, customer, asset, document and ticket
+    authorization check applies unchanged. Only a SHA-256 hash is stored; the
+    plaintext key is shown once when issued. Rotation = issue a new key, switch the
+    portal, then revoke the old key.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_client_keys")
+    name = models.CharField(max_length=120)
+    key_prefix = models.CharField(max_length=16, unique=True)
+    key_sha256 = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["tenant", "user"])]
+
+    @property
+    def is_usable(self):
+        now = timezone.now()
+        return self.revoked_at is None and (self.expires_at is None or self.expires_at > now)
+
+    def __str__(self):
+        return f"API key {self.key_prefix}… for {self.user_id} ({'active' if self.is_usable else 'inactive'})"

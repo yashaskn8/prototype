@@ -23,7 +23,9 @@ class CoreConfig(AppConfig):
         # model loading never happens inside a customer request.
         import os
         import sys
-        if os.getenv("SERVY_PRELOAD_MODELS") == "1" and "runserver" in sys.argv:
+        # servy_rag/wsgi.py marks a production WSGI serving process (gunicorn etc.).
+        serving = "runserver" in sys.argv or os.getenv("SERVY_SERVING_PROCESS") == "1"
+        if os.getenv("SERVY_PRELOAD_MODELS") == "1" and serving:
             from core.ml.preload import start_preload
             start_preload()
 

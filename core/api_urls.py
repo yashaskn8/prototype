@@ -1,4 +1,6 @@
 from django.urls import path
+
+from core.health import LiveView, ReadyView
 from . import api_views
 from .diagnostics import api_views as diag_views
 from .customer_sources import CustomerSourceView
@@ -11,6 +13,8 @@ from .technician_inbox import (
 urlpatterns = [
     path("customer-support/source/", CustomerSourceView.as_view(), name="api_customer_source"),
     # Auth & Session
+    path("health/live/", LiveView.as_view(), name="api_health_live"),
+    path("health/ready/", ReadyView.as_view(), name="api_health_ready"),
     path("auth/csrf/", api_views.CSRFBootstrapView.as_view(), name="api_auth_csrf"),
     path("auth/login/", api_views.LoginView.as_view(), name="api_auth_login"),
     path("auth/logout/", api_views.LogoutView.as_view(), name="api_auth_logout"),

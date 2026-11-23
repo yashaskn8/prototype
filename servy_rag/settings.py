@@ -194,6 +194,8 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Asia/Kolkata"
 USE_I18N = True
 USE_TZ = True
+# Serve the built React client at /app/ (local use). Backend-only VMs set 0.
+SERVY_SERVE_FRONTEND = os.getenv("SERVY_SERVE_FRONTEND", "1") == "1"
 STATIC_URL = "/static/"
 STATICFILES_DIRS = []  # Project-specific Bootstrap assets belonged to the retired Django UI.
 STATIC_ROOT = BASE_DIR / "staticfiles"
@@ -238,6 +240,15 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+
+def _env_origins(name):
+    return [o.strip().rstrip("/") for o in os.getenv(name, "").split(",") if o.strip()]
+
+
+# Production: the external portal's HTTPS origin(s), only needed when a browser
+# calls the API directly. Server-to-server calls with an API key need no CORS.
+CORS_ALLOWED_ORIGINS += _env_origins("SERVY_CORS_ALLOWED_ORIGINS")
+
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -248,10 +259,19 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 ]
+CSRF_TRUSTED_ORIGINS += _env_origins("SERVY_CSRF_TRUSTED_ORIGINS")
+
+# Behind a TLS-terminating reverse proxy (nginx/IIS), trust its scheme header so
+# SECURE_SSL_REDIRECT does not loop. Enable only when the proxy sets this header.
+if os.getenv("DJANGO_BEHIND_TLS_PROXY", "0") == "1":
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    USE_X_FORWARDED_HOST = os.getenv("DJANGO_USE_X_FORWARDED_HOST", "0") == "1"
 
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # Server-to-server portal integrations: Authorization: Bearer servy_...
+        "core.api_keys.ApiKeyAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [

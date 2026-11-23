@@ -27,8 +27,14 @@ urlpatterns = [
     path("accounts/login/", RedirectView.as_view(url="/app/", permanent=False), name="login"),
     path("accounts/logout/", auth_views.LogoutView.as_view(next_page="/app/"), name="logout"),
     path("api/", include("core.api_urls")),
-    path("app/", serve_react_app, name="react_app"),
-    path("app/<path:path>", serve_react_app, name="react_app_path"),
-    # The former server-rendered Django dashboard has been retired.
-    path("", RedirectView.as_view(url="/app/", permanent=False), name="app_root"),
 ]
+
+# The React client is optional: a backend-only deployment (SERVY_SERVE_FRONTEND=0)
+# publishes only the API and admin, and never needs frontend/dist.
+if getattr(settings, "SERVY_SERVE_FRONTEND", True):
+    urlpatterns += [
+        path("app/", serve_react_app, name="react_app"),
+        path("app/<path:path>", serve_react_app, name="react_app_path"),
+        # The former server-rendered Django dashboard has been retired.
+        path("", RedirectView.as_view(url="/app/", permanent=False), name="app_root"),
+    ]

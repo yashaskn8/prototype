@@ -29,6 +29,10 @@ def get_memberships(request):
 
 def get_current_membership(request):
     memberships = get_memberships(request)
+    api_key = getattr(request, "_servy_api_key", None)
+    if api_key is not None:
+        # An API key is bound to one tenant; never fall back to another membership.
+        return memberships.filter(tenant_id=api_key.tenant_id).first()
     tenant_id = request.session.get("tenant_id")
     membership = memberships.filter(tenant_id=tenant_id).first() if tenant_id else None
     if membership is None:

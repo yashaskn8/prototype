@@ -24,3 +24,7 @@ mysqlclient>=2.2.0
 pymysql>=1.1.0
 cryptography>=43.0,<51.0
 psutil>=5.9,<8.0
+# V5 reranker ONNX runtime (SERVY_RERANKER_BACKEND=onnx), CPU build.
+onnxruntime>=1.17,<2.0
+# Production WSGI server for a Linux VM (not used on Windows development machines).
+gunicorn>=22.0,<24.0; sys_platform != "win32"
