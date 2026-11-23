@@ -114,7 +114,8 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
     # causes just because the manual contains more detail for earlier ones.
     omitted = max(0, len(causes) - MAX_SECTION_CLAIMS)
     causes = causes[:MAX_SECTION_CLAIMS]
-    detail_budget = MAX_SECTION_CLAIMS - len(causes)
+    detail_budget = (MAX_SECTION_CLAIMS if len(causes) > 4
+                     else MAX_SECTION_CLAIMS - len(causes))
     retrieve_fn = retrieve_fn or _retrieve_for_cause
     all_cause_texts = {_norm(c["source_text"]) for c in causes}
     citations: List[Dict[str, Any]] = []
@@ -208,18 +209,33 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
                         "kind": "uncertainty", "evidence_ids": []})
     unknown = unknown or [{"text": "This chat has not verified which documented possibility applies to your unit.",
                            "kind": "uncertainty", "evidence_ids": []}]
-    sections = [
-        {"number": 1, "title": "What the document says", "claims": cause_claims + fact_claims},
-        {"number": 2, "title": TITLES[1], "claims": [{
-            "text": "No customer procedure has been approved in the supporting evidence. "
-                    "Report what you observed to a technician.", "kind": "uncertainty", "evidence_ids": []}]},
-        {"number": 3, "title": TITLES[2], "claims": unknown},
-        {"number": 4, "title": TITLES[3], "claims": [{
-            "text": "Ask an authorized technician to confirm which cause applies if the issue continues. "
-                    "No ticket has been created.", "kind": "next_step", "evidence_ids": []}]},
-    ]
+    multi_section = len(causes) > 4
+    if multi_section:
+        # The standard four-section contract permits 12 claims in its first
+        # section. Focused presentation (already supported by the client)
+        # keeps the full listed causes AND one independently cited explanation
+        # per cause, without claiming that truncated details are absent.
+        sections = [{"number": 1, "title": "What the document says",
+                     "claims": cause_claims}]
+        if fact_claims:
+            sections.append({"number": 2, "title": "What the document says",
+                             "claims": fact_claims})
+        sections.append({"number": len(sections) + 1, "title": "Evidence limitation",
+                         "claims": unknown})
+    else:
+        sections = [
+            {"number": 1, "title": "What the document says", "claims": cause_claims + fact_claims},
+            {"number": 2, "title": TITLES[1], "claims": [{
+                "text": "No customer procedure has been approved in the supporting evidence. "
+                        "Report what you observed to a technician.", "kind": "uncertainty", "evidence_ids": []}]},
+            {"number": 3, "title": TITLES[2], "claims": unknown},
+            {"number": 4, "title": TITLES[3], "claims": [{
+                "text": "Ask an authorized technician to confirm which cause applies if the issue continues. "
+                        "No ticket has been created.", "kind": "next_step", "evidence_ids": []}]},
+        ]
     return {"sections": sections, "citations": citations, "explanations": explanations,
-            "supporting_claims": cause_claims + fact_claims, "omitted": omitted}
+            "supporting_claims": cause_claims + fact_claims, "omitted": omitted,
+            "multi_section": multi_section}
 
 
 def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any]:
