@@ -90,7 +90,10 @@ def build_conversation_ticket_description(conversation):
     ValueError when the conversation has no customer-reported text.
     """
     messages = list(conversation.messages.order_by("created_at", "id"))
-    customer_messages = [m for m in messages if m.sender_role == "customer" and _clean(m.message_text)]
+    from .conversation_context import extract_conversation_context, is_greeting
+    # Greetings, thanks and sign-offs are not reported problems.
+    customer_messages = [m for m in messages if m.sender_role == "customer"
+                         and _clean(m.message_text) and not is_greeting(m.message_text)]
     if not customer_messages:
         raise ValueError("A customer-reported issue is required before creating a service ticket.")
     assistant_messages = [m for m in messages if m.sender_role == "assistant"]
@@ -98,6 +101,11 @@ def build_conversation_ticket_description(conversation):
     sections = {title: [] for title in SECTION_TITLES}
     complaint = _clean(customer_messages[0].message_text)
     sections[SECTION_TITLES[0]].append(complaint)
+    # A later correction or newly reported problem is recorded as the current
+    # problem; the original statement is kept, never rewritten.
+    active = _clean(extract_conversation_context(conversation, "").active_issue or "")
+    if active and active.casefold() != complaint.casefold():
+        sections[SECTION_TITLES[0]].append(f"Current problem (later customer statement): {active}")
 
     asset = conversation.asset
     if asset is not None:

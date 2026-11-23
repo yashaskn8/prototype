@@ -55,10 +55,12 @@ test('missing contacts from the preview disable confirmation and are described, 
   assert.equal(describeMissingFields(['contact_name', 'phone_or_email']), 'contact name, a phone number or email address');
 });
 
-test('confirmation is disabled while submitting, without sections, or when the server forbids it', () => {
+test('confirmation is disabled while submitting, without a saved conversation, or when the server forbids it', () => {
   const p = interpretTicketResponse('uuid-1', TRANSCRIPT, PREVIEW_RESPONSE).preview;
   assert.equal(canConfirmTicket(p, true), false);                       // repeated clicks
-  assert.equal(canConfirmTicket({ ...p, sections: null }, false), false);
+  // Customers never receive the staff-only report; confirmation does not depend on it.
+  assert.equal(canConfirmTicket({ ...p, sections: null }, false), true);
+  assert.equal(canConfirmTicket({ ...p, messageCount: 0 }, false), false);
   assert.equal(canConfirmTicket({ ...p, canCreate: false }, false), false);
   assert.equal(canConfirmTicket(null, false), false);
   const none = interpretTicketResponse('uuid-1', [], { ticket: null, preview: null,

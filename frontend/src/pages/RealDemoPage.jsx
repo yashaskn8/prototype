@@ -933,7 +933,7 @@ export function RealDemoPage() {
                     </div>
 
                     <div className="real-demo-ticket-field real-demo-ticket-description">
-                      <span>Description (prepared by Servy from this whole conversation)</span>
+                      <span>What the technician will receive</span>
                       {ticketDraft.previewDetail && <p className="real-demo-error" role="alert">{ticketDraft.previewDetail}</p>}
                       {ticketDraft.preview?.missing_fields?.length > 0 && <p className="real-demo-error" role="alert">
                         Contact details needed before a technician can be dispatched:{' '}
@@ -941,13 +941,11 @@ export function RealDemoPage() {
                           contact_name: 'contact name', phone_or_email: 'a phone number or email address',
                           asset: 'the selected equipment' })[field] || field).join(', ')}.
                         Update your customer record; Servy does not fill these in.</p>}
-                      {ticketDraft.preview?.sections && <div className="form-control real-demo-ticket-preview"
-                        data-testid="ticket-description-preview" style={{ height: 'auto', maxHeight: 320, overflowY: 'auto' }}>
-                        <small>{ticketDraft.preview.message_count} saved messages</small>
-                        {Object.entries(ticketDraft.preview.sections).map(([title, items]) => <div key={title}>
-                          <strong>{title}</strong>
-                          <ul>{(items || []).map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul>
-                        </div>)}
+                      {ticketDraft.preview && <div className="form-control real-demo-ticket-preview"
+                        data-testid="ticket-description-preview" style={{ height: 'auto' }}>
+                        {ticketDraft.preview.complaint && <p><strong>Your reported problem:</strong> {ticketDraft.preview.complaint}</p>}
+                        <small>Your conversation ({ticketDraft.preview.message_count} saved messages) and the details
+                          below will be shared with the assigned technician.</small>
                       </div>}
                     </div>
 

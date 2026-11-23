@@ -220,19 +220,24 @@ class ConversationTicketWorkflowTests(TestCase):
         self.assertEqual((ServiceCall.objects.count(), conv.messages.count(), conv.status), before)
         self.assertTrue(preview["can_create"])
         self.assertEqual(preview["missing_fields"], [])
-        for title in SECTION_TITLES:
-            self.assertIn(title, preview["description"])
-        self.assertIn("My split AC is running but not cooling.", preview["description"])
-        self.assertIn("The indoor fan is running but the room stays warm.", preview["description"])
-        self.assertIn(f"Asset ID {self.split.id}", preview["description"])
-        self.assertIn("Synthetic Split AC Troubleshooting Guide", preview["description"])
-        self.assertIn("No diagnosis has been confirmed", preview["description"])
+        # The generated handover report is technician data: never in the customer preview.
+        self.assertNotIn("description", preview)
+        self.assertNotIn("sections", preview)
+        self.assertEqual(preview["complaint"], "My split AC is running but not cooling.")
 
         r = self.client.post(self.ticket_url(uuid), {"confirm_ticket_creation": True},
                              content_type="application/json")
         self.assertEqual(r.status_code, 200, r.content[:400])
         call = ServiceCall.objects.get()
-        self.assertIn(preview["description"], call.technician_notes)
+        # The complete handover reaches the technician through the ServiceCall.
+        for title in SECTION_TITLES:
+            self.assertIn(title, call.technician_notes)
+        self.assertIn("My split AC is running but not cooling.", call.technician_notes)
+        self.assertIn("The indoor fan is running but the room stays warm.", call.technician_notes)
+        self.assertIn(f"Asset ID {self.split.id}", call.technician_notes)
+        self.assertIn("Synthetic Split AC Troubleshooting Guide", call.technician_notes)
+        self.assertIn("No diagnosis has been confirmed", call.technician_notes)
+        self.assertNotIn("technician_notes", r.json()["ticket"])
         self.assertEqual(call.complaint_text, "My split AC is running but not cooling.")
         # Relationships: customer, contact (from the customer record), asset, site, conversation.
         conv.refresh_from_db()

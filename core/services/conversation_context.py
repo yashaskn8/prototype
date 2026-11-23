@@ -467,6 +467,40 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
         ctx.active_topics = []
 
 
+MAX_STATE_MESSAGES = 400
+
+_SUMMARY_REQUEST = re.compile(
+    r"\b(?:summari[sz]e|summary|recap|sum\s+up)\b"
+    r"|\bwhat\s+(?:have|did)\s+i\s+(?:told|tell|said|say|mention(?:ed)?)\b"
+    r"|\beverything\s+(?:i(?:'ve|\s+have)?|we(?:'ve|\s+have)?)\s+(?:told|said|discussed|mentioned)\b", re.I)
+
+
+def is_summary_request(text: str) -> bool:
+    """A request to recap the conversation itself; it needs no manual evidence."""
+    return bool(_SUMMARY_REQUEST.search(" ".join(str(text or "").split())))
+
+
+def conversation_summary_text(ctx: "ConversationContext", ticket_ref: Optional[str] = None) -> str:
+    """Summarize only what the customer said and was asked; adds no technical facts."""
+    equipment = ctx.asset_name or "your equipment"
+    lines = [f"Here's what you've told me about the {equipment} so far:"]
+    if ctx.original_complaint:
+        lines.append(f'- You first reported: "{ctx.original_complaint.strip()}"')
+    if ctx.active_issue and ctx.active_issue.strip() != (ctx.original_complaint or "").strip():
+        lines.append(f'- The current problem: "{ctx.active_issue.strip()}"')
+    for pair in ctx.resolved_answers[-6:]:
+        lines.append(f'- When I asked "{pair["question"]}", you said: "{pair["answer"]}"')
+    if ctx.negative_observations:
+        lines.append(f"- You said there is no: {', '.join(ctx.negative_observations)}")
+    if ctx.completed_checks:
+        lines.append(f"- You told me you already checked: {', '.join(ctx.completed_checks)}")
+    if len(lines) == 1:
+        lines = [f"You haven't described a problem with the {equipment} yet. What is it doing?"]
+    lines.append(f"A service request is open ({ticket_ref})." if ticket_ref
+                 else "No service request has been created.")
+    return "\n".join(lines)
+
+
 def extract_conversation_context(
     conv: Any,
     current_input: str,
@@ -519,9 +553,14 @@ def extract_conversation_context(
     for sym in extract_symptoms_from_text(ctx.original_complaint):
         if sym not in ctx.reported_symptoms:
             ctx.reported_symptoms.append(sym)
-    recent_messages = list(conv.messages.order_by("-created_at", "-id")[:max(1, max_history_turns)])
-    recent_messages.reverse()
-    ctx.history_turns = [{"role": m.sender_role, "text": m.message_text} for m in recent_messages]
+    # Durable diagnostic state is rebuilt from the whole saved conversation (bounded),
+    # so corrections, observations and answers survive long conversations; only the
+    # wording context (history_turns) uses the short recent window.
+    all_messages = list(conv.messages.order_by("-created_at", "-id")[:MAX_STATE_MESSAGES])
+    all_messages.reverse()
+    recent_messages = all_messages
+    ctx.history_turns = [{"role": m.sender_role, "text": m.message_text}
+                         for m in all_messages[-max(1, max_history_turns):]]
 
     # Track suggested actions by turn to associate customer confirmations
     last_assistant_suggested_actions: List[str] = []

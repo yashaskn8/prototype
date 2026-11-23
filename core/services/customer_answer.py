@@ -856,8 +856,12 @@ def exception_presentation(contract):
 
 def build_customer_answer(
     interaction, session, references, conversation_context=None,
-    original_question=None, generate_with_local_model=True,
+    original_question=None, generate_with_local_model=True, evidence_blocked=False,
 ):
+    # evidence_blocked: the original-document integrity gate refused this turn.
+    # No path below (fact lookup, generic cause scan) may reintroduce claims.
+    if evidence_blocked:
+        references = []
     from .customer_diagnostic import classify_action_safety
     from .llm import check_evidence_sufficiency, extract_typed_quantities, verify_quantity_support, _STOPWORDS
     from .identifiers import extract_error_codes
@@ -895,7 +899,7 @@ def build_customer_answer(
     wrong_model = explicit_model and asset and explicit_model[1].casefold() != (asset.model_number or "").casefold()
     wrong_model = wrong_model or names_other_equipment_type(raw_user_q, asset)
     fact_family = _document_fact_family(question)
-    if fact_family and not wrong_model and not query_is_control_abuse(question):
+    if fact_family and not evidence_blocked and not wrong_model and not query_is_control_abuse(question):
         fact_answer = _document_fact_response(interaction, session, fact_family)
         if fact_answer:
             return fact_answer
@@ -915,7 +919,7 @@ def build_customer_answer(
         )
     )
     evidence_chunks = list(sufficient.grounded_chunks or [])
-    if generic_cause_overview:
+    if generic_cause_overview and not evidence_blocked:
         # A broad question must not inherit a single fault family from top-k/V5.
         overview = _generic_cause_candidates(
             tenant=tenant, customer=customer, asset=asset,
@@ -1189,8 +1193,8 @@ def build_customer_answer(
             cause_sections.append(label[:80])
     cause_sections = cause_sections[:10]
     normal = bool(causes or facts or observations or procedures)
-    no_authorized_docs = False
-    if not normal and not candidates:
+    no_authorized_docs = bool(evidence_blocked)
+    if not normal and not candidates and not evidence_blocked:
         from .retriever import _knowledge_candidates
         no_authorized_docs = not _knowledge_candidates(
             tenant, asset, customer, False, backend="all")

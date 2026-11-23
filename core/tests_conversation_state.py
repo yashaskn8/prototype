@@ -407,3 +407,83 @@ class CitationRefreshTests(TestCase):
             untouched = refresh_citation_urls(json.loads(json.dumps(contract)),
                                               {"user": other, "tenant": tenant, "customer": customer})
             self.assertEqual(untouched["presentation"]["citations"][0]["url"], old)
+
+
+class LongConversationMemoryTests(TestCase):
+    """Facts from early turns survive far beyond the 10-message wording window."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Synthetic Long", slug="synthetic-long")
+        self.customer = Customer.objects.create(tenant=self.tenant, name="Long Customer")
+        self.conv = CustomerConversation.objects.create(tenant=self.tenant, customer=self.customer, status="ACTIVE")
+
+    def _say(self, role, text, contract=None):
+        CustomerMessage.objects.create(tenant=self.tenant, conversation=self.conv, sender_role=role,
+                                       message_text=text, structured_contract=contract or {})
+
+    def test_corrections_answers_and_negations_survive_60_turns(self):
+        self._say("customer", "Hi")
+        self._say("assistant", "Hello!", {"response_type": "GREETING"})
+        self._say("customer", "My AC isn't working.")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE",
+                                          "clarification_question": "Is any error code shown?"})
+        self._say("customer", "No error code.")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE"})
+        self._say("customer", "No water leak is visible.")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE"})
+        self._say("customer", "Actually, the AC starts, but it doesn't cool.")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE"})
+        for i in range(26):   # 52 more messages of small talk / follow-ups
+            self._say("customer", f"Thanks, noted {i}.")
+            self._say("assistant", "ok", {"response_type": "DIAGNOSTIC_GUIDANCE"})
+        self.assertGreater(self.conv.messages.count(), 60)
+        ctx = extract_conversation_context(self.conv, "What should I do next?")
+        self.assertEqual(ctx.original_complaint, "My AC isn't working.")
+        self.assertEqual(ctx.active_issue, "the AC starts, but it doesn't cool")
+        self.assertIn("water leak", ctx.negative_observations)
+        self.assertIn({"question": "Is any error code shown?", "answer": "No error code."}, ctx.resolved_answers)
+        self.assertEqual(len(ctx.history_turns), 10)   # wording window stays bounded
+        query = contextualize_customer_query("What should I do next?", ctx).casefold()
+        self.assertIn("cool", query)
+        self.assertNotIn("isn't working", query)
+
+    def test_summary_lists_only_what_the_customer_said(self):
+        from core.services.conversation_context import conversation_summary_text, is_summary_request
+        self._say("customer", "There is a noise in the machine")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE",
+                                          "clarification_question": "When does the noise happen?"})
+        self._say("customer", "Only at startup")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE"})
+        for text in ("Can you summarize everything I've told you?", "Give me a recap", "What have I told you so far?"):
+            self.assertTrue(is_summary_request(text), text)
+        self.assertFalse(is_summary_request("What causes noise at startup?"))
+        summary = conversation_summary_text(extract_conversation_context(self.conv, "summarize"))
+        self.assertIn("There is a noise in the machine", summary)
+        self.assertIn("Only at startup", summary)
+        self.assertIn("No service request has been created.", summary)
+
+    def test_ticket_complaint_skips_greetings_and_keeps_corrections(self):
+        from core.services.conversation_ticket import build_conversation_ticket_description
+        self._say("customer", "Hi")
+        self._say("assistant", "Hello!", {"response_type": "GREETING"})
+        self._say("customer", "My AC isn't working.")
+        self._say("assistant", "answer", {"response_type": "DIAGNOSTIC_GUIDANCE"})
+        self._say("customer", "Actually, the AC starts, but it doesn't cool.")
+        built = build_conversation_ticket_description(self.conv)
+        self.assertEqual(built["complaint"], "My AC isn't working.")
+        first = built["sections"]["1. Customer-reported problem"]
+        self.assertIn("Current problem (later customer statement): the AC starts, but it doesn't cool", first)
+        self.assertFalse(any(line.endswith("] Hi (customer-reported, not independently verified)")
+                             for line in built["sections"]["3. Symptoms and observations reported by the customer"]))
+
+
+class SummaryThroughGatewayTests(SplitACConversationTests):
+    def test_summary_needs_no_retrieval(self):
+        uuid = self.create()
+        self.ask(uuid, "HI")
+        self.ask(uuid, "THERE IS A NOISE IN THE MACHINE")
+        with mock.patch("core.services.rag.ask_rag", side_effect=AssertionError("RAG must not run")):
+            summary, _ = self.ask(uuid, "Can you summarize everything I've told you?")
+        self.assertEqual(summary["response_type"], "CONVERSATION_SUMMARY")
+        self.assertIn("NOISE IN THE MACHINE", summary["answer"])
+        self.assertFalse((summary.get("presentation") or {}).get("citations"))

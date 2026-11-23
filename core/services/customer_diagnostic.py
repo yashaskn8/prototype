@@ -647,6 +647,7 @@ def build_structured_diagnostic_contract(
     hazard_warning: str = "",
     conversation_context: Optional[Any] = None,
     original_question: Optional[str] = None,
+    evidence_blocked: bool = False,
 ) -> Dict[str, Any]:
     """
     Constructs an authoritative, validated structured customer diagnostic contract.
@@ -769,6 +770,7 @@ def build_structured_diagnostic_contract(
         retrieved_references,
         conversation_context=conversation_context,
         original_question=original_question,
+        evidence_blocked=evidence_blocked,
     )
 
 

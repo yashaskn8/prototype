@@ -132,7 +132,7 @@ def _greeting_contract(asset, session, has_previous_answer):
         f"Hello again. You can ask me to explain any of the causes above, or describe a new symptom of the {name}."
         if has_previous_answer else
         f"Hello! Tell me what the {name} is doing, such as a symptom, alarm or error code, "
-        "and I will look it up in its approved manuals."
+        "and I'll help you work out what's going on."
     )
     return {
         "response_mode": "GREETING", "response_type": "GREETING",
@@ -143,6 +143,22 @@ def _greeting_contract(asset, session, has_previous_answer):
         "clarification_question": None, "can_resolve": False, "can_escalate": True,
         "engine": "conversation-greeting",
         "presentation": {"schema_version": "customer-answer-v1", "response_type": "GREETING",
+                         "sections": [], "citations": [], "supporting_claims": [], "message": message,
+                         "hazard": {"severity": "none", "message": ""}},
+    }
+
+
+def _summary_contract(session, message):
+    """A recap of what the customer reported; contains no technical claims."""
+    return {
+        "response_mode": "CONVERSATION_SUMMARY", "response_type": "CONVERSATION_SUMMARY",
+        "session_id": str(session.session_id) if session else None,
+        "session_status": session.status if session else "ACTIVE",
+        "summary": message, "answer": message, "citations": [], "references": [],
+        "customer_safe_actions": [], "check_first": [], "technician_only_actions": [],
+        "clarification_question": None, "can_resolve": False, "can_escalate": True,
+        "engine": "conversation-summary",
+        "presentation": {"schema_version": "customer-answer-v1", "response_type": "CONVERSATION_SUMMARY",
                          "sections": [], "citations": [], "supporting_claims": [], "message": message,
                          "hazard": {"severity": "none", "message": ""}},
     }
@@ -673,6 +689,22 @@ def _process_customer_diagnostic_turn(
                 session=session, turn_text=turn_text, idem_record=idem_record,
                 contract=_greeting_contract(asset, session, bool(conv_context.last_supported_contract)))
 
+        # A recap of the conversation itself needs no manual evidence.
+        from core.services.conversation_context import conversation_summary_text, is_summary_request
+        from core.services.customer_answer import _question_guard as _summary_guard
+        if (conv_context.turn_count > 0 and is_summary_request(request_text or turn_text)
+                and not _summary_guard(request_text or turn_text)):
+            for stage, label in (("customer_rag_execution", "Manual retrieval skipped: conversation summary"),
+                                 ("customer_evidence_validation", "No technical claim in a conversation summary"),
+                                 ("customer_qwen_generation", "Local Qwen generation skipped for a summary")):
+                emit_execution_event(stage, label, "skipped")
+            linked = getattr(conv, "linked_service_call", None)
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_summary_contract(session, conversation_summary_text(
+                    conv_context, f"SRV-{linked.servy_id}" if linked else None)))
+
         from core.services.customer_answer import _CAUSE_EXPLANATION_REQUEST, _question_guard
         from core.services.conversation_context import resolve_cause_reference
         from core.services.content_safety import query_is_control_abuse
@@ -691,9 +723,14 @@ def _process_customer_diagnostic_turn(
             else causes_for_request(conv_context, quoted_items) if wants_all_explained
             else []
         )
-        # Explanation retrieval must not bypass a safety or policy guard.
+        # Explanation retrieval must not bypass a safety or policy guard, nor the
+        # original-document integrity gate (stored causes are re-gated every turn).
         if query_is_control_abuse(request_text) or _question_guard(request_text):
             listed = []
+        if listed:
+            from core.services.rag import original_documentation_permits
+            if not original_documentation_permits(tenant=tenant, customer=customer, asset=asset):
+                listed = []
         if listed:
             with transaction.atomic():
                 interaction = CustomerInteraction.objects.create(
@@ -901,6 +938,7 @@ def _process_customer_diagnostic_turn(
                 "customer_evidence_validation",
                 "Validating manual claims and constructing citation-backed answer",
             ):
+                from core.services.rag import NO_AUTHORIZED_ORIGINAL_DOCUMENTATION
                 contract = build_structured_diagnostic_contract(
                     interaction=interaction,
                     session=session,
@@ -908,6 +946,7 @@ def _process_customer_diagnostic_turn(
                     retrieved_references=rag_res.get("references", []),
                     conversation_context=conv_context,
                     original_question=answer_question,
+                    evidence_blocked=rag_res.get("reason_code") == NO_AUTHORIZED_ORIGINAL_DOCUMENTATION,
                 )
             if cause_reference:
                 focus_presentation_on_cause(contract, cause_reference)

@@ -81,6 +81,12 @@ ALLOWED_KB_EXTENSIONS = {".pdf", ".docx", ".txt", ".md", ".csv"}
 MAX_KB_UPLOAD_BYTES = getattr(settings, "SERVY_MAX_KB_UPLOAD_BYTES", 10 * 1024 * 1024)
 
 
+STORE_ROLES = {"store_admin", "store_operator"}
+# Internal diagnostic history (recovery passport) and technician notes are visible
+# to staff who work the call; store roles see only what the parts workflow needs.
+DIAGNOSTIC_ROLES = {"admin", "manager", "technician", "superuser"}
+
+
 def _customer_ticket_data(call):
     """Serialize a ServiceCall without staff-only notes or identities."""
     return {
@@ -1602,21 +1608,22 @@ class AssetCallsView(APIView):
             calls_qs = calls_qs.filter(status__in=["marked_for_closure", "closed"])
 
         is_customer = role in CUSTOMER_ROLES
+        is_store = role in STORE_ROLES
         items = []
         for c in calls_qs.order_by("-created_at")[:100]:
             items.append({
                 "id": c.id,
                 "servy_id": c.servy_id,
                 "complaint_type": c.complaint_type,
-                "complaint_text": c.complaint_text,
+                "complaint_text": "" if is_store else c.complaint_text,
                 "status": c.status,
                 "priority": c.priority,
-                "contact_name": c.contact_name,
+                "contact_name": "" if is_store else c.contact_name,
                 "created_at": c.created_at,
                 "closed_at": c.closed_at,
-                "resolution_text": c.resolution_text,
-                "technician_notes": "" if is_customer else c.technician_notes,
-                "technician_name": c.technician.full_name if (c.technician and not is_customer) else None,
+                "resolution_text": "" if is_store else c.resolution_text,
+                "technician_notes": c.technician_notes if role in DIAGNOSTIC_ROLES else "",
+                "technician_name": c.technician.full_name if (c.technician and not (is_customer or is_store)) else None,
                 "site_name": c.site.name if c.site else None,
             })
 
@@ -1753,11 +1760,15 @@ class CallRegisterView(APIView):
                 Q(technician__full_name__icontains=search)
             )
 
-        items = list(qs.order_by("-created_at")[:100].values(
-            "id", "servy_id", "complaint_type", "complaint_text", "status", "priority",
-            "contact_name", "created_at", "customer__name", "site__name",
-            "asset__name", "technician__full_name"
-        ))
+        if role in STORE_ROLES:
+            # Store roles: call reference, status and equipment only (no complaints,
+            # contacts, customer names or technician identities).
+            fields = ("id", "servy_id", "status", "priority", "created_at", "site__name", "asset__name")
+        else:
+            fields = ("id", "servy_id", "complaint_type", "complaint_text", "status", "priority",
+                      "contact_name", "created_at", "customer__name", "site__name",
+                      "asset__name", "technician__full_name")
+        items = list(qs.order_by("-created_at")[:100].values(*fields))
         return Response({"calls": items})
 
 
@@ -1777,6 +1788,8 @@ class CallDetailView(APIView):
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
 
         is_customer = ctx["role"] in CUSTOMER_ROLES
+        is_store = ctx["role"] in STORE_ROLES
+        can_see_diagnostics = ctx["role"] in DIAGNOSTIC_ROLES
         if is_customer and (not ctx["customer"] or call.customer_id != ctx["customer"].id):
             return Response({"detail": "Call not found."}, status=status.HTTP_404_NOT_FOUND)
         if ctx["role"] == "technician" and not authorized_service_calls(ctx).filter(pk=call.id).exists():
@@ -1785,8 +1798,8 @@ class CallDetailView(APIView):
         updates_raw = list(call.updates.select_related("author").order_by("created_at").values(
             "id", "status", "note", "created_at", "author__full_name"
         ))
-        # Customer callers must NOT see internal notes or staff identity in call updates
-        if is_customer:
+        # Customer and store callers must NOT see internal notes or staff identity in call updates
+        if is_customer or is_store:
             updates = [
                 {"id": u["id"], "status": u["status"], "note": "", "created_at": u["created_at"], "author__full_name": None}
                 for u in updates_raw
@@ -1798,7 +1811,7 @@ class CallDetailView(APIView):
             "id", "indent_id", "spare_description", "manager_status", "store_status", "date"
         ))
 
-        rp = getattr(call, "recovery_passport", None)
+        rp = getattr(call, "recovery_passport", None) if can_see_diagnostics else None
         recovery_passport = None
         if rp:
             recovery_passport = {
@@ -1814,16 +1827,17 @@ class CallDetailView(APIView):
                 "id": call.id,
                 "servy_id": call.servy_id,
                 "complaint_type": call.complaint_type,
-                "complaint_text": call.complaint_text,
-                "technician_notes": "" if is_customer else call.technician_notes,
-                "resolution_text": call.resolution_text,
+                "complaint_text": "" if is_store else call.complaint_text,
+                "technician_notes": call.technician_notes if can_see_diagnostics else "",
+                "resolution_text": "" if is_store else call.resolution_text,
                 "status": call.status,
                 "priority": call.priority,
-                "contact_name": call.contact_name,
-                "contact_phone": call.contact_phone,
-                "contact_email": call.contact_email,
+                "contact_name": "" if is_store else call.contact_name,
+                "contact_phone": "" if is_store else call.contact_phone,
+                "contact_email": "" if is_store else call.contact_email,
                 "created_at": call.created_at,
-                "customer": {"id": call.customer.id, "name": call.customer.name} if call.customer else None,
+                "customer": ({"id": call.customer.id, "name": call.customer.name}
+                             if call.customer and not is_store else None),
                 "site": {"id": call.site.id, "name": call.site.name} if call.site else None,
                 "asset": {"id": call.asset.id, "name": call.asset.name, "model_number": call.asset.model_number} if call.asset else None,
                 "technician": ({"id": call.technician.id, "name": call.technician.full_name} if call.technician else None) if not is_customer else None,
@@ -3080,12 +3094,15 @@ class CustomerConversationTicketView(_WriteThrottledMixin, APIView):
                 missing = missing_contact_fields(conv.customer)
                 body["preview"] = {
                     "complaint": built["complaint"],
-                    "description": built["description"],
-                    "sections": built["sections"],
                     "message_count": built["message_count"],
                     "missing_fields": missing,
                     "can_create": not missing and conv.asset_id is not None,
                 }
+                if role not in CUSTOMER_ROLES:
+                    # The generated diagnostic handover report is technician/staff
+                    # data; customers see only their complaint and what is missing.
+                    body["preview"]["description"] = built["description"]
+                    body["preview"]["sections"] = built["sections"]
             except ValueError as exc:
                 body["preview"] = None
                 body["preview_detail"] = str(exc)

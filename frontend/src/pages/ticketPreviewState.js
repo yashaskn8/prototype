@@ -43,7 +43,8 @@ export function interpretTicketResponse(conversationUuid, transcript, response) 
 
 /** Confirmation is allowed only when the server says so and nothing is in flight. */
 export function canConfirmTicket(preview, submitting) {
-  return Boolean(preview && !submitting && preview.canCreate && preview.sections
+  // The generated report (sections) is staff-only and absent for customers.
+  return Boolean(preview && !submitting && preview.canCreate && preview.messageCount > 0
     && preview.missingFields.length === 0);
 }
 

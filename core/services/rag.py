@@ -52,6 +52,19 @@ def has_authorized_original_documentation(*, tenant, customer, asset):
     return False
 
 
+def original_documentation_permits(*, tenant, customer, asset) -> bool:
+    """False only when the verified-real original-document gate applies and fails.
+
+    Every customer path that can produce technical claims without calling ask_rag
+    (explanations of previously listed causes, stored-claim follow-ups) uses this,
+    so a missing, altered or revoked original can never be bypassed.
+    """
+    from .customer_isolation import get_customer_data_mode, is_real_tenant
+    if not (is_real_tenant(tenant) and get_customer_data_mode() == "verified_real_only"):
+        return True
+    return has_authorized_original_documentation(tenant=tenant, customer=customer, asset=asset)
+
+
 def ask_rag(
     *,
     tenant,
