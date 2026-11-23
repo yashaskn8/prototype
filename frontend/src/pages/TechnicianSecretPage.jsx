@@ -64,10 +64,15 @@ export function TechnicianSecretPage() {
         inFlight = false;
       }
     };
-    const timer = window.setInterval(refreshQueue, 8000);
+    // No periodic polling: refresh when the tab becomes visible again (and via
+    // the Refresh queue button), never on a timer while the page sits open.
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshQueue();
+    };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [token]);
 

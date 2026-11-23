@@ -4,7 +4,6 @@ import { api } from '../api';
 import { handoffBucket, handoffLabel } from './technicianHandoffState';
 import './TechnicianInboxPage.css';
 
-const POLL_INTERVAL_MS = 10000;
 
 const BUCKETS = [
   { id: 'incoming', label: 'Incoming', icon: Inbox },
@@ -59,33 +58,19 @@ export function TechnicianInboxPage() {
     }
   }, []);
 
+  // No periodic polling: load once, reload when the technician returns to the
+  // tab, and on the Refresh button. Avoids a steady stream of backend requests.
   useEffect(() => {
-    const poll = () => {
+    const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') loadInbox();
     };
-    const initialLoad = window.setTimeout(poll, 0);
-    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
-    document.addEventListener('visibilitychange', poll);
+    const initialLoad = window.setTimeout(refreshWhenVisible, 0);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       window.clearTimeout(initialLoad);
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', poll);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [loadInbox]);
-
-  useEffect(() => {
-    if (!selectedTicket?.id) return undefined;
-    const timer = window.setInterval(async () => {
-      if (document.visibilityState !== 'visible') return;
-      try {
-        const data = await api.get(`/api/technician/inbox/${selectedTicket.id}/`);
-        setSelectedTicket(data.ticket || null);
-      } catch {
-        // Keep the last authorized detail visible while the list poll reports errors.
-      }
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [selectedTicket?.id]);
 
   const groupedTickets = useMemo(() => tickets.filter((ticket) => handoffBucket(ticket.handoff_state) === activeBucket), [tickets, activeBucket]);
   const counts = useMemo(() => Object.fromEntries(BUCKETS.map((bucket) => [

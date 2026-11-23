@@ -29,7 +29,8 @@ test('technician experience is a distinct access-code instance', async () => {
   assert.match(page, /technicianCall\(INBOX_PATH/);
   assert.match(page, /ticketPath\(selected\.id, 'update\/'\)/);
   assert.match(page, /downloadAttachment/);
-  assert.match(page, /window\.setInterval\(refreshQueue, 8000\)/);
+  assert.doesNotMatch(page, /setInterval/);
+  assert.match(page, /addEventListener\('visibilitychange', refreshWhenVisible\)/);
   assert.match(page, /queue refreshes automatically/i);
   assert.doesNotMatch(customerPage, /http:\/\/127\.0\.0\.1:5176\//);
   assert.doesNotMatch(customerPage, /technician_access\.txt/);

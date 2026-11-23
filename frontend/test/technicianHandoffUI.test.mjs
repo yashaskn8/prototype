@@ -14,14 +14,15 @@ test('customer reviews the saved conversation and explicitly confirms the author
   assert.match(source, /Service Tickets/);
 });
 
-test('technician inbox polls the authenticated backend and persists acknowledgement', async () => {
+test('technician inbox loads the authenticated backend without timer polling and persists acknowledgement', async () => {
   const [page, app, navigation] = await Promise.all([
     readSource('../src/pages/TechnicianInboxPage.jsx'),
     readSource('../src/App.jsx'),
     readSource('../src/components/Navigation.jsx'),
   ]);
   assert.match(page, /api\.get\('\/api\/technician\/inbox\/'\)/);
-  assert.match(page, /setInterval\(poll, POLL_INTERVAL_MS\)/);
+  assert.doesNotMatch(page, /setInterval/);
+  assert.match(page, /addEventListener\('visibilitychange', refreshWhenVisible\)/);
   assert.match(page, /\/api\/technician\/inbox\/\$\{selectedTicket\.id\}\/acknowledge\//);
   for (const heading of ['Customer conversation', 'Confirmed troubleshooting', 'Verified supporting references', 'Outstanding information']) {
     assert.ok(page.includes(heading), `missing ticket section: ${heading}`);
