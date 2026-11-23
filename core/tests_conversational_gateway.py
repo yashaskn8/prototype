@@ -269,10 +269,16 @@ Possible causes:
                 uuid, "what could be the possible causes for it to not work")
 
         self.assertEqual(overview["response_type"], "DIAGNOSTIC_GUIDANCE", overview["answer"])
+        cause_ids = {
+            evidence_id
+            for cause in overview["presentation"]["supporting_claims"]
+            if cause.get("kind") == "possible_cause"
+            for evidence_id in cause.get("evidence_ids", [])
+        }
         headings = {
             c["heading"].casefold()
             for c in overview["presentation"]["citations"]
-            if c.get("kind") == "possible_cause"
+            if c.get("id") in cause_ids
         }
         for name in ("communication", "high-pressure", "low-pressure",
                      "compressor", "fan"):
