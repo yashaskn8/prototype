@@ -1,0 +1,320 @@
+openapi: 3.0.3
+info:
+  title: Servy customer-support API (portal integration)
+  version: "1.0"
+  description: |
+    Backend-only Django API for an external customer portal: conversations,
+    AI troubleshooting messages (synchronous or server-sent events) and tickets.
+    Every request authenticates with a server-to-server API key that acts as one
+    Servy integration user; tenant, customer and asset authorization is enforced
+    per request. All errors are JSON objects with at least a "detail" field.
+servers:
+  - url: https://api.example.com/api
+    description: Placeholder host; replace with the deployed VM's HTTPS name.
+security:
+  - ServyApiKey: []
+components:
+  securitySchemes:
+    ServyApiKey:
+      type: http
+      scheme: bearer
+      description: "Authorization: Bearer servy_<prefix>_<secret> (issued with manage.py servy_api_key issue)."
+  parameters:
+    ConversationUuid:
+      name: conversation_uuid
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: X-Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Retry-safe key per customer message. Replaying the same key with the same
+        payload returns the stored result (no duplicate message or AI turn); the same
+        key with a different payload returns 400.
+      schema: {type: string, maxLength: 128}
+  responses:
+    Unauthorized:
+      description: An invalid, expired or revoked API key was presented. (A request with no credentials at all receives 403.)
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+          example: {detail: Invalid or inactive API key.}
+    Forbidden:
+      description: No credentials supplied, or the account's role may not perform this action.
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    NotFound:
+      description: Unknown conversation, or one that belongs to another customer (indistinguishable by design).
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    BadRequest:
+      description: Invalid payload, closed conversation, idempotency-key collision or message too long.
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Throttled:
+      description: Per-user rate limit exceeded (AI turns 20/minute by default).
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Busy:
+      description: Another AI turn is running on this server (code rag_busy) or stream capacity is full. Retry later with the same idempotency key.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+          example: {detail: "Servy is still answering your previous question. Please wait for it to finish, then try again.", code: rag_busy}
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: {type: string}
+        code: {type: string}
+    Asset:
+      type: object
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        asset_code: {type: string}
+        model_number: {type: string}
+    Ticket:
+      type: object
+      properties:
+        id: {type: integer}
+        servy_id: {type: integer}
+        ticket_ref: {type: string, example: SRV-1}
+        status: {type: string}
+        priority: {type: string}
+        complaint_type: {type: string}
+        complaint_text: {type: string}
+        created_at: {type: string, format: date-time}
+        response_due_at: {type: string, format: date-time, nullable: true}
+        resolution_due_at: {type: string, format: date-time, nullable: true}
+        technician_assigned: {type: boolean}
+        technician_name: {type: string, nullable: true}
+        handoff_state: {type: string}
+        technician_acknowledged: {type: boolean}
+        acknowledged_at: {type: string, format: date-time, nullable: true}
+    Message:
+      type: object
+      properties:
+        id: {type: integer}
+        sender_role: {type: string, enum: [customer, assistant, system]}
+        message_text: {type: string, description: "Plain-text reply; [n] markers refer to contract.presentation.citations."}
+        structured_contract: {$ref: "#/components/schemas/Contract"}
+        source_refs: {type: array, items: {type: object}}
+        created_at: {type: string, format: date-time}
+    Contract:
+      type: object
+      description: |
+        The structured answer. Portals should render presentation.response.segments
+        (natural reply) and may show presentation.citations as source links. Technical
+        evidence (claims with exact source text and headings) and diagnostics stay in
+        the contract for engineers; they need not be shown to customers.
+      properties:
+        response_type:
+          type: string
+          enum: [GREETING, CLARIFICATION, DIAGNOSTIC_GUIDANCE, INSUFFICIENT_EVIDENCE, TECHNICIAN_HANDOFF, ESCALATION_REQUIRED, POLICY_VIOLATION]
+        answer: {type: string}
+        conversation_uuid: {type: string, format: uuid}
+        clarification_question: {type: string, nullable: true}
+        suggested_follow_ups: {type: array, items: {type: string}}
+        presentation:
+          type: object
+          properties:
+            response_type: {type: string}
+            message: {type: string}
+            response:
+              type: object
+              properties:
+                text: {type: string}
+                style: {type: string}
+                segments:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      kind: {type: string, enum: [text, list_item, claim, question]}
+                      text: {type: string}
+                      citation_ids: {type: array, items: {type: string}}
+                displayed_claims:
+                  type: array
+                  description: Ordered claims shown to the customer; "the first cause" refers to this list.
+                  items: {type: object}
+            citations:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: {type: string}
+                  title: {type: string}
+                  heading: {type: string}
+                  url: {type: string, description: "Signed source link (valid 1 hour), opened with GET /customer-support/source/."}
+            supporting_claims: {type: array, items: {type: object}}
+        outcome:
+          type: object
+          description: Truthful execution outcome (status, response_mode, generation_status, fallback_reason). For monitoring; not customer text.
+        diagnostics: {type: object, description: "Per-turn retrieval/reranking/generation facts for engineers."}
+    TurnResult:
+      type: object
+      properties:
+        user_message: {$ref: "#/components/schemas/Message"}
+        assistant_message: {$ref: "#/components/schemas/Message"}
+        contract: {$ref: "#/components/schemas/Contract"}
+        conversation_title: {type: string}
+        idempotent_replay: {type: boolean}
+paths:
+  /health/live/:
+    get:
+      summary: Liveness probe
+      security: []
+      responses:
+        "200": {description: "Process is up", content: {application/json: {example: {status: ok}}}}
+  /health/ready/:
+    get:
+      summary: Readiness probe (database reachable and all enabled models warmed)
+      security: []
+      responses:
+        "200": {description: Ready, content: {application/json: {example: {status: ready, database: ok, models: {bge: ready, v5: ready, qwen: ready}, rag_busy: false}}}}
+        "503": {description: "Not ready (models warming or failed, or database unavailable)"}
+  /customer-support/conversations/:
+    get:
+      summary: List the authorized customer's conversations
+      parameters:
+        - {name: asset_id, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, maximum: 50, default: 20}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+      responses:
+        "200": {description: "{count, conversations[], limit, offset}"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      summary: Start a conversation for one of the customer's assets
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [asset_id]
+              properties:
+                asset_id: {type: integer}
+                site_id: {type: integer}
+                title: {type: string}
+                message: {type: string, description: "Optional first customer message, answered inline (first_turn)."}
+      responses:
+        "201": {description: "{id, conversation_uuid, title, status, session_id, site, asset, created_at[, first_turn | first_turn_error]}"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "429": {$ref: "#/components/responses/Throttled"}
+  /customer-support/conversations/{conversation_uuid}/:
+    parameters: [{$ref: "#/components/parameters/ConversationUuid"}]
+    get:
+      summary: Conversation with complete ordered message history and linked ticket
+      responses:
+        "200": {description: "{id, conversation_uuid, title, status, asset, session_id, ticket, messages[], created_at, updated_at, closed_at}"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    delete:
+      summary: Hide the conversation for the customer (soft delete, idempotent)
+      responses:
+        "204": {description: "Hidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /customer-support/conversations/{conversation_uuid}/messages/:
+    parameters: [{$ref: "#/components/parameters/ConversationUuid"}]
+    get:
+      summary: Ordered message history
+      responses:
+        "200": {description: "{messages: Message[]}"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      summary: Send a customer message and receive the AI reply (synchronous)
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: {type: string, maxLength: 4000}
+      responses:
+        "200": {description: "Turn completed", content: {application/json: {schema: {$ref: \"#/components/schemas/TurnResult\"}}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "429": {$ref: "#/components/responses/Throttled"}
+        "503": {$ref: "#/components/responses/Busy"}
+  /customer-support/conversations/{conversation_uuid}/messages-stream/:
+    parameters: [{$ref: "#/components/parameters/ConversationUuid"}]
+    post:
+      summary: Send a customer message and stream progress and the reply (server-sent events)
+      description: |
+        Request body and validation are identical to the synchronous endpoint; validation
+        errors are returned as JSON before any stream starts. The stream (text/event-stream)
+        sends a ": servy-rag-stream" comment, "event: log" progress frames, ": keep-alive"
+        comments every 12 s, and exactly one terminal "event: result" (same JSON as the
+        synchronous 200 body) or "event: error" ({"detail": ...}). If the client
+        disconnects, the turn still completes and is persisted; fetch it with GET messages/
+        or retry with the same idempotency key.
+      parameters: [{$ref: "#/components/parameters/IdempotencyKey"}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [message], properties: {message: {type: string, maxLength: 4000}}}}}
+      responses:
+        "200": {description: "SSE stream", content: {text/event-stream: {}}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "429": {$ref: "#/components/responses/Throttled"}
+        "503": {$ref: "#/components/responses/Busy"}
+  /customer-support/conversations/{conversation_uuid}/ticket/:
+    parameters: [{$ref: "#/components/parameters/ConversationUuid"}]
+    get:
+      summary: Linked ticket, or a read-only preview of the ticket that would be created
+      responses:
+        "200": {description: "{ticket: Ticket} or {ticket: null, detail, preview{complaint, description, sections, message_count, missing_fields, can_create}}"}
+        "404": {$ref: "#/components/responses/NotFound"}
+    post:
+      summary: Create the service ticket for this conversation (explicit confirmation required; never automatic)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_ticket_creation]
+              properties:
+                confirm_ticket_creation: {type: boolean, enum: [true]}
+                user_observation: {type: string}
+      responses:
+        "200": {description: "{ticket: Ticket, created: true|false, detail}. created=false means the existing linked ticket was returned (no duplicate)."}
+        "400": {description: "Missing confirmation, missing contact details (missing_fields) or no customer message"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /customer-support/tickets/:
+    get:
+      summary: The customer's tickets
+      parameters:
+        - {name: status, in: query, schema: {type: string}}
+        - {name: asset_id, in: query, schema: {type: integer}}
+        - {name: limit, in: query, schema: {type: integer}}
+        - {name: offset, in: query, schema: {type: integer}}
+      responses:
+        "200": {description: "Ticket list"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /customer-support/tickets/{id}/:
+    get:
+      summary: One ticket (resolution_text only once resolved or closed)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": {description: "Ticket detail", content: {application/json: {schema: {$ref: \"#/components/schemas/Ticket\"}}}}
+        "404": {$ref: "#/components/responses/NotFound"}
+  /customer-support/source/:
+    get:
+      summary: Open a cited source excerpt from a signed citation URL
+      parameters: [{name: citation, in: query, required: true, schema: {type: string}}]
+      responses:
+        "200": {description: "{title, heading, excerpt, document_id, chunk_id}"}
+        "404": {description: "Expired, tampered or no-longer-authorized citation"}

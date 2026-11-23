@@ -1,0 +1,869 @@
+{
+  "create_conversation": {
+    "method": "POST",
+    "path": "/api/customer-support/conversations/",
+    "request": {
+      "asset_id": 1916
+    },
+    "status": 201,
+    "response": {
+      "id": 302,
+      "conversation_uuid": "94a49170-197b-4da0-9f90-05e1ffdedd94",
+      "title": "Inquiry for Split AC Unit 2T",
+      "status": "ACTIVE",
+      "session_id": "3faf879a-ecc5-4838-bf21-c1b1decdf226",
+      "site": {
+        "id": 1720,
+        "name": "Site"
+      },
+      "asset": {
+        "id": 1916,
+        "name": "Split AC Unit 2T",
+        "asset_code": "DEV-AST-059",
+        "model_number": ""
+      },
+      "created_at": "2026-11-23T08:50:55.491295Z"
+    }
+  },
+  "conversation_detail": {
+    "method": "GET",
+    "path": "/api/customer-support/conversations/ed8ed8ac-3088-4501-9a5c-923f3e1b6632/",
+    "request": null,
+    "status": 200,
+    "response": {
+      "id": 299,
+      "conversation_uuid": "ed8ed8ac-3088-4501-9a5c-923f3e1b6632",
+      "title": "Inquiry for Split AC Unit 2T",
+      "status": "ACTIVE",
+      "customer": {
+        "id": 1890,
+        "name": "Synthetic Development Customer"
+      },
+      "site": {
+        "id": 1706,
+        "name": "Site"
+      },
+      "asset": {
+        "id": 1902,
+        "name": "Split AC Unit 2T",
+        "asset_code": "DEV-AST-059",
+        "model_number": "",
+        "status": "active"
+      },
+      "session_id": "01a07e66-283a-42f7-8214-9318b2232f9c",
+      "session_status": "ACTIVE",
+      "ticket": null,
+      "messages": [],
+      "created_at": "2026-11-23T08:50:54.703410Z",
+      "updated_at": "2026-11-23T08:50:54.703410Z",
+      "closed_at": null
+    }
+  },
+  "other_customer_conversation": {
+    "method": "GET",
+    "path": "/api/customer-support/conversations/ed8ed8ac-3088-4501-9a5c-923f3e1b6632/ticket/",
+    "request": null,
+    "status": 404,
+    "response": {
+      "detail": "Conversation not found."
+    }
+  },
+  "health_ready": {
+    "method": "GET",
+    "path": "/api/health/ready/",
+    "request": null,
+    "status": 503,
+    "response": {
+      "status": "not_ready",
+      "database": "ok",
+      "models": {
+        "bge": "not_started",
+        "v5": "not_started",
+        "qwen": "not_started"
+      },
+      "rag_busy": false
+    }
+  },
+  "send_message": {
+    "method": "POST",
+    "path": "/api/customer-support/conversations/d00ead7a-3a34-44ec-a452-9deb49dc2766/messages/",
+    "request": {
+      "message": "My AC is not cooling"
+    },
+    "status": 200,
+    "response": {
+      "user_message": {
+        "id": 1114,
+        "sender_role": "customer",
+        "message_text": "My AC is not cooling",
+        "created_at": "2026-11-23T08:50:55.101752Z"
+      },
+      "assistant_message": {
+        "id": 1115,
+        "sender_role": "assistant",
+        "message_text": "Here are the possible causes of poor cooling on the Split AC Unit 2T:\n- Dirty filter or coil. [1]\n- Blocked outdoor unit. [2]\nThese are possibilities from the approved manuals, not a confirmed diagnosis of your unit.\nDo any of these match what you are seeing?",
+        "structured_contract": {
+          "presentation": {
+            "schema_version": "customer-answer-v1",
+            "response_type": "DIAGNOSTIC_GUIDANCE",
+            "equipment": {
+              "id": 1910,
+              "name": "Split AC Unit 2T",
+              "model_number": ""
+            },
+            "sections": [
+              {
+                "number": 1,
+                "title": "What could be wrong?",
+                "claims": [
+                  {
+                    "id": "c1",
+                    "text": "Possible documented cause: Dirty filter or coil.",
+                    "source_text": "Dirty filter or coil.",
+                    "kind": "possible_cause",
+                    "evidence_ids": [
+                      "s1"
+                    ],
+                    "source_heading": "3. SYMPTOM: POOR COOLING",
+                    "source_document_title": "Split AC Unit 2T - Troubleshooting"
+                  },
+                  {
+                    "id": "c2",
+                    "text": "Possible documented cause: Blocked outdoor unit.",
+                    "source_text": "Blocked outdoor unit.",
+                    "kind": "possible_cause",
+                    "evidence_ids": [
+                      "s2"
+                    ],
+                    "source_heading": "3. SYMPTOM: POOR COOLING",
+                    "source_document_title": "Split AC Unit 2T - Troubleshooting"
+                  }
+                ]
+              },
+              {
+                "number": 2,
+                "title": "What can I safely check or report?",
+                "claims": [
+                  {
+                    "text": "No customer procedure has been approved in the supporting evidence. Report what you observed to a technician.",
+                    "kind": "uncertainty",
+                    "evidence_ids": []
+                  }
+                ]
+              },
+              {
+                "number": 3,
+                "title": "What is still unknown?",
+                "claims": [
+                  {
+                    "text": "The available passages do not provide a customer-safe observation that confirms which documented possibility applies.",
+                    "kind": "uncertainty",
+                    "evidence_ids": []
+                  }
+                ]
+              },
+              {
+                "number": 4,
+                "title": "What should I do next?",
+                "claims": [
+                  {
+                    "text": "Ask an authorized technician for model-specific help if the issue continues. No ticket has been created.",
+                    "kind": "next_step",
+                    "evidence_ids": []
+                  }
+                ]
+              }
+            ],
+            "citations": [
+              {
+                "document_id": 1713,
+                "chunk_id": 2097,
+                "title": "Split AC Unit 2T - Troubleshooting",
+                "heading": "3. SYMPTOM: POOR COOLING",
+                "document_version": 2,
+                "url": "/api/customer-support/source/?citation=<signed-token>",
+                "id": "s1"
+              },
+              {
+                "document_id": 1713,
+                "chunk_id": 2097,
+                "title": "Split AC Unit 2T - Troubleshooting",
+                "heading": "3. SYMPTOM: POOR COOLING",
+                "document_version": 2,
+                "url": "/api/customer-support/source/?citation=<signed-token>",
+                "id": "s2"
+              }
+            ],
+            "hazard": {
+              "severity": "none",
+              "message": ""
+            },
+            "supporting_claims": [
+              {
+                "id": "c1",
+                "text": "Possible documented cause: Dirty filter or coil.",
+                "source_text": "Dirty filter or coil.",
+                "kind": "possible_cause",
+                "evidence_ids": [
+                  "s1"
+                ],
+                "source_heading": "3. SYMPTOM: POOR COOLING",
+                "source_document_title": "Split AC Unit 2T - Troubleshooting"
+              },
+              {
+                "id": "c2",
+                "text": "Possible documented cause: Blocked outdoor unit.",
+                "source_text": "Blocked outdoor unit.",
+                "kind": "possible_cause",
+                "evidence_ids": [
+                  "s2"
+                ],
+                "source_heading": "3. SYMPTOM: POOR COOLING",
+                "source_document_title": "Split AC Unit 2T - Troubleshooting"
+              }
+            ],
+            "customer_permitted_observations": [],
+            "customer_authorized_actions": [],
+            "message": "",
+            "technician_only_warnings": [
+              "Physical procedures require separate customer approval or an authorized technician."
+            ],
+            "known_limitations": [
+              "No physical inspection or confirmed diagnosis."
+            ],
+            "authorized_user_actions": {
+              "can_resolve": false,
+              "can_escalate": true
+            },
+            "response": {
+              "text": "Here are the possible causes of poor cooling on the Split AC Unit 2T:\n- Dirty filter or coil. [1]\n- Blocked outdoor unit. [2]\nThese are possibilities from the approved manuals, not a confirmed diagnosis of your unit.\nDo any of these match what you are seeing?",
+              "segments": [
+                {
+                  "kind": "text",
+                  "text": "Here are the possible causes of poor cooling on the Split AC Unit 2T:",
+                  "citation_ids": []
+                },
+                {
+                  "kind": "list_item",
+                  "text": "Dirty filter or coil.",
+                  "citation_ids": [
+                    "s1"
+                  ]
+                },
+                {
+                  "kind": "list_item",
+                  "text": "Blocked outdoor unit.",
+                  "citation_ids": [
+                    "s2"
+                  ]
+                },
+                {
+                  "kind": "text",
+                  "text": "These are possibilities from the approved manuals, not a confirmed diagnosis of your unit.",
+                  "citation_ids": []
+                },
+                {
+                  "kind": "question",
+                  "text": "Do any of these match what you are seeing?",
+                  "citation_ids": []
+                }
+              ],
+              "style": "symptom_causes",
+              "composer": "deterministic",
+              "displayed_claims": [
+                {
+                  "kind": "possible_cause",
+                  "source_text": "Dirty filter or coil.",
+                  "source_heading": "3. SYMPTOM: POOR COOLING",
+                  "evidence_ids": [
+                    "s1"
+                  ]
+                },
+                {
+                  "kind": "possible_cause",
+                  "source_text": "Blocked outdoor unit.",
+                  "source_heading": "3. SYMPTOM: POOR COOLING",
+                  "evidence_ids": [
+                    "s2"
+                  ]
+                }
+              ]
+            }
+          },
+          "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
+          "response_type": "DIAGNOSTIC_GUIDANCE",
+          "interaction_id": 482,
+          "session_id": "18fececc-a991-420a-917b-b7024ff59df5",
+          "session_status": "ACTIVE",
+          "session_version": 1,
+          "asset": {
+            "id": 1910,
+            "name": "Split AC Unit 2T",
+            "model_number": ""
+          },
+          "summary": "Possible causes from documentation; diagnosis unconfirmed.",
+          "answer": "Here are the possible causes of poor cooling on the Split AC Unit 2T:\n- Dirty filter or coil. [1]\n- Blocked outdoor unit. [2]\nThese are possibilities from the approved manuals, not a confirmed diagnosis of your unit.\nDo any of these match what you are seeing?",
+          "citations": [
+            {
+              "document_id": 1713,
+              "chunk_id": 2097,
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING",
+              "document_version": 2,
+              "url": "/api/customer-support/source/?citation=<signed-token>",
+              "id": "s1"
+            },
+            {
+              "document_id": 1713,
+              "chunk_id": 2097,
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING",
+              "document_version": 2,
+              "url": "/api/customer-support/source/?citation=<signed-token>",
+              "id": "s2"
+            }
+          ],
+          "references": [
+            {
+              "document_id": 1713,
+              "chunk_id": 2097,
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING",
+              "document_version": 2,
+              "url": "/api/customer-support/source/?citation=<signed-token>",
+              "id": "s1"
+            },
+            {
+              "document_id": 1713,
+              "chunk_id": 2097,
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING",
+              "document_version": 2,
+              "url": "/api/customer-support/source/?citation=<signed-token>",
+              "id": "s2"
+            }
+          ],
+          "documented_cause_sections": [
+            "POOR COOLING"
+          ],
+          "customer_safe_actions": [],
+          "check_first": [],
+          "technician_only_actions": [],
+          "stop_conditions": [],
+          "expected_result": "",
+          "clarification_question": null,
+          "can_resolve": false,
+          "can_escalate": true,
+          "engine": "source-structured-extractive",
+          "reason_code": null,
+          "suggested_follow_ups": [
+            "Explain each of these causes.",
+            "Tell me more about the first cause."
+          ],
+          "conversation_uuid": "d00ead7a-3a34-44ec-a452-9deb49dc2766",
+          "past_resolutions": [],
+          "retrieval_backend": "fallback",
+          "reranker_applied": true,
+          "reranker_model": "servy_v5_bge_verified",
+          "diagnostics": {
+            "retrieval": {
+              "passes": 1,
+              "dense_candidates": 0,
+              "sparse_candidates": 1,
+              "retrieved": 1,
+              "backends": [
+                "fallback"
+              ],
+              "reranker_applied": true
+            },
+            "cited_evidence": [
+              {
+                "id": "s1",
+                "title": "Split AC Unit 2T - Troubleshooting",
+                "heading": "3. SYMPTOM: POOR COOLING"
+              },
+              {
+                "id": "s2",
+                "title": "Split AC Unit 2T - Troubleshooting",
+                "heading": "3. SYMPTOM: POOR COOLING"
+              }
+            ],
+            "rejection_reasons": [],
+            "qwen": {
+              "ran": false,
+              "status": "disabled",
+              "eligible_claims": 0,
+              "accepted_claims": 0
+            },
+            "response_type": "DIAGNOSTIC_GUIDANCE"
+          },
+          "outcome": {
+            "status": "success",
+            "response_mode": "grounded_extractive",
+            "deadline_seconds": 5.0,
+            "deadline_exceeded": false,
+            "stage_timeouts": [],
+            "total_duration_ms": 188.0,
+            "retrieval_backend": "fallback",
+            "retrieval_status": "hybrid",
+            "dense_passes": {
+              "completed": 1,
+              "skipped_or_failed": 0
+            },
+            "reranker_applied": true,
+            "reranker_model": "servy_v5_bge_verified",
+            "reranker_status": "applied",
+            "generation_status": "disabled",
+            "generation_applied": false,
+            "fallback_reason": null
+          }
+        },
+        "created_at": "2026-11-23T08:50:55.111263Z"
+      },
+      "contract": {
+        "presentation": {
+          "schema_version": "customer-answer-v1",
+          "response_type": "DIAGNOSTIC_GUIDANCE",
+          "equipment": {
+            "id": 1910,
+            "name": "Split AC Unit 2T",
+            "model_number": ""
+          },
+          "sections": [
+            {
+              "number": 1,
+              "title": "What could be wrong?",
+              "claims": [
+                {
+                  "id": "c1",
+                  "text": "Possible documented cause: Dirty filter or coil.",
+                  "source_text": "Dirty filter or coil.",
+                  "kind": "possible_cause",
+                  "evidence_ids": [
+                    "s1"
+                  ],
+                  "source_heading": "3. SYMPTOM: POOR COOLING",
+                  "source_document_title": "Split AC Unit 2T - Troubleshooting"
+                },
+                {
+                  "id": "c2",
+                  "text": "Possible documented cause: Blocked outdoor unit.",
+                  "source_text": "Blocked outdoor unit.",
+                  "kind": "possible_cause",
+                  "evidence_ids": [
+                    "s2"
+                  ],
+                  "source_heading": "3. SYMPTOM: POOR COOLING",
+                  "source_document_title": "Split AC Unit 2T - Troubleshooting"
+                }
+              ]
+            },
+            {
+              "number": 2,
+              "title": "What can I safely check or report?",
+              "claims": [
+                {
+                  "text": "No customer procedure has been approved in the supporting evidence. Report what you observed to a technician.",
+                  "kind": "uncertainty",
+                  "evidence_ids": []
+                }
+              ]
+            },
+            {
+              "number": 3,
+              "title": "What is still unknown?",
+              "claims": [
+                {
+                  "text": "The available passages do not provide a customer-safe observation that confirms which documented possibility applies.",
+                  "kind": "uncertainty",
+                  "evidence_ids": []
+                }
+              ]
+            },
+            {
+              "number": 4,
+              "title": "What should I do next?",
+              "claims": [
+                {
+                  "text": "Ask an authorized technician for model-specific help if the issue continues. No ticket has been created.",
+                  "kind": "next_step",
+                  "evidence_ids": []
+                }
+              ]
+            }
+          ],
+          "citations": [
+            {
+              "document_id": 1713,
+              "chunk_id": 2097,
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING",
+              "document_version": 2,
+              "url": "/api/customer-support/source/?citation=<signed-token>",
+              "id": "s1"
+            },
+            {
+              "document_id": 1713,
+              "chunk_id": 2097,
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING",
+              "document_version": 2,
+              "url": "/api/customer-support/source/?citation=<signed-token>",
+              "id": "s2"
+            }
+          ],
+          "hazard": {
+            "severity": "none",
+            "message": ""
+          },
+          "supporting_claims": [
+            {
+              "id": "c1",
+              "text": "Possible documented cause: Dirty filter or coil.",
+              "source_text": "Dirty filter or coil.",
+              "kind": "possible_cause",
+              "evidence_ids": [
+                "s1"
+              ],
+              "source_heading": "3. SYMPTOM: POOR COOLING",
+              "source_document_title": "Split AC Unit 2T - Troubleshooting"
+            },
+            {
+              "id": "c2",
+              "text": "Possible documented cause: Blocked outdoor unit.",
+              "source_text": "Blocked outdoor unit.",
+              "kind": "possible_cause",
+              "evidence_ids": [
+                "s2"
+              ],
+              "source_heading": "3. SYMPTOM: POOR COOLING",
+              "source_document_title": "Split AC Unit 2T - Troubleshooting"
+            }
+          ],
+          "customer_permitted_observations": [],
+          "customer_authorized_actions": [],
+          "message": "",
+          "technician_only_warnings": [
+            "Physical procedures require separate customer approval or an authorized technician."
+          ],
+          "known_limitations": [
+            "No physical inspection or confirmed diagnosis."
+          ],
+          "authorized_user_actions": {
+            "can_resolve": false,
+            "can_escalate": true
+          },
+          "response": {
+            "text": "Here are the possible causes of poor cooling on the Split AC Unit 2T:\n- Dirty filter or coil. [1]\n- Blocked outdoor unit. [2]\nThese are possibilities from the approved manuals, not a confirmed diagnosis of your unit.\nDo any of these match what you are seeing?",
+            "segments": [
+              {
+                "kind": "text",
+                "text": "Here are the possible causes of poor cooling on the Split AC Unit 2T:",
+                "citation_ids": []
+              },
+              {
+                "kind": "list_item",
+                "text": "Dirty filter or coil.",
+                "citation_ids": [
+                  "s1"
+                ]
+              },
+              {
+                "kind": "list_item",
+                "text": "Blocked outdoor unit.",
+                "citation_ids": [
+                  "s2"
+                ]
+              },
+              {
+                "kind": "text",
+                "text": "These are possibilities from the approved manuals, not a confirmed diagnosis of your unit.",
+                "citation_ids": []
+              },
+              {
+                "kind": "question",
+                "text": "Do any of these match what you are seeing?",
+                "citation_ids": []
+              }
+            ],
+            "style": "symptom_causes",
+            "composer": "deterministic",
+            "displayed_claims": [
+              {
+                "kind": "possible_cause",
+                "source_text": "Dirty filter or coil.",
+                "source_heading": "3. SYMPTOM: POOR COOLING",
+                "evidence_ids": [
+                  "s1"
+                ]
+              },
+              {
+                "kind": "possible_cause",
+                "source_text": "Blocked outdoor unit.",
+                "source_heading": "3. SYMPTOM: POOR COOLING",
+                "evidence_ids": [
+                  "s2"
+                ]
+              }
+            ]
+          }
+        },
+        "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
+        "response_type": "DIAGNOSTIC_GUIDANCE",
+        "interaction_id": 482,
+        "session_id": "18fececc-a991-420a-917b-b7024ff59df5",
+        "session_status": "ACTIVE",
+        "session_version": 1,
+        "asset": {
+          "id": 1910,
+          "name": "Split AC Unit 2T",
+          "model_number": ""
+        },
+        "summary": "Possible causes from documentation; diagnosis unconfirmed.",
+        "answer": "Here are the possible causes of poor cooling on the Split AC Unit 2T:\n- Dirty filter or coil. [1]\n- Blocked outdoor unit. [2]\nThese are possibilities from the approved manuals, not a confirmed diagnosis of your unit.\nDo any of these match what you are seeing?",
+        "citations": [
+          {
+            "document_id": 1713,
+            "chunk_id": 2097,
+            "title": "Split AC Unit 2T - Troubleshooting",
+            "heading": "3. SYMPTOM: POOR COOLING",
+            "document_version": 2,
+            "url": "/api/customer-support/source/?citation=<signed-token>",
+            "id": "s1"
+          },
+          {
+            "document_id": 1713,
+            "chunk_id": 2097,
+            "title": "Split AC Unit 2T - Troubleshooting",
+            "heading": "3. SYMPTOM: POOR COOLING",
+            "document_version": 2,
+            "url": "/api/customer-support/source/?citation=<signed-token>",
+            "id": "s2"
+          }
+        ],
+        "references": [
+          {
+            "document_id": 1713,
+            "chunk_id": 2097,
+            "title": "Split AC Unit 2T - Troubleshooting",
+            "heading": "3. SYMPTOM: POOR COOLING",
+            "document_version": 2,
+            "url": "/api/customer-support/source/?citation=<signed-token>",
+            "id": "s1"
+          },
+          {
+            "document_id": 1713,
+            "chunk_id": 2097,
+            "title": "Split AC Unit 2T - Troubleshooting",
+            "heading": "3. SYMPTOM: POOR COOLING",
+            "document_version": 2,
+            "url": "/api/customer-support/source/?citation=<signed-token>",
+            "id": "s2"
+          }
+        ],
+        "documented_cause_sections": [
+          "POOR COOLING"
+        ],
+        "customer_safe_actions": [],
+        "check_first": [],
+        "technician_only_actions": [],
+        "stop_conditions": [],
+        "expected_result": "",
+        "clarification_question": null,
+        "can_resolve": false,
+        "can_escalate": true,
+        "engine": "source-structured-extractive",
+        "reason_code": null,
+        "suggested_follow_ups": [
+          "Explain each of these causes.",
+          "Tell me more about the first cause."
+        ],
+        "conversation_uuid": "d00ead7a-3a34-44ec-a452-9deb49dc2766",
+        "past_resolutions": [],
+        "retrieval_backend": "fallback",
+        "reranker_applied": true,
+        "reranker_model": "servy_v5_bge_verified",
+        "diagnostics": {
+          "retrieval": {
+            "passes": 1,
+            "dense_candidates": 0,
+            "sparse_candidates": 1,
+            "retrieved": 1,
+            "backends": [
+              "fallback"
+            ],
+            "reranker_applied": true
+          },
+          "cited_evidence": [
+            {
+              "id": "s1",
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING"
+            },
+            {
+              "id": "s2",
+              "title": "Split AC Unit 2T - Troubleshooting",
+              "heading": "3. SYMPTOM: POOR COOLING"
+            }
+          ],
+          "rejection_reasons": [],
+          "qwen": {
+            "ran": false,
+            "status": "disabled",
+            "eligible_claims": 0,
+            "accepted_claims": 0
+          },
+          "response_type": "DIAGNOSTIC_GUIDANCE"
+        },
+        "outcome": {
+          "status": "success",
+          "response_mode": "grounded_extractive",
+          "deadline_seconds": 5.0,
+          "deadline_exceeded": false,
+          "stage_timeouts": [],
+          "total_duration_ms": 188.0,
+          "retrieval_backend": "fallback",
+          "retrieval_status": "hybrid",
+          "dense_passes": {
+            "completed": 1,
+            "skipped_or_failed": 0
+          },
+          "reranker_applied": true,
+          "reranker_model": "servy_v5_bge_verified",
+          "reranker_status": "applied",
+          "generation_status": "disabled",
+          "generation_applied": false,
+          "fallback_reason": null
+        }
+      },
+      "conversation_title": "AC is not cooling"
+    }
+  },
+  "idempotency_collision": {
+    "method": "POST",
+    "path": "/api/customer-support/conversations/d00ead7a-3a34-44ec-a452-9deb49dc2766/messages/",
+    "request": {
+      "message": "Different text"
+    },
+    "status": 400,
+    "response": {
+      "detail": "Idempotency key collision with different request payload."
+    }
+  },
+  "revoked_key": {
+    "method": "GET",
+    "path": "/api/customer-support/conversations/",
+    "request": null,
+    "status": 401,
+    "response": {
+      "detail": "Invalid or inactive API key."
+    }
+  },
+  "ticket_preview": {
+    "method": "GET",
+    "path": "/api/customer-support/conversations/94a49170-197b-4da0-9f90-05e1ffdedd94/ticket/",
+    "request": null,
+    "status": 200,
+    "response": {
+      "ticket": null,
+      "detail": "No ticket has been created for this conversation yet.",
+      "preview": {
+        "complaint": "My AC is not cooling",
+        "description": "Customer conversation 94a49170-197b-4da0-9f90-05e1ffdedd94 (2 messages)\n\n1. Customer-reported problem\n- My AC is not cooling\n\n2. Asset\n- Asset ID 1916, Split AC Unit 2T, code DEV-AST-059\n- Site: Site\n\n3. Symptoms and observations reported by the customer\n- [1] My AC is not cooling (customer-reported, not independently verified)\n\n4. Questions asked during the conversation\n- Q: Do any of these match what you are seeing?\n\n5. Customer responses\n- No follow-up responses from the customer.\n\n6. Troubleshooting discussed (not confirmed as performed)\n- No customer troubleshooting steps were suggested.\n\n7. Approved-manual findings and citations\n- Assistant answer 1: Here are the possible causes of poor cooling on the Split AC Unit 2T: - Dirty filter or coil. [1] - Blocked outdoor unit. [2] These are possibilities from the approved manuals, not a confirmed diagnosis of your unit. Do any of these match what you are seeing?\n-    Source: Split AC Unit 2T - Troubleshooting - 3. SYMPTOM: POOR COOLING\n\n8. Unresolved\n- The customer requested a service call; the issue is not confirmed as resolved.\n- Unanswered question: Do any of these match what you are seeing?\n\n9. For technician investigation\n- No diagnosis has been confirmed. Verify the customer-reported symptoms on site.",
+        "sections": {
+          "1. Customer-reported problem": [
+            "My AC is not cooling"
+          ],
+          "2. Asset": [
+            "Asset ID 1916, Split AC Unit 2T, code DEV-AST-059",
+            "Site: Site"
+          ],
+          "3. Symptoms and observations reported by the customer": [
+            "[1] My AC is not cooling (customer-reported, not independently verified)"
+          ],
+          "4. Questions asked during the conversation": [
+            "Q: Do any of these match what you are seeing?"
+          ],
+          "5. Customer responses": [
+            "No follow-up responses from the customer."
+          ],
+          "6. Troubleshooting discussed (not confirmed as performed)": [
+            "No customer troubleshooting steps were suggested."
+          ],
+          "7. Approved-manual findings and citations": [
+            "Assistant answer 1: Here are the possible causes of poor cooling on the Split AC Unit 2T: - Dirty filter or coil. [1] - Blocked outdoor unit. [2] These are possibilities from the approved manuals, not a confirmed diagnosis of your unit. Do any of these match what you are seeing?",
+            "   Source: Split AC Unit 2T - Troubleshooting - 3. SYMPTOM: POOR COOLING"
+          ],
+          "8. Unresolved": [
+            "The customer requested a service call; the issue is not confirmed as resolved.",
+            "Unanswered question: Do any of these match what you are seeing?"
+          ],
+          "9. For technician investigation": [
+            "No diagnosis has been confirmed. Verify the customer-reported symptoms on site."
+          ]
+        },
+        "message_count": 2,
+        "missing_fields": [],
+        "can_create": true
+      }
+    }
+  },
+  "ticket_create": {
+    "method": "POST",
+    "path": "/api/customer-support/conversations/94a49170-197b-4da0-9f90-05e1ffdedd94/ticket/",
+    "request": {
+      "confirm_ticket_creation": true
+    },
+    "status": 200,
+    "response": {
+      "ticket": {
+        "id": 195,
+        "servy_id": 42831,
+        "ticket_ref": "SRV-42831",
+        "status": "assigned",
+        "priority": "normal",
+        "complaint_type": "AI Self-Service Escalation",
+        "complaint_text": "My AC is not cooling",
+        "created_at": "2026-11-23T08:50:55.744323Z",
+        "response_due_at": "2026-11-23T10:50:55.742339Z",
+        "resolution_due_at": "2026-11-23T20:50:55.742339Z",
+        "technician_assigned": true,
+        "technician_name": "Synthetic Technician",
+        "handoff_state": "assigned",
+        "technician_acknowledged": false,
+        "acknowledged_at": null
+      },
+      "created": true,
+      "detail": "Service Call #42831 created successfully."
+    }
+  },
+  "ticket_create_repeat": {
+    "method": "POST",
+    "path": "/api/customer-support/conversations/94a49170-197b-4da0-9f90-05e1ffdedd94/ticket/",
+    "request": {
+      "confirm_ticket_creation": true
+    },
+    "status": 200,
+    "response": {
+      "ticket": {
+        "id": 195,
+        "servy_id": 42831,
+        "ticket_ref": "SRV-42831",
+        "status": "assigned",
+        "priority": "normal",
+        "complaint_type": "AI Self-Service Escalation",
+        "complaint_text": "My AC is not cooling",
+        "created_at": "2026-11-23T08:50:55.744323Z",
+        "response_due_at": "2026-11-23T10:50:55.742339Z",
+        "resolution_due_at": "2026-11-23T20:50:55.742339Z",
+        "technician_assigned": true,
+        "technician_name": "Synthetic Technician",
+        "handoff_state": "assigned",
+        "technician_acknowledged": false,
+        "acknowledged_at": null
+      },
+      "created": false,
+      "detail": "Service Call #42831 already exists for this conversation."
+    }
+  }
+}
