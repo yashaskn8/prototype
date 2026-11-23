@@ -179,7 +179,7 @@ def _generic_cause_candidates(*, tenant, customer, asset):
     from .retriever import _knowledge_candidates
 
     authorized_scope = _knowledge_candidates(
-        tenant, asset, customer, False, backend="all",
+        tenant, asset, customer, False, allow_failed=True, backend="sparse",
     )
     cause_chunks = []
     for chunk in authorized_scope:
