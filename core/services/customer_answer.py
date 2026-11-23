@@ -125,7 +125,7 @@ _CAUSE_QUESTION = re.compile(
     r"malfunction\w*|not working|(?:isn'?t|doesn'?t|won'?t|stopped) work\w*)\b", re.I)
 
 _GENERIC_FAILURE_QUERY = re.compile(
-    r"\b(?:not working|does(?:n'?t| not) work|won'?t work|can'?t work|cannot work|"
+    r"\b(?:not work(?:ing)?|does(?:n'?t| not) work|won'?t work|can'?t work|cannot work|"
     r"isn'?t functioning|not functioning|stopped working|not operational|"
     r"not running|not operating|not turning on|won'?t turn on|"
     r"doesn'?t turn on|"
@@ -160,6 +160,61 @@ def is_generic_cause_overview(question):
         and _GENERIC_CAUSE_REQUEST.search(value)
         and not _SPECIFIC_FAULT_QUERY.search(value)
     )
+
+
+def _generic_cause_candidates(*, tenant, customer, asset):
+    """Cover distinct authorized fault sections for an unspecified failure.
+
+    Generic equipment failure has no fault-specific similarity target. Top-k
+    reranking can favor one arbitrary fault, so it must not be the only source
+    of candidates for an overview. Every selected chunk is reauthorized.
+    """
+    from .retriever import _knowledge_candidates
+
+    by_heading = {}
+    for chunk in _knowledge_candidates(tenant, asset, customer, False, backend="all"):
+        heading = str(chunk.heading or "")
+        if not re.search(
+            r"\b(?:fault|symptom|failure|troubleshoot|not working|does not start)\b",
+            heading, re.I,
+        ):
+            continue
+        if not any(kind == "possible_cause" and _descriptive_cause(text)
+                   for text, kind, _start, _end in source_claims(chunk.text)):
+            continue
+        key = (chunk.document_id,
+               re.sub(r"^\s*\d+[.)]\s*", "", heading).strip().casefold())
+        by_heading.setdefault(key, []).append(chunk)
+
+    # Cover all headings once before taking secondary chunks from any heading.
+    # The bounded authorization work never replaces the underlying scope gate.
+    selected = []
+    for depth in range(3):
+        for group in by_heading.values():
+            if depth < len(group):
+                selected.append(group[depth])
+                if len(selected) >= 48:
+                    break
+        if len(selected) >= 48:
+            break
+
+    authorized = []
+    for chunk in selected:
+        try:
+            permitted = source_chunk(
+                tenant=tenant, customer=customer, asset=asset,
+                document_id=chunk.document_id, chunk_id=chunk.id,
+            )
+        except NotFound:
+            continue
+        authorized.append(SimpleNamespace(
+            chunk=permitted, text=permitted.text, heading=permitted.heading,
+            title=permitted.document.title, score=0.0,
+            source_verified=True, equipment_applicable=True,
+            is_quarantined=False, customer_action_authorized=False,
+            exact_identifier_match=False,
+        ))
+    return authorized
 
 
 def _is_cause_coverage_review(question):
@@ -786,40 +841,30 @@ def build_customer_answer(
         if fact_answer:
             return fact_answer
     sufficient = check_evidence_sufficiency(question, asset, candidates)
-    generic_cause_overview = (
-        is_generic_cause_overview(raw_user_q)
-        or is_generic_cause_overview(question)
-        or (
-            conversation_context is not None
-            and is_generic_cause_overview(
-                getattr(conversation_context, "original_complaint", "")
-            )
-            and _is_cause_coverage_review(raw_user_q or question)
+    # Intent belongs to the latest customer turn, not to a previous complaint
+    # incorporated into the technical retrieval query.
+    original_complaint = (
+        getattr(conversation_context, "original_complaint", "")
+        if conversation_context is not None else ""
+    )
+    generic_cause_overview = bool(
+        _GENERIC_CAUSE_REQUEST.search(raw_user_q)
+        and not _SPECIFIC_FAULT_QUERY.search(raw_user_q)
+        and (
+            is_generic_cause_overview(raw_user_q)
+            or is_generic_cause_overview(f"{raw_user_q} {original_complaint}")
         )
     )
     evidence_chunks = list(sufficient.grounded_chunks or [])
     if generic_cause_overview:
-        # A generic failure does not identify one symptom heading. For this
-        # explicit cause-overview request, include score-qualified, selected-
-        # asset, re-authorized chunks only when their own heading is a fault
-        # condition and their source contains a descriptive cause sentence.
-        from django.conf import settings as django_settings
-        minimum_score = float(getattr(django_settings, "SERVY_RAG_MIN_SCORE", 0.055))
-        seen_cause_chunks = {candidate.chunk.id for candidate in evidence_chunks}
-        for candidate in candidates:
-            if (candidate.chunk.id in seen_cause_chunks
-                    or candidate.score < minimum_score
-                    or not candidate.source_verified
-                    or not candidate.equipment_applicable
-                    or candidate.is_quarantined
-                    or not re.search(r"\b(?:fault|symptom)\b", candidate.heading or "", re.I)):
-                continue
-            if any(
-                kind == "possible_cause" and _descriptive_cause(text)
-                for text, kind, _start, _end in source_claims(candidate.text)
-            ):
-                evidence_chunks.append(candidate)
-                seen_cause_chunks.add(candidate.chunk.id)
+        # A broad question must not inherit a single fault family from top-k/V5.
+        overview = _generic_cause_candidates(
+            tenant=tenant, customer=customer, asset=asset,
+        )
+        if overview:
+            evidence_chunks = overview
+            known = {candidate.chunk.id for candidate in candidates}
+            candidates.extend(item for item in overview if item.chunk.id not in known)
     causes, observations, procedures, facts, citations = [], [], [], [], []
     terms = set(re.findall(r"[a-z0-9_-]{3,}", normalize_domain_terms(question).casefold())) - _STOPWORDS
     # One matching rule for every answer-stage check: folded word forms, plus
@@ -827,12 +872,11 @@ def build_customer_answer(
     term_keys = match_keys(terms)
     # Classify the customer's intent from their words with spelling corrected
     # ("what cuases this", "how ofen") as well as from the raw text.
-    intent_text = f"{raw_user_q} {normalize_domain_terms(raw_user_q)} {normalize_domain_terms(question)}"
+    intent_text = f"{raw_user_q} {normalize_domain_terms(raw_user_q)}"
     asked_symptoms = symptom_concepts(intent_text) | symptom_concepts(question)
-    wants_facts = not _CAUSE_QUESTION.search(intent_text) and not _CAUSE_QUESTION.search(question)
+    wants_facts = not _CAUSE_QUESTION.search(intent_text)
     wants_cause_details = bool(
         _CAUSE_EXPLANATION_REQUEST.search(raw_user_q)
-        or _CAUSE_EXPLANATION_REQUEST.search(question)
     )
     asks_frequency = bool(_FREQUENCY_QUESTION.search(intent_text))
     # A multi-part question ("what causes X, and how often should Y be done?")
@@ -1032,7 +1076,22 @@ def build_customer_answer(
         # causes or facts; section 2 observations and procedures), keeping the
         # most relevant claims. A generic failure overview previously kept 20
         # causes, which the client rejected as an invalid answer.
-        chosen = (sorted(cause_pool, key=lambda i: -_relevance(i))[:MAX_SECTION_CLAIMS if generic_cause_overview else 10]
+        if generic_cause_overview:
+            # Give each documented fault heading one claim before taking
+            # additional bullets from a heading, within the client claim cap.
+            primary, secondary, headings = [], [], set()
+            for item in cause_pool:
+                heading = re.sub(r"^\s*\d+[.)]\s*", "",
+                                 str(item["result"].heading or "")).casefold()
+                if heading in headings:
+                    secondary.append(item)
+                else:
+                    headings.add(heading)
+                    primary.append(item)
+            selected_causes = (primary + secondary)[:MAX_SECTION_CLAIMS]
+        else:
+            selected_causes = sorted(cause_pool, key=lambda i: -_relevance(i))[:10]
+        chosen = (selected_causes
                   + fact_choice[:MAX_SECTION_CLAIMS]
                   + sorted(action_pool, key=lambda i: -_relevance(i))[:8])
         chosen.sort(key=lambda i: i["order"])
