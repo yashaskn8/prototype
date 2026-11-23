@@ -248,6 +248,12 @@ Possible causes:
         vague, _ = self.ask(uuid, "why is this not working")
         self.assertEqual(vague["response_type"], "CLARIFICATION")
         self.ask(uuid, "dont know suddenly it stopped working")
+        from core.models import CustomerConversation
+        from core.services.conversation_context import extract_conversation_context
+        conv = CustomerConversation.objects.get(conversation_uuid=uuid)
+        reconstructed = extract_conversation_context(
+            conv, "an independent question", asset=self.vrf)
+        self.assertIsNone(reconstructed.pending_question)
 
         # Reproduce the live failure: V5 returned only the low-pressure chunk.
         def one_fault_only(**kwargs):
