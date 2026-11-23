@@ -44,14 +44,13 @@ export function generationFallbackNote(data) {
   return why ? `Source wording used because ${why}.` : 'Source wording used.';
 }
 
-// One short customer-facing line, only when no answer could be confirmed. Answers
-// shown in assistant or exact source wording carry no label in the chat.
+// Customer chat carries no outcome label: every reply, including an unconfirmed
+// one, explains itself in plain language. Kept for API compatibility.
 export function outcomeLabel(data) {
   const o = data?.outcome;
   if (!o || typeof o !== 'object') return '';
-  if (o.status === 'insufficient_evidence') {
-    return 'No answer from the approved manuals could be confirmed for this question. Please describe the symptom in more detail or request a technician.';
-  }
+  // Unconfirmed answers already explain themselves in plain language; no extra
+  // notice is shown under them (the outcome stays recorded for diagnostics).
   return '';
 }
 

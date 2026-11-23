@@ -439,13 +439,15 @@ class DashboardView(APIView):
             }
             data["stats"] = stats
             data["metrics"] = stats
-            data["recent_calls"] = list(calls_qs.order_by("-created_at")[:8].values(
-                "id", "servy_id", "complaint_type", "status", "priority", "created_at",
-                "customer__name", "asset__name"
-            ))
-            recent_interactions_qs = interactions_qs.select_related(
+            store = role in STORE_ROLES
+            # Store roles: no customer names or customers' questions (default deny).
+            call_fields = (("id", "servy_id", "status", "priority", "created_at", "asset__name") if store else
+                           ("id", "servy_id", "complaint_type", "status", "priority", "created_at",
+                            "customer__name", "asset__name"))
+            data["recent_calls"] = list(calls_qs.order_by("-created_at")[:8].values(*call_fields))
+            recent_interactions_qs = ([] if store else interactions_qs.select_related(
                 "customer", "asset"
-            ).order_by("-created_at")[:5]
+            ).order_by("-created_at")[:5])
             data["recent_interactions"] = [
                 {
                     "id": ix.id,
@@ -1840,7 +1842,9 @@ class CallDetailView(APIView):
                              if call.customer and not is_store else None),
                 "site": {"id": call.site.id, "name": call.site.name} if call.site else None,
                 "asset": {"id": call.asset.id, "name": call.asset.name, "model_number": call.asset.model_number} if call.asset else None,
-                "technician": ({"id": call.technician.id, "name": call.technician.full_name} if call.technician else None) if not is_customer else None,
+                # Technician identity: staff who work calls only (not customers or stores).
+                "technician": ({"id": call.technician.id, "name": call.technician.full_name}
+                               if call.technician and not (is_customer or is_store) else None),
             },
             "updates": updates,
             "part_requests": parts if not is_customer else [],

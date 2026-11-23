@@ -627,7 +627,9 @@ class CustomerRagEndToEndTests(TestCase):
         self.assertEqual(data.get("expected_result", ""), "")
         self.assertFalse(data["can_resolve"])
         self.assertTrue(data["can_escalate"])
-        self.assertIn("insufficient evidence", data.get("answer", "").lower())
+        # Abstention is stated in plain language, without internal labels.
+        self.assertIn("can't confirm", data.get("answer", "").lower())
+        self.assertNotIn("insufficient evidence", data.get("answer", "").lower())
 
     def test_scenario_5_refresh_and_resume_preserves_session(self):
         """Refresh and resume preserve the existing session without re-submitting a POST."""

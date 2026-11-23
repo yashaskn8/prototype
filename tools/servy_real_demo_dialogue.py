@@ -8,6 +8,10 @@ never asserts a new technical fact.
 import hashlib
 import re
 
+# The backend's former generic no-evidence text (core.services.customer_answer).
+LEGACY_GENERIC_NO_EVIDENCE = ("There is insufficient evidence to establish a safe answer for this equipment "
+                              "and question. Ask an authorized technician for help.")
+
 from core.services.content_safety import detect_document_prompt_injection
 from core.services.term_matching import (
     heading_states_symptom, match_keys, question_states_heading, symptom_concepts,
@@ -1561,8 +1565,7 @@ def focus_answer(contract, question, *, last_topic=None, previous_facts=(), plan
         presentation = contract.get("presentation") or {}
         if (contract.get("response_type") == "INSUFFICIENT_EVIDENCE"
             and not contract.get("reason_code")
-            and presentation.get("message") ==
-                "There is insufficient evidence to establish a safe answer for this equipment and question. Ask an authorized technician for help."):
+            and presentation.get("message") == LEGACY_GENERIC_NO_EVIDENCE):
             topic = question_topic(question, last_topic)
             message, reason, next_asked = NO_EVIDENCE[topic], None, list(asked_followups)[-8:]
             if topic == "causes":

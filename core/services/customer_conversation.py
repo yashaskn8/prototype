@@ -82,7 +82,7 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
                 contract["response_type"] = presentation["response_type"] = "CLARIFICATION"
                 contract["clarification_question"] = clarification["text"]
                 presentation["follow_up_question"] = clarification["text"]
-                presentation["message"] = "I need a little more detail to find the right section of the manual."
+                presentation["message"] = "I need a little more detail to help."
                 contract["answer"] = f"{presentation['message']} {clarification['text']}"
     except Exception:
         logger.exception("Conversational composition failed; keeping the structured answer")
@@ -148,17 +148,17 @@ def _greeting_contract(asset, session, has_previous_answer):
     }
 
 
-def _summary_contract(session, message):
-    """A recap of what the customer reported; contains no technical claims."""
+def _summary_contract(session, message, response_type="CONVERSATION_SUMMARY", reason_code=None):
+    """A conversation-only reply (recap, ticket questions, certainty); no technical claims."""
     return {
-        "response_mode": "CONVERSATION_SUMMARY", "response_type": "CONVERSATION_SUMMARY",
+        "response_mode": response_type, "response_type": response_type, "reason_code": reason_code,
         "session_id": str(session.session_id) if session else None,
         "session_status": session.status if session else "ACTIVE",
         "summary": message, "answer": message, "citations": [], "references": [],
         "customer_safe_actions": [], "check_first": [], "technician_only_actions": [],
         "clarification_question": None, "can_resolve": False, "can_escalate": True,
-        "engine": "conversation-summary",
-        "presentation": {"schema_version": "customer-answer-v1", "response_type": "CONVERSATION_SUMMARY",
+        "engine": "conversation-intent",
+        "presentation": {"schema_version": "customer-answer-v1", "response_type": response_type,
                          "sections": [], "citations": [], "supporting_claims": [], "message": message,
                          "hazard": {"severity": "none", "message": ""}},
     }
@@ -704,6 +704,27 @@ def _process_customer_diagnostic_turn(
                 session=session, turn_text=turn_text, idem_record=idem_record,
                 contract=_summary_contract(session, conversation_summary_text(
                     conv_context, f"SRV-{linked.servy_id}" if linked else None)))
+
+        # Questions about the service request or about certainty are answered from
+        # saved conversation state and the linked ticket only, never from manuals.
+        from core.services.conversation_context import conversation_intent, conversation_intent_reply
+        intent = conversation_intent(request_text or turn_text)
+        guard = _summary_guard(request_text or turn_text) if intent else None
+        # A certainty question is what the "unsupported" guard describes; the reply
+        # below is itself a refusal to confirm, so no retrieval is needed. Safety
+        # guards always keep precedence.
+        if intent and (not guard or (intent == "certainty" and guard == "unsupported")):
+            for stage, label in (("customer_rag_execution", f"Manual retrieval skipped: {intent} question"),
+                                 ("customer_evidence_validation", "No technical claim in this reply"),
+                                 ("customer_qwen_generation", "Local Qwen generation skipped")):
+                emit_execution_event(stage, label, "skipped")
+            linked = getattr(conv, "linked_service_call", None)
+            ticket = ({"ref": f"SRV-{linked.servy_id}", "status": linked.status} if linked else None)
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_summary_contract(session, conversation_intent_reply(intent, conv_context, ticket),
+                                           response_type="CONVERSATION_REPLY", reason_code=intent.upper()))
 
         from core.services.customer_answer import _CAUSE_EXPLANATION_REQUEST, _question_guard
         from core.services.conversation_context import resolve_cause_reference

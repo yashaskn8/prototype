@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 ORDINAL_WORDS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
                  "ninth", "tenth", "eleventh", "twelfth")
-LIMITATION = "These are possibilities from the approved manuals, not a confirmed diagnosis of your unit."
+LIMITATION = "These are possibilities, not a confirmed diagnosis of your unit."
 MAX_SEGMENT_CHARS = 600
 
 
@@ -116,8 +116,9 @@ def _acknowledge(answer: str) -> str:
 def compose_reply_acknowledgement(context, equipment: str) -> Optional[Dict[str, Any]]:
     """A reply to our own question with nothing further documented for the current topic.
 
-    Records the customer's answer and says plainly that the approved manuals add
-    nothing more specific, instead of switching to an unrelated symptom.
+    Records the customer's answer and says plainly that the exact cause can't be
+    narrowed down further, instead of switching to an unrelated symptom. The
+    technician offer is made once, not after every observation.
     """
     if not getattr(context, "answers_pending_question", False):
         return None
@@ -126,11 +127,11 @@ def compose_reply_acknowledgement(context, equipment: str) -> Optional[Dict[str,
     topic = topics[0] if len(topics) == 1 else "this issue"
     segments = [
         _segment("text", _acknowledge(answers[-1]["answer"] if answers else "")),
-        _segment("text", f"The approved {equipment} manuals don't describe {topic} in any more detail than "
-                         f"what I've already shared, so I can't narrow it down further from them."),
-        _segment("question", "If it keeps happening, would you like a technician to take a look? "
-                             "I can prepare a service request with what you've told me."),
+        _segment("text", f"I can't confirm the exact cause of the {topic} from the information available."),
     ]
+    previous = str(getattr(context, "last_assistant_answer", "") or "").casefold()
+    if "service request" not in previous and "technician" not in previous:
+        segments.append(_segment("question", "I can record this for a technician if you'd like."))
     return {"text": render_text(segments, []), "segments": segments, "style": "reply_acknowledged",
             "composer": "deterministic", "displayed_claims": []}
 

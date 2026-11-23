@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional
 from django.conf import settings
 
 MAX_EXPLANATIONS_PER_CAUSE = 1
-RESPONSE_LIMIT_TEXT = "More explanation may exist in the approved manuals; ask about this cause separately for details."
-GAP_TEXT = "I could not find a further explanation of this cause in the manual passages I checked."
+RESPONSE_LIMIT_TEXT = "There may be more to say about this one; ask me about it on its own."
+GAP_TEXT = "I couldn't find more detail on this cause in the information I searched."
 UNVERIFIED_TEXT = "One previously listed cause could not be re-verified in the currently authorized manuals."
 LIMITATION = "These are documented possibilities, not a confirmed diagnosis of your unit."
 

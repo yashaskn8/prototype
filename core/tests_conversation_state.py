@@ -239,25 +239,30 @@ class ActiveIssueQueryTests(TestCase):
             "Actually, I meant a communication fault.", ctx).casefold())
 
 
+def install_split_ac_fixture(test, manual=None):
+    """Inline SSE worker plus the synthetic Split AC manual on the gateway asset."""
+    from core.services import rag_event_stream
+    from core.tests_conversational_gateway import _InlineThread
+    for name, value in (("Thread", _InlineThread), ("close_old_connections", lambda: None),
+                        ("connections", mock.Mock())):
+        patcher = mock.patch.object(rag_event_stream, name, value)
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    KnowledgeDocument.objects.filter(asset=test.asset).delete()
+    doc = KnowledgeDocument.objects.create(
+        tenant=test.tenant, product=test.asset.product, asset=test.asset,
+        title="Split AC Unit 2T - Troubleshooting and Faults", source_type="text",
+        is_rag_enabled=True, content_text=manual or SPLIT_AC_MANUAL)
+    index_document(doc)
+    test.vrf = test.asset
+
+
 class SplitACConversationTests(GatewayTestBase):
     """The exact five-turn Split AC conversation through the real customer gateway."""
 
     def setUp(self):
         super().setUp()
-        from core.services import rag_event_stream
-        from core.tests_conversational_gateway import _InlineThread
-        for name, value in (("Thread", _InlineThread), ("close_old_connections", lambda: None),
-                            ("connections", mock.Mock())):
-            patcher = mock.patch.object(rag_event_stream, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        KnowledgeDocument.objects.filter(asset=self.asset).delete()
-        doc = KnowledgeDocument.objects.create(
-            tenant=self.tenant, product=self.asset.product, asset=self.asset,
-            title="Split AC Unit 2T - Troubleshooting and Faults", source_type="text",
-            is_rag_enabled=True, content_text=SPLIT_AC_MANUAL)
-        index_document(doc)
-        self.vrf = self.asset
+        install_split_ac_fixture(self)
 
     create = VRFConversationGatewayTests.create
     ask = VRFConversationGatewayTests.ask

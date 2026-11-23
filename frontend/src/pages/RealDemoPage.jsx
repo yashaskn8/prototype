@@ -678,7 +678,7 @@ export function RealDemoPage() {
                 <Bot size={25} />
                 <div className="real-demo-chat-heading">
                   <h2>Ask Servy</h2>
-                  <p>Continuous conversation · Approved original manuals · Cited answers</p>
+                  <p>Equipment troubleshooting assistant</p>
                 </div>
                 <button type="button" className="real-demo-new-chat" onClick={startNewChat} disabled={busy}>
                   <Plus size={16} /> New chat
@@ -707,7 +707,7 @@ export function RealDemoPage() {
                   <h3>{asset ? 'Ask about this equipment' : 'Select equipment first'}</h3>
                   <p>{asset
                     ? 'Describe a symptom or fault code. Continue asking follow-up questions; Servy will use the earlier customer reports to retrieve relevant approved documentation.'
-                    : 'Choose the exact equipment in Equipment Selection before starting a conversation. Each chat stays bound to that asset and its approved manuals.'}</p>
+                    : 'Choose the exact equipment in Equipment Selection before starting a conversation. Each chat stays bound to that equipment.'}</p>
                   <small>Local demo: conversations are saved in the isolated development database and reload after a refresh. Nothing is written to company records.</small>
                 </div>}
                 {messages.map((message, index) => (
@@ -726,12 +726,15 @@ export function RealDemoPage() {
                               <span className={message.data?.response_type === 'DIAGNOSTIC_GUIDANCE'
                                 ? 'real-demo-chat-guidance' : 'real-demo-chat-limited'}>
                                 {({
-                                  DIAGNOSTIC_GUIDANCE: 'Cited answer',
+                                  DIAGNOSTIC_GUIDANCE: 'Troubleshooting',
                                   TECHNICIAN_HANDOFF: 'Technician advice',
                                   CLARIFICATION: message.data?.reason_code === 'CUSTOMER_REPORT_CAPTURED'
-                                    ? 'Customer detail captured' : 'Clarification',
+                                    ? 'Noted' : 'Question',
                                   INSUFFICIENT_EVIDENCE: message.data?.reason_code === 'OUT_OF_SCOPE_QUERY'
-                                    ? 'Outside manual scope' : 'More evidence needed',
+                                    ? 'Outside what I can help with' : 'Not confirmed',
+                                  CONVERSATION_SUMMARY: 'Summary',
+                                  CONVERSATION_REPLY: 'Reply',
+                                  GREETING: 'Hello',
                                   ESCALATION_REQUIRED: 'Safety notice',
                                   POLICY_VIOLATION: 'Not permitted',
                                 })[message.data?.response_type] || 'Response'}

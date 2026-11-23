@@ -854,6 +854,40 @@ def exception_presentation(contract):
             "authorized_user_actions": {"can_resolve": False, "can_escalate": bool(contract.get("can_escalate"))}}
 
 
+# Former generic refusal text (kept so tools can recognise answers stored before
+# the wording change); customers now receive limitation_message() instead.
+LEGACY_GENERIC_NO_EVIDENCE = ("There is insufficient evidence to establish a safe answer for this equipment "
+                              "and question. Ask an authorized technician for help.")
+
+
+def no_documentation_message(asset) -> str:
+    name = getattr(asset, "name", None) or "this equipment"
+    return (f"I don't have approved documentation for the {name}, so I can't suggest causes or repair steps. "
+            "If you note what it is doing, when it happens and any code shown, a technician can take it from "
+            "there. No service request has been created.")
+
+
+def limitation_message(asset, conversation_context=None) -> str:
+    """A plain, honest 'I can't confirm that' that keeps what the customer told us.
+
+    Adds no technical content. Offers a technician only when the previous reply
+    did not already offer one, so the offer is not repeated after every message.
+    """
+    name = getattr(asset, "name", None) or "your equipment"
+    parts = [f"I can't confirm that from the information I have for the {name}."]
+    issue = " ".join(str(getattr(conversation_context, "active_issue", "") or "").split()).rstrip(" .!?")
+    answers = getattr(conversation_context, "resolved_answers", None) or []
+    if answers:
+        said = answers[-1]["answer"].rstrip(" .!?")
+        parts.append(f"You've mentioned \"{said}\" about \"{issue}\"." if issue else f"You've mentioned \"{said}\".")
+    elif issue:
+        parts.append(f"You've told me: \"{issue}\".")
+    previous = str(getattr(conversation_context, "last_assistant_answer", "") or "").casefold()
+    if "service request" not in previous:
+        parts.append("I can record this for a technician in a service request if you'd like.")
+    return " ".join(parts)
+
+
 def build_customer_answer(
     interaction, session, references, conversation_context=None,
     original_question=None, generate_with_local_model=True, evidence_blocked=False,
@@ -1106,11 +1140,18 @@ def build_customer_answer(
                     "order": len(eligible), "target": target, "kind": kind,
                     "text": text, "start": start, "end": end, "result": result,
                 })
-        seen_text = set()
+        # Identical wording under different fault headings ("Dirty filter." under
+        # POOR COOLING and under ICE ON COIL) is a distinct cause in a distinct
+        # context: causes are de-duplicated by (text, source heading), other claims
+        # by text.
+        seen_text, seen_keys = set(), set()
         unique = []
         for item in eligible:
-            if item["text"] in seen_text:
+            heading = " ".join(str(getattr(item["result"], "heading", "") or "").split()).casefold()
+            key = (item["text"], heading) if item["target"] is causes else (item["text"], None)
+            if key in seen_keys:
                 continue
+            seen_keys.add(key)
             seen_text.add(item["text"])
             unique.append(item)
         def _relevance(item):
@@ -1203,13 +1244,10 @@ def build_customer_answer(
         reason_code = ("NO_AUTHORIZED_ORIGINAL_DOCUMENTATION"
                        if get_customer_data_mode() == "verified_real_only"
                        else "NO_AUTHORIZED_TEST_DOCUMENTATION")
-        message = ("INSUFFICIENT EVIDENCE: No authorized documentation is available for this equipment. "
-                   "I cannot identify a cause, give repair steps, or cite a manual. "
-                   "Please note the model, symptom, when it occurs, and any displayed code "
-                   "for an authorized technician. No ticket has been created.")
+        message = no_documentation_message(asset)
     else:
         reason_code = None
-        message = "There is insufficient evidence to establish a safe answer for this equipment and question. Ask an authorized technician for help."
+        message = limitation_message(asset, conversation_context)
     sections = []
     if normal:
         observation_topics = [re.sub(

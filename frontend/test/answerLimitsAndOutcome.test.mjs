@@ -46,8 +46,7 @@ test('customer chat labels only unconfirmed answers; generation fallbacks stay i
   assert.equal(generationFallbackNote({ outcome: { status: 'degraded', response_mode: 'grounded_extractive', generation_status: 'timeout' } }),
     'Source wording used because the wording step ran out of time.');
   assert.equal(generationFallbackNote({ outcome: { status: 'success', response_mode: 'grounded_generated' } }), '');
-  assert.match(outcomeLabel({ outcome: { status: 'insufficient_evidence', response_mode: 'no_validated_evidence' } }),
-    /No answer from the approved manuals could be confirmed/);
+  assert.equal(outcomeLabel({ outcome: { status: 'insufficient_evidence', response_mode: 'no_validated_evidence' } }), '');
   assert.equal(outcomeLabel({ outcome: { status: 'safety_escalation' } }), '');
   assert.equal(outcomeLabel({ outcome: { status: 'conversational' } }), '');
 });

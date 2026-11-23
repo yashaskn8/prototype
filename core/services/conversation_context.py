@@ -501,6 +501,87 @@ def conversation_summary_text(ctx: "ConversationContext", ticket_ref: Optional[s
     return "\n".join(lines)
 
 
+_TICKET_WORDS = r"(?:ticket|service\s+request|service\s+call|complaint|request|technician\s+visit)"
+_TICKET_STATUS = re.compile(
+    r"\b(?:did|have|has)\s+(?:you|it|anyone)\s+(?:actually\s+|already\s+)?"
+    r"(?:create|raise|open|log|file|submit|book|ma(?:k|d)e)\w*\s+(?:a|an|the|my)?\s*" + _TICKET_WORDS
+    + r"|\b(?:status|progress|number|reference)\s+of\s+(?:my|the)\s+" + _TICKET_WORDS
+    + r"|\b(?:what(?:'s|\s+is)|where(?:'s|\s+is))\s+(?:my|the)\s+" + _TICKET_WORDS
+    + r"(?:\s+(?:number|status|reference))?\b"
+    + r"|\bis\s+(?:there|my)\s+(?:a\s+|an\s+)?(?:open\s+)?" + _TICKET_WORDS + r"\b", re.I)
+_TICKET_CONTENTS = re.compile(
+    r"\bwhat\s+(?:will|would|does|is|gets?)\s+(?:be\s+)?(?:in|included\s+in|on|sent\s+with|shared\s+in)\s+"
+    r"(?:the|my|a)\s+" + _TICKET_WORDS
+    + r"|\bwhat\s+(?:will|would|does)\s+the\s+(?:ticket|service\s+request|technician)\s+"
+    r"(?:say|include|contain|see|get|receive|know)\b", re.I)
+_TICKET_HELP = re.compile(
+    r"\b(?:create|raise|open|log|file|submit|book|make|arrange|schedule)\s+(?:a|an|the|my)?\s*"
+    r"(?:new\s+)?" + _TICKET_WORDS
+    + r"|\bhow\s+(?:do|can|should)\s+i\s+(?:create|raise|open|get|book|request|log)\s+(?:a|an)?\s*"
+    r"(?:ticket|service\s+request|service\s+call|technician)\b", re.I)
+_CERTAINTY = re.compile(
+    r"\b(?:definitely|for\s+sure|certainly|100\s*%|guaranteed)\b"
+    r"|\bare\s+you\s+(?:sure|certain|confident)\b"
+    r"|\bhow\s+(?:sure|certain|confident)\s+are\s+you\b"
+    r"|\bis\s+(?:this|that|it)\s+(?:confirmed|the\s+(?:actual|real|exact|definite)\s+(?:cause|problem|fault|issue))\b",
+    re.I)
+
+
+def conversation_intent(text: str) -> Optional[str]:
+    """Requests about the conversation or the service request, answered without manuals.
+
+    Returns "ticket_status", "ticket_contents", "ticket_help", "certainty" or None.
+    Status is checked before help, so "Did you create a ticket?" is not a request to
+    create one. A message that also reports a symptom is left to normal handling.
+    """
+    value = " ".join(str(text or "").split())
+    if not value or len(value) > 300:
+        return None
+    if _TICKET_STATUS.search(value):
+        return "ticket_status"
+    if _TICKET_CONTENTS.search(value):
+        return "ticket_contents"
+    if _TICKET_HELP.search(value) and not extract_symptoms_from_text(value):
+        return "ticket_help"
+    if _CERTAINTY.search(value) and (value.endswith("?") or _QUESTION_START.match(value)):
+        return "certainty"
+    return None
+
+
+def conversation_intent_reply(intent: str, ctx: "ConversationContext", ticket: Optional[Dict[str, str]] = None) -> str:
+    """Truthful replies built from saved conversation state and the linked ticket only."""
+    equipment = ctx.asset_name or "your equipment"
+    issue = (ctx.active_issue or ctx.original_complaint or "").strip()
+    if intent == "ticket_status":
+        if ticket:
+            return (f"Yes. Service request {ticket['ref']} is open for this conversation "
+                    f"(status: {ticket['status']}).")
+        return ("No, I haven't created a service request for this conversation. "
+                "One is created only when you confirm it, and I can prepare it whenever you're ready.")
+    if intent == "ticket_help":
+        if ticket:
+            return (f"A service request is already open for this conversation ({ticket['ref']}, "
+                    f"status: {ticket['status']}), so I won't create another one.")
+        return ("I can prepare a service request for a technician with what you've told me"
+                + (f' ("{issue}")' if issue else "")
+                + ". It's created only after you confirm it with the service request option.")
+    if intent == "ticket_contents":
+        items = [f"the {equipment} details"]
+        if issue:
+            items.append(f'the problem you described ("{issue}")')
+        items += ["what you've told me in this chat", "the possibilities we discussed, marked as unconfirmed"]
+        return ("The service request includes " + ", ".join(items[:-1]) + ", and " + items[-1]
+                + ". It doesn't include a confirmed diagnosis, because none has been made.")
+    # certainty
+    listed = listed_causes(ctx.last_cause_list_contract or ctx.last_supported_contract or {})
+    if listed:
+        return ("No, I can't confirm that. The causes I mentioned are possibilities for this kind of problem, "
+                f"not a diagnosis of your {equipment}. Only a technician's inspection can confirm which one, "
+                "if any, applies.")
+    return (f"No, I can't confirm a diagnosis of your {equipment} from a conversation. "
+            "A technician's inspection is needed to establish the actual cause.")
+
+
 def extract_conversation_context(
     conv: Any,
     current_input: str,

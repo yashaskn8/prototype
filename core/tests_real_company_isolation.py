@@ -613,7 +613,11 @@ class RealCompanyDataIsolationTests(TestCase):
         self.assertEqual(res.data["can_escalate"], True)
         self.assertEqual(len(res.data["customer_safe_actions"]), 0)
         # Must not fabricate customer steps
-        self.assertIn("insufficient evidence", res.data["answer"].lower())
+        # Plain-language abstention: no documentation, no causes or steps offered.
+        answer = res.data["answer"].lower()
+        self.assertIn("don't have approved documentation", answer)
+        self.assertIn("can't suggest causes or repair steps", answer)
+        self.assertNotIn("insufficient evidence", answer)
 
     # -----------------------------------------------------------------------
     # 20. Hazard detected in follow-up observation escalates session
