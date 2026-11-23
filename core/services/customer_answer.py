@@ -181,24 +181,26 @@ def _generic_cause_candidates(*, tenant, customer, asset):
     authorized_scope = _knowledge_candidates(
         tenant, asset, customer, False, backend="all",
     )
-    # Prefer documents specifically assigned to this asset or its product.
-    # Fleet-wide manuals are authorized to read but may describe a different
-    # model and should not displace an available equipment-specific manual.
+    cause_chunks = []
+    for chunk in authorized_scope:
+        if (_GENERIC_CAUSE_HEADING.search(str(chunk.heading or ""))
+                and any(kind == "possible_cause" and _descriptive_cause(text)
+                        for text, kind, _start, _end in source_claims(chunk.text))):
+            cause_chunks.append(chunk)
+
+    # Prefer fault evidence specifically assigned to this asset or product.
+    # An asset-specific installation guide without causes must not prevent
+    # fallback to a relevant authorized category-level troubleshooting guide.
     direct = [
-        chunk for chunk in authorized_scope
+        chunk for chunk in cause_chunks
         if chunk.document.asset_id == asset.id
         or (getattr(asset, "product_id", None)
             and chunk.document.product_id == asset.product_id)
     ]
-    search_scope = direct or authorized_scope
+    search_scope = direct or cause_chunks
     by_heading = {}
     for chunk in search_scope:
         heading = str(chunk.heading or "")
-        if not _GENERIC_CAUSE_HEADING.search(heading):
-            continue
-        if not any(kind == "possible_cause" and _descriptive_cause(text)
-                   for text, kind, _start, _end in source_claims(chunk.text)):
-            continue
         key = (chunk.document_id,
                re.sub(r"^\s*\d+[.)]\s*", "", heading).strip().casefold())
         by_heading.setdefault(key, []).append(chunk)
