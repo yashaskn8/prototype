@@ -55,7 +55,8 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
     The fixed report sections stay in the contract; the composed reply becomes
     the stored message text. Any failure keeps the existing answer unchanged.
     """
-    from core.services.customer_response_composer import clarification_for_ambiguous, compose_response
+    from core.services.customer_response_composer import (
+        clarification_for_ambiguous, compose_reply_acknowledgement, compose_response)
     try:
         presentation = contract.get("presentation") or {}
         response = compose_response(contract, turn_text, conv_context, cause_reference)
@@ -63,8 +64,20 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
             presentation["response"] = response
             contract["answer"] = response["text"]
             return
+        # A short answer to our own question ("Only at startup.") with no further
+        # documented detail is acknowledged on the current topic, never answered
+        # with an unrelated section or a generic "which symptom?" prompt.
+        equipment = str((presentation.get("equipment") or {}).get("name") or getattr(asset, "name", "") or "this unit")
+        acknowledgement = compose_reply_acknowledgement(conv_context, equipment)
+        if acknowledgement and presentation.get("response_type") in ("DIAGNOSTIC_GUIDANCE", "INSUFFICIENT_EVIDENCE"):
+            presentation["response"] = acknowledgement
+            if presentation.get("response_type") != "DIAGNOSTIC_GUIDANCE":
+                presentation["message"] = acknowledgement["text"]
+            contract["answer"] = acknowledgement["text"]
+            return
         if presentation.get("response_type") == "INSUFFICIENT_EVIDENCE":
-            clarification = clarification_for_ambiguous(turn_text, asset, tenant)
+            clarification = clarification_for_ambiguous(
+                turn_text, asset, tenant, customer=getattr(asset, "customer", None))
             if clarification:
                 contract["response_type"] = presentation["response_type"] = "CLARIFICATION"
                 contract["clarification_question"] = clarification["text"]
@@ -146,15 +159,17 @@ _TECHNICIAN_DECISION = re.compile(
 )
 
 
-def _technician_decision_contract(asset, session):
+def _technician_decision_contract(asset, session, ticketed=False):
     """Answer a service-handoff decision without misrepresenting manual evidence."""
     message = (
-        "Yes. Contacting an authorized technician is appropriate when the "
-        "equipment has stopped working and its cause has not been established. "
-        "Report what stopped working, when it happened, and any displayed "
-        "alarm or code. Do not open the equipment or attempt internal "
+        "Yes. Contacting an authorized technician is appropriate while the cause "
+        "has not been established. Tell them what is happening, when it started, "
+        "and any alarm or code shown. Do not open the equipment or attempt internal "
         "electrical or refrigerant repairs yourself. This is not a diagnosis."
     )
+    # Advice only: say truthfully whether a service request exists.
+    message += (" A service request is already open for this conversation." if ticketed else
+                " No service request has been created yet; I can prepare one if you would like.")
     return {
         "response_mode": "TECHNICIAN_HANDOFF",
         "response_type": "TECHNICIAN_HANDOFF",
@@ -639,7 +654,7 @@ def _process_customer_diagnostic_turn(
             return _persist_direct_reply(
                 tenant=tenant, customer=customer, user=user, site=site, asset=asset,
                 conv=conv, session=session, turn_text=turn_text, idem_record=idem_record,
-                contract=_technician_decision_contract(asset, session),
+                contract=_technician_decision_contract(asset, session, ticketed=bool(getattr(conv, "linked_service_call_id", None))),
             )
 
         # 4b. Conversational routing that needs no new retrieval for the original question.

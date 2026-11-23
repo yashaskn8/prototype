@@ -163,6 +163,11 @@ def retrieval_focus(question: str) -> Optional[str]:
     kept = list(primary)
     if len(_content_tokens(" ".join(c.text for c in kept))) < 2:
         kept = kept + procedural          # request tail carries the only content
+    else:
+        # A request clause naming a component the report does not ("How do I check
+        # the drain pan?") is part of the request; only content-free tails drop.
+        covered = _content_tokens(" ".join(c.text for c in kept))
+        kept = kept + [c for c in procedural if _content_tokens(c.text) - covered]
     kept_ids = {id(c) for c in kept}
     dropped = [c for c in clauses if id(c) not in kept_ids]
     if not dropped or not kept:

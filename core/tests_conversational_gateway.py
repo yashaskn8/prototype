@@ -213,7 +213,8 @@ class VRFConversationGatewayTests(GatewayTestBase):
         self.assertFalse(items[high_pressure]["evidence"])
         self.assertIn("cause_without_explaining_evidence", answer["diagnostics"]["rejection_reasons"])
         texts = [s["text"] for s in self.segments(answer)]
-        self.assertIn("The approved manuals do not explain this cause further.", texts)
+        from core.services.cause_explanations import GAP_TEXT
+        self.assertIn(GAP_TEXT, texts)
 
     def test_unknown_failure_does_not_invent_a_low_pressure_diagnosis(self):
         """Even a top-k pool containing one fault must yield a broad overview."""
@@ -253,7 +254,9 @@ Possible causes:
         conv = CustomerConversation.objects.get(conversation_uuid=uuid)
         reconstructed = extract_conversation_context(
             conv, "an independent question", asset=self.vrf)
-        self.assertIsNone(reconstructed.pending_question)
+        # The first turn's clarification is no longer pending once answered; only
+        # the latest reply's own question can be.
+        self.assertNotEqual(reconstructed.pending_question, vague.get("clarification_question"))
 
         # Reproduce the live failure: V5 returned only the low-pressure chunk.
         def one_fault_only(**kwargs):

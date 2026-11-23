@@ -176,6 +176,8 @@ def _generic_cause_candidates(*, tenant, customer, asset):
     reranking can favor one arbitrary fault, so it must not be the only source
     of candidates for an overview. Every selected chunk is reauthorized.
     """
+    if asset is None or customer is None:
+        return []
     from .retriever import _knowledge_candidates
 
     authorized_scope = _knowledge_candidates(
@@ -765,6 +767,36 @@ def _approved_source_action(text, chunk, asset, tenant):
     return False
 
 
+_CITATION_PREFIX = "/api/customer-support/source/?citation="
+
+
+def refresh_citation_urls(contract, ctx):
+    """Re-issue the signed citation links of a stored answer for the same user.
+
+    Reopening an old conversation must not leave dead source links. Only tokens
+    this server signed for this user, tenant and customer are renewed; the renewed
+    token carries the same bound document/chunk/version/hash/span, and opening it
+    still re-runs every authorization and integrity check in open_citation.
+    """
+    presentation = (contract or {}).get("presentation") if isinstance(contract, dict) else None
+    customer = ctx.get("customer")
+    if not isinstance(presentation, dict) or not customer:
+        return contract
+    for citation in presentation.get("citations") or []:
+        url = citation.get("url") if isinstance(citation, dict) else None
+        if not isinstance(url, str) or not url.startswith(_CITATION_PREFIX):
+            continue
+        try:
+            payload = signing.loads(url[len(_CITATION_PREFIX):], salt=SALT, max_age=None)
+        except signing.BadSignature:
+            continue
+        if (payload.get("user") != ctx["user"].id or payload.get("tenant") != ctx["tenant"].id
+                or payload.get("customer") != customer.id):
+            continue
+        citation["url"] = _CITATION_PREFIX + signing.dumps(payload, salt=SALT, compress=True)
+    return contract
+
+
 def open_citation(token, ctx):
     try:
         payload = signing.loads(token, salt=SALT, max_age=3600)
@@ -1215,8 +1247,12 @@ def build_customer_answer(
                             "that confirms which documented possibility applies.")
             next_text = ("Ask an authorized technician for model-specific help if the issue continues. "
                          "No ticket has been created.")
+        # A multi-part question ("What causes this and when is maintenance due?")
+        # keeps both parts: up to four facts share section 1 with the causes.
+        shared_facts = facts[:4] if causes else facts
+        first_section = (causes[:MAX_SECTION_CLAIMS - len(shared_facts)] + shared_facts) if causes else facts
         content = [
-            causes or facts or [{"text": "The available evidence does not establish a possible cause.", "kind": "uncertainty", "evidence_ids": []}],
+            first_section or [{"text": "The available evidence does not establish a possible cause.", "kind": "uncertainty", "evidence_ids": []}],
             observations + procedures or [{"text": "No customer procedure has been approved in the supporting evidence. Report what you observed to a technician.", "kind": "uncertainty", "evidence_ids": []}],
             [{"text": unknown_text, "kind": "uncertainty", "evidence_ids": []}],
             [{"text": next_text, "kind": "next_step", "evidence_ids": []}],

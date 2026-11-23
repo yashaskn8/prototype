@@ -52,7 +52,7 @@ class ComposerTests(SimpleTestCase):
         response = compose_response(contract, "My split AC is not cooling.")
         self.assert_well_formed(response, contract)
         self.assertEqual(response["style"], "symptom_causes")
-        self.assertIn("For poor cooling on the Split AC Unit 2T", response["text"])
+        self.assertIn("possible causes of poor cooling on the Split AC Unit 2T", response["text"])
         self.assertIn("- Dirty filter or coil. [1]", response["text"])
         self.assertIn(LIMITATION, response["text"])
         self.assertTrue(response["text"].rstrip().endswith("?"))
@@ -151,6 +151,6 @@ class RoleLabelTests(SimpleTestCase):
         procedure = _claim("c8", "customer_procedure", "Clean the washable front filter.")
         contract = _contract(CAUSES[:1], (), [observation, procedure])
         text = compose_response(contract, "Water is leaking.")["text"]
-        self.assertIn("Details worth noting for the technician:\n- Record the leak location", text)
-        self.assertIn("Checks the manual approves for customers:\n- Clean the washable front filter", text)
+        self.assertIn("Useful details to note for a technician:\n- Record the leak location", text)
+        self.assertIn("Things you can safely check yourself:\n- Clean the washable front filter", text)
         self.assertNotIn("allows you to check safely", text)

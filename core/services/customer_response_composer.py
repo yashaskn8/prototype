@@ -22,8 +22,9 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-ORDINAL_WORDS = ("first", "second", "third", "fourth", "fifth", "sixth")
-LIMITATION = "These are documented possibilities, not a confirmed diagnosis of your unit."
+ORDINAL_WORDS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+                 "ninth", "tenth", "eleventh", "twelfth")
+LIMITATION = "These are possibilities from the approved manuals, not a confirmed diagnosis of your unit."
 MAX_SEGMENT_CHARS = 600
 
 
@@ -88,20 +89,60 @@ def _cited_claims(presentation: Dict[str, Any], kinds: set) -> List[Dict[str, An
     seen, out = set(), []
     for section in presentation.get("sections") or []:
         for claim in section.get("claims") or []:
+            key = (_norm(claim.get("text")), _norm(claim.get("source_heading"))) if isinstance(claim, dict) else None
             if (isinstance(claim, dict) and claim.get("kind") in kinds and claim.get("evidence_ids")
-                    and _norm(claim.get("text")) not in seen):
-                seen.add(_norm(claim.get("text")))
+                    and key not in seen):
+                seen.add(key)
                 out.append(claim)
     return out
+
+
+def _displayed(claim: Dict[str, Any]) -> Dict[str, Any]:
+    """The reference record of a claim shown to the customer (for "the first cause")."""
+    return {"kind": claim.get("kind"), "source_text": claim.get("source_text"),
+            "source_heading": claim.get("source_heading"), "evidence_ids": list(claim.get("evidence_ids") or [])}
+
+
+def _label_title(label: str) -> str:
+    return label[:1].upper() + label[1:] if label else label
+
+
+def _acknowledge(answer: str) -> str:
+    said = " ".join(str(answer or "").split()).rstrip(" .!")
+    said = said.lower() if said.isupper() else said[:1].lower() + said[1:]
+    return f"Thanks, I've noted that: {said}." if said else "Thanks, I've noted that."
+
+
+def compose_reply_acknowledgement(context, equipment: str) -> Optional[Dict[str, Any]]:
+    """A reply to our own question with nothing further documented for the current topic.
+
+    Records the customer's answer and says plainly that the approved manuals add
+    nothing more specific, instead of switching to an unrelated symptom.
+    """
+    if not getattr(context, "answers_pending_question", False):
+        return None
+    answers = getattr(context, "resolved_answers", None) or []
+    topics = getattr(context, "active_topics", None) or []
+    topic = topics[0] if len(topics) == 1 else "this issue"
+    segments = [
+        _segment("text", _acknowledge(answers[-1]["answer"] if answers else "")),
+        _segment("text", f"The approved {equipment} manuals don't describe {topic} in any more detail than "
+                         f"what I've already shared, so I can't narrow it down further from them."),
+        _segment("question", "If it keeps happening, would you like a technician to take a look? "
+                             "I can prepare a service request with what you've told me."),
+    ]
+    return {"text": render_text(segments, []), "segments": segments, "style": "reply_acknowledged",
+            "composer": "deterministic", "displayed_claims": []}
 
 
 def compose_response(contract: Dict[str, Any], question: str, context=None,
                      cause_reference: Optional[Dict[str, Any]] = None,
                      language: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
-    """Return {"text", "segments", "style", "composer"} for a supported answer, else None.
+    """Return {"text", "segments", "style", "composer", "displayed_claims"} for a supported answer, else None.
 
     ``language`` may carry validated Qwen wording for "opening" and "question";
-    anything missing falls back to fixed wording.
+    anything missing falls back to fixed wording. ``displayed_claims`` is the exact
+    ordered list of claims shown, which later ordinal references resolve against.
     """
     presentation = contract.get("presentation") or {}
     if presentation.get("response_type") != "DIAGNOSTIC_GUIDANCE":
@@ -116,6 +157,7 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
     previous = _previous_texts(context)
     segments: List[Dict[str, Any]] = []
     followup_subject = None
+    replying = bool(getattr(context, "answers_pending_question", False)) and not cause_reference
 
     if cause_reference and causes:
         # Only the cause the customer pointed at, plus checks from its own section.
@@ -127,25 +169,38 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             causes = chosen
             facts = []
             checks = [c for c in checks if heading and _norm(c.get("source_heading")) == _norm(heading)]
+    elif replying:
+        # A short answer to our own question stays on the current topic: only
+        # claims from the manual sections last discussed, and only ones not shown
+        # already. Evidence from other sections (poor cooling after a noise
+        # question) is not promoted just because retrieval returned it.
+        topics = set(getattr(context, "active_topics", None) or [])
+        shown = _previous_claim_sources(context)
+        on_topic = (lambda c: _section_label(c.get("source_heading")) in topics) if topics else (lambda c: True)
+        causes, facts, checks = ([c for c in group if on_topic(c) and _norm(c.get("source_text")) not in shown]
+                                 for group in (causes, facts, checks))
+        if not (causes or facts):
+            return compose_reply_acknowledgement(context, equipment)
     elif getattr(context, "is_followup", False):
         # A broad equipment-failure question is not a component follow-up.
         # Filtering on its generic words ("causes", "not work") can silently
         # reduce an authorized multi-section overview to one matching fault.
         from .customer_answer import is_generic_cause_overview
+        from .conversation_context import is_explain_all_request
         original = getattr(context, "original_complaint", "")
-        if is_generic_cause_overview(question) or (
-            original and is_generic_cause_overview(f"{question} {original}")
-        ):
-            subject = set()
-        else:
-            subject = _subject_terms(question)
+        broad_request = (is_generic_cause_overview(question) or is_explain_all_request(question)
+                         or bool(original and is_generic_cause_overview(f"{question} {original}")))
+        subject = set() if broad_request else _subject_terms(question)
         if subject:
             about = lambda c: bool(subject & _terms(c.get("source_text") or c.get("text")))  # noqa: E731
             if any(about(c) for c in causes + facts + checks):
                 causes, facts, checks = ([c for c in group if about(c)] for group in (causes, facts, checks))
                 followup_subject = " ".join(sorted(subject))
-        if not followup_subject:
-            # Do not repeat what the previous reply already listed, unless nothing new remains.
+        if not followup_subject and not broad_request:
+            # An explicit request for the causes (or for all of them) is answered
+            # with the complete authorized list, including ones shown before.
+            # Otherwise do not repeat what the previous reply already listed,
+            # unless nothing new remains.
             shown = _previous_claim_sources(context)
             fresh = [[c for c in group if _norm(c.get("source_text")) not in shown] for group in (causes, facts, checks)]
             # A leftover note is not a new answer: when every cause and fact was
@@ -156,29 +211,47 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
 
     if not (causes or facts or checks):
         return None
-    subject_lead = (f"Here is what the {equipment} manual says about {followup_subject}:"
-                    if followup_subject else None)
+    displayed: List[Dict[str, Any]] = []
+    if replying:
+        answers = getattr(context, "resolved_answers", None) or []
+        segments.append(_segment("text", _acknowledge(answers[-1]["answer"] if answers else "")))
+    subject_lead = f"Here's what I found about the {followup_subject}:" if followup_subject else None
 
     if cause_reference and causes:
         style = "cause_detail"
         position = int(cause_reference.get("position", 0))
         ordinal = ORDINAL_WORDS[position] if 0 <= position < len(ORDINAL_WORDS) else "selected"
-        segments.append(_segment("text", language.get("opening")
-                                 or f"Here is the {ordinal} possible cause from the list:"))
+        segments.append(_segment("text", language.get("opening") or f"About the {ordinal} possible cause:"))
         for claim in causes:
             segments.append(_segment("claim", _claim_body(claim), claim.get("evidence_ids")))
+            displayed.append(_displayed(claim))
     elif causes:
         style = "symptom_causes"
-        labels = sorted({_section_label(c.get("source_heading")) for c in causes if c.get("source_heading")})
-        lead = (f"For {labels[0]} on the {equipment}, the manual lists "
-                f"{'this possible cause' if len(causes) == 1 else 'these possible causes'}:"
-                if len(labels) == 1 else
-                f"The {equipment} manual lists these possible causes:")
+        labels = []
+        for claim in causes:
+            label = _section_label(claim.get("source_heading"))
+            if label not in labels:
+                labels.append(label)
         if language.get("opening"):
             segments.append(_segment("text", language["opening"]))
-        segments.append(_segment("text", subject_lead or lead))
-        for claim in causes:
-            segments.append(_segment("list_item", _claim_body(claim), claim.get("evidence_ids")))
+        if subject_lead:
+            segments.append(_segment("text", subject_lead))
+        elif len(labels) == 1 and labels[0]:
+            segments.append(_segment("text", (
+                f"One possible cause of {labels[0]} on the {equipment} is:" if len(causes) == 1 else
+                f"Here are the possible causes of {labels[0]} on the {equipment}:")))
+        else:
+            segments.append(_segment("text", (
+                f"A few different problems can cause this on the {equipment}. "
+                "Here are the possibilities, grouped by what you would notice:")))
+        grouped = len(labels) > 1 and not subject_lead
+        for label in labels:
+            group = [c for c in causes if _section_label(c.get("source_heading")) == label]
+            if grouped and label:
+                segments.append(_segment("text", f"{_label_title(label)}:"))
+            for claim in group:
+                segments.append(_segment("list_item", _claim_body(claim), claim.get("evidence_ids")))
+                displayed.append(_displayed(claim))
     else:
         style = "documented_facts"
         if language.get("opening"):
@@ -187,25 +260,40 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             segments.append(_segment("text", subject_lead))
         for claim in facts:
             segments.append(_segment("claim", _claim_body(claim), claim.get("evidence_ids")))
+            displayed.append(_displayed(claim))
 
     if causes and not cause_reference and facts:
-        segments.append(_segment("text", "The manual also notes:"))
+        segments.append(_segment("text", "Also worth knowing:"))
         for claim in facts:
             segments.append(_segment("claim", _claim_body(claim), claim.get("evidence_ids")))
+            displayed.append(_displayed(claim))
     # Role distinction: only customer-approved procedures are presented as checks;
     # observations are things to notice and report, never instructions to act.
     procedures = [c for c in checks if c.get("kind") == "customer_procedure"]
     observations = [c for c in checks if c.get("kind") != "customer_procedure"]
     if procedures:
-        segments.append(_segment("text", "Checks the manual approves for customers:"))
+        segments.append(_segment("text", "Things you can safely check yourself:"))
         for claim in procedures:
             segments.append(_segment("list_item", _claim_body(claim), claim.get("evidence_ids")))
+            displayed.append(_displayed(claim))
     if observations:
-        segments.append(_segment("text", "Details worth noting for the technician:"))
+        segments.append(_segment("text", "Useful details to note for a technician:"))
         for claim in observations:
             segments.append(_segment("list_item", _claim_body(claim), claim.get("evidence_ids")))
-    if causes and _norm(LIMITATION) not in previous:
+            displayed.append(_displayed(claim))
+    # Every multi-cause list carries the limitation; a repeated single-cause
+    # detail does not restate it.
+    last_response = ((getattr(context, "last_contract", None) or {}).get("presentation") or {}).get("response") or {}
+    previous_causes = {_norm(c.get("source_text")) for c in last_response.get("displayed_claims") or []
+                       if isinstance(c, dict) and c.get("kind") == "possible_cause"}
+    new_list = {_norm(c.get("source_text")) for c in causes} != previous_causes
+    if causes and (_norm(LIMITATION) not in previous or (len(causes) > 1 and new_list)):
         segments.append(_segment("text", LIMITATION))
+    from .customer_answer import MAX_SECTION_CLAIMS
+    if style == "symptom_causes" and len(causes) >= MAX_SECTION_CLAIMS:
+        # Lists are capped; say so instead of implying the list is complete.
+        segments.append(_segment("text", f"I've listed the first {len(causes)} documented possibilities; the manuals "
+                                         "may describe more. Tell me the specific symptom to narrow it down."))
     question_text = language.get("question")
     if not question_text and style == "symptom_causes" and len(causes) > 1:
         question_text = "Do any of these match what you are seeing?"
@@ -214,7 +302,7 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
 
     text = render_text(segments, presentation.get("citations") or [])
     return {"text": text, "segments": segments, "style": style,
-            "composer": "qwen" if language else "deterministic"}
+            "composer": "qwen" if language else "deterministic", "displayed_claims": displayed}
 
 
 def render_text(segments: List[Dict[str, Any]], citations: List[Dict[str, Any]]) -> str:
@@ -231,26 +319,38 @@ def render_text(segments: List[Dict[str, Any]], citations: List[Dict[str, Any]])
     return "\n".join(lines)
 
 
-def clarification_for_ambiguous(question: str, asset, tenant) -> Optional[Dict[str, Any]]:
+def clarification_for_ambiguous(question: str, asset, tenant, customer=None) -> Optional[Dict[str, Any]]:
     """For a message with no identifiable symptom, offer the asset's documented symptom sections.
 
     Only manual section titles from documents the customer may already see are
     used; no symptom, cause or instruction is invented.
     """
-    from core.models import KnowledgeChunk
+    from rest_framework.exceptions import APIException
     from .conversation_context import is_self_contained_question
+    from .customer_answer import source_chunk
+    from .retriever import _knowledge_candidates
     words = [w for w in re.findall(r"[a-z]{3,}", _norm(question))
              if w not in {"the", "and", "this", "that", "unit", "not", "working", "properly", "work", "its",
                           "isnt", "doesnt", "broken", "problem", "issue", "wrong", "right", "help", "with", "has"}]
     if is_self_contained_question(question) or len(words) > 1 or asset is None:
         return None
-    headings = (KnowledgeChunk.objects
-                .filter(tenant=tenant, document__asset=asset, document__is_rag_enabled=True,
-                        document__is_confidential=False, is_quarantined=False,
-                        heading__iregex=r"symptom\s*:")
-                .order_by("document_id", "chunk_index").values_list("heading", flat=True))
+    customer = customer or getattr(asset, "customer", None)
+    if customer is None:
+        return None
+    # Section titles are content too: only chunks that pass the same per-chunk
+    # authorization gate as cited evidence may contribute one.
+    candidates = sorted(
+        (c for c in _knowledge_candidates(tenant, asset, customer, False, allow_failed=True, backend="sparse")
+         if c.document.asset_id == asset.id and re.search(r"symptom\s*:", c.heading or "", re.I)),
+        key=lambda c: (c.document_id, c.chunk_index))[:200]
     labels = []
-    for heading in headings:
+    for chunk in candidates:
+        try:
+            source_chunk(tenant=tenant, customer=customer, asset=asset,
+                         document_id=chunk.document_id, chunk_id=chunk.id)
+        except APIException:
+            continue
+        heading = chunk.heading
         label = _section_label(heading)
         if label and label not in labels:
             labels.append(label)

@@ -33,7 +33,13 @@ SYMPTOM_INDICATORS = [
     "blinking light", "error code", "fault code", "warning light",
     "suction failure", "fails to draw", "draw failure", "sample error",
     "frozen", "icing", "frost on coil", "ice buildup",
+    "noise", "noisy", "leak", "leaking", "smell", "stopped working", "not working",
 ]
+# "no water leak", "there is no noise now", "not showing an error code": a negated
+# observation is recorded as such and never counted as a reported symptom.
+_NEGATION_BEFORE = re.compile(
+    r"\b(?:no|not|never|none|without|isn['’]?t|aren['’]?t|doesn['’]?t|don['’]?t|didn['’]?t|"
+    r"hasn['’]?t|haven['’]?t|wasn['’]?t|nothing)\b(?:\s+[a-z'’]+){0,3}\s*$", re.I)
 
 # A completed check needs a named component, not a following clause such as
 # "cleaned but cooling" or a running-state report about the equipment.
@@ -227,6 +233,19 @@ class ConversationContext:
     suggested_checks: List[str] = field(default_factory=list)
     completed_checks: List[str] = field(default_factory=list)
     pending_question: Optional[str] = None
+    # The current message is a short reply to ``pending_question`` ("Only at
+    # startup." after "When does the noise occur?"). It is resolved against that
+    # question and the active issue, never against the first complaint.
+    answers_pending_question: bool = False
+    # The latest substantive issue the customer raised (a new symptom replaces an
+    # earlier one); replies and clarifications refine it rather than replace it.
+    active_issue: str = ""
+    # Manual section labels of the claims last shown to the customer
+    # ("noise or vibration"): the subject a short reply refers to.
+    active_topics: List[str] = field(default_factory=list)
+    negative_observations: List[str] = field(default_factory=list)
+    # (question, answer) pairs: what the customer told us in reply to our questions.
+    resolved_answers: List[Dict[str, str]] = field(default_factory=list)
     turn_count: int = 0
     is_followup: bool = False
     last_assistant_answer: str = ""
@@ -249,8 +268,14 @@ class ConversationContext:
             parts.append(f"Initial complaint: {self.original_complaint}")
         if self.reported_symptoms:
             parts.append(f"Symptoms: {', '.join(self.reported_symptoms)}")
+        if self.active_issue and self.active_issue != self.original_complaint:
+            parts.append(f"Current issue: {self.active_issue}")
         if self.customer_observations:
             parts.append(f"Customer observations: {', '.join(self.customer_observations)}")
+        if self.negative_observations:
+            parts.append(f"Reported absent: {', '.join(self.negative_observations)}")
+        for pair in self.resolved_answers[-3:]:
+            parts.append(f"Asked: {pair['question']} Answer: {pair['answer']}")
         if self.completed_checks:
             parts.append(f"Completed checks: {', '.join(self.completed_checks)}")
         return "; ".join(parts)
@@ -262,14 +287,30 @@ def _clean_phrase(text: str) -> str:
     return cleaned
 
 
+def _indicator_hits(text: str):
+    """(indicator, negated) for each symptom indicator named in the text."""
+    lower = (text or "").lower()
+    hits = []
+    for indicator in SYMPTOM_INDICATORS:
+        for match in re.finditer(r"\b" + re.escape(indicator) + r"\b", lower):
+            # Only the words of the same clause before the indicator decide negation.
+            clause = re.split(r"[,;.!?]|\bbut\b|\band\b", lower[:match.start()])[-1]
+            hits.append((indicator, bool(_NEGATION_BEFORE.search(clause))))
+    return hits
+
+
+def extract_negated_observations(text: str) -> List[str]:
+    """Symptoms the customer explicitly says are absent ("no water leak is visible")."""
+    return list(dict.fromkeys(ind for ind, negated in _indicator_hits(text) if negated))
+
+
 def extract_symptoms_from_text(text: str) -> List[str]:
-    """Identify attributable symptom phrases from text."""
+    """Identify attributable, affirmatively reported symptom phrases from text."""
     if not text:
         return []
-    lower = text.lower()
     found = []
-    for indicator in SYMPTOM_INDICATORS:
-        if indicator in lower:
+    for indicator, negated in _indicator_hits(text):
+        if not negated and indicator not in found:
             found.append(indicator)
     # Also extract error code patterns like E-04, F-07
     codes = re.findall(r"\b[A-Z]{1,3}[- ]?\d{1,3}\b", text)
@@ -334,6 +375,98 @@ def extract_suggested_actions(contract: Dict[str, Any], answer_text: str = "") -
     return cleaned
 
 
+def _topic_label(heading: str) -> str:
+    """'6. SYMPTOM: NOISE OR VIBRATION' -> 'noise or vibration'."""
+    label = re.sub(r"^\s*\d+[.)]\s*", "", str(heading or ""))
+    label = re.sub(r"^(?:symptom|fault)\s*:\s*", "", label, flags=re.I)
+    return " ".join(label.split()).lower()
+
+
+def asked_question(contract: Dict[str, Any]) -> Optional[str]:
+    """The question an assistant reply put to the customer, if it asked one.
+
+    Sources, in order: an explicit clarification question, the composed reply's
+    closing question, and a manual observation of the "note whether ..." kind that
+    the reply showed (the customer may answer it directly: "Only at startup.").
+    """
+    contract = contract or {}
+    presentation = contract.get("presentation") or {}
+    question = contract.get("clarification_question") or presentation.get("follow_up_question")
+    if not question:
+        segments = (presentation.get("response") or {}).get("segments") or []
+        asked = [s.get("text") for s in segments
+                 if isinstance(s, dict) and s.get("kind") == "question" and s.get("text")]
+        observed = [s.get("text") for s in segments
+                    if isinstance(s, dict) and s.get("kind") == "list_item"
+                    and re.search(r"\b(?:whether|when|where|if)\b", str(s.get("text") or ""), re.I)
+                    and re.match(r"\s*(?:record|note|observe|report|check)\b", str(s.get("text") or ""), re.I)]
+        question = " ".join(asked + observed[:2]) or None
+    if not question and contract.get("response_type") == "CLARIFICATION":
+        question = contract.get("summary")
+    return " ".join(str(question).split()) if question else None
+
+
+def shown_topics(contract: Dict[str, Any]) -> List[str]:
+    """Manual section labels of the claims a reply showed the customer."""
+    presentation = (contract or {}).get("presentation") or {}
+    displayed = (presentation.get("response") or {}).get("displayed_claims")
+    claims = displayed if isinstance(displayed, list) else presentation.get("supporting_claims") or []
+    labels = []
+    for claim in claims:
+        label = _topic_label(claim.get("source_heading") if isinstance(claim, dict) else "")
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+_FAULT_MENTION = re.compile(r"\b(?:fault|error|alarm|code|trip(?:s|ping)?|alert)\b", re.I)
+
+
+def is_reply_to_question(text: str, pending: Optional[str], active_issue: str = "") -> bool:
+    """A short statement answering the question the assistant just asked.
+
+    "Only at startup.", "Yes, the fan is running.", "No error code." are replies;
+    a question, an explicit topic change, a request to explain listed causes or a
+    newly reported symptom is not, so a self-contained new request can still
+    change the subject.
+    """
+    value = " ".join(str(text or "").split())
+    if not pending or not value or is_greeting(value) or len(value.split()) > 12:
+        return False
+    if value.endswith("?") or _QUESTION_START.match(value):
+        return False
+    if is_explain_all_request(value) or topic_shift_query(value) or _ORDINAL_REFERENCE.search(value):
+        return False
+    known = f"{pending} {active_issue}".lower()
+    new_symptoms = [s for s in extract_symptoms_from_text(value) if s not in known]
+    return not new_symptoms
+
+
+def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
+    """Update the active issue, negative observations and answered questions."""
+    value = " ".join(str(text or "").split())
+    if not value or is_greeting(value):
+        ctx.answers_pending_question = False
+        return
+    for negated in extract_negated_observations(value):
+        if negated not in ctx.negative_observations:
+            ctx.negative_observations.append(negated)
+    for symptom in extract_symptoms_from_text(value):
+        if symptom in ctx.negative_observations:
+            ctx.negative_observations.remove(symptom)
+    reply = is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
+    ctx.answers_pending_question = reply
+    if reply:
+        ctx.resolved_answers.append({"question": ctx.pending_question, "answer": value})
+        return
+    shifted = topic_shift_query(value)
+    if shifted or extract_symptoms_from_text(value) or _FAULT_MENTION.search(value):
+        # A newly reported problem replaces the earlier one as the current issue;
+        # its section topics come from the next answer.
+        ctx.active_issue = (shifted or value).rstrip(" .!")
+        ctx.active_topics = []
+
+
 def extract_conversation_context(
     conv: Any,
     current_input: str,
@@ -393,9 +526,11 @@ def extract_conversation_context(
     # Track suggested actions by turn to associate customer confirmations
     last_assistant_suggested_actions: List[str] = []
 
+    ctx.active_issue = "" if is_greeting(ctx.original_complaint) else ctx.original_complaint
     for msg in recent_messages:
         text = msg.message_text.strip()
         if msg.sender_role == "customer":
+            _track_customer_turn(ctx, text)
             # Extract symptoms mentioned in customer message
             for sym in extract_symptoms_from_text(text):
                 if sym not in ctx.reported_symptoms:
@@ -428,14 +563,15 @@ def extract_conversation_context(
                     if s not in ctx.suggested_checks:
                         ctx.suggested_checks.append(s)
 
-            # Extract pending question if clarification was requested
-            if contract.get("response_type") == "CLARIFICATION":
-                ctx.pending_question = contract.get("clarification_question") or contract.get("summary")
-            elif contract.get("response_type") != "GREETING":
-                # A resolved/declined clarification is not pending forever.
-                # Leaving this set forces every subsequent turn into follow-up
-                # mode, including otherwise independent customer questions.
-                ctx.pending_question = None
+            # The question this reply asked the customer, if any. Only the most
+            # recent assistant message counts: an answered or ignored question is
+            # not pending forever (that would force every later turn into
+            # follow-up mode, including independent questions).
+            if contract.get("response_type") != "GREETING":
+                ctx.pending_question = asked_question(contract)
+                topics = shown_topics(contract)
+                if topics:
+                    ctx.active_topics = topics
 
     # Now evaluate current_input in relation to conversation state
     current_lower = clean_input.lower()
@@ -449,6 +585,7 @@ def extract_conversation_context(
     for sym in extract_symptoms_from_text(clean_input):
         if sym not in ctx.reported_symptoms:
             ctx.reported_symptoms.append(sym)
+    _track_customer_turn(ctx, clean_input)
 
     # Determine if current_input is a follow-up query
     is_followup = False
@@ -458,13 +595,15 @@ def extract_conversation_context(
         has_pronoun = bool(re.search(r"\b(?:it|that|this|they|them|its|already|now|still)\b", current_lower))
         is_short = len(clean_input.split()) <= 12
         lacks_explicit_equipment = target_asset and target_asset.name.lower() not in current_lower
-        is_clarif_reply = bool(ctx.pending_question)
+        is_clarif_reply = ctx.answers_pending_question
 
         # A complete new question ("How many years will the blower motor
         # last?") is not a follow-up merely because it is short or omits the
         # asset name: merging the earlier symptoms into it would answer the
         # previous topic instead of this question.
-        if is_self_contained_question(clean_input) and not has_next_pattern:
+        if is_clarif_reply:
+            is_followup = True
+        elif is_self_contained_question(clean_input) and not has_next_pattern:
             is_followup = False
         elif has_next_pattern or (is_short and (has_pronoun or lacks_explicit_equipment)) or is_clarif_reply:
             is_followup = True
@@ -553,16 +692,32 @@ def contextualize_customer_query(
     model_str = context.asset_model or (target_asset.model_number if hasattr(target_asset, "model_number") else "")
     equipment_header = f"{asset_str} {model_str}".strip()
 
+    issue = context.active_issue or context.original_complaint
+
+    # A short reply to the question just asked is resolved against that question
+    # and the current issue ("noise" + "only at startup"), not the first complaint
+    # or symptoms the customer raised earlier and has since moved on from.
+    if context.answers_pending_question:
+        topics = context.active_topics if 0 < len(context.active_topics) <= 2 else []
+        parts = [equipment_header, *topics]
+        if issue and not is_greeting(issue):
+            parts.append(issue)
+        parts.append(clean_input)
+        return "; ".join(p for p in parts if p)[:450]
+
     # Determine current user intent
     is_asking_next = any(p.search(clean_input) for p in NEXT_STEP_PATTERNS)
 
-    # Gather known symptoms
-    symptoms = list(context.reported_symptoms)
+    # Gather known symptoms: the current issue's, not every symptom ever named,
+    # and never one the customer has said is absent.
+    issue_symptoms = extract_symptoms_from_text(issue)
+    symptoms = [s for s in (issue_symptoms or context.reported_symptoms)
+                if s not in context.negative_observations]
     for sym in extract_symptoms_from_text(clean_input):
         if sym not in symptoms:
             symptoms.append(sym)
 
-    symptoms_str = ", ".join(symptoms) if symptoms else (context.original_complaint or "troubleshooting")
+    symptoms_str = ", ".join(symptoms) if symptoms else (issue or "troubleshooting")
 
     # Gather completed checks
     completed_str = ""
@@ -573,21 +728,20 @@ def contextualize_customer_query(
     # Construct contextualized query
     parts = [equipment_header]
 
-    if context.original_complaint and context.original_complaint.lower() not in symptoms_str.lower():
-        parts.append(f"issue: {context.original_complaint}")
+    if issue and issue.lower() not in symptoms_str.lower():
+        parts.append(f"issue: {issue}")
 
     parts.append(f"symptoms: {symptoms_str}")
 
     if completed_str:
         parts.append(completed_str)
 
+    # The customer's own words always lead, so truncation never removes the current
+    # request; "what next?" adds the intent rather than replacing what was said.
+    current = query_input
     if is_asking_next:
-        parts.append("next troubleshooting steps and technical causes")
-    else:
-        # Include user's current specific remark/question
-        parts.append(query_input)
-
-    rewritten = "; ".join(p for p in parts if p)
+        current = f"{query_input}; next troubleshooting steps and technical causes"
+    rewritten = "; ".join(p for p in [current] + parts if p)
     # Bound query length
     return rewritten[:450]
 
@@ -597,12 +751,14 @@ def contextualize_customer_query(
 # Ordinal references to a previously listed cause ("Explain the second cause.")
 # ---------------------------------------------------------------------------
 _ORDINALS = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2,
-             "fourth": 3, "4th": 3, "fifth": 4, "5th": 4, "sixth": 5, "6th": 5, "last": -1}
+             "fourth": 3, "4th": 3, "fifth": 4, "5th": 4, "sixth": 5, "6th": 5,
+             "seventh": 6, "7th": 6, "eighth": 7, "8th": 7, "ninth": 8, "9th": 8, "tenth": 9, "10th": 9,
+             "eleventh": 10, "11th": 10, "twelfth": 11, "12th": 11, "last": -1}
 _CAUSE_WORDS = r"(?:cause|causes|reason|reasons|possibility|option|item|one|point)"
 _ORDINAL_REFERENCE = re.compile(
     r"\b(?P<ordinal>" + "|".join(_ORDINALS) + r")\s+(?:(?:possible|documented|listed|probable)\s+)?"
     + _CAUSE_WORDS + r"\b"
-    r"|\b(?:cause|reason|item|option)\s*(?:number\s*|#\s*|no\.?\s*)?(?P<number>[1-6])\b",
+    r"|\b(?:cause|reason|item|option)\s*(?:number\s*|#\s*|no\.?\s*)?(?P<number>[1-9]|1[0-9]|20)\b",
     re.I,
 )
 
@@ -611,18 +767,26 @@ def listed_causes(contract: Dict[str, Any]) -> List[Dict[str, str]]:
     """The possible causes in the order the customer saw them in a previous answer."""
     presentation = (contract or {}).get("presentation") or {}
     citations = {c.get("id"): c for c in presentation.get("citations") or [] if isinstance(c, dict)}
-    ordered = []
-    for section in presentation.get("sections") or []:
-        ordered.extend(section.get("claims") or [])
-    ordered.extend(presentation.get("supporting_claims") or [])
+    # The composed reply records exactly which claims it displayed, in order:
+    # "the first cause" means the first one the customer saw, not the first
+    # validated claim (the reply may have omitted or reordered some).
+    displayed = (presentation.get("response") or {}).get("displayed_claims")
+    if isinstance(displayed, list):
+        ordered = list(displayed)
+    else:
+        ordered = []
+        for section in presentation.get("sections") or []:
+            ordered.extend(section.get("claims") or [])
+        ordered.extend(presentation.get("supporting_claims") or [])
     causes, seen = [], set()
     for claim in ordered:
         if not isinstance(claim, dict) or claim.get("kind") != "possible_cause":
             continue
         source = " ".join(str(claim.get("source_text") or "").split())
-        if not source or source.casefold() in seen:
+        key = (source.casefold(), " ".join(str(claim.get("source_heading") or "").split()).casefold())
+        if not source or key in seen:
             continue
-        seen.add(source.casefold())
+        seen.add(key)
         evidence = citations.get((claim.get("evidence_ids") or [None])[0]) or {}
         causes.append({"source_text": source, "heading": str(claim.get("source_heading") or ""),
                        "document_id": evidence.get("document_id"), "chunk_id": evidence.get("chunk_id")})

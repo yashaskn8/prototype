@@ -136,7 +136,12 @@ def is_authorized_candidate(
         if doc.index_status not in ("INDEXED", "INDEXING"):
             return False
 
+    # Revocation is recorded on the document's provenance record (KnowledgeDocument
+    # has no revoked_at). Customer-facing paths also honour disable_sharing, in
+    # every data mode, exactly as customer_visible_documents does.
     if getattr(doc, "revoked_at", None) is not None:
+        return False
+    if not staff_mode and (doc.disable_sharing or is_revoked_document(doc)):
         return False
 
     # 4. Confidentiality
@@ -168,6 +173,22 @@ def is_authorized_candidate(
             return False
 
     return True
+
+
+def revoked_document_ids(tenant) -> set:
+    """IDs of the tenant's documents whose source provenance has been revoked."""
+    from core.models import SourceProvenanceRecord
+    return set(SourceProvenanceRecord.objects.filter(
+        tenant=tenant, local_object_type="KnowledgeDocument",
+    ).filter(Q(verification_status="REVOKED") | Q(revoked_at__isnull=False))
+        .values_list("local_object_id", flat=True))
+
+
+def is_revoked_document(doc) -> bool:
+    from core.models import SourceProvenanceRecord
+    return SourceProvenanceRecord.objects.filter(
+        tenant_id=doc.tenant_id, local_object_type="KnowledgeDocument", local_object_id=doc.id,
+    ).filter(Q(verification_status="REVOKED") | Q(revoked_at__isnull=False)).exists()
 
 
 def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False, backend="all"):
@@ -204,6 +225,9 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
     if not include_confidential:
         qs = qs.filter(document__is_confidential=False)
+
+    if not staff_mode:
+        qs = qs.filter(document__disable_sharing=False).exclude(document_id__in=revoked_document_ids(tenant))
 
     if customer:
         qs = qs.filter(Q(document__customer__isnull=True) | Q(document__customer=customer))
@@ -1101,31 +1125,46 @@ def retrieve(
             "skipped",
         )
     else:
-        with execution_stage(
-            "dense_retrieval",
-            "Searching the approved vector index",
-        ):
-            try:
-                # Bounded by the request deadline; on timeout only the already
-                # authorized sparse results below are used.
-                from .request_deadline import run_bounded
-                dense_results = run_bounded(
-                    "dense_retrieval", _dense_score_candidates,
-                    dense_candidates, dense_doc_ids, dense_chunks_by_id,
-                    evidence_text, query_identifiers, asset, customer,
-                    tenant, top_k, min_score,
-                    query_doc_ids=query_doc_ids,
-                    staff_mode=staff_mode,
-                    include_confidential=include_confidential,
-                    serving_config=serving_config,
-                )
-            except Exception as exc:
-                logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
-                emit_execution_event(
-                    "dense_retrieval", "Vector search", "skipped",
-                    error_type=type(exc).__name__,
-                )
-                dense_results = []
+        from .request_deadline import current_deadline, stage_budget
+        deadline = current_deadline()
+        if deadline is not None and stage_budget("dense_retrieval") <= 0:
+            # The request's time is already spent: do not attempt (or warn about)
+            # vector search again. Recorded once per stage event; the request-level
+            # diagnostics report sparse-only retrieval truthfully.
+            deadline.record_timeout("dense_retrieval", 0.0)
+            deadline.skips["dense_retrieval"] = deadline.skips.get("dense_retrieval", 0) + 1
+            emit_execution_event(
+                "dense_retrieval", "Vector search skipped: request time budget already used",
+                "skipped", error_type="DeadlineExhausted",
+            )
+            dense_results = []
+        else:
+            with execution_stage(
+                "dense_retrieval",
+                "Searching the approved vector index",
+            ):
+                try:
+                    # Bounded by the request deadline; on timeout only the already
+                    # authorized sparse results below are used.
+                    from .request_deadline import run_bounded
+                    dense_results = run_bounded(
+                        "dense_retrieval", _dense_score_candidates,
+                        dense_candidates, dense_doc_ids, dense_chunks_by_id,
+                        evidence_text, query_identifiers, asset, customer,
+                        tenant, top_k, min_score,
+                        query_doc_ids=query_doc_ids,
+                        staff_mode=staff_mode,
+                        include_confidential=include_confidential,
+                        serving_config=serving_config,
+                    )
+                except Exception as exc:
+                    if deadline is None or deadline.warn_once("dense_retrieval"):
+                        logger.warning("Dense retrieval failed gracefully, falling back to sparse: %s", exc)
+                    emit_execution_event(
+                        "dense_retrieval", "Vector search", "skipped",
+                        error_type=type(exc).__name__,
+                    )
+                    dense_results = []
 
     # 2c: Fuse results using RRF
     with execution_stage(

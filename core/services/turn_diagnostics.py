@@ -90,13 +90,20 @@ def build_outcome(events: List[dict], contract: Dict[str, Any], deadline=None) -
 
     dense_events = [e for e in events if e.get("stage") == "dense_retrieval"]
     dense_error = next((e.get("error_type") for e in dense_events if e.get("error_type")), None)
+    dense_completed = sum(1 for e in dense_events if e.get("status") == "completed" and not e.get("error_type"))
+    dense_skipped = sum(1 for e in dense_events if e.get("error_type"))
     dense_status = "failed" if dense_error else (dense_events[-1].get("status") if dense_events else None)
+    deadline_errors = ("StageTimeout", "StageBusy", "DeadlineExhausted")
     if not retrieval.get("passes"):
         retrieval_status = "not_run"
     elif dense_status == "completed":
         retrieval_status = "hybrid"
+    elif dense_completed and dense_skipped:
+        # Several retrieval passes in one turn: some hybrid, later ones sparse-only.
+        retrieval_status = ("hybrid_partial_dense_timeout" if dense_error in deadline_errors
+                            else "hybrid_partial_dense_unavailable")
     else:
-        retrieval_status = "sparse_only_dense_timeout" if dense_error in ("StageTimeout", "StageBusy") \
+        retrieval_status = "sparse_only_dense_timeout" if dense_error in deadline_errors \
             else "sparse_only_dense_unavailable"
 
     v5_outcome, v5_error = _last_status(events, "v5_reranking_outcome")
@@ -123,7 +130,7 @@ def build_outcome(events: List[dict], contract: Dict[str, Any], deadline=None) -
         status, mode, reason = "safety_escalation", "safety_response", None
     elif response_type == "DIAGNOSTIC_GUIDANCE" and citations:
         degraded_reasons = []
-        if retrieval_status.startswith("sparse_only") and retrieval.get("passes"):
+        if retrieval_status.startswith(("sparse_only", "hybrid_partial")) and retrieval.get("passes"):
             degraded_reasons.append(retrieval_status)
         if reranker_status in ("timeout", "busy", "failed"):
             degraded_reasons.append(f"reranker_{reranker_status}")
@@ -149,6 +156,7 @@ def build_outcome(events: List[dict], contract: Dict[str, Any], deadline=None) -
         "total_duration_ms": total_ms,
         "retrieval_backend": contract.get("retrieval_backend") or ",".join(retrieval.get("backends") or []) or None,
         "retrieval_status": retrieval_status,
+        "dense_passes": {"completed": dense_completed, "skipped_or_failed": dense_skipped},
         "reranker_applied": reranker_applied,
         "reranker_model": contract.get("reranker_model") if reranker_applied else None,
         "reranker_status": reranker_status,

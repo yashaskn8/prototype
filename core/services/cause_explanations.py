@@ -23,7 +23,7 @@ from django.conf import settings
 
 MAX_EXPLANATIONS_PER_CAUSE = 1
 RESPONSE_LIMIT_TEXT = "More explanation may exist in the approved manuals; ask about this cause separately for details."
-GAP_TEXT = "The approved manuals do not explain this cause further."
+GAP_TEXT = "I could not find a further explanation of this cause in the manual passages I checked."
 UNVERIFIED_TEXT = "One previously listed cause could not be re-verified in the currently authorized manuals."
 LIMITATION = "These are documented possibilities, not a confirmed diagnosis of your unit."
 
@@ -89,6 +89,32 @@ def _retrieve_for_cause(*, tenant, customer, asset, cause):
             for r in results if getattr(r, "source_kind", "document") != "past_resolution"]
 
 
+def _section_grouped_retrieval(causes):
+    """One retrieval per manual section instead of one per listed cause.
+
+    Every cause still starts from its own cited chunk; the shared hits only supply
+    nearby explanatory passages. Twelve causes from four sections cost four
+    searches, so one turn stays inside its request deadline instead of repeating
+    dense and V5 work after the budget is spent.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for cause in causes:
+        groups.setdefault(_norm(cause.get("heading") or ""), []).append(cause)
+    cache: Dict[str, list] = {}
+
+    def retrieve_for(*, tenant, customer, asset, cause):
+        key = _norm(cause.get("heading") or "")
+        if not key:
+            return _retrieve_for_cause(tenant=tenant, customer=customer, asset=asset, cause=cause)
+        if key not in cache:
+            members = groups.get(key) or [cause]
+            combined = {"heading": cause.get("heading"),
+                        "source_text": " ".join(c["source_text"] for c in members)[:400]}
+            cache[key] = _retrieve_for_cause(tenant=tenant, customer=customer, asset=asset, cause=combined)
+        return cache[key]
+    return retrieve_for
+
+
 def _authorized_chunk(*, tenant, customer, asset, document_id, chunk_id):
     from rest_framework.exceptions import NotFound
     from .customer_answer import source_chunk
@@ -116,7 +142,7 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
     causes = causes[:MAX_SECTION_CLAIMS]
     detail_budget = (MAX_SECTION_CLAIMS if len(causes) > 4
                      else MAX_SECTION_CLAIMS - len(causes))
-    retrieve_fn = retrieve_fn or _retrieve_for_cause
+    retrieve_fn = retrieve_fn or _section_grouped_retrieval(causes)
     all_cause_texts = {_norm(c["source_text"]) for c in causes}
     citations: List[Dict[str, Any]] = []
     cause_claims, fact_claims, gap_claims = [], [], []

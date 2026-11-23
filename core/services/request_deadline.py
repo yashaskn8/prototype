@@ -52,6 +52,16 @@ class RequestDeadline:
         self.reserve = float(reserve_seconds)
         self.caps = dict(caps)
         self.timeouts: Dict[str, float] = {}
+        # Stages skipped up front because the budget was already spent, and the
+        # stages already warned about (one log line per stage per request).
+        self.skips: Dict[str, int] = {}
+        self._warned: set = set()
+
+    def warn_once(self, stage: str) -> bool:
+        if stage in self._warned:
+            return False
+        self._warned.add(stage)
+        return True
 
     def elapsed(self) -> float:
         return time.monotonic() - self.started
