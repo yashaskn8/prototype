@@ -260,7 +260,8 @@ def technical_document(path):
         "'event: error'. Validation errors are plain JSON before the stream starts.",
         "Status codes: 400 invalid payload/closed conversation/idempotency collision/message over 4000 characters; 401 "
         "invalid, expired or revoked key; 403 no credentials or role not allowed; 404 unknown or other customer's resource (indistinguishable); 429 "
-        "rate limit (customer_rag 20/minute); 503 rag_busy or stream capacity.",
+        "rate limit (per account: AI messages 20/minute, ticket creation 10/hour, conversation create/resolve 60/hour; "
+        "reading history is not counted); 503 rag_busy or stream capacity.",
         "Idempotency: X-Idempotency-Key per message; a replay returns the stored turn (idempotent_replay=true).",
         "Client disconnect during a stream: the turn still completes and is saved (bounded by the request deadline); the "
         "single AI slot is held until it finishes. This is intended bounded-worker behavior; the portal can fetch the result "
@@ -278,39 +279,64 @@ def technical_document(path):
         "Customers never receive quarantined chunk text or original files containing quarantined content.",
         "Production settings: DEBUG off, secret key required, HTTPS redirect, HSTS, secure cookies, environment-driven "
         "ALLOWED_HOSTS / CORS / CSRF origins, TLS proxy header only when DJANGO_BEHIND_TLS_PROXY=1.",
-        "API keys: hashed, expiring, revocable, uniform 401 message; never logged (gunicorn access log format excludes headers).",
+        "API keys: hashed, expiring, revocable, uniform 401 message; never logged (gunicorn access log format excludes headers). "
+        "Keys are issued only to customer-role accounts linked to one customer and stop working if that membership "
+        "changes, so a portal key can never read more than one customer's data.",
+        "Uploads: store roles cannot upload; documents a technician stages through the asset upload stay invisible to customers until approved "
+        "(is_rag_enabled); customers also see their own pending uploads.",
+        "Streaming disconnects: model stages not yet started are skipped (ClientDisconnected); the turn is still saved.",
     ])
 
     d.add_heading("18. Production VM architecture", 1)
-    d.add_paragraph("One Linux VM (or Windows Server with an equivalent WSGI host) running: nginx (TLS, /api/ only, proxy_buffering "
-                    "off for SSE) -> gunicorn with one gthread worker (deploy/gunicorn.conf.py) as a systemd service "
-                    "(deploy/servy-api.service) -> Django. MySQL 8.0 on the VM or a managed host (TLS via MYSQL_SSL_CA). "
-                    "Ollama on the same VM bound to 127.0.0.1. Chroma, media and model directories on persistent disk.")
+    d.add_paragraph("The company has specified a VM but has not yet provided its operating system, CPU/RAM, GPU, "
+                    "network or hosting details, so nothing below assumes them. The backend needs one long-running WSGI "
+                    "process (models are loaded once per process), a TLS reverse proxy in front of it, MySQL 8.0, a local "
+                    "Ollama server bound to 127.0.0.1, and persistent directories for ChromaDB, media and model artifacts. "
+                    "The repository provides Linux examples (deploy/gunicorn.conf.py, deploy/servy-api.service, "
+                    "deploy/nginx-servy-api.conf); on Windows Server the same roles are filled by a WSGI host and IIS/ARR or "
+                    "another TLS proxy, which must not buffer text/event-stream responses. No Docker or React is required.")
+    d.add_heading("Items awaiting company confirmation", 2)
+    bullets(d, [
+        "Operating system and version of the VM; whether a Python 3.12 runtime may be installed.",
+        "vCPU count, RAM and disk; whether a GPU is available (the code runs CPU-only; a GPU only affects Qwen speed in Ollama).",
+        "MySQL 8.0 location (same VM or managed) and TLS requirements; backup policy.",
+        "Public host name, TLS certificate source, and the portal's network path to the API (private network or internet).",
+        "Whether the portal calls the API server-to-server (no CORS) or from browsers (CORS origins needed).",
+        "How portal users map to Servy customer accounts (one API key per Servy customer account is implemented).",
+        "Ticket ownership: Servy ServiceCall vs the portal's own ticket system (section 12).",
+        "Outbound internet policy (runtime needs none once models are copied; HF_HUB_OFFLINE=1).",
+        "Real approved manuals, V5 checkpoint and pinned hashes to install on the VM.",
+    ])
 
     d.add_heading("19. Hardware and software prerequisites", 1)
     bullets(d, [
-        "CPU-only is supported (torch CPU build, ONNX Runtime CPU). Recommended: 8 vCPU, 16 GB RAM (BGE + V5 + Chroma in "
-        "the Django process plus Ollama with a 2B 4-bit Qwen), 40 GB disk for models, vector store, media and logs.",
-        "GPU: not required; not verified in this repository.",
-        "Python 3.12, MySQL 8.0, Ollama, nginx; Python packages from requirements.txt (including gunicorn on Linux and "
-        "onnxruntime).",
-        "Model artifacts copied to the VM (no internet access needed at runtime: HF_HUB_OFFLINE=1): BGE snapshot at the "
-        "pinned revision, V5 checkpoint (+ verified ONNX export), Ollama model pull.",
-        "These sizes are engineering estimates from the serving stack; they were not measured on the target VM.",
+        "Software: Python 3.12, MySQL 8.0, Ollama, a TLS reverse proxy, and the packages in requirements.txt "
+        "(gunicorn is installed on Linux only; onnxruntime for the V5 ONNX runtime).",
+        "Model artifacts copied to the VM: BGE-small at the pinned revision, the V5 checkpoint (and verified ONNX export), "
+        "and the configured Qwen model pulled into Ollama.",
+        "Sizing must be measured on the company VM. Development measurements (i7-10870H CPU; RTX 3050 Ti used by Ollama): "
+        "vector search ~0.05 s, V5 over 5 pairs 1.35-2.05 s, Qwen wording of 6 claims ~2.7-3.3 s. These are not VM figures.",
+        "If the VM is CPU-only, expect slower Qwen wording; the per-stage deadline then falls back to exact source wording "
+        "(reported as generation_status=timeout) rather than delaying the answer.",
     ])
 
-    d.add_heading("20. Deployment procedure", 1)
+    d.add_heading("20. Deployment procedure (runbook)", 1)
     for i, step in enumerate([
-        "Create the servy system user, /opt/servy/{prototype,venv,data,models} and /etc/servy (mode 700).",
-        "Clone the repository at the release commit; python3.12 -m venv /opt/servy/venv; pip install -r requirements.txt.",
-        "Create the MySQL 8.0 database (utf8mb4) and a least-privilege user; copy deploy/servy-api.env.example to "
-        "/etc/servy/servy-api.env (chmod 600) and fill real values.",
-        "Copy model artifacts and the approved Chroma/media data (or re-index from MySQL) to /opt/servy/data and /opt/servy/models.",
-        "Back up the database, then run manage.py migrate (additive migrations only) and manage.py check --deploy.",
-        "Install and start Ollama bound to 127.0.0.1; ollama pull the configured Qwen model.",
-        "Install deploy/servy-api.service and deploy/nginx-servy-api.conf (with real certificates); start both.",
-        "Wait for GET /api/health/ready/ = 200; issue the portal key: manage.py servy_api_key issue --username <integration account>.",
-        "Smoke test: create a conversation, send a message, preview a ticket, with the portal key.",
+        "Confirm the items listed under 'Items awaiting company confirmation'.",
+        "Create a dedicated service account and directories for code, virtual environment, data (chroma, media) and models; "
+        "restrict the secrets file to that account.",
+        "Check out the release commit; create a Python 3.12 virtual environment; pip install -r requirements.txt.",
+        "Create the MySQL 8.0 database (utf8mb4) and a least-privilege user; fill the environment file from "
+        "deploy/servy-api.env.example (DJANGO_DEBUG=0, real secret key, ALLOWED_HOSTS, SERVY_SERVE_FRONTEND=0).",
+        "Copy model artifacts and the approved Chroma/media data to the data and model directories.",
+        "Back up the database, run manage.py migrate (additive migrations 0011-0012 in this release) and "
+        "manage.py check --deploy.",
+        "Start Ollama bound to 127.0.0.1 and pull the configured Qwen model.",
+        "Start the WSGI service and the TLS proxy (Linux: the provided systemd unit and nginx site).",
+        "Wait for GET /api/health/ready/ = 200; then issue one key per Servy customer account with "
+        "manage.py servy_api_key issue --username <customer account>.",
+        "Smoke test with the key: create a conversation, send a message, preview a ticket; check contract.outcome reports "
+        "retrieval_status=hybrid and reranker/generation statuses for real-model execution.",
         "Rollback: stop the service, check out the previous release, restore the database backup only if a migration was "
         "applied, restart.",
     ], 1):
@@ -329,13 +355,18 @@ def technical_document(path):
 
     d.add_heading("22. Known limitations and deployment blockers", 1)
     bullets(d, [
-        "Deployment to the evaluator's VM has not been performed (no VM access in this work).",
+        "Deployment to the company VM has not been performed (no VM access or VM details yet).",
+        "Store roles can read the tenant call register (/api/calls/, asset calls) for the existing UI; whether that is "
+        "intended is a policy decision awaiting confirmation.",
+        "One AI turn runs at a time per process for all tenants; heavy use by one customer can make others wait (503).",
+        "Compound cause bullets ('A, B, or C') are kept as one documented cause with its exact wording; they are not "
+        "split into separate causes.",
         "One AI turn at a time per process (others get 503 rag_busy); scale out with more VMs.",
         "Ticket ownership between Servy and the evaluator's portal must be agreed (section 12).",
         "Citations expire after one hour; reopening an old conversation shows the stored answer, and a fresh citation needs a "
         "new answer.",
-        "API keys map to one integration account each; a portal serving many customers needs one integration account "
-        "(and key) per Servy customer, or an agreed delegated-identity design.",
+        "API keys are issued only to customer-role accounts and act for exactly one customer; a portal serving many "
+        "customers holds one key per Servy customer account (a shared multi-customer key is deliberately not supported).",
         "Real equipment accuracy has been tested in depth for the Split AC and VRF demo assets only.",
     ])
     d.save(path)

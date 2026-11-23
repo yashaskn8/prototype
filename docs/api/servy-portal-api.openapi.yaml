@@ -51,7 +51,7 @@ components:
       description: Invalid payload, closed conversation, idempotency-key collision or message too long.
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     Throttled:
-      description: Per-user rate limit exceeded (AI turns 20/minute by default).
+      description: "Per-account rate limit exceeded (defaults: AI messages 20/minute, ticket creation 10/hour, conversation create/resolve 60/hour; reading is not limited by these)."
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
     Busy:
       description: Another AI turn is running on this server (code rag_busy) or stream capacity is full. Retry later with the same idempotency key.
@@ -171,7 +171,7 @@ paths:
       summary: Readiness probe (database reachable and all enabled models warmed)
       security: []
       responses:
-        "200": {description: Ready, content: {application/json: {example: {status: ready, database: ok, models: {bge: ready, v5: ready, qwen: ready}, rag_busy: false}}}}
+        "200": {description: Ready, content: {application/json: {example: {status: ready, database: ok, models: {bge: ready, v5: ready, qwen: ready}}}}}
         "503": {description: "Not ready (models warming or failed, or database unavailable)"}
   /customer-support/conversations/:
     get:
