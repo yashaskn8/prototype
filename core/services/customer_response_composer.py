@@ -138,7 +138,10 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             # Do not repeat what the previous reply already listed, unless nothing new remains.
             shown = _previous_claim_sources(context)
             fresh = [[c for c in group if _norm(c.get("source_text")) not in shown] for group in (causes, facts, checks)]
-            if any(fresh):
+            # A leftover note is not a new answer: when every cause and fact was
+            # already listed ("What else could it be?"), keep them rather than
+            # replying with only an observation.
+            if fresh[0] or fresh[1]:
                 causes, facts, checks = fresh
 
     if not (causes or facts or checks):

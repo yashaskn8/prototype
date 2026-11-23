@@ -44,6 +44,7 @@ from core.diagnostics.schemas import (
 VAGUE_PATTERNS = [
     r"^(my\s+)?(machine|asset|equipment|device|analyzer|unit)\s+(is\s+)?(not\s+working|broken|down|faulty|dead|having\s+issues?|stopped)\.?$",
     r"^(it\s+)?(is\s+)?(not\s+working|broken|down|stopped|failed)\.?$",
+    r"^(?:it[’']?s|it\s+is)\s+not\s+working(?:\s+(?:properly|right|correctly|well))?\.?$",
     r"^(not\s+working|broken|machine\s+down|help|error|issue|problem)\.?$",
     r"^(my\s+)?(milk\s+analyzer|analyzer)\s+(is\s+)?(not\s+working|broken|down)\.?$",
     r"^(the\s+)?equipment\s+is\s+not\s+working\.?$",

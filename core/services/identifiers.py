@@ -69,6 +69,14 @@ def extract_error_codes(text: str) -> Set[str]:
     # ALM-series: ALM-01, ALARM-02
     for m in re.finditer(rf"\b(?:ALM|ALARM)\s*{DASH_CHARS}?\s*(\d{{1,5}})\b", text, re.IGNORECASE):
         codes.add(f"ALM-{m.group(1).upper()}")
+    # Other letter codes count only when named as a code, alarm, error or fault
+    # ("alarm code A3", "code H1", "U4 error"). Without that context a token such
+    # as "2T" or "R32" is not a fault code.
+    for m in re.finditer(rf"\b(?:codes?|alarms?|errors?|faults?)\s*(?:code\s*)?[:#]?\s*([A-Z]{{1,2}}){DASH_CHARS}?(\d{{1,3}})\b",
+                         text, re.IGNORECASE):
+        codes.add(f"{m.group(1).upper()}{m.group(2)}")
+    for m in re.finditer(rf"\b([A-Z]{{1,2}}){DASH_CHARS}?(\d{{1,3}})\s+(?:code|alarm|error|fault)\b", text, re.IGNORECASE):
+        codes.add(f"{m.group(1).upper()}{m.group(2)}")
     return codes
 
 

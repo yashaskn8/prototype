@@ -185,7 +185,8 @@ _RESTRICTED_LEVELS = frozenset({"PROHIBITED", "TECHNICIAN_ONLY"})
 _VALUE_QUESTION = re.compile(
     r"\b(?:what|which)\s+(?:is|are)\s+(?:the\s+)?(?:[a-z0-9/-]+\s+){0,4}?"
     r"(?:pressure|voltage|current|amperage|capacity|temperature|rating|size|setting|value|weight|"
-    r"dimensions?|tonnage|airflow|flow rate|clearance|torque|speed|charge|specification)s?\b"
+    r"dimensions?|tonnage|airflow|flow rate|clearance|torque|speed|charge|specification|"
+    r"length|distance|height)s?\b"
     r"|\bhow (?:much|many)\b", re.I)
 # A customer reporting a fault or symptom rather than asking a factual question.
 _SYMPTOM_REPORT = re.compile(
@@ -293,8 +294,30 @@ def _question_guard(question):
         r"\b(?:bypas\w*|defeat|bridge|resett?\w*|clear(?:ing)? (?:the )?fault|"
         r"open|probe|wire|measure|chip|adjust|vent|charg\w*|top up|spray|fix|repair|"
         r"keep (?:the |it |unit |equipment |system ){0,3}(?:running|operating)|"
-        r"stay on|operate|run|change fan speed)\b", lower)
+        r"stay on|operate|run|change (?:the )?fan speed)\b", lower)
     if permission and physical:
+        return "safety"
+    # Asking for instructions ("Tell me how to bypass ...", "Give me the steps to
+    # adjust the charge ...", "I should keep resetting ...") requests the same
+    # operation as "Can I ...?" and gets the same answer. Only operations on
+    # protection, refrigerant or electrical access count here, so ordinary
+    # "how do I ..." questions keep their normal answer.
+    instruction = re.search(
+        r"\bhow\s+(?:do|can|could|should|would|to)\b"
+        r"|\b(?:tell|show|give|walk)\s+(?:me|us)\b[^.?!]{0,30}\b(?:how|steps?|procedure|through)\b"
+        r"|\bsteps?\s+(?:to|for)\b"
+        r"|\b(?:i|we)\s+(?:should|can|could|may|must|need\s+to|have\s+to)\b", lower)
+    restricted = re.search(
+        r"\b(?:bypas\w*|defeat\w*|bridg(?:e|ing)|disabl\w*|jumper\w*|short(?:ing)?[- ]out|resett?\w*)\b"
+        r"|\b(?:re)?charg\w*\s+(?:the\s+|more\s+)?(?:\w+\s+){0,2}?(?:refrigerant|gas|circuit|system)\b"
+        r"|\b(?:refrigerant|gas)\s+charg\w*"
+        r"|\b(?:top(?:ping)?\s+up|add(?:ing)?\s+(?:more\s+|some\s+)?)(?:the\s+)?(?:refrigerant|gas)\b"
+        r"|\b(?:refrigerant|gas)\b[^.?!]{0,30}\badd\b"
+        r"|\badjust\w*\s+(?:the\s+)?(?:\w+\s+){0,2}?(?:charge|pressure|refrigerant|fan|speed|static|controls?|switch)\b"
+        r"|\bopen(?:ing)?\s+(?:up\s+)?(?:the\s+|a\s+|its\s+)?(?:\w+\s+){0,2}?"
+        r"(?:panel|cover|cabinet|compartment|circuit|casing|enclosure)\b"
+        r"|\bchange\s+(?:the\s+)?fan\s+speed", lower)
+    if (permission or instruction) and restricted:
         return "safety"
     if re.search(r"\b(?:proves?|definitely|certainly|must mean|for sure)\b", lower):
         return "unsupported"
@@ -327,6 +350,39 @@ def _question_guard(question):
     if len(words) <= 7 and re.search(r"\b(?:help|what happened|what first|due yet)\b", lower):
         return "clarify"
     return None
+
+
+# Equipment types of the company's registered assets (customer_isolation registry).
+# A question naming one of these while a different type is selected asks about
+# other equipment, and the selected unit's manuals do not answer it.
+_EQUIPMENT_TYPES = {
+    "split": re.compile(r"\bsplit\s+(?:ac|a/c|unit|air|system|type)\b", re.I),
+    "vrf": re.compile(r"\bvrf\b|\bvariable refrigerant flow\b", re.I),
+    "ductable": re.compile(r"\bductable\b", re.I),
+    "cassette": re.compile(r"\bcassette\b", re.I),
+    "package": re.compile(r"\bpackage(?:d)?\s+(?:ac|a/c|unit)\b", re.I),
+    "chiller": re.compile(r"\bchillers?\b", re.I),
+    "cooling_tower": re.compile(r"\bcooling\s+towers?\b", re.I),
+    "ahu": re.compile(r"\bahu\b|\bair[- ]handling\s+unit\b", re.I),
+    "fridge": re.compile(r"\b(?:fridge|refrigerator)s?\b", re.I),
+}
+# Fault vocabulary shared by every section ("fault", "problem", "unit"): a claim
+# that shares only these words with the question is not about the question.
+_GENERIC_MATCH_WORDS = frozenset({
+    "fault", "faults", "issue", "issues", "problem", "problems", "error", "errors", "failure",
+    "failures", "alarm", "alarms", "symptom", "symptoms", "unit", "units", "module", "modules",
+    "system", "systems", "equipment",
+})
+
+
+def names_other_equipment_type(question, asset):
+    """True when the question names an equipment type other than the selected unit's."""
+    if asset is None:
+        return False
+    label = f"{getattr(asset, 'name', '') or ''} {getattr(asset, 'model_number', '') or ''}"
+    own = {name for name, pattern in _EQUIPMENT_TYPES.items() if pattern.search(label)}
+    asked = {name for name, pattern in _EQUIPMENT_TYPES.items() if pattern.search(str(question or ""))}
+    return bool(asked - own) and not (asked & own)
 
 
 def _source_warning(candidates, question, *, tenant, customer, asset):
@@ -723,6 +779,7 @@ def build_customer_answer(
         return _guarded_customer_response(interaction, session, candidates, guard)
     explicit_model = re.search(r"\bmodel\s+([a-z0-9]+[-][a-z0-9-]+)", question, re.I)
     wrong_model = explicit_model and asset and explicit_model[1].casefold() != (asset.model_number or "").casefold()
+    wrong_model = wrong_model or names_other_equipment_type(raw_user_q, asset)
     fact_family = _document_fact_family(question)
     if fact_family and not wrong_model and not query_is_control_abuse(question):
         fact_answer = _document_fact_response(interaction, session, fact_family)
@@ -792,6 +849,18 @@ def build_customer_answer(
         wants_facts = False
     codes = extract_error_codes(question)
     quantities = extract_typed_quantities(question)
+    generic_keys = match_keys(_GENERIC_MATCH_WORDS)
+    stated_text = (f"{raw_user_q} {question} {normalize_domain_terms(raw_user_q)} "
+                   f"{normalize_domain_terms(question)}")
+    # Sections with a documented cause list, and those whose symptom the customer
+    # names. A named symptom is answered from its own section: causes and notes of
+    # other symptom sections are not added merely because they share a word
+    # ("fault", "airflow"). Naming two symptoms keeps both sections.
+    symptom_sections = {r.heading for r in evidence_chunks
+                        if any(k == "possible_cause" for _t, k, _s, _e in source_claims(r.text))}
+    stated_sections = set() if generic_cause_overview else {
+        h for h in symptom_sections
+        if heading_states_symptom(h, asked_symptoms) or question_states_heading(stated_text, h)}
     eligible = []
     if evidence_chunks and (sufficient or generic_cause_overview) and not wrong_model and not query_is_control_abuse(question):
         for result in evidence_chunks:
@@ -829,12 +898,15 @@ def build_customer_answer(
                         # diagnosis. Preserve the source section as a condition.
                         target = causes
                     else:
+                        if stated_sections and result.heading not in stated_sections:
+                            continue
                         # A cause that shares no word with the question is
                         # relevant only through its section. Sharing some heading
                         # words is not enough ("server room temperature" is not
                         # "uneven room temperatures"): the question must state the
-                        # symptom that heading names.
-                        if not sentence_overlap and not (
+                        # symptom that heading names. Shared fault vocabulary
+                        # alone ("fault", "problem") does not count as sharing.
+                        if not (sentence_overlap - generic_keys) and not (
                                 heading_states_symptom(result.heading, asked_symptoms)
                                 or question_states_heading(
                                     # Customers misspell; judge the typo-normalized
@@ -846,6 +918,16 @@ def build_customer_answer(
                         target = causes
                 elif level in ("INFORMATIONAL_OBSERVATION", "UNKNOWN_REQUIRES_REVIEW") and _noninvasive_observation(text):
                     if _is_completed_check(text):
+                        continue
+                    # A value question is answered only by a documented value.
+                    if asks_value and not wants_cause_details:
+                        continue
+                    if (stated_sections and result.heading in symptom_sections
+                            and result.heading not in stated_sections):
+                        continue
+                    if (not (sentence_overlap - generic_keys)
+                            and not ((term_keys & match_keys(heading_words)) - generic_keys)
+                            and not heading_states_symptom(result.heading, asked_symptoms)):
                         continue
                     target, kind = observations, "observation"
                 elif level == "CUSTOMER_APPROVED" and _approved_source_action(text, result.chunk, asset, tenant):

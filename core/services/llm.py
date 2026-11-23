@@ -345,6 +345,21 @@ def _without_reported_duration(text):
     return observation.sub(replace, text)
 
 
+def _restates_asset_rating(number_text: str, asset) -> bool:
+    """True for a tonnage that is the selected unit's own nominal rating.
+
+    "2 ton" in a question about the "Split AC Unit 2T" names that unit; it is not a
+    specification the evidence must restate, so it is not checked as a threshold.
+    Any other number, unit or tonnage is still verified against the source.
+    """
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*tons?", str(number_text or "").strip().lower())
+    if not match or asset is None:
+        return False
+    label = f"{getattr(asset, 'name', '') or ''} {getattr(asset, 'model_number', '') or ''}".lower()
+    ratings = {float(v) for v in re.findall(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*(?:t|tr|tons?)\b", label)}
+    return float(match.group(1)) in ratings
+
+
 def extract_technical_numbers(text: str) -> set:
     """Extract numbers with technical units or multi-digit thresholds from text.
 
@@ -628,7 +643,7 @@ def _extractive_answer(question, asset, retrieved, service_call=None, conversati
     terms = _grounding_terms(question, _STOPWORDS, normalize=normalize_domain_terms)
 
     q_codes = extract_error_codes(question or "")
-    q_numbers = extract_technical_numbers(question or "")
+    q_numbers = {n for n in extract_technical_numbers(question or "") if not _restates_asset_rating(n, asset)}
 
     # Check evidence relevance against question terms and metadata.
     # The retriever has ALREADY performed hybrid ranking (dense + lexical + BM25 + fault-code boost + RRF).
@@ -953,7 +968,7 @@ def check_evidence_sufficiency(question: str, asset, retrieved: list) -> Evidenc
     from .retriever import normalize_domain_terms
     terms = _grounding_terms(question, _STOPWORDS, normalize=normalize_domain_terms)
 
-    q_numbers = extract_technical_numbers(question or "")
+    q_numbers = {n for n in extract_technical_numbers(question or "") if not _restates_asset_rating(n, asset)}
 
     grounded_chunks = []
     for r in applicable_chunks:

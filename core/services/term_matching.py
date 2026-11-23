@@ -54,7 +54,7 @@ def text_keys(text: str, stopwords=frozenset()) -> set:
 
 
 # concept -> (customer wording, wording a section heading must contain)
-_TEMPERATURE_WORD = r"(?:colder|cooler|warmer|hotter)"
+_TEMPERATURE_WORD = r"(?:colder|cooler|warmer|hotter|too\s+(?:cold|cool|warm|hot))"
 SYMPTOM_CONCEPTS = {
     "poor_cooling": (
         re.compile(
@@ -74,6 +74,13 @@ SYMPTOM_CONCEPTS = {
             r"|\b(?:room\s+)?temperatures?\s+(?:are|is|seem|feel)\s+uneven\b"
             r"|\bhot\s+and\s+cold\s+spots?\b", re.I),
         re.compile(r"\buneven\s+(?:room\s+)?temperatures?\b", re.I),
+    ),
+    # "Water is dripping from the indoor unit" reports the WATER LEAKAGE symptom.
+    "water_leakage": (
+        re.compile(
+            r"\b(?:water|condensate)\b[^.?!]{0,40}\b(?:leak\w*|drip\w*|pour\w*|overflow\w*|spill\w*)\b"
+            r"|\b(?:leak\w*|drip\w*)\b[^.?!]{0,40}\b(?:water|condensate)\b", re.I),
+        re.compile(r"\bwater\s+leak\w*\b", re.I),
     ),
     "communication": (
         re.compile(

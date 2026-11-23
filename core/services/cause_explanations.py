@@ -55,17 +55,19 @@ def _locate(chunk, text: str):
 def _candidate_sentences(chunk, asset):
     """Customer-safe descriptive sentences of one re-authorized chunk with exact spans."""
     from .customer_answer import (
-        _RESTRICTED_LEVELS, _descriptive_cause, _sentence_spans, customer_safe_fact, source_claims)
+        _RESTRICTED_LEVELS, _sentence_spans, customer_safe_fact, source_claims)
     from .customer_diagnostic import classify_action_safety
     for text, kind, start, end in source_claims(chunk.text):
+        if kind == "possible_cause":
+            # Another documented cause, usually of a different symptom, does not
+            # explain this one even when it shares words such as "dirty".
+            continue
         parts = _sentence_spans(chunk.text, text, start, end) or [(text, start, end)]
         for part, part_start, part_end in parts:
             level, _ = classify_action_safety(part, asset)
             if level in _RESTRICTED_LEVELS:
                 continue
-            safe = customer_safe_fact(part, level) == "descriptive" or (
-                kind == "possible_cause" and _descriptive_cause(part))
-            if safe:
+            if customer_safe_fact(part, level) == "descriptive":
                 yield part, part_start, part_end
 
 
