@@ -431,8 +431,11 @@ def extract_conversation_context(
             # Extract pending question if clarification was requested
             if contract.get("response_type") == "CLARIFICATION":
                 ctx.pending_question = contract.get("clarification_question") or contract.get("summary")
-            elif "clarification_question" in contract and contract["clarification_question"]:
-                ctx.pending_question = contract["clarification_question"]
+            elif contract.get("response_type") != "GREETING":
+                # A resolved/declined clarification is not pending forever.
+                # Leaving this set forces every subsequent turn into follow-up
+                # mode, including otherwise independent customer questions.
+                ctx.pending_question = None
 
     # Now evaluate current_input in relation to conversation state
     current_lower = clean_input.lower()
