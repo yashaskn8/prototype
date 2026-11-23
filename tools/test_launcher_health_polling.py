@@ -22,6 +22,12 @@ class LauncherHealthPollingTests(unittest.TestCase):
         self.assertIn("$healthShown = $false", self.text)
         self.assertIn("if (-not $healthShown) { $healthShown = $true; $_ }", self.text)
 
+    def test_gateway_refuses_to_start_with_unapplied_migrations(self):
+        check = self.text.index("'manage.py' 'migrate' '--check'")
+        start = self.text.index("'runserver','127.0.0.1:8002'")
+        self.assertLess(check, start)
+        self.assertIn("servy_dev has unapplied migrations", self.text)
+
 
 if __name__ == "__main__":
     unittest.main()

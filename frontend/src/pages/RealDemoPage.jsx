@@ -19,6 +19,7 @@ import {
 import './RealDemoPage.css';
 import {
   CONVERSATIONS_PATH, conversationPath, gatewaySourceUrl, messagesFromServer,
+  parseDemoResponse,
 } from './demoGatewayClient';
 import { busyMessage, outcomeLabel } from '../components/turnDiagnostics.js';
 import { AnswerFeedback } from '../components/AnswerFeedback.jsx';
@@ -33,9 +34,7 @@ async function call(path, token, options = {}) {
     headers,
     cache: 'no-store',
   });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || 'Demo request failed');
-  return data;
+  return parseDemoResponse(response);
 }
 
 async function callRagStream(path, token, payload, onLog, signal) {

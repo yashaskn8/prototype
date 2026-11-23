@@ -1,4 +1,4 @@
-# Start the localhost-only Customer RAG demo: the official Django APIs served by
+﻿# Start the localhost-only Customer RAG demo: the official Django APIs served by
 # the access-code gateway on 127.0.0.1:8002, backed only by the isolated servy_dev
 # MySQL database (servy_dev_app). No migrations, seeding or company-data changes.
 param([switch]$Watch, [switch]$NoWatch, [switch]$Restart, [switch]$ReviewRequest, [switch]$RebuildFromVerifiedDocs, [switch]$NoLocalChat)
@@ -227,6 +227,10 @@ if (!(Test-LocalPort 8002)) {
     try {
         & $pythonPath '-B' 'manage.py' 'check_dev_database' *> $null
         if ($LASTEXITCODE -ne 0) { throw 'The servy_dev isolation check failed; the Customer gateway was not started. Run manage.py check_dev_database for details.' }
+        # New code must not run against an older servy_dev schema: a missing column
+        # turns every inventory request into an HTML 500 page.
+        & $pythonPath '-B' 'manage.py' 'migrate' '--check' *> $null
+        if ($LASTEXITCODE -ne 0) { throw 'servy_dev has unapplied migrations; the Customer gateway was not started. Back up servy_dev, then run: manage.py migrate (with the same SERVY_MYSQL_ENV_FILE / SERVY_MEDIA_ROOT as this launcher).' }
     } finally {
         Pop-Location
     }
