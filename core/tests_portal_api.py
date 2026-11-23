@@ -186,7 +186,8 @@ class PortalApiTests(GatewayTestBase):
         ready = APIClient().get("/api/health/ready/")
         _capture("health_ready", "get", "/api/health/ready/", ready)
         self.assertIn(ready.status_code, (200, 503))
-        self.assertEqual(set(ready.json()), {"status", "database", "models"})
+        self.assertEqual(set(ready.json()), {"status", "database", "schema", "models", "index"})
+        self.assertEqual(ready.json()["schema"], "ok")
         self.assertNotIn(self.customer.name, ready.content.decode())
 
     def test_management_command_issues_lists_and_revokes(self):
@@ -332,3 +333,22 @@ class ThrottlePlacementTests(SimpleTestCase):
             view.request = factory.get("/")
             self.assertEqual(view.get_throttles(), [], view_cls)
         self.assertEqual(CustomerSupportQueryView.throttle_classes, [CustomerRAGThrottle])
+
+
+
+class ReadinessStateTests(GatewayTestBase):
+    @override_settings(ROOT_URLCONF="servy_rag.urls")
+    def test_ready_only_when_models_index_and_schema_are_ready(self):
+        from unittest import mock
+        from core import health
+        from core.ml import preload
+        ready_models = {"bge": "ready", "v5": "ready", "qwen": "ready"}
+        with mock.patch.dict(preload.status, ready_models), mock.patch.object(preload, "index_state", "ready"):
+            self.assertEqual(APIClient().get("/api/health/ready/").status_code, 200)
+            with mock.patch.object(health, "_pending_migrations", return_value=True):
+                r = APIClient().get("/api/health/ready/")
+                self.assertEqual((r.status_code, r.json()["schema"]), (503, "migrations_pending"))
+        for state in ("empty", "missing"):
+            with mock.patch.dict(preload.status, ready_models), mock.patch.object(preload, "index_state", state):
+                r = APIClient().get("/api/health/ready/")
+                self.assertEqual((r.status_code, r.json()["index"]), (503, state))

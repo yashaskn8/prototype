@@ -18,6 +18,8 @@ logger = logging.getLogger("servy.rag.preload")
 _started = False
 _lock = threading.Lock()
 status = {"bge": "not_started", "v5": "not_started", "qwen": "not_started"}
+# Vector index state seen during BGE warm-up: not_checked, missing, empty or ready.
+index_state = "not_checked"
 
 
 def _warm_bge():
@@ -32,9 +34,15 @@ def _warm_bge():
     # Open the vector collection and run one query so the first customer search
     # does not pay the collection-open cost (measured ~1 s). No results are used.
     from core.ml.embeddings import get_collection
+    global index_state
     collection = get_collection(profile, create=False)
-    if collection is not None and collection.count():
+    if collection is None:
+        index_state = "missing"
+    elif not collection.count():
+        index_state = "empty"
+    else:
         collection.query(query_embeddings=[list(map(float, vector))], n_results=1)
+        index_state = "ready"
 
 
 def _warm_v5():
