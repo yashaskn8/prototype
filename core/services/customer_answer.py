@@ -171,11 +171,25 @@ def _generic_cause_candidates(*, tenant, customer, asset):
     """
     from .retriever import _knowledge_candidates
 
+    authorized_scope = _knowledge_candidates(
+        tenant, asset, customer, False, backend="all",
+    )
+    # Prefer documents specifically assigned to this asset or its product.
+    # Fleet-wide manuals are authorized to read but may describe a different
+    # model and should not displace an available equipment-specific manual.
+    direct = [
+        chunk for chunk in authorized_scope
+        if chunk.document.asset_id == asset.id
+        or (getattr(asset, "product_id", None)
+            and chunk.document.product_id == asset.product_id)
+    ]
+    search_scope = direct or authorized_scope
     by_heading = {}
-    for chunk in _knowledge_candidates(tenant, asset, customer, False, backend="all"):
+    for chunk in search_scope:
         heading = str(chunk.heading or "")
         if not re.search(
-            r"\b(?:fault|symptom|failure|troubleshoot|not working|does not start)\b",
+            r"\b(?:faults?|symptoms?|failures?|troubleshoot(?:ing)?|"
+            r"not working|does not start|not starting|does not run)\b",
             heading, re.I,
         ):
             continue
