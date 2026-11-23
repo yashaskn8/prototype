@@ -211,6 +211,12 @@ def technical_document(path):
         "conversations; only the wording context uses the last 10 messages.",
         "'Summarize what I told you' and similar requests are answered from saved customer statements only "
         "(response_type CONVERSATION_SUMMARY), with no retrieval and no technical claims.",
+        "Ticket help ('create a ticket'), ticket status ('did you create the ticket?'), ticket contents and "
+        "certainty questions ('is this definitely X?') are answered from conversation state and the linked ticket "
+        "only (response_type CONVERSATION_REPLY, reason_code TICKET_HELP/TICKET_STATUS/TICKET_CONTENTS/CERTAINTY). "
+        "No ticket is ever created by chat; safety-guarded messages are never routed here.",
+        "Unconfirmed answers use plain wording ('I can't confirm that from the information I have...') that "
+        "repeats what the customer reported and offers a technician once, not after every message.",
     ])
 
     d.add_heading("12. Ticket workflow and ownership", 1)
@@ -306,6 +312,7 @@ def technical_document(path):
         ["Complaint text, contact details, customer name on calls", "Own calls", "No", "Yes"],
         ["Part requests on a call", "No", "Yes", "Yes"],
         ["Documents staged for approval by staff", "No (own uploads only)", "Cannot upload", "Yes"],
+        ["Technician identity on calls; dashboard customer names and questions", "No", "No", "Yes"],
     ])
     d.add_paragraph("These rules are enforced in the Django views (not the UI) and covered by "
                     "core/tests_data_visibility.py. Whether store roles need any call data beyond reference, "

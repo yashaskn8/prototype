@@ -110,7 +110,7 @@ components:
       properties:
         response_type:
           type: string
-          enum: [GREETING, CLARIFICATION, DIAGNOSTIC_GUIDANCE, INSUFFICIENT_EVIDENCE, TECHNICIAN_HANDOFF, ESCALATION_REQUIRED, POLICY_VIOLATION]
+          enum: [GREETING, CLARIFICATION, DIAGNOSTIC_GUIDANCE, INSUFFICIENT_EVIDENCE, TECHNICIAN_HANDOFF, ESCALATION_REQUIRED, POLICY_VIOLATION, CONVERSATION_SUMMARY, CONVERSATION_REPLY]
         answer: {type: string}
         conversation_uuid: {type: string, format: uuid}
         clarification_question: {type: string, nullable: true}
