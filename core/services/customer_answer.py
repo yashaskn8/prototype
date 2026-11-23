@@ -148,6 +148,13 @@ _GENERIC_CAUSE_REQUEST = re.compile(
     r"issues?|problems?|why)\b", re.I)
 
 
+_GENERIC_CAUSE_HEADING = re.compile(
+    r"\b(?:faults?|symptoms?|failures?|troubleshoot(?:ing)?|"
+    r"not working|does not start|not starting|does not run)\b",
+    re.I,
+)
+
+
 def is_generic_cause_overview(question):
     """Identify a cause overview attached to a generic equipment failure.
 
@@ -187,11 +194,7 @@ def _generic_cause_candidates(*, tenant, customer, asset):
     by_heading = {}
     for chunk in search_scope:
         heading = str(chunk.heading or "")
-        if not re.search(
-            r"\b(?:faults?|symptoms?|failures?|troubleshoot(?:ing)?|"
-            r"not working|does not start|not starting|does not run)\b",
-            heading, re.I,
-        ):
+        if not _GENERIC_CAUSE_HEADING.search(heading):
             continue
         if not any(kind == "possible_cause" and _descriptive_cause(text)
                    for text, kind, _start, _end in source_claims(chunk.text)):
@@ -929,7 +932,7 @@ def build_customer_answer(
                 generic_section_cause = bool(
                     generic_cause_overview
                     and kind == "possible_cause"
-                    and re.search(r"\b(?:fault|symptom)\b", result.heading or "", re.I)
+                    and _GENERIC_CAUSE_HEADING.search(result.heading or "")
                 )
                 if (not sentence_overlap and not term_keys & match_keys(heading_words)
                         and not heading_states_symptom(result.heading, asked_symptoms)
