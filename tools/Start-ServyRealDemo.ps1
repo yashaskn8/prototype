@@ -334,7 +334,13 @@ if (-not $NoWatch) {
     Write-Output ''
     Write-Output 'Live customer RAG events (Ctrl+C to close this viewer only):'
     if (Test-Path -LiteralPath $backendErrLog -PathType Leaf) {
-        Get-Content -LiteralPath $backendErrLog -Tail 25 -Wait
+        # Show the startup readiness checks as a single health line; all other lines pass through.
+        $healthShown = $false
+        Get-Content -LiteralPath $backendErrLog -Tail 25 -Wait | ForEach-Object {
+            if ($_ -match '"GET /demo-api/health/ ') {
+                if (-not $healthShown) { $healthShown = $true; $_ }
+            } else { $_ }
+        }
     } else {
         Write-Warning "Customer RAG backend log is not available at: $backendErrLog"
     }

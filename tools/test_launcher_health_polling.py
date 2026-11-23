@@ -15,7 +15,12 @@ class LauncherHealthPollingTests(unittest.TestCase):
         attempts, seconds = map(int, loops[0])
         self.assertEqual(seconds, 5)
         self.assertLessEqual(attempts * seconds, 150)
-        self.assertEqual(self.text.count("/demo-api/health/"), 2, "initial probe plus the loop only")
+        self.assertEqual(self.text.count("Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/health/'"), 2,
+                         "initial probe plus the loop only")
+
+    def test_viewer_shows_a_single_health_line(self):
+        self.assertIn("$healthShown = $false", self.text)
+        self.assertIn("if (-not $healthShown) { $healthShown = $true; $_ }", self.text)
 
 
 if __name__ == "__main__":
