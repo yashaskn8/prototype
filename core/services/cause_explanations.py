@@ -209,6 +209,10 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
                         "kind": "uncertainty", "evidence_ids": []})
     unknown = unknown or [{"text": "This chat has not verified which documented possibility applies to your unit.",
                            "kind": "uncertainty", "evidence_ids": []}]
+    if len(unknown) > MAX_SECTION_CLAIMS:
+        # Retain the overall omission/unverified notice when individual
+        # explanation gaps exceed the per-section client contract limit.
+        unknown = unknown[:MAX_SECTION_CLAIMS - 1] + [unknown[-1]]
     multi_section = len(causes) > 4
     if multi_section:
         # The standard four-section contract permits 12 claims in its first
