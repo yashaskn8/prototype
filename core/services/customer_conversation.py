@@ -656,11 +656,27 @@ def _process_customer_diagnostic_turn(
                 session=session, turn_text=turn_text, idem_record=idem_record,
                 contract=_greeting_contract(asset, session, bool(conv_context.last_supported_contract)))
 
-        from core.services.customer_answer import _CAUSE_EXPLANATION_REQUEST
+        from core.services.customer_answer import _CAUSE_EXPLANATION_REQUEST, _question_guard
+        from core.services.conversation_context import resolve_cause_reference
+        from core.services.content_safety import query_is_control_abuse
         wants_all_explained = conv_context.turn_count > 0 and (
             is_explain_all_request(request_text)
             or (quoted_items and _CAUSE_EXPLANATION_REQUEST.search(request_text or "")))
-        listed = causes_for_request(conv_context, quoted_items) if wants_all_explained else []
+        selected_reference = resolve_cause_reference(request_text, conv_context)
+        wants_selected_explained = bool(
+            selected_reference and re.search(
+                r"\b(?:explain|elaborate|expand|describe|tell me more|more detail|in detail)\b",
+                request_text, re.I,
+            )
+        )
+        listed = (
+            [selected_reference["selected"]] if wants_selected_explained
+            else causes_for_request(conv_context, quoted_items) if wants_all_explained
+            else []
+        )
+        # Explanation retrieval must not bypass a safety or policy guard.
+        if query_is_control_abuse(request_text) or _question_guard(request_text):
+            listed = []
         if listed:
             with transaction.atomic():
                 interaction = CustomerInteraction.objects.create(
