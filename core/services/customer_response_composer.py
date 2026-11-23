@@ -128,7 +128,17 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             facts = []
             checks = [c for c in checks if heading and _norm(c.get("source_heading")) == _norm(heading)]
     elif getattr(context, "is_followup", False):
-        subject = _subject_terms(question)
+        # A broad equipment-failure question is not a component follow-up.
+        # Filtering on its generic words ("causes", "not work") can silently
+        # reduce an authorized multi-section overview to one matching fault.
+        from .customer_answer import is_generic_cause_overview
+        original = getattr(context, "original_complaint", "")
+        if is_generic_cause_overview(question) or (
+            original and is_generic_cause_overview(f"{question} {original}")
+        ):
+            subject = set()
+        else:
+            subject = _subject_terms(question)
         if subject:
             about = lambda c: bool(subject & _terms(c.get("source_text") or c.get("text")))  # noqa: E731
             if any(about(c) for c in causes + facts + checks):
