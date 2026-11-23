@@ -183,6 +183,8 @@ def _explanation_contract(interaction, session, asset, built):
         "known_limitations": ["No physical inspection or confirmed diagnosis."],
         "authorized_user_actions": {"can_resolve": False, "can_escalate": True},
     }
+    if built.get("multi_section"):
+        presentation["view_mode"] = "focused"
     response = explanation_response(equipment.get("name") or "equipment", built)
     presentation["response"] = response
     return {
