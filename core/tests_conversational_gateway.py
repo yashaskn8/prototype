@@ -12,7 +12,7 @@ from unittest import mock
 from django.test import override_settings
 
 from core.models import (
-    Asset, Brand, CustomerMessage, KnowledgeDocument, Product, ProductCategory, ProductDomain, Site)
+    Asset, Brand, CustomerMessage, KnowledgeChunk, KnowledgeDocument, Product, ProductCategory, ProductDomain, Site)
 from core.services.indexing import index_document
 from core.tests_demo_gateway import CUSTOMER_CODE, GatewayTestBase
 
@@ -214,6 +214,86 @@ class VRFConversationGatewayTests(GatewayTestBase):
         self.assertIn("cause_without_explaining_evidence", answer["diagnostics"]["rejection_reasons"])
         texts = [s["text"] for s in self.segments(answer)]
         self.assertIn("The approved manuals do not explain this cause further.", texts)
+
+    def test_unknown_failure_does_not_invent_a_low_pressure_diagnosis(self):
+        """Even a top-k pool containing one fault must yield a broad overview."""
+        doc = KnowledgeDocument.objects.create(
+            tenant=self.tenant, product=self.vrf.product, asset=self.vrf,
+            title="VRF Outdoor Module - Additional Fault Conditions",
+            source_type="text", is_rag_enabled=True, content_text="""2. COMMUNICATION OR ADDRESSING FAULT
+Possible causes:
+- Communication cable damage or incorrect topology.
+- Duplicate addresses or configuration mismatch.
+
+3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT
+Possible causes:
+- Blocked outdoor airflow or a dirty coil.
+
+4. LOW-PRESSURE OR CAPACITY FAULT
+Possible causes:
+- Operating conditions, sensor/control issue, or refrigerant-system problem.
+
+5. COMPRESSOR OR INVERTER FAULT
+Possible causes:
+- Electrical supply issue, over-temperature, drive fault, or compressor protection.
+
+6. FAN OR TEMPERATURE-SENSOR FAULT
+Possible causes:
+- Fan controller problem or temperature sensor failure.
+""")
+        index_document(doc)
+        low = KnowledgeChunk.objects.get(document=doc, heading__icontains="LOW-PRESSURE")
+        uuid = self.create()
+        self.ask(uuid, "hi")
+        vague, _ = self.ask(uuid, "why is this not working")
+        self.assertEqual(vague["response_type"], "CLARIFICATION")
+        self.ask(uuid, "dont know suddenly it stopped working")
+
+        # Reproduce the live failure: V5 returned only the low-pressure chunk.
+        def one_fault_only(**kwargs):
+            return {
+                "answer": "", "references": [
+                    {"document_id": doc.id, "chunk_id": low.id, "score": 0.85},
+                ], "retrieval_backend": "regression-fixture",
+                "reranker_applied": True,
+            }
+
+        with mock.patch("core.services.rag.ask_rag", side_effect=one_fault_only):
+            overview, _ = self.ask(
+                uuid, "what could be the possible causes for it to not work")
+
+        self.assertEqual(overview["response_type"], "DIAGNOSTIC_GUIDANCE", overview["answer"])
+        headings = {
+            c["heading"].casefold()
+            for c in overview["presentation"]["citations"]
+            if c.get("kind") == "possible_cause"
+        }
+        for name in ("communication", "high-pressure", "low-pressure",
+                     "compressor", "fan"):
+            self.assertTrue(any(name in h for h in headings),
+                            (name, headings, overview["answer"]))
+        self.assert_citations_resolve(overview)
+        self.assertGreaterEqual(len(self.listed(overview)), 5)
+        self.assertIn("not a confirmed diagnosis", overview["answer"].casefold())
+
+        explanation, _ = self.ask(uuid, "Explain each of these causes.")
+        self.assertEqual(explanation["response_type"], "DIAGNOSTIC_GUIDANCE")
+        explained = explanation["presentation"]["response"]["explanations"]
+        self.assertGreaterEqual(len(explained), 5)
+
+        with mock.patch("core.services.rag.ask_rag", side_effect=AssertionError("RAG must not run")):
+            decision, logs = self.ask(uuid, "so should i call a technician")
+        self.assertEqual(decision["response_type"], "TECHNICIAN_HANDOFF")
+        self.assertTrue(decision["answer"].startswith("Yes."))
+        self.assertFalse(decision.get("citations"))
+        self.assertTrue(all(
+            event.get("status") == "skipped"
+            for event in logs if event.get("stage") == "customer_rag_execution"
+        ))
+        # The technician decision must not erase the previously cited causes.
+        first, _ = self.ask(uuid, "Tell me more about the first cause.")
+        self.assertEqual(first["response_type"], "DIAGNOSTIC_GUIDANCE", first["answer"])
+        self.assert_citations_resolve(first)
 
     def test_explain_each_without_a_previous_cause_list_is_not_invented(self):
         uuid = self.create()
