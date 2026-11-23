@@ -303,9 +303,10 @@ try {
         throw 'The authenticated demo health check failed.'
     }
     # Wait for BGE, V5 and Qwen to finish warming so the first answers are not fallbacks.
+    # One sequential poll every 5 s (max 150 s); it stops as soon as models_ready is true.
     $modelsReady = [bool]$healthPayload.models_ready
-    for ($attempt = 0; $attempt -lt 75 -and !$modelsReady; $attempt++) {
-        Start-Sleep -Seconds 2
+    for ($attempt = 0; $attempt -lt 30 -and !$modelsReady; $attempt++) {
+        Start-Sleep -Seconds 5
         $healthPayload = (Invoke-WebRequest -Uri 'http://127.0.0.1:5175/demo-api/health/' -Headers @{
             Authorization = "Demo $demoToken"
             'X-Servy-Request-Source' = 'launcher-readiness'
