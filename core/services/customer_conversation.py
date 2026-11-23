@@ -12,6 +12,7 @@ Owns the customer-facing turn lifecycle:
 
 import hashlib
 import logging
+import re
 from typing import Any, Dict, Optional
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
@@ -131,6 +132,42 @@ def _greeting_contract(asset, session, has_previous_answer):
         "presentation": {"schema_version": "customer-answer-v1", "response_type": "GREETING",
                          "sections": [], "citations": [], "supporting_claims": [], "message": message,
                          "hazard": {"severity": "none", "message": ""}},
+    }
+
+
+_TECHNICIAN_DECISION = re.compile(
+    r"\b(?:should|can|could|may|do|must)\s+(?:i|we)\s+"
+    r"(?:call|contact|request|ask for|arrange)\s+"
+    r"(?:an?\s+)?(?:authorized\s+)?"
+    r"(?:service\s+)?(?:technician|engineer|service\s+team|support)\b"
+    r"|\b(?:do|would)\s+(?:i|we)\s+need\s+(?:to\s+)?"
+    r"(?:call|contact|request)\s+(?:an?\s+)?(?:technician|service\s+team|support)\b",
+    re.I,
+)
+
+
+def _technician_decision_contract(asset, session):
+    """Answer a service-handoff decision without misrepresenting manual evidence."""
+    message = (
+        "Yes. Contacting an authorized technician is appropriate when the "
+        "equipment has stopped working and its cause has not been established. "
+        "Report what stopped working, when it happened, and any displayed "
+        "alarm or code. Do not open the equipment or attempt internal "
+        "electrical or refrigerant repairs yourself. This is not a diagnosis."
+    )
+    return {
+        "response_mode": "TECHNICIAN_HANDOFF",
+        "response_type": "TECHNICIAN_HANDOFF",
+        "session_id": str(session.session_id) if session else None,
+        "session_status": session.status if session else "ACTIVE",
+        "asset": {"id": asset.id, "name": asset.name, "model_number": asset.model_number}
+                 if asset else {},
+        "summary": message, "message": message, "answer": message,
+        "citations": [], "references": [], "presentation": None,
+        "customer_safe_actions": [], "check_first": [], "technician_only_actions": [],
+        "clarification_question": None, "can_resolve": False, "can_escalate": True,
+        "engine": "customer-technician-decision",
+        "reason_code": "TECHNICIAN_CONTACT_RECOMMENDED",
     }
 
 
@@ -589,6 +626,19 @@ def _process_customer_diagnostic_turn(
                 "contract": contract,
                 "conversation": conv,
             }
+
+        # Direct service-handoff questions are decisions, not new fault-diagnosis
+        # requests. Do not route them through old cause retrieval or invent citations.
+        if _TECHNICIAN_DECISION.search(turn_text):
+            from core.services.rag_execution_log import emit_execution_event
+            for stage in ("customer_rag_execution", "customer_evidence_validation",
+                          "customer_qwen_generation"):
+                emit_execution_event(stage, "Technician decision answered without manual claims", "skipped")
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset,
+                conv=conv, session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_technician_decision_contract(asset, session),
+            )
 
         # 4b. Conversational routing that needs no new retrieval for the original question.
         from core.services.cause_explanations import (
