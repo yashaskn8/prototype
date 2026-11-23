@@ -83,7 +83,8 @@ def rag_execution_stream(work):
     def run_work() -> None:
         try:
             close_old_connections()
-            with bind_execution_log(publish), rag_admission.admitted_work():
+            from .request_deadline import bind_cancellation
+            with bind_execution_log(publish), rag_admission.admitted_work(), bind_cancellation(closed):
                 result = work()
             publish({"type": "result", "data": result}, terminal=True)
         except Exception as exc:
@@ -132,8 +133,9 @@ def rag_execution_stream(work):
                     yield _sse_frame(event_type, item.get("data") or {})
                     break
         finally:
-            # This stops further log queuing. A synchronous RAG operation
-            # already in progress is allowed to finish safely in its worker.
+            # This stops further log queuing and, through bind_cancellation, gives
+            # model stages that have not started yet no budget. Work already in
+            # progress finishes safely and the turn is still saved (R22).
             closed.set()
 
     response = StreamingHttpResponse(

@@ -25,7 +25,8 @@ def _find_split_point(cut, min_pos):
 
 # "6. POWER SUPPLY INTERRUPTION", "3. SYMPTOM: POOR COOLING", "4.2 FAULT CODES":
 # a numbered, upper-case section title is a heading even without "#" or a colon.
-_NUMBERED_HEADING = re.compile(r"^\d+(?:\.\d+)*[.)]?\s+[A-Z][A-Z0-9 /&:()',-]{2,80}$")
+_NUMBERED_HEADING = re.compile(
+    r"^\d+(?:\.\d+)*[.)]?\s+(?:[A-Z][A-Z0-9 /&:()',-]{2,80}|(?i:symptom|fault)\s*:\s*\S.{1,78})$")
 
 
 def chunk_markdownish(text, max_chars=1100, overlap=140):
@@ -44,9 +45,11 @@ def chunk_markdownish(text, max_chars=1100, overlap=140):
         is_heading = numbered or bool(re.match(r"^#{1,4}\s+", stripped)) or (
             stripped and len(stripped) < 90 and stripped.endswith(":")
         )
-        if is_heading and not numbered and not buffer and _NUMBERED_HEADING.match(heading or ""):
-            # A label such as "Possible causes:" directly under a numbered section
-            # heading stays in that section's body; the section keeps its own name.
+        if (is_heading and not numbered and not stripped.startswith("#")
+                and _NUMBERED_HEADING.match(heading or "")):
+            # Labels such as "Possible causes:" or "Initial checks:" under a numbered
+            # section heading stay in that section's body, wherever they occur, so
+            # the causes keep their fault section's identity (R04).
             buffer.append(line)
             continue
         if is_heading:

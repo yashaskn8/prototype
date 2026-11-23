@@ -155,6 +155,12 @@ _GENERIC_CAUSE_HEADING = re.compile(
 )
 
 
+# Portable (MySQL 8 / SQLite) prefilter for _GENERIC_CAUSE_HEADING; the Python
+# pattern is still applied to every returned chunk.
+_GENERIC_CAUSE_HEADING_SQL = r"(fault|symptom|failure|troubleshoot|not working|does not start|not starting|does not run)"
+GENERIC_SCAN_LIMIT = 600
+
+
 def is_generic_cause_overview(question):
     """Identify a cause overview attached to a generic equipment failure.
 
@@ -180,8 +186,10 @@ def _generic_cause_candidates(*, tenant, customer, asset):
         return []
     from .retriever import _knowledge_candidates
 
+    # R17: heading prefilter in the database and a hard cap on rows scanned.
     authorized_scope = _knowledge_candidates(
         tenant, asset, customer, False, allow_failed=True, backend="sparse",
+        heading_regex=_GENERIC_CAUSE_HEADING_SQL, limit=GENERIC_SCAN_LIMIT,
     )
     cause_chunks = []
     for chunk in authorized_scope:

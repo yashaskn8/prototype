@@ -93,7 +93,7 @@ def build_outcome(events: List[dict], contract: Dict[str, Any], deadline=None) -
     dense_completed = sum(1 for e in dense_events if e.get("status") == "completed" and not e.get("error_type"))
     dense_skipped = sum(1 for e in dense_events if e.get("error_type"))
     dense_status = "failed" if dense_error else (dense_events[-1].get("status") if dense_events else None)
-    deadline_errors = ("StageTimeout", "StageBusy", "DeadlineExhausted")
+    deadline_errors = ("StageTimeout", "StageBusy", "DeadlineExhausted", "ClientDisconnected")
     if not retrieval.get("passes"):
         retrieval_status = "not_run"
     elif dense_status == "completed":

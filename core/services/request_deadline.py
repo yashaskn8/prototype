@@ -25,6 +25,19 @@ from typing import Callable, Dict, Iterator, Optional
 from django.conf import settings
 
 _CURRENT: ContextVar[Optional["RequestDeadline"]] = ContextVar("servy_request_deadline", default=None)
+# Set by the SSE stream worker: the client's connection closed. Model stages that
+# have not started yet get no budget, so a disconnected request stops spending
+# model time; mandatory work (validation, persistence) still completes.
+_CANCEL: ContextVar[Optional[object]] = ContextVar("servy_request_cancel", default=None)
+
+
+@contextmanager
+def bind_cancellation(event):
+    token = _CANCEL.set(event)
+    try:
+        yield
+    finally:
+        _CANCEL.reset(token)
 
 # Measured warm durations on the development laptop (i7-10870H CPU for BGE/V5,
 # RTX 3050 Ti for Qwen): vector search ~0.05 s, V5 (5 pairs) 1.35-1.6 s,
@@ -56,6 +69,11 @@ class RequestDeadline:
         # stages already warned about (one log line per stage per request).
         self.skips: Dict[str, int] = {}
         self._warned: set = set()
+        self._cancel = _CANCEL.get()
+
+    @property
+    def cancelled(self) -> bool:
+        return bool(self._cancel is not None and self._cancel.is_set())
 
     def warn_once(self, stage: str) -> bool:
         if stage in self._warned:
@@ -74,6 +92,8 @@ class RequestDeadline:
 
     def stage_budget(self, stage: str) -> float:
         """Seconds this stage may use now (0 when it must not start)."""
+        if self.cancelled:
+            return 0.0
         available = self.remaining() - self.reserve
         cap = self.caps.get(stage)
         return max(0.0, min(available, cap) if cap is not None else available)

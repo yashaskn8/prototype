@@ -90,6 +90,7 @@ def is_authorized_candidate(
     allow_failed=False,
     backend="all",
     verified_doc_ids=None,
+    revoked_doc_ids=None,
 ) -> bool:
     """Canonical server-side authorization predicate for retrieved candidates.
 
@@ -141,7 +142,8 @@ def is_authorized_candidate(
     # every data mode, exactly as customer_visible_documents does.
     if getattr(doc, "revoked_at", None) is not None:
         return False
-    if not staff_mode and (doc.disable_sharing or is_revoked_document(doc)):
+    revoked = (doc.id in revoked_doc_ids) if revoked_doc_ids is not None else is_revoked_document(doc)
+    if not staff_mode and (doc.disable_sharing or revoked):
         return False
 
     # 4. Confidentiality
@@ -191,7 +193,8 @@ def is_revoked_document(doc) -> bool:
     ).filter(Q(verification_status="REVOKED") | Q(revoked_at__isnull=False)).exists()
 
 
-def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False, backend="all"):
+def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_failed=False, query_doc_ids=None, staff_mode=False, backend="all",
+                          heading_regex=None, limit=None):
     from .customer_isolation import get_customer_data_mode, is_real_tenant
     mode = get_customer_data_mode()
     is_real = is_real_tenant(tenant)
@@ -226,8 +229,9 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
     if not include_confidential:
         qs = qs.filter(document__is_confidential=False)
 
+    revoked_ids = revoked_document_ids(tenant)
     if not staff_mode:
-        qs = qs.filter(document__disable_sharing=False).exclude(document_id__in=revoked_document_ids(tenant))
+        qs = qs.filter(document__disable_sharing=False).exclude(document_id__in=revoked_ids)
 
     if customer:
         qs = qs.filter(Q(document__customer__isnull=True) | Q(document__customer=customer))
@@ -270,6 +274,12 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
 
     # Pre-filter candidate list to those passing canonical authorization predicate
     # Eliminate the [:3000] slice limitation (Part 7)
+    if heading_regex:
+        # Bounded scans (generic cause overview) filter by heading in the database
+        # and cap the rows loaded, instead of enumerating every in-scope chunk.
+        qs = qs.filter(heading__iregex=heading_regex)
+    if limit:
+        qs = qs.order_by("document_id", "chunk_index")[:limit]
     candidates = list(qs)
     return [
         c for c in candidates
@@ -283,6 +293,7 @@ def _knowledge_candidates(tenant, asset, customer, include_confidential, allow_f
             allow_failed=allow_failed,
             backend=backend,
             verified_doc_ids=verified_doc_ids,
+            revoked_doc_ids=revoked_ids,
         )
     ]
 
@@ -1135,7 +1146,7 @@ def retrieve(
             deadline.skips["dense_retrieval"] = deadline.skips.get("dense_retrieval", 0) + 1
             emit_execution_event(
                 "dense_retrieval", "Vector search skipped: request time budget already used",
-                "skipped", error_type="DeadlineExhausted",
+                "skipped", error_type="ClientDisconnected" if deadline.cancelled else "DeadlineExhausted",
             )
             dense_results = []
         else:

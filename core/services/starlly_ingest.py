@@ -269,6 +269,10 @@ def fetch_attachment_content(file_url: str, timeout: int = 20) -> tuple[bytes, s
     return content, sha, text
 
 
+_STRONG_SECTION = re.compile(
+    r"^(?:\d+\.\s+(?:[A-Z][A-Z0-9 /&:()',-]{2,80}|(?i:symptom|fault)\s*:\s*\S.*)|(?i:symptom):\s+\S.*)$")
+
+
 def split_document_into_sections(text: str) -> List[Dict[str, str]]:
     """Split technical manual text into semantically cohesive sections with headings."""
     lines = text.splitlines()
@@ -281,7 +285,19 @@ def split_document_into_sections(text: str) -> List[Dict[str, str]]:
     for line in lines:
         stripped = line.strip()
         match = header_pattern.match(stripped)
-        if match and len(current_lines) > 2:
+        content_lines = [l for l in current_lines if l.strip()]
+        if match and not content_lines and current_heading == "General Overview":
+            # A document that opens directly with a section heading names its first
+            # section after it, not "General Overview" (R05).
+            current_heading = stripped
+            current_lines = [line]
+            continue
+        # An upper-case numbered or SYMPTOM/FAULT section heading always starts a new
+        # section once the current one has content, so a short section cannot
+        # swallow the next fault heading (R05). Other numbered lines (procedure
+        # steps) keep the original rule.
+        strong = bool(_STRONG_SECTION.match(stripped))
+        if match and (len(current_lines) > 2 or (strong and len(content_lines) >= 2)):
             section_body = "\n".join(current_lines).strip()
             if section_body:
                 sections.append({

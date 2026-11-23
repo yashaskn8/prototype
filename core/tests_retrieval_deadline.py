@@ -79,3 +79,22 @@ class TruthfulRetrievalDiagnosticsTests(SimpleTestCase):
     def test_all_skipped_is_sparse_only(self):
         events = [{"stage": "dense_retrieval", "status": "skipped", "error_type": "DeadlineExhausted"}]
         self.assertEqual(self.turn_outcome(events)["retrieval_status"], "sparse_only_dense_timeout")
+
+
+class DisconnectCancellationTests(SimpleTestCase):
+    def test_disconnect_gives_unstarted_model_stages_no_budget(self):
+        from threading import Event
+        from core.services.request_deadline import StageTimeout, bind_cancellation, run_bounded
+        closed = Event()
+        with bind_cancellation(closed), request_deadline(total_seconds=30.0) as deadline:
+            self.assertGreater(deadline.stage_budget("v5_reranking"), 0)
+            closed.set()
+            self.assertTrue(deadline.cancelled)
+            for stage in ("dense_retrieval", "v5_reranking", "customer_qwen_generation"):
+                self.assertEqual(deadline.stage_budget(stage), 0.0)
+            with self.assertRaises(StageTimeout):
+                run_bounded("v5_reranking", lambda: "must not run")
+
+    def test_no_cancellation_without_a_stream(self):
+        with request_deadline(total_seconds=30.0) as deadline:
+            self.assertFalse(deadline.cancelled)
