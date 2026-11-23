@@ -136,8 +136,9 @@ def technical_document(path):
         "Warm-up: core.ml.preload.start_preload() (started from core/apps.py when SERVY_PRELOAD_MODELS=1 in a serving "
         "process - runserver or the WSGI app, which sets SERVY_SERVING_PROCESS=1) warms BGE (+ one Chroma query), Qwen "
         "(empty generate with keep_alive) and V5, and records per-model status: not_started, pending, ready, failed, disabled.",
-        "Readiness: GET /api/health/ready/ returns 200 only when the database answers and every model is ready or disabled; "
-        "otherwise 503 with the per-model status.",
+        "Readiness: GET /api/health/ready/ returns 200 only when the database answers, no migrations are pending, every "
+        "model is ready or disabled and the vector index is present and non-empty; otherwise 503 with coarse states "
+        "(database, schema, models, index). The demo launcher also refuses to start with pending migrations.",
     ])
 
     d.add_heading("6. BGE retrieval workflow", 1)
@@ -205,6 +206,11 @@ def technical_document(path):
         "the answer and says the manuals add nothing more, instead of switching to an unrelated section.",
         "Ordinal references ('the first', 'the seventh', 'the last', 'cause number 12') resolve against displayed_claims.",
         "'Should I contact a technician?' is answered directly without retrieval and never claims a ticket exists.",
+        "Durable state is rebuilt from the whole saved conversation (up to 400 messages): original and current "
+        "problem, corrections, answers to questions, negative observations and completed checks survive long "
+        "conversations; only the wording context uses the last 10 messages.",
+        "'Summarize what I told you' and similar requests are answered from saved customer statements only "
+        "(response_type CONVERSATION_SUMMARY), with no retrieval and no technical claims.",
     ])
 
     d.add_heading("12. Ticket workflow and ownership", 1)
@@ -273,6 +279,9 @@ def technical_document(path):
     bullets(d, [
         "Every query is scoped by tenant; customers see only their own assets, conversations and tickets; other customers' "
         "resources return 404.",
+        "Original-document gate (verified-real mode): when the approved original file is missing, altered or revoked, "
+        "the refusal is authoritative for the whole turn; the generic cause scan, document-fact lookup and "
+        "explanations of previously listed causes cannot reintroduce technical claims.",
         "All retrieval paths (main answer, generic cause overview, explanations, follow-ups, clarification options) use the "
         "same candidate scope and per-chunk gate; confidential, sharing-disabled, provenance-revoked, quarantined and "
         "rag-disabled documents are excluded for customers.",
@@ -286,6 +295,21 @@ def technical_document(path):
         "(is_rag_enabled); customers also see their own pending uploads.",
         "Streaming disconnects: model stages not yet started are skipped (ClientDisconnected); the turn is still saved.",
     ])
+
+    d.add_heading("Data visibility contract", 2)
+    table(d, ["Data", "Customer (own only)", "Store roles", "Technician / manager / admin"], [
+        ["Conversation messages and answers", "Yes", "No", "Assigned/authorized calls"],
+        ["Ticket reference, status, priority, due dates", "Yes", "Reference/status only", "Yes"],
+        ["Generated technician handover report (preview description/sections, technician_notes)",
+         "No", "No", "Yes"],
+        ["Recovery passport (internal diagnostic history)", "No", "No", "Yes"],
+        ["Complaint text, contact details, customer name on calls", "Own calls", "No", "Yes"],
+        ["Part requests on a call", "No", "Yes", "Yes"],
+        ["Documents staged for approval by staff", "No (own uploads only)", "Cannot upload", "Yes"],
+    ])
+    d.add_paragraph("These rules are enforced in the Django views (not the UI) and covered by "
+                    "core/tests_data_visibility.py. Whether store roles need any call data beyond reference, "
+                    "status and equipment is a company policy decision; the default is deny.")
 
     d.add_heading("18. Production VM architecture", 1)
     d.add_paragraph("The company has specified a VM but has not yet provided its operating system, CPU/RAM, GPU, "
@@ -358,7 +382,9 @@ def technical_document(path):
         "Deployment to the company VM has not been performed (no VM access or VM details yet).",
         "Store roles can read the tenant call register (/api/calls/, asset calls) for the existing UI; whether that is "
         "intended is a policy decision awaiting confirmation.",
-        "One AI turn runs at a time per process for all tenants; heavy use by one customer can make others wait (503).",
+        "Capacity: one AI turn runs at a time per process for all tenants (others get 503 rag_busy). Concurrency, "
+        "latency (p95) and memory have not been measured on the company VM; sizing and any multi-process design must "
+        "be decided once the VM resources and expected concurrent users are known.",
         "Compound cause bullets ('A, B, or C') are kept as one documented cause with its exact wording; they are not "
         "split into separate causes.",
         "One AI turn at a time per process (others get 503 rag_busy); scale out with more VMs.",
