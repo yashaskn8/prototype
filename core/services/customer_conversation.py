@@ -170,7 +170,9 @@ _TECHNICIAN_DECISION = re.compile(
     r"(?:an?\s+)?(?:authorized\s+)?"
     r"(?:service\s+)?(?:technician|engineer|service\s+team|support)\b"
     r"|\b(?:do|would)\s+(?:i|we)\s+need\s+(?:to\s+)?"
-    r"(?:call|contact|request)\s+(?:an?\s+)?(?:technician|service\s+team|support)\b",
+    r"(?:call|contact|request)\s+(?:an?\s+)?(?:technician|service\s+team|support)\b"
+    r"|\b(?:i|we)\s+should\s+(?:call|contact|get|request|ask\s+for)\s+(?:an?\s+)?(?:authorized\s+)?"
+    r"(?:service\s+)?(?:technician|engineer|service\s+team)\b",
     re.I,
 )
 
@@ -726,6 +728,37 @@ def _process_customer_diagnostic_turn(
                 contract=_summary_contract(session, conversation_intent_reply(intent, conv_context, ticket),
                                            response_type="CONVERSATION_REPLY", reason_code=intent.upper()))
 
+        from core.services.conversation_context import ordinal_beyond_list
+        from core.services.customer_answer import asks_about_other_equipment
+        beyond = ordinal_beyond_list(request_text or turn_text, conv_context) if conv_context.turn_count else None
+        other_equipment = asks_about_other_equipment(request_text or turn_text, asset)
+        if beyond or other_equipment:
+            name = getattr(asset, "name", None) or "this equipment"
+            if beyond:
+                label = beyond[0]["heading"]
+                label = re.sub(r"^\s*\d+[.)]\s*(?:symptom|fault)?\s*:?\s*", "", label, flags=re.I).strip().lower()
+                listed_text = "; ".join(c["source_text"].rstrip(".") for c in beyond)
+                message = (f"I only listed {len(beyond)} possible cause{'s' if len(beyond) != 1 else ''}"
+                           + (f" for {label}" if label else "") + f": {listed_text}. "
+                           "Would you like me to go through it in more detail?" if len(beyond) == 1 else
+                           f"I only listed {len(beyond)} possible causes" + (f" for {label}" if label else "")
+                           + f": {listed_text}.")
+                reason = "ORDINAL_BEYOND_LIST"
+            else:
+                message = (f"The information I have is for the {name} only, and it doesn't cover other types of "
+                           "equipment, so I can't apply their fault codes or instructions to this unit. "
+                           f"If the {name} shows a code, note it exactly as displayed for the technician.")
+                reason = "OTHER_EQUIPMENT"
+            for stage, label_text in (("customer_rag_execution", "Manual retrieval skipped: conversation-only reply"),
+                                      ("customer_evidence_validation", "No technical claim in this reply"),
+                                      ("customer_qwen_generation", "Local Qwen generation skipped")):
+                emit_execution_event(stage, label_text, "skipped")
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_summary_contract(session, message, response_type="CONVERSATION_REPLY",
+                                           reason_code=reason))
+
         from core.services.customer_answer import _CAUSE_EXPLANATION_REQUEST, _question_guard
         from core.services.conversation_context import resolve_cause_reference
         from core.services.content_safety import query_is_control_abuse
@@ -734,7 +767,7 @@ def _process_customer_diagnostic_turn(
             or (quoted_items and _CAUSE_EXPLANATION_REQUEST.search(request_text or "")))
         selected_reference = resolve_cause_reference(request_text, conv_context)
         wants_selected_explained = bool(
-            selected_reference and re.search(
+            selected_reference and not selected_reference.get("mode") and re.search(
                 r"\b(?:explain|elaborate|expand|describe|tell me more|more detail|in detail)\b",
                 request_text, re.I,
             )
@@ -899,6 +932,16 @@ def _process_customer_diagnostic_turn(
         from core.services.conversation_context import topic_shift_query
         answer_question = (topic_shift_query(routed_text) if conv_context.is_followup and not cause_reference
                            else None) or routed_text
+        # A cause request without its own subject is about the current issue: answer
+        # it as "what are the possible causes of <issue>?" (retrieval and claims).
+        from core.services.conversation_context import canonical_issue_question
+        canonical = None if cause_reference else canonical_issue_question(routed_text, conv_context)
+        if canonical:
+            answer_question = canonical
+            retrieval_query = "; ".join(p for p in (
+                getattr(asset, "name", ""), " ".join(conv_context.active_topics[:2]), conv_context.active_issue,
+                "customer-safe checks and observations" if "check or observe" in canonical else "possible causes")
+                if p)[:450]
         if cause_reference:
             selected = cause_reference["selected"]
             retrieval_query = f"{selected['heading']}: {selected['source_text']}".strip(": ")

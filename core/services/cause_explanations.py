@@ -271,7 +271,9 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
 def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any]:
     """Composed reply: each cause, then its cited explanation or an explicit gap."""
     from .customer_response_composer import _segment, render_text
-    segments = [_segment("text", f"Here is what the {equipment} manuals say about each listed cause:")]
+    explained = [e for e in built.get("explanations") or [] if e.get("cause")]
+    segments = [_segment("text", "Here's what I have on this cause:" if len(explained) == 1
+                         else "Here's what I have on each of these causes:")]
     for item in built["explanations"]:
         if item["status"] == "unverified":
             segments.append(_segment("text", UNVERIFIED_TEXT))

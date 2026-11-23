@@ -246,6 +246,8 @@ class ConversationContext:
     negative_observations: List[str] = field(default_factory=list)
     # (question, answer) pairs: what the customer told us in reply to our questions.
     resolved_answers: List[Dict[str, str]] = field(default_factory=list)
+    # Earlier issues replaced by a newer problem or a correction (oldest first).
+    issue_history: List[str] = field(default_factory=list)
     turn_count: int = 0
     is_followup: bool = False
     last_assistant_answer: str = ""
@@ -301,7 +303,22 @@ def _indicator_hits(text: str):
 
 def extract_negated_observations(text: str) -> List[str]:
     """Symptoms the customer explicitly says are absent ("no water leak is visible")."""
-    return list(dict.fromkeys(ind for ind, negated in _indicator_hits(text) if negated))
+    found = list(dict.fromkeys(ind for ind, negated in _indicator_hits(text) if negated))
+    # "water leaking" also matches "leaking": keep the most specific phrase only.
+    return [ind for ind in found if not any(ind != other and ind in other for other in found)]
+
+
+# Symptom concepts shared with evidence matching (term_matching.SYMPTOM_CONCEPTS),
+# so "lost connection", "some rooms are warmer" or "isn't working" are recognised
+# here exactly as they are when matching manual sections.
+_CONCEPT_LABELS = {"poor_cooling": "poor cooling", "uneven_temperature": "uneven room temperature",
+                   "water_leakage": "water leak", "communication": "communication fault",
+                   "generic_failure": "not working"}
+_EXTRA_SYMPTOMS = {
+    "weak airflow": re.compile(r"\bair\s*flow\b[^.?!]{0,25}\b(?:weak|low|reduced|poor)\b"
+                               r"|\b(?:weak|low|reduced|poor)\s+air\s*flow\b", re.I),
+    "noise": re.compile(r"\b(?:rattl\w*|squeal\w*|clank\w*|buzz\w*)\b", re.I),
+}
 
 
 def extract_symptoms_from_text(text: str) -> List[str]:
@@ -309,9 +326,25 @@ def extract_symptoms_from_text(text: str) -> List[str]:
     if not text:
         return []
     found = []
+    negated_words = [w for phrase in extract_negated_observations(text) for w in phrase.split()]
     for indicator, negated in _indicator_hits(text):
         if not negated and indicator not in found:
             found.append(indicator)
+    from .term_matching import symptom_concepts
+    for concept in sorted(symptom_concepts(text)):
+        label = _CONCEPT_LABELS.get(concept)
+        # "There's no water leaking" names the concept but negates it.
+        # Negated when a negated phrase shares a word stem with the label
+        # ("No water is leaking" negates "water leak").
+        negated = any(word[:4] == other[:4] for word in label.split() if len(word) > 3 for other in negated_words)
+        if label and label not in found and not negated:
+            found.append(label)
+    for label, pattern in _EXTRA_SYMPTOMS.items():
+        match = pattern.search(text)
+        if match and label not in found:
+            clause = re.split(r"[,;.!?]|\bbut\b", text[:match.start()].lower())[-1]
+            if not _NEGATION_BEFORE.search(clause):
+                found.append(label)
     # Also extract error code patterns like E-04, F-07
     codes = re.findall(r"\b[A-Z]{1,3}[- ]?\d{1,3}\b", text)
     for code in codes:
@@ -420,6 +453,51 @@ def shown_topics(contract: Dict[str, Any]) -> List[str]:
 
 
 _FAULT_MENTION = re.compile(r"\b(?:fault|error|alarm|code|trip(?:s|ping)?|alert)\b", re.I)
+_CODE = re.compile(r"\b[A-Z]{1,3}[- ]?\d{1,3}\b")
+# "Actually, I may have read that code incorrectly": doubt about an earlier
+# observation, not a new problem.
+_UNCERTAIN_OBSERVATION = re.compile(
+    r"\b(?:may|might|could)\s+have\s+(?:read|seen|heard|misread)\b|\bmisread\b"
+    r"|\bread\s+(?:it|that|the\s+code|the\s+display)\s+(?:wrong|incorrectly)\b"
+    r"|\bnot\s+sure\s+(?:about|of)\s+(?:the|that)\s+(?:code|reading|number)\b", re.I)
+
+
+def _is_question(value: str) -> bool:
+    return value.rstrip().endswith("?") or bool(_QUESTION_START.match(value))
+
+
+def _code_symptom(symptom: str) -> bool:
+    # Reported codes and generic "not working/running" wording ("the fan is not
+    # running") are details of an existing issue, not a new symptom.
+    return symptom.startswith("code ") or symptom == "not working"
+
+
+def is_problem_report(text: str) -> bool:
+    """A statement reporting a problem (not a question, not only negated symptoms)."""
+    value = " ".join(str(text or "").split())
+    return bool(value) and not _is_question(value) and bool(extract_symptoms_from_text(value))
+
+
+def is_observation_statement(text: str, ctx: "ConversationContext") -> bool:
+    """A short statement adding detail to the current issue rather than a new one.
+
+    "The noise stops after a few seconds.", "There's no error code showing.",
+    "The airflow seems normal, though.", "The outdoor module now shows E-99."
+    """
+    value = " ".join(str(text or "").split())
+    if (not value or _is_question(value) or len(value.split()) > 25
+            or not (ctx.active_issue or ctx.active_topics)):
+        return False
+    if is_explain_all_request(value) or _ORDINAL_REFERENCE.search(value):
+        return False
+    if _UNCERTAIN_OBSERVATION.search(value):
+        return True
+    if topic_shift_query(value):
+        return False
+    known = f"{ctx.active_issue} {' '.join(ctx.active_topics)}".lower()
+    new = [s for s in extract_symptoms_from_text(value)
+           if not _code_symptom(s) and s not in known and s.split()[0] not in known]
+    return not new
 
 
 def is_reply_to_question(text: str, pending: Optional[str], active_issue: str = "") -> bool:
@@ -438,7 +516,8 @@ def is_reply_to_question(text: str, pending: Optional[str], active_issue: str = 
     if is_explain_all_request(value) or topic_shift_query(value) or _ORDINAL_REFERENCE.search(value):
         return False
     known = f"{pending} {active_issue}".lower()
-    new_symptoms = [s for s in extract_symptoms_from_text(value) if s not in known]
+    new_symptoms = [s for s in extract_symptoms_from_text(value)
+                    if not _code_symptom(s) and s not in known]
     return not new_symptoms
 
 
@@ -454,20 +533,41 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
     for symptom in extract_symptoms_from_text(value):
         if symptom in ctx.negative_observations:
             ctx.negative_observations.remove(symptom)
-    reply = is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
+    # The first reported problem (e.g. the answer to "please describe the symptom")
+    # becomes the current issue; it is not an acknowledgement-only reply.
+    if not ctx.active_issue and is_problem_report(value):
+        ctx.answers_pending_question = False
+        _set_issue(ctx, value)
+        return
+    reply = (is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
+             or is_observation_statement(value, ctx))
     ctx.answers_pending_question = reply
     if reply:
-        ctx.resolved_answers.append({"question": ctx.pending_question, "answer": value})
+        ctx.resolved_answers.append({"question": ctx.pending_question or "", "answer": value})
         return
     shifted = topic_shift_query(value)
-    if shifted or extract_symptoms_from_text(value) or _FAULT_MENTION.search(value):
-        # A newly reported problem replaces the earlier one as the current issue;
-        # its section topics come from the next answer.
-        ctx.active_issue = (shifted or value).rstrip(" .!")
-        ctx.active_topics = []
+    if shifted and _is_question(value) and not (extract_symptoms_from_text(value) or _FAULT_MENTION.search(value)):
+        # "Does that correction change the possible causes?" asks about the
+        # conversation; only a question naming a problem changes the subject.
+        shifted = None
+    if shifted or is_problem_report(value):
+        # A newly reported problem or a correction replaces the current issue (the
+        # earlier one is kept in issue_history); questions never do.
+        _set_issue(ctx, shifted or value)
+
+
+def _set_issue(ctx: "ConversationContext", value: str) -> None:
+    issue = value.rstrip(" .!")
+    if ctx.active_issue and ctx.active_issue != issue:
+        ctx.issue_history.append(ctx.active_issue)
+    ctx.active_issue = issue
+    ctx.active_topics = []
 
 
 MAX_STATE_MESSAGES = 400
+_ISSUE_DEPENDENT = re.compile(
+    r"\b(?:causes?|causing|reasons?|possibilit(?:y|ies)|observe|check|look\s+for|do\s+next|next\s+steps?|"
+    r"fix|wrong|problem|issue|symptoms?|match|explain|why|happening|record|note)\b", re.I)
 
 _SUMMARY_REQUEST = re.compile(
     r"\b(?:summari[sz]e|summary|recap|sum\s+up)\b"
@@ -481,15 +581,20 @@ def is_summary_request(text: str) -> bool:
 
 
 def conversation_summary_text(ctx: "ConversationContext", ticket_ref: Optional[str] = None) -> str:
-    """Summarize only what the customer said and was asked; adds no technical facts."""
+    """Summarize only what the customer said; adds no technical facts."""
     equipment = ctx.asset_name or "your equipment"
     lines = [f"Here's what you've told me about the {equipment} so far:"]
-    if ctx.original_complaint:
-        lines.append(f'- You first reported: "{ctx.original_complaint.strip()}"')
-    if ctx.active_issue and ctx.active_issue.strip() != (ctx.original_complaint or "").strip():
-        lines.append(f'- The current problem: "{ctx.active_issue.strip()}"')
-    for pair in ctx.resolved_answers[-6:]:
-        lines.append(f'- When I asked "{pair["question"]}", you said: "{pair["answer"]}"')
+    original = (ctx.original_complaint or "").strip()
+    if original and not is_greeting(original):
+        lines.append(f'- You first reported: "{original}"')
+    for earlier in ctx.issue_history:
+        if earlier.strip() != original.rstrip(" .!") and earlier.strip():
+            lines.append(f'- You also mentioned: "{earlier.strip()}"')
+    if ctx.active_issue and ctx.active_issue.strip() != original.rstrip(" .!"):
+        lines.append(f'- The current problem, as you last described it: "{ctx.active_issue.strip()}"')
+    details = [pair["answer"].rstrip(" .") for pair in ctx.resolved_answers[-8:]]
+    if details:
+        lines.append("- Details you added: " + "; ".join(f'"{d}"' for d in details))
     if ctx.negative_observations:
         lines.append(f"- You said there is no: {', '.join(ctx.negative_observations)}")
     if ctx.completed_checks:
@@ -501,7 +606,7 @@ def conversation_summary_text(ctx: "ConversationContext", ticket_ref: Optional[s
     return "\n".join(lines)
 
 
-_TICKET_WORDS = r"(?:ticket|service\s+request|service\s+call|complaint|request|technician\s+visit)"
+_TICKET_WORDS = r"(?:(?:service\s+|support\s+)?ticket|service\s+request|service\s+call|complaint|request|technician\s+visit)"
 _TICKET_STATUS = re.compile(
     r"\b(?:did|have|has)\s+(?:you|it|anyone)\s+(?:actually\s+|already\s+)?"
     r"(?:create|raise|open|log|file|submit|book|ma(?:k|d)e)\w*\s+(?:a|an|the|my)?\s*" + _TICKET_WORDS
@@ -510,10 +615,10 @@ _TICKET_STATUS = re.compile(
     + r"(?:\s+(?:number|status|reference))?\b"
     + r"|\bis\s+(?:there|my)\s+(?:a\s+|an\s+)?(?:open\s+)?" + _TICKET_WORDS + r"\b", re.I)
 _TICKET_CONTENTS = re.compile(
-    r"\bwhat\s+(?:will|would|does|is|gets?)\s+(?:be\s+)?(?:in|included\s+in|on|sent\s+with|shared\s+in)\s+"
+    r"\bwhat\b[^?.!]{0,40}\b(?:in|included\s+in|on|sent\s+with|shared\s+in|added\s+to)\s+"
     r"(?:the|my|a)\s+" + _TICKET_WORDS
-    + r"|\bwhat\s+(?:will|would|does)\s+the\s+(?:ticket|service\s+request|technician)\s+"
-    r"(?:say|include|contain|see|get|receive|know)\b", re.I)
+    + r"|\bwhat\b[^?.!]{0,30}\b(?:will|would|does)\s+the\s+(?:ticket|service\s+request|technician)\s+"
+    r"(?:say|include|contain|see|get|receive|know|be\s+told)\b", re.I)
 _TICKET_HELP = re.compile(
     r"\b(?:create|raise|open|log|file|submit|book|make|arrange|schedule)\s+(?:a|an|the|my)?\s*"
     r"(?:new\s+)?" + _TICKET_WORDS
@@ -523,14 +628,25 @@ _CERTAINTY = re.compile(
     r"\b(?:definitely|for\s+sure|certainly|100\s*%|guaranteed)\b"
     r"|\bare\s+you\s+(?:sure|certain|confident)\b"
     r"|\bhow\s+(?:sure|certain|confident)\s+are\s+you\b"
-    r"|\bis\s+(?:this|that|it)\s+(?:confirmed|the\s+(?:actual|real|exact|definite)\s+(?:cause|problem|fault|issue))\b",
+    r"|\bis\s+(?:this|that|it)\s+(?:confirmed|the\s+(?:actual|real|exact|definite)\s+(?:cause|problem|fault|issue))\b"
+    r"|\bwhat\b[^?.!]{0,30}\bconfirmed\b|\bconfirmed\s+(?:and|or|vs\.?|versus)\s+what\b"
+    r"|\bonly\s+(?:a\s+)?possibilit(?:y|ies)\b",
     re.I)
+_ASSESSMENT = re.compile(
+    r"\bwhat\s+do\s+you\s+think\s+(?:the\s+|is\s+the\s+)?(?:main\s+|real\s+|actual\s+|likely\s+)?"
+    r"(?:problem|issue|cause|fault)\b"
+    r"|\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:main|most\s+likely|likely|real)\s+(?:problem|issue|cause|fault)\b"
+    r"|\bwhich\s+(?:one|cause)\s+is\s+(?:it|most\s+likely)\b", re.I)
+_RELATION = re.compile(
+    r"\b(?:related|connected|linked)\s+(?:to|with)\b|\bthe\s+same\s+(?:as|problem|issue|thing|fault)\b"
+    r"|\bcaused\s+by\s+the\s+same\b", re.I)
 
 
 def conversation_intent(text: str) -> Optional[str]:
     """Requests about the conversation or the service request, answered without manuals.
 
-    Returns "ticket_status", "ticket_contents", "ticket_help", "certainty" or None.
+    Returns "ticket_status", "ticket_contents", "ticket_help", "certainty",
+    "assessment", "relation" or None.
     Status is checked before help, so "Did you create a ticket?" is not a request to
     create one. A message that also reports a symptom is left to normal handling.
     """
@@ -543,8 +659,17 @@ def conversation_intent(text: str) -> Optional[str]:
         return "ticket_contents"
     if _TICKET_HELP.search(value) and not extract_symptoms_from_text(value):
         return "ticket_help"
-    if _CERTAINTY.search(value) and (value.endswith("?") or _QUESTION_START.match(value)):
+    is_question = value.endswith("?") or _QUESTION_START.match(value)
+    if _CERTAINTY.search(value) and is_question:
         return "certainty"
+    if _ASSESSMENT.search(value) and is_question:
+        return "assessment"
+    # "Is this related to the problem I mentioned earlier?": about the customer's
+    # own problems (a question naming a new fault type is answered from evidence).
+    if (_RELATION.search(value) and is_question
+            and re.search(r"\b(?:earlier|before|first|previous|other)\s+(?:problem|issue)\b"
+                          r"|\b(?:problem|issue)\s+i\s+(?:mentioned|described|reported)\b", value, re.I)):
+        return "relation"
     return None
 
 
@@ -572,14 +697,37 @@ def conversation_intent_reply(intent: str, ctx: "ConversationContext", ticket: O
         items += ["what you've told me in this chat", "the possibilities we discussed, marked as unconfirmed"]
         return ("The service request includes " + ", ".join(items[:-1]) + ", and " + items[-1]
                 + ". It doesn't include a confirmed diagnosis, because none has been made.")
-    # certainty
     listed = listed_causes(ctx.last_cause_list_contract or ctx.last_supported_contract or {})
+    reported = [pair["answer"].rstrip(" .") for pair in ctx.resolved_answers[-4:]]
+    if intent == "relation":
+        earlier = next((i for i in reversed(ctx.issue_history) if i.strip()), ctx.original_complaint or "")
+        if earlier and issue and earlier.strip() != issue:
+            return (f'I can\'t confirm a link between "{issue}" and what you mentioned earlier ("{earlier}"). '
+                    "Nothing in the information I have connects them, so a technician would need to check both.")
+        return ("I can't confirm a link between them from the information I have. "
+                "A technician can check whether they share a cause.")
+    if intent == "assessment":
+        parts = [f'From what you\'ve told me, the main problem is: "{issue}".' if issue
+                 else "You haven't described the problem in detail yet."]
+        if reported:
+            parts.append("You've also told me: " + "; ".join(f'"{r}"' for r in reported) + ".")
+        if listed:
+            parts.append("I can't say which cause is responsible. The causes I listed are possibilities, "
+                         "and only a technician's inspection can confirm one.")
+        else:
+            parts.append("I can't identify the cause from the information I have; a technician's inspection is needed.")
+        return " ".join(parts)
+    # certainty
+    if reported:
+        facts = "What you've reported yourself: " + "; ".join(f'"{r}"' for r in reported) + ". "
+    else:
+        facts = ""
     if listed:
-        return ("No, I can't confirm that. The causes I mentioned are possibilities for this kind of problem, "
-                f"not a diagnosis of your {equipment}. Only a technician's inspection can confirm which one, "
-                "if any, applies.")
-    return (f"No, I can't confirm a diagnosis of your {equipment} from a conversation. "
-            "A technician's inspection is needed to establish the actual cause.")
+        return ("No, nothing has been confirmed. " + facts + "The causes I mentioned are possibilities for this "
+                f"kind of problem, not a diagnosis of your {equipment}. Only a technician's inspection can confirm "
+                "which one, if any, applies.")
+    return (f"No, nothing has been confirmed. {facts}I can't confirm a diagnosis of your {equipment} from a "
+            "conversation; a technician's inspection is needed to establish the actual cause.")
 
 
 def extract_conversation_context(
@@ -621,11 +769,10 @@ def extract_conversation_context(
     # Limit the database query rather than loading an unbounded transcript.
     ctx.turn_count = conv.messages.filter(sender_role="customer").count()
     # The complaint is the first substantive customer message; a greeting is not one.
-    first_customer_msg = next(
-        (m for m in conv.messages.filter(sender_role="customer").order_by("created_at", "id")[:20]
-         if not is_greeting(m.message_text)),
-        None,
-    )
+    early = [m for m in conv.messages.filter(sender_role="customer").order_by("created_at", "id")[:20]
+             if not is_greeting(m.message_text)]
+    first_customer_msg = next((m for m in early if is_problem_report(m.message_text)),
+                              early[0] if early else None)
     if not first_customer_msg:
         ctx.original_complaint = "" if is_greeting(clean_input) else clean_input
         ctx.reported_symptoms = extract_symptoms_from_text(clean_input)
@@ -646,7 +793,8 @@ def extract_conversation_context(
     # Track suggested actions by turn to associate customer confirmations
     last_assistant_suggested_actions: List[str] = []
 
-    ctx.active_issue = "" if is_greeting(ctx.original_complaint) else ctx.original_complaint
+    # The current issue is established by the first problem report, in order.
+    ctx.active_issue = ""
     for msg in recent_messages:
         text = msg.message_text.strip()
         if msg.sender_role == "customer":
@@ -723,6 +871,11 @@ def extract_conversation_context(
         # previous topic instead of this question.
         if is_clarif_reply:
             is_followup = True
+        elif (ctx.active_issue and _ISSUE_DEPENDENT.search(clean_input)
+              and not extract_symptoms_from_text(clean_input) and not names_own_subject(clean_input)):
+            # "What could be causing this?", "What can I safely observe?": no subject
+            # of their own, so they are about the current issue.
+            is_followup = True
         elif is_self_contained_question(clean_input) and not has_next_pattern:
             is_followup = False
         elif has_next_pattern or (is_short and (has_pronoun or lacks_explicit_equipment)) or is_clarif_reply:
@@ -746,7 +899,16 @@ def extract_conversation_context(
 
 _TOPIC_SHIFT = re.compile(
     r"\b(?:i meant|i mean|sorry|actually|correction|instead|rather than|not that one|"
-    r"different (?:issue|problem|fault|symptom))\b", re.I)
+    r"different (?:issue|problem|fault|symptom)|clarify|explained it (?:incorrectly|wrong)|"
+    r"said it wrong|got it wrong|i was wrong|let me correct)\b", re.I)
+# A sentence that only announces a correction ("Wait, I think I explained it
+# incorrectly.", "I should clarify something:") carries no subject of its own.
+_CORRECTION_PREFACE = re.compile(
+    r"^\W*(?:(?:wait|sorry|ok(?:ay)?|hmm|so|well)\W+)*(?:i\s+think\s+)?(?:i\s+)?"
+    r"(?:explained|said|described|told\s+you|put)\s+(?:it|that|this)\s+(?:incorrectly|wrong(?:ly)?|badly)\W*$"
+    r"|^\W*(?:i\s+(?:should|need\s+to|want\s+to)|let\s+me)\s+(?:clarify|correct)"
+    r"(?:\s+(?:something|that|myself|this|one\s+thing))?\W*$"
+    r"|^\W*(?:correction|to\s+clarify)\W*$", re.I)
 _SHIFT_PREFIX = re.compile(r"^\s*(?:(?:sorry|actually|correction|no)\s*[,:-]?\s*)*(?:i\s+meant?\s*(?:that\s*)?)?", re.I)
 _NEGATED_TAIL = re.compile(
     r"[,;]?\s*(?:and\s+)?not\s+(?:the\s+|a\s+|an\s+)?[a-z/-]+(?:\s+[a-z/-]+)?\s*[.!?]?\s*$", re.I)
@@ -764,6 +926,9 @@ def topic_shift_query(text: str) -> Optional[str]:
     value = " ".join(str(text or "").split())
     if not _TOPIC_SHIFT.search(value):
         return None
+    sentences = [x for x in re.split(r"(?<=[.!?:])\s+", value) if x.strip()]
+    if len(sentences) > 1:
+        value = " ".join(x for x in sentences if not _CORRECTION_PREFACE.match(x)) or value
     cleaned = _NEGATED_TAIL.sub("", value)
     cleaned = _SHIFT_PREFIX.sub("", cleaned)
     cleaned = _INSTEAD.sub(" ", cleaned).strip(" ,;")
@@ -913,6 +1078,90 @@ def listed_causes(contract: Dict[str, Any]) -> List[Dict[str, str]]:
     return causes
 
 
+_CAUSE_REQUEST = re.compile(
+    r"\b(?:causes?|causing|reasons?|possibilit(?:y|ies)|what\s+(?:could|might|may)\s+be\s+(?:wrong|happening)"
+    r"|what(?:'s|\s+is)\s+wrong|match(?:es)?\s+(?:these|my|the|everything))\b", re.I)
+
+
+def is_issue_cause_request(text: str, context: "ConversationContext") -> bool:
+    """A request for causes that names no symptom of its own: it is about the current issue.
+
+    "What could be causing this?", "Which possible causes best match everything I've
+    reported?", "Does that correction change the possible causes?"
+    """
+    value = " ".join(str(text or "").split())
+    return bool(context and context.active_issue and _CAUSE_REQUEST.search(value)
+                and not _ORDINAL_REFERENCE.search(value) and not names_own_subject(value)
+                and not [s for s in extract_symptoms_from_text(value) if not _code_symptom(s)])
+
+
+_REFERS_BACK = re.compile(r"\b(?:this|that|these|those|it|everything|what\s+i(?:'ve|\s+have)?\s+(?:told|said|reported))\b", re.I)
+
+
+def names_own_subject(value: str) -> bool:
+    """"Causes of a high-pressure fault on a VRF outdoor module" names its own subject."""
+    # "this model" / "the unit" name the selected equipment, not an earlier topic.
+    if _REFERS_BACK.search(_EQUIPMENT_REFERENCE.sub(" ", value)):
+        return False
+    return bool(_FAULT_MENTION.search(value)
+                or re.search(r"\b(?:of|for|with)\s+(?:an?|the|my)\s+[a-z]", value, re.I))
+
+
+# "What can I safely observe?", "What should I do next?", "How do I know which one
+# it is?", "What should I record before the technician arrives?": requests for
+# customer-safe checks about the current issue.
+_CHECK_REQUEST = re.compile(
+    r"\b(?:observe|look\s+(?:at|for)|inspect|record|note\s+down|write\s+down|keep\s+track)\b"
+    r"|\bwhat\s+(?:should|can|do)\s+i\s+do(?:\s+next|\s+now)?\b|\bnext\s+steps?\b"
+    r"|\bhow\s+(?:do|can|would)\s+i\s+(?:know|tell|find\s+out|check)\b", re.I)
+_MORE_CAUSES = re.compile(r"\b(?:other|else|more|additional|any\s+further)\b", re.I)
+
+
+def is_issue_check_request(text: str, context: "ConversationContext") -> bool:
+    value = " ".join(str(text or "").split())
+    return bool(context and context.active_issue and _CHECK_REQUEST.search(value)
+                and (value.endswith("?") or _QUESTION_START.match(value))
+                and not names_own_subject(value)
+                and not [s for s in extract_symptoms_from_text(value) if not _code_symptom(s)])
+
+
+ISSUE_CAUSES_PREFIX = "What are the possible causes of this:"
+ISSUE_MORE_CAUSES_PREFIX = "What other possible causes are there for this:"
+ISSUE_CHECKS_PREFIX = "What can I safely check or observe for this:"
+
+
+def canonical_issue_question(text: str, context: "ConversationContext") -> Optional[str]:
+    """The current-issue form of a request that names no subject of its own."""
+    if is_issue_cause_request(text, context):
+        prefix = ISSUE_MORE_CAUSES_PREFIX if _MORE_CAUSES.search(text) else ISSUE_CAUSES_PREFIX
+        return f"{prefix} {context.active_issue}?"
+    if is_issue_check_request(text, context):
+        return f"{ISSUE_CHECKS_PREFIX} {context.active_issue}?"
+    return None
+
+
+def ordinal_beyond_list(text: str, context: "ConversationContext") -> Optional[List[Dict[str, str]]]:
+    """The displayed causes when "the second one" points past the end of that list."""
+    match = _ORDINAL_REFERENCE.search(str(text or ""))
+    if not match or not context:
+        return None
+    causes = listed_causes(context.last_cause_list_contract or context.last_supported_contract
+                           or context.last_contract)
+    if not causes:
+        return None
+    index = (_ORDINALS[match.group("ordinal").casefold()] if match.group("ordinal")
+             else int(match.group("number")) - 1)
+    return causes if index >= len(causes) else None
+
+
+# "Can you explain that in simpler words?", "Why might that cause poor cooling?":
+# about the single cause just discussed.
+_BACK_TO_LAST_CAUSE = re.compile(
+    r"\b(?:simpler|simply|plain(?:er)?\s+(?:words|english|terms|language)|simple\s+terms|in\s+other\s+words"
+    r"|easier\s+to\s+understand|rephrase)\b"
+    r"|\bwhy\s+(?:might|would|could|does|did|can|is)\s+(?:that|this|it)\b", re.I)
+
+
 def resolve_cause_reference(text: str, context: "ConversationContext") -> Optional[Dict[str, Any]]:
     """Resolve "the second cause" against the causes listed in the previous answer.
 
@@ -924,7 +1173,22 @@ def resolve_cause_reference(text: str, context: "ConversationContext") -> Option
         return None
     match = _ORDINAL_REFERENCE.search(str(text or ""))
     if not match:
-        return None
+        # "explain that more simply" / "why might that ..." after a single-cause reply.
+        mode = _BACK_TO_LAST_CAUSE.search(str(text or ""))
+        last = listed_causes(context.last_contract)
+        if not last:
+            # A one-cause answer is never a "cause list"; fall back to it as well.
+            last = (listed_causes(context.last_cause_list_contract)
+                    or listed_causes(context.last_supported_contract))
+        if not mode or len(last) != 1:
+            return None
+        full = listed_causes(context.last_cause_list_contract or context.last_contract)
+        keys = [(c["source_text"].casefold(), c["heading"].casefold()) for c in full]
+        key = (last[0]["source_text"].casefold(), last[0]["heading"].casefold())
+        position = keys.index(key) if key in keys else 0
+        return {"selected": last[0], "position": position,
+                "others": [c["source_text"] for c in full if c is not full[position]] if full else [],
+                "mode": "simpler" if "why" not in mode.group(0).casefold() else "why"}
     causes = listed_causes(context.last_cause_list_contract or context.last_supported_contract
                            or context.last_contract)
     if not causes:

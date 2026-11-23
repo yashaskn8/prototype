@@ -87,7 +87,7 @@ class IntentClassificationTests(SimpleTestCase):
         contents = conversation_intent_reply("ticket_contents", ctx)
         self.assertIn("Unit stopped working", contents)
         self.assertIn("doesn't include a confirmed diagnosis", contents)
-        self.assertTrue(conversation_intent_reply("certainty", ctx).startswith("No, I can't confirm"))
+        self.assertTrue(conversation_intent_reply("certainty", ctx).startswith("No, nothing has been confirmed."))
 
 
 class _SplitACGateway(GatewayTestBase):
@@ -110,7 +110,7 @@ class IntentsThroughGatewayTests(_SplitACGateway):
             status, _ = self.ask(uuid, "Did you actually create the ticket?")
             self.assertTrue(status["answer"].startswith("No, I haven't created"))
             sure, _ = self.ask(uuid, "Is this definitely a low-pressure fault?")
-            self.assertTrue(sure["answer"].startswith("No, I can't confirm that."))
+            self.assertTrue(sure["answer"].startswith("No, nothing has been confirmed."))
             self.assertFalse((sure.get("presentation") or {}).get("citations"))
         # A safety-guarded message is never short-circuited by the intent route.
         unsafe, _ = self.ask(uuid, "How do I bypass the breaker so I can raise a ticket?")

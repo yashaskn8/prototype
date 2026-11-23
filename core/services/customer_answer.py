@@ -459,6 +459,18 @@ _GENERIC_MATCH_WORDS = frozenset({
 })
 
 
+def asks_about_other_equipment(question, asset):
+    """A question naming an equipment type other than the selected unit's (even if it
+    also names this unit): "Would a VRF fault code apply to this Ductable AC?"."""
+    value = str(question or "")
+    if asset is None or not (value.rstrip().endswith("?") or re.match(r"\s*(?:would|does|do|can|is|are|will)\b", value, re.I)):
+        return False
+    label = f"{getattr(asset, 'name', '') or ''} {getattr(asset, 'model_number', '') or ''}"
+    own = {name for name, pattern in _EQUIPMENT_TYPES.items() if pattern.search(label)}
+    asked = {name for name, pattern in _EQUIPMENT_TYPES.items() if pattern.search(value)}
+    return bool(asked - own)
+
+
 def names_other_equipment_type(question, asset):
     """True when the question names an equipment type other than the selected unit's."""
     if asset is None:
@@ -854,6 +866,19 @@ def exception_presentation(contract):
             "authorized_user_actions": {"can_resolve": False, "can_escalate": bool(contract.get("can_escalate"))}}
 
 
+# Document front matter: purpose/scope/overview sections and metadata lines
+# ("Asset: ...", "Document ID: ...", "Revision: ...") describe the document itself.
+_FRONT_MATTER_HEADING = re.compile(
+    r"^\s*(?:\d+[.)]\s*)?(?:purpose|scope|general\s+overview|overview|introduction|document\s+control|"
+    r"revision\s+history|references?|definitions?)\s*$", re.I)
+_METADATA_LINE = re.compile(
+    r"^\s*(?:asset|document(?:\s+id)?|revision|status|date|prepared\s+by|approved\s+by|version)\s*:", re.I)
+_DOCUMENT_QUESTION = re.compile(
+    r"\b(?:what\s+is\s+(?:this|the)\s+(?:document|manual|guide)|purpose\s+of\s+(?:this|the)\s+"
+    r"(?:document|manual|guide)|which\s+(?:document|manual)|what\s+does\s+(?:this|the)\s+(?:document|manual)\s+cover)\b",
+    re.I)
+
+
 # Former generic refusal text (kept so tools can recognise answers stored before
 # the wording change); customers now receive limitation_message() instead.
 LEGACY_GENERIC_NO_EVIDENCE = ("There is insufficient evidence to establish a safe answer for this equipment "
@@ -867,21 +892,27 @@ def no_documentation_message(asset) -> str:
             "there. No service request has been created.")
 
 
-def limitation_message(asset, conversation_context=None) -> str:
+def limitation_message(asset, conversation_context=None, question: str = "") -> str:
     """A plain, honest 'I can't confirm that' that keeps what the customer told us.
 
     Adds no technical content. Offers a technician only when the previous reply
     did not already offer one, so the offer is not repeated after every message.
     """
     name = getattr(asset, "name", None) or "your equipment"
-    parts = [f"I can't confirm that from the information I have for the {name}."]
-    issue = " ".join(str(getattr(conversation_context, "active_issue", "") or "").split()).rstrip(" .!?")
-    answers = getattr(conversation_context, "resolved_answers", None) or []
-    if answers:
-        said = answers[-1]["answer"].rstrip(" .!?")
-        parts.append(f"You've mentioned \"{said}\" about \"{issue}\"." if issue else f"You've mentioned \"{said}\".")
-    elif issue:
-        parts.append(f"You've told me: \"{issue}\".")
+    question = str(question or "")
+    code = re.search(r"\b[A-Z]{1,3}[- ]?\d{1,3}\b", question)
+    if code:
+        parts = [f"I can't find code {code.group(0)} in the information I have for the {name}, so I can't tell "
+                 "you what it means. Please note it exactly as displayed for the technician."]
+    else:
+        parts = [f"I can't confirm that from the information I have for the {name}."]
+        issue = " ".join(str(getattr(conversation_context, "active_issue", "") or "").split()).rstrip(" .!?")
+        answers = getattr(conversation_context, "resolved_answers", None) or []
+        if answers:
+            said = answers[-1]["answer"].rstrip(" .!?")
+            parts.append(f"You've mentioned: \"{said}\".")
+        elif issue:
+            parts.append(f"I've noted what you told me: \"{issue}\".")
     previous = str(getattr(conversation_context, "last_assistant_answer", "") or "").casefold()
     if "service request" not in previous:
         parts.append("I can record this for a technician in a service request if you'd like.")
@@ -1004,8 +1035,15 @@ def build_customer_answer(
         if heading_states_symptom(h, asked_symptoms) or question_states_heading(stated_text, h)}
     eligible = []
     if evidence_chunks and (sufficient or generic_cause_overview) and not wrong_model and not query_is_control_abuse(question):
+        about_document = bool(_DOCUMENT_QUESTION.search(raw_user_q))
         for result in evidence_chunks:
+            if not about_document and _FRONT_MATTER_HEADING.match(str(result.heading or "")):
+                # A document's purpose/overview/metadata section describes the document,
+                # not the equipment problem; it is never shown as a troubleshooting answer.
+                continue
             for text, kind, start, end in source_claims(result.text):
+                if not about_document and _METADATA_LINE.match(text):
+                    continue
                 words = set(re.findall(r"[a-z0-9_-]{3,}", text.casefold())) - _STOPWORDS
                 heading_words = set(re.findall(r"[a-z0-9_-]{3,}", (result.heading or "").casefold()))
                 sentence_overlap = term_keys & match_keys(words)
@@ -1247,7 +1285,7 @@ def build_customer_answer(
         message = no_documentation_message(asset)
     else:
         reason_code = None
-        message = limitation_message(asset, conversation_context)
+        message = limitation_message(asset, conversation_context, raw_user_q)
     sections = []
     if normal:
         observation_topics = [re.sub(

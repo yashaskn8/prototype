@@ -182,6 +182,9 @@ def question_states_heading(question: str, heading: str) -> bool:
 
 
 DOMAIN_TYPO_MAP = {
+    # Number words match the digits used in schedules ("every six months").
+    "two": "2", "three": "3", "four": "4", "five": "5", "six": "6", "seven": "7",
+    "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
     "indor": "indoor",
     "leeking": "leaking",
     "watter": "water",
