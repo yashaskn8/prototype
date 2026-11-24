@@ -26,7 +26,7 @@ SYMPTOM_INDICATORS = [
     "poor cooling", "weak cooling", "insufficient cooling",
     "not heating", "poor heating", "weak heating",
     "weak airflow", "low airflow", "no airflow", "restricted airflow",
-    "water leaking", "water leak", "dripping", "condensate leak",
+    "water leaking", "water leakage", "water leak", "dripping", "condensate leak",
     "making noise", "abnormal noise", "rattling", "grinding", "vibration",
     "unusual smell", "burning smell", "odor",
     "not turning on", "power issue", "tripping", "trips breaker",
@@ -315,7 +315,9 @@ def extract_negated_observations(text: str) -> List[str]:
     """Symptoms the customer explicitly says are absent ("no water leak is visible")."""
     found = list(dict.fromkeys(ind for ind, negated in _indicator_hits(text) if negated))
     # "water leaking" also matches "leaking": keep the most specific phrase only.
-    return [ind for ind in found if not any(ind != other and ind in other for other in found)]
+    specific = [ind for ind in found if not any(ind != other and ind in other for other in found)]
+    return list(dict.fromkeys("water leak" if ind in ("water leakage", "water leaking") else ind
+                              for ind in specific))
 
 
 # Symptom concepts shared with evidence matching (term_matching.SYMPTOM_CONCEPTS),
@@ -544,6 +546,11 @@ def is_observation_statement(text: str, ctx: "ConversationContext") -> bool:
     shifted = topic_shift_query(value)
     if shifted and _names_problem(shifted):
         return False
+    # Additive wording describes an additional observation of the same incident,
+    # not a replacement for the current complaint. Explicit corrections above
+    # still take precedence.
+    if re.search(r"\b(?:also|as well|in addition|on top of that)\b", value, re.I):
+        return True
     known = f"{ctx.active_issue} {' '.join(ctx.active_topics)}".lower()
     new = [s for s in extract_symptoms_from_text(value)
            if not _code_symptom(s) and s not in known and s.split()[0] not in known]
@@ -1366,7 +1373,7 @@ def ordinal_beyond_list(text: str, context: "ConversationContext") -> Optional[L
 # "Can you explain that in simpler words?", "Why might that cause poor cooling?":
 # about the single cause just discussed.
 _BACK_TO_LAST_CAUSE = re.compile(
-    r"\b(?:simpler|simply|plain(?:er)?\s+(?:words|english|terms|language)|simple\s+terms|in\s+other\s+words"
+    r"\b(?:simpler|simply|plain(?:er)?\s+(?:words|english|terms|language)|simple\s+(?:words|english|terms|language)|in\s+other\s+words"
     r"|easier\s+to\s+understand|rephrase)\b"
     r"|\bwhy\s+(?:might|would|could|does|did|can|is)\s+(?:that|this|it)\b", re.I)
 
@@ -1387,8 +1394,8 @@ def resolve_cause_reference(text: str, context: "ConversationContext") -> Option
         last = listed_causes(context.last_contract)
         if not last:
             # A one-cause answer is never a "cause list"; fall back to it as well.
-            last = (listed_causes(context.last_cause_list_contract)
-                    or listed_causes(context.last_supported_contract))
+            last = (listed_causes(context.last_supported_contract)
+                    or listed_causes(context.last_cause_list_contract))
         if not mode or len(last) != 1:
             return None
         full = listed_causes(context.last_cause_list_contract or context.last_contract)

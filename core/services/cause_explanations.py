@@ -295,12 +295,15 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
             "multi_section": multi_section}
 
 
-def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any]:
+def explanation_response(equipment: str, built: Dict[str, Any], mode=None) -> Dict[str, Any]:
     """Composed reply: each cause, then its cited explanation or an explicit gap."""
     from .customer_response_composer import _segment, render_text
     explained = [e for e in built.get("explanations") or [] if e.get("cause")]
-    segments = [_segment("text", "Here's what I have on this cause:" if len(explained) == 1
-                         else "Here's what I have on each of these causes:")]
+    lead = ("In simple terms, the manual identifies this as a possible cause:"
+            if mode == "simpler" and len(explained) == 1 else
+            "Here's what I have on this cause:" if len(explained) == 1
+            else "Here's what I have on each of these causes:")
+    segments = [_segment("text", lead)]
     for item in built["explanations"]:
         if item["status"] == "unverified":
             segments.append(_segment("text", UNVERIFIED_TEXT))
@@ -323,8 +326,12 @@ def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any
     segments.append(_segment("text", LIMITATION))
     segments = segments[:30]
     explanations = [e for e in built["explanations"] if e["status"] != "unverified"]
+    displayed_ids = {cid for segment in segments for cid in segment.get("citation_ids", [])}
+    displayed = [claim for claim in built.get("supporting_claims", [])
+                 if displayed_ids.intersection(claim.get("evidence_ids") or [])]
     return {"text": render_text(segments, built["citations"]), "segments": segments,
-            "style": "cause_explanations", "composer": "deterministic", "explanations": explanations}
+            "style": "cause_explanations", "composer": "deterministic", "explanations": explanations,
+            "displayed_claims": displayed}
 
 
 def previous_answer_texts(context) -> List[str]:

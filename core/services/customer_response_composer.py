@@ -197,9 +197,23 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
         shown = _previous_claim_sources(context) | {
             _norm(c["source_text"]) for c in listed_causes(getattr(context, "last_cause_list_contract", None) or {})}
         on_topic = (lambda c: _section_label(c.get("source_heading")) in topics) if topics else (lambda c: True)
+        # A new observation can make a previously shown cause relevant again.
+        # Keep only on-topic, already revalidated claims mentioning its specific
+        # subject. Do not treat a matching phrase as a confirmed diagnosis.
+        from .conversation_context import extract_symptoms_from_text
+        answers = getattr(context, "resolved_answers", None) or []
+        observation = answers[-1]["answer"] if answers else ""
+        subjects = set()
+        for symptom in extract_symptoms_from_text(observation):
+            if symptom not in ("not working", "poor cooling"):
+                subjects.update(_terms(symptom))
+        related = [c for c in causes if on_topic(c) and subjects
+                   and subjects & _terms(c.get("source_text"))]
         causes, facts, checks = ([c for c in group if on_topic(c) and _norm(c.get("source_text")) not in shown]
                                  for group in (causes, facts, checks))
-        if not (causes or facts):
+        if related:
+            causes = related
+        if not (causes or facts or checks):
             return compose_reply_acknowledgement(context, equipment)
     elif getattr(context, "is_followup", False):
         # A broad equipment-failure question is not a component follow-up.

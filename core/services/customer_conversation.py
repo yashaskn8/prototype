@@ -75,7 +75,8 @@ def _compose_conversational_reply(contract, turn_text, conv_context, cause_refer
                 presentation["message"] = acknowledgement["text"]
             contract["answer"] = acknowledgement["text"]
             return
-        if presentation.get("response_type") == "INSUFFICIENT_EVIDENCE":
+        if (presentation.get("response_type") == "INSUFFICIENT_EVIDENCE"
+                and not cause_reference and not getattr(conv_context, "active_issue", "")):
             clarification = clarification_for_ambiguous(
                 turn_text, asset, tenant, customer=getattr(asset, "customer", None))
             if clarification:
@@ -204,7 +205,7 @@ def _technician_decision_contract(asset, session, ticketed=False):
     }
 
 
-def _explanation_contract(interaction, session, asset, built):
+def _explanation_contract(interaction, session, asset, built, mode=None):
     from core.services.cause_explanations import explanation_response
     equipment = {"id": asset.id, "name": asset.name, "model_number": asset.model_number} if asset else {}
     presentation = {
@@ -218,7 +219,7 @@ def _explanation_contract(interaction, session, asset, built):
     }
     if built.get("multi_section"):
         presentation["view_mode"] = "focused"
-    response = explanation_response(equipment.get("name") or "equipment", built)
+    response = explanation_response(equipment.get("name") or "equipment", built, mode=mode)
     presentation["response"] = response
     return {
         "presentation": presentation, "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
@@ -802,10 +803,10 @@ def _process_customer_diagnostic_turn(
             or (quoted_items and _CAUSE_EXPLANATION_REQUEST.search(request_text or "")))
         selected_reference = resolve_cause_reference(request_text, conv_context)
         wants_selected_explained = bool(
-            selected_reference and not selected_reference.get("mode") and re.search(
+            selected_reference and (selected_reference.get("mode") or re.search(
                 r"\b(?:explain|elaborate|expand|describe|tell me more|more detail|in detail)\b",
                 request_text, re.I,
-            )
+            ))
         )
         listed = (
             [selected_reference["selected"]] if wants_selected_explained
@@ -836,7 +837,8 @@ def _process_customer_diagnostic_turn(
                     emit_execution_event("customer_qwen_generation",
                                          "Exact cited source wording used for per-cause explanations",
                                          "skipped")
-                    contract = _explanation_contract(interaction, session, asset, built)
+                    contract = _explanation_contract(interaction, session, asset, built,
+                                                     mode=selected_reference.get("mode") if wants_selected_explained else None)
                     interaction.answer = contract["answer"]
                     interaction.source_refs = built["citations"]
                     interaction.save(update_fields=["answer", "source_refs"])
@@ -846,6 +848,26 @@ def _process_customer_diagnostic_turn(
                         contract=contract, source_refs=built["citations"])
                 # No listed cause is citable any more: answer the message normally.
                 interaction.delete()
+
+        # An explicitly absent symptom is a report, not a request for causes.
+        # Preserve the positive issue and acknowledge the negative observation
+        # without searching for a fault the customer says is absent.
+        from core.services.conversation_context import (
+            extract_negated_observations, extract_symptoms_from_text, _is_question)
+        negated = extract_negated_observations(request_text)
+        if (negated and not _is_question(request_text)
+                and not extract_symptoms_from_text(request_text)
+                and not query_is_control_abuse(request_text) and not _question_guard(request_text)):
+            message = "Thanks, I've noted what you reported: " + request_text.rstrip(" .!") + "."
+            if conv_context.active_issue:
+                message += " I'll keep the reported problem in focus rather than treating the absent symptom as a new fault."
+            for stage in ("customer_rag_execution", "customer_evidence_validation", "customer_qwen_generation"):
+                emit_execution_event(stage, "Negative observation recorded; no new manual claim", "skipped")
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_summary_contract(session, message, response_type="CONVERSATION_REPLY",
+                                           reason_code="NEGATIVE_OBSERVATION"))
 
         # 5. Ambiguity & Clarification Evaluation
         # Only evaluate vague complaint at start of issue when no symptoms/history are established

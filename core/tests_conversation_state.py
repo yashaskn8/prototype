@@ -563,3 +563,41 @@ class SharedAttributionRegressionTests(TestCase):
         self.assertEqual(before.negative_observations, after.negative_observations)
         self.assertIn("water leak", after.negative_observations)
         self.assertNotIn("fan fault", after.reported_symptoms)
+
+
+class SplitACLiveTranscriptRegressionTests(GatewayTestBase):
+    def setUp(self):
+        super().setUp()
+        install_split_ac_fixture(self)
+
+    create = VRFConversationGatewayTests.create
+    ask = VRFConversationGatewayTests.ask
+    segments = staticmethod(VRFConversationGatewayTests.segments)
+    assert_citations_resolve = VRFConversationGatewayTests.assert_citations_resolve
+
+    def test_live_transcript_keeps_cause_reference_and_negative_observation(self):
+        uuid = self.create()
+        for message in ("hi", "My AC is not working properly", "poor cooling",
+                        "It turns on but the room is not getting cold"):
+            self.ask(uuid, message)
+        overview, _ = self.ask(uuid, "What could be the reason?")
+        causes = listed_causes(overview)
+        self.assertGreaterEqual(len(causes), 2)
+        selected = causes[1]["source_text"]
+        detail, _ = self.ask(uuid, "Can you explain the second cause?")
+        self.assertIn(selected.casefold(), detail["answer"].casefold())
+        simpler, _ = self.ask(uuid, "Explain it in simple words")
+        self.assertIn(selected.casefold(), simpler["answer"].casefold())
+        self.assert_citations_resolve(simpler)
+        weak, _ = self.ask(uuid, "The airflow is also very weak")
+        self.assertIn("airflow", weak["answer"].casefold())
+        absent, _ = self.ask(uuid, "There is no water leakage")
+        self.assertEqual(absent["reason_code"], "NEGATIVE_OBSERVATION")
+        self.assertNotIn("condensate drain", absent["answer"].casefold())
+        conv = CustomerConversation.objects.get(conversation_uuid=uuid)
+        state = extract_conversation_context(conv, "")
+        self.assertIn("water leak", state.negative_observations)
+        self.assertNotIn("water leak", state.reported_symptoms)
+        self.assertIn("weak airflow", state.reported_symptoms)
+        self.assertIn("cooling", state.active_issue.casefold())
+        self.assertNotIn("water leak", state.active_issue.casefold())
