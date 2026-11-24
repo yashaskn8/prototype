@@ -26,10 +26,15 @@ INDEX_VERSION = "v1"
 
 def _eligible_chunks(profile=None):
     from django.conf import settings
-    from core.models import KnowledgeChunk
+    from django.db.models import Exists, OuterRef, Q
+    from core.models import KnowledgeChunk, SourceProvenanceRecord
+    revoked = SourceProvenanceRecord.objects.filter(
+        tenant_id=OuterRef("tenant_id"), local_object_type="KnowledgeDocument",
+        local_object_id=OuterRef("document_id"),
+    ).filter(Q(verification_status="REVOKED") | Q(revoked_at__isnull=False))
     qs = (KnowledgeChunk.objects
-            .filter(is_quarantined=False, document__is_rag_enabled=True, document__index_status="INDEXED",
-                    document__revoked_at__isnull=True)
+            .filter(is_quarantined=False, document__is_rag_enabled=True, document__index_status="INDEXED")
+            .filter(~Exists(revoked))
             .exclude(text="")
             .select_related("document", "document__domain", "document__category",
                             "document__product", "document__asset")
@@ -225,6 +230,29 @@ def remove_document_bge(document_id: int, profile_key: str = "bge-small") -> int
     return 0
 
 
+def current_document_vectors_ready(document, profile, collection) -> bool:
+    """All searchable current chunks must have matching dense-vector metadata.
+
+    Historical company vectors are preserved and do not count as current.
+    This probe never creates, deletes, or repairs a collection.
+    """
+    if collection is None or not document.is_rag_enabled or document.index_status != "INDEXED":
+        return False
+    checkpoint_fp = _profile_fingerprint(profile)
+    chunks = document.chunks.filter(is_quarantined=False).exclude(text="")
+    expected = {}
+    for chunk in chunks:
+        text = passage_text(profile, chunk)
+        if text.strip():
+            expected[_chunk_key(chunk)] = _expected_vector_metadata(
+                chunk, profile, hashlib.sha256(text.encode("utf-8")).hexdigest(), checkpoint_fp)
+    if not expected:
+        return False
+    got = collection.get(where={"document_id": int(document.id)}, include=["metadatas"])
+    actual = dict(zip(got.get("ids") or [], got.get("metadatas") or []))
+    return all(_metadata_matches(actual.get(cid), metadata) for cid, metadata in expected.items())
+
+
 def reconcile_index(profile_key: str = "bge-small", dry_run: bool = True) -> dict:
     """Full reconciliation between database chunks and Chroma vectors with dry-run support."""
     from core.models import KnowledgeChunk
@@ -259,8 +287,11 @@ def reconcile_index(profile_key: str = "bge-small", dry_run: bool = True) -> dic
     if not dry_run:
         if missing or orphans or mismatched:
             build_index(profile_key, limit=None)
-        report["reconciled"] = True
-        report["final_count"] = coll.count()
+        # A rebuild can preserve historical company vectors by design, or
+        # fail to repair an inconsistency. Recompute rather than assume success.
+        final = reconcile_index(profile_key, dry_run=True)
+        return {**final, "dry_run": False, "before": report,
+                "reconciled": final["is_consistent"], "final_count": final["present_count"]}
 
     return report
 

@@ -1,7 +1,4 @@
 from django.conf import settings
-from pathlib import Path
-import hashlib
-
 from rest_framework.exceptions import PermissionDenied
 
 from .content_safety import query_is_control_abuse
@@ -16,7 +13,8 @@ NO_AUTHORIZED_ORIGINAL_DOCUMENTATION = "NO_AUTHORIZED_ORIGINAL_DOCUMENTATION"
 def has_authorized_original_documentation(*, tenant, customer, asset):
     """Require an intact company attachment with a customer-visible source chunk."""
     from .customer_isolation import (is_verified_real_asset, is_verified_real_customer,
-                                     is_verified_real_document, validate_customer_serving_policy)
+                                     is_verified_real_document, original_attachment_is_intact,
+                                     validate_customer_serving_policy)
     from .retriever import _knowledge_candidates
     from .customer_answer import source_chunk
 
@@ -25,22 +23,15 @@ def has_authorized_original_documentation(*, tenant, customer, asset):
         or not is_verified_real_asset(asset) or not is_verified_real_customer(customer)):
         raise PermissionDenied("Customer and asset scope is not verified.")
     validate_customer_serving_policy(tenant, customer, asset)
-    media_root = Path(settings.MEDIA_ROOT).resolve()
     verified_files = {}
     for chunk in _knowledge_candidates(tenant, asset, customer, False, backend="all"):
         document = chunk.document
         if document.id not in verified_files:
-            valid = False
-            if (document.source_type == "file" and document.file and document.checksum_sha256
-                and not document.is_confidential and not document.disable_sharing
-                and is_verified_real_document(document)):
-                try:
-                    file_path = Path(document.file.path).resolve()
-                    if file_path.is_relative_to(media_root) and file_path.is_file():
-                        valid = hashlib.sha256(file_path.read_bytes()).hexdigest().lower() == document.checksum_sha256.lower()
-                except OSError:
-                    pass
-            verified_files[document.id] = valid
+            verified_files[document.id] = bool(
+                not document.is_confidential and not document.disable_sharing
+                and is_verified_real_document(document)
+                and original_attachment_is_intact(document)
+            )
         if not verified_files[document.id]:
             continue
         try:

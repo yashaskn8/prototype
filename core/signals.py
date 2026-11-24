@@ -3,7 +3,7 @@ from django.db.models.signals import m2m_changed, post_delete, post_save
 from django.dispatch import receiver
 
 from .models import KnowledgeDocument, Project, ServiceCall
-from .services.chroma_store import queue_chroma_deletion
+from .services.chroma_store import is_real_company_tenant, queue_chroma_deletion
 from .services.indexing import index_service_resolution
 
 
@@ -16,13 +16,11 @@ def keep_resolution_index_in_sync(sender, instance, raw=False, **kwargs):
 
 @receiver(post_delete, sender=KnowledgeDocument)
 def purge_chroma_on_document_delete(sender, instance, **kwargs):
-    """Purge document vectors from ChromaDB when a KnowledgeDocument is deleted."""
-    queue_chroma_deletion(instance.id)
-    try:
-        from core.ml.indexer import remove_document_bge
-        remove_document_bge(instance.id)
-    except Exception:
-        pass
+    """Schedule one cleanup after commit; preserve company vector history."""
+    # After commit the document row no longer exists, so determine its
+    # protected scope here rather than relying on a later database lookup.
+    if not is_real_company_tenant(instance.tenant):
+        queue_chroma_deletion(instance.id)
 
 
 @receiver(m2m_changed, sender=Project.assets.through)

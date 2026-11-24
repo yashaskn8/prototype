@@ -10,6 +10,7 @@ Enforces Phase 4 strict real-only customer data policy:
 
 import hashlib
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from django.conf import settings
 from rest_framework.exceptions import PermissionDenied
@@ -53,6 +54,33 @@ def is_verified_real_tenant(tenant: Any) -> bool:
 def is_real_tenant(tenant: Any) -> bool:
     """Backward-compatible alias for is_verified_real_tenant."""
     return is_verified_real_tenant(tenant)
+
+
+def original_attachment_is_intact(document: Any) -> bool:
+    """Check the actual local approved source bytes, not just a stored digest.
+
+    This is intentionally not cached across turns. Authorization and provenance
+    are separate checks; an intact file alone never grants access.
+    """
+    if (getattr(document, "source_type", None) != "file"
+            or not getattr(document, "file", None)
+            or not getattr(document, "checksum_sha256", None)):
+        return False
+    try:
+        expected = str(document.checksum_sha256).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            return False
+        media_root = Path(settings.MEDIA_ROOT).resolve()
+        file_path = Path(document.file.path).resolve()
+        if not file_path.is_relative_to(media_root) or not file_path.is_file():
+            return False
+        digest = hashlib.sha256()
+        with file_path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest() == expected
+    except (OSError, ValueError, RuntimeError, NotImplementedError):
+        return False
 
 
 def is_test_environment() -> bool:

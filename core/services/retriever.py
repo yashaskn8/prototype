@@ -673,6 +673,29 @@ def _qwen3_profile_if_ready(settings_obj, is_real: bool) -> str:
     return "company-bge-small" if is_real else "bge-small"
 
 
+def resolve_dense_profile(settings_obj, is_real: bool, *, staff_mode: bool = False,
+                          serving_profile=None):
+    """Single effective-profile selector shared by retrieval and readiness."""
+    from core.ml.embeddings import get_profile
+    selected = serving_profile if serving_profile is not None else getattr(
+        settings_obj, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
+    if selected in ("qwen3", "company-qwen3"):
+        key = _qwen3_profile_if_ready(settings_obj, is_real)
+    elif selected in ("company-bge-ft", "bge-small-ft"):
+        key = "company-bge-ft"
+    else:
+        key = "company-bge-small" if is_real else "bge-small"
+    profile = get_profile(key)
+    if not getattr(profile, "promotion_eligible", False) and not staff_mode:
+        logger.warning(
+            "Embedding profile '%s' is not promotion eligible (training_status='%s'). "
+            "Rejecting unpromoted model and using the approved BGE profile.",
+            profile.key, getattr(profile, "training_status", "unknown"),
+        )
+        profile = get_profile("company-bge-small" if is_real else "bge-small")
+    return profile
+
+
 # ---------------------------------------------------------------------------
 # Dense retrieval scoring
 # ---------------------------------------------------------------------------
@@ -707,26 +730,10 @@ def _dense_score_candidates(candidates, allowed_doc_ids, allowed_chunks_by_id,
             if serving_config is not None
             else getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "auto")
         )
-        if serving_profile in ("qwen3", "company-qwen3"):
-            profile_key = _qwen3_profile_if_ready(settings, is_real)
-        elif serving_profile in ("company-bge-ft", "bge-small-ft"):
-            profile_key = "company-bge-ft"
-        else:
-            # BGE-small is the only approved embedding model; "auto" and
-            # unknown values resolve to it.
-            profile_key = "company-bge-small" if is_real else "bge-small"
-        from core.ml.embeddings import get_profile, load_model, get_collection, encode_queries
+        from core.ml.embeddings import load_model, get_collection, encode_queries
 
-        profile = get_profile(profile_key)
-        # Phase 7 Fix: Enforce model promotion gating at serving time
-        if not getattr(profile, "promotion_eligible", False) and not staff_mode:
-            logger.warning(
-                "Embedding profile '%s' is not promotion eligible (training_status='%s'). "
-                "Rejecting unpromoted model and using the approved BGE profile.",
-                profile.key, getattr(profile, "training_status", "unknown"),
-            )
-            profile_key = "company-bge-small" if is_real else "bge-small"
-            profile = get_profile(profile_key)
+        profile = resolve_dense_profile(settings, is_real, staff_mode=staff_mode,
+                                        serving_profile=serving_profile)
 
         model = load_model(profile)
         if model is None or not allowed_doc_ids:

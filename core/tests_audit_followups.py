@@ -253,6 +253,33 @@ class OriginalDocumentFileGateTests(TestCase):
         contract = self.ask()
         self.assertTrue((contract.get("presentation") or {}).get("citations"), contract.get("answer"))
 
+    def test_intact_manual_does_not_authorize_a_different_corrupt_manual(self):
+        from rest_framework.exceptions import NotFound
+        from core.services.customer_answer import source_chunk
+        from core.services.customer_isolation import register_test_verified_provenance
+        other = KnowledgeDocument.objects.create(
+            tenant=self.tenant, product=self.asset.product, asset=self.asset,
+            title="Second approved manual", source_type="file",
+            checksum_sha256=hashlib.sha256(self.CONTENT).hexdigest(),
+            content_text=self.CONTENT.decode(), is_rag_enabled=True, index_status="INDEXED")
+        other.file.save("other.txt", ContentFile(self.CONTENT), save=True)
+        register_test_verified_provenance(other)
+        original_chunk = self.doc.chunks.first()
+        other_chunk = KnowledgeChunk.objects.create(
+            tenant=self.tenant, document=other, chunk_index=0,
+            heading=original_chunk.heading, text=original_chunk.text,
+            embedding=original_chunk.embedding, content_embedding=original_chunk.content_embedding)
+        kwargs = {"tenant": self.tenant, "customer": self.customer, "asset": self.asset}
+        self.assertEqual(source_chunk(**kwargs, document_id=other.id, chunk_id=other_chunk.id).id,
+                         other_chunk.id)
+        with open(other.file.path, "wb") as handle:
+            handle.write(self.CONTENT + b"corrupted")
+        self.assertTrue(self.gate(), "the first document is still intact")
+        with self.assertRaises(NotFound):
+            source_chunk(**kwargs, document_id=other.id, chunk_id=other_chunk.id)
+        self.assertEqual(source_chunk(**kwargs, document_id=self.doc.id, chunk_id=original_chunk.id).id,
+                         original_chunk.id)
+
     def test_missing_original_file_blocks_every_claim(self):
         self.doc.file.storage.delete(self.doc.file.name)
         self.assertFalse(self.gate())

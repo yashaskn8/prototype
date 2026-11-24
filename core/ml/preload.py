@@ -23,14 +23,18 @@ index_state = "not_checked"
 
 
 def _warm_bge():
-    from core.ml.embeddings import encode_queries, get_profile, load_model
-    profile = get_profile(str(getattr(settings, "SERVY_SERVING_EMBEDDING_PROFILE", "bge-small") or "bge-small"))
+    from core.ml.embeddings import encode_queries, load_model
+    from core.services.customer_isolation import get_customer_data_mode
+    from core.services.retriever import resolve_dense_profile
+    # In real-only production the approved company collection is the one
+    # customer retrieval actually uses, even when the setting says bge-small.
+    profile = resolve_dense_profile(settings, get_customer_data_mode() == "verified_real_only")
     model = load_model(profile)
     if model is None:
         raise RuntimeError("BGE model unavailable")
     vector = encode_queries(profile, model, ["equipment not cooling"])[0]
-    if len(vector) == 0:
-        raise RuntimeError("BGE produced an empty vector")
+    if len(vector) != profile.dim:
+        raise RuntimeError("BGE produced an unexpected embedding dimension")
     # Open the vector collection and run one query so the first customer search
     # does not pay the collection-open cost (measured ~1 s). No results are used.
     from core.ml.embeddings import get_collection

@@ -82,19 +82,22 @@ def get_document_retrieval_readiness(document_id: Any) -> Dict[str, Any]:
         from core.ml.embeddings import get_profile, get_collection
         bge_profile = get_profile("company-bge-small" if is_real_company_tenant(doc.tenant) else "bge-small")
         bge_coll = get_collection(bge_profile, create=False)
-        bge_res = bge_coll.get(where={"document_id": doc.id}, limit=1)
-        bge_ready = bool(bge_res and bge_res.get("ids"))
+        from core.ml.indexer import current_document_vectors_ready
+        bge_ready = current_document_vectors_ready(doc, bge_profile, bge_coll)
     except Exception:
         bge_ready = False
 
-    from core.services.customer_isolation import is_verified_real_document
+    from core.services.customer_isolation import is_verified_real_document, original_attachment_is_intact
+    from core.services.retriever import is_revoked_document
     if is_real_company_tenant(doc.tenant):
         source_verified = is_verified_real_document(doc)
         source_provenance_status = "VERIFIED" if source_verified else "UNVERIFIED"
-        customer_eligible = source_verified
+        customer_eligible = bool(source_verified and original_attachment_is_intact(doc)
+                                 and not is_revoked_document(doc))
     else:
         source_provenance_status = "SYNTHETIC_OR_DEMO"
-        customer_eligible = bool(doc.is_rag_enabled and not doc.is_confidential)
+        customer_eligible = bool(doc.is_rag_enabled and not doc.is_confidential
+                                 and not doc.disable_sharing and not is_revoked_document(doc))
 
     parse_status = "PARSED" if parsed else "UNPARSED"
     sparse_index_status = "INDEXED" if sparse_ready else "NOT_INDEXED"

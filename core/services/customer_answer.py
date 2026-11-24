@@ -736,6 +736,15 @@ def source_chunk(*, tenant, customer, asset, document_id, chunk_id):
         or detect_document_prompt_injection(chunk.text)
         or "injection" in str(chunk.safety_flags or "").lower()):
         raise NotFound("Source unavailable.")
+    # The asset-level gate only proves at least one intact manual exists.
+    # Every individual source, including old cause references and citations,
+    # must independently have its own intact original in real-only serving.
+    from .customer_isolation import (
+        get_customer_data_mode, is_real_tenant, original_attachment_is_intact,
+    )
+    if (is_real_tenant(tenant) and get_customer_data_mode() == "verified_real_only"
+            and not original_attachment_is_intact(chunk.document)):
+        raise NotFound("Source unavailable.")
     return chunk
 
 
