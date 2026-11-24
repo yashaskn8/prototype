@@ -285,31 +285,7 @@ def _affordable_claims(candidates: list[dict], budget: float) -> list[dict]:
     return selected
 
 
-# Narrow, reviewed lexical equivalences for explicit plain-language requests.
-# They do not assert a mechanism, diagnose equipment, or authorize work.
-_PLAIN_EQUIVALENCES = (
-    ("restricted airflow", "limited air movement"),
-    ("blocked outdoor unit clearance", "something blocking the space around the outdoor unit"),
-    ("incorrect settings", "wrong settings"),
-    ("condensate drain", "drain for condensed water"),
-)
-
-
-def plain_cause_wording(source: str) -> str:
-    """Exact phrase substitutions only; preserve all other source language."""
-    text = str(source or "")
-    for technical, plain in _PLAIN_EQUIVALENCES:
-        text = re.sub(r"\b" + re.escape(technical) + r"\b", plain, text, flags=re.I)
-    return text[:1].upper() + text[1:] if text else text
-
-
-def _canonical_plain_wording(text):
-    for technical, plain in _PLAIN_EQUIVALENCES:
-        text = re.sub(r"\b" + re.escape(plain) + r"\b", technical, text, flags=re.I)
-    return text
-
-
-def _validate_paraphrase(source: str, text: str, kind: str, *, plain_language=False) -> bool:
+def _validate_paraphrase(source: str, text: str, kind: str) -> bool:
     text = (text or "").strip()
     if (not 25 <= len(text) <= MAX_DISPLAY_CHARS
             or "\n" in text or "\r" in text
@@ -319,10 +295,6 @@ def _validate_paraphrase(source: str, text: str, kind: str, *, plain_language=Fa
     # An imperative is allowed only when it repeats the source's own imperative
     # (e.g. "Quarterly: clean filters" -> "Clean filters quarterly"); the model may
     # never turn a statement into an instruction or add a new instruction.
-    if plain_language and kind == "possible_cause":
-        # Compare the exact approved equivalents as their technical forms. All
-        # other numeric, negation, action and token checks remain unchanged.
-        text = _canonical_plain_wording(text)
     source_imperatives = {verb.casefold() for verb in _IMPERATIVE.findall(source)}
     if any(verb.casefold() not in source_imperatives for verb in _IMPERATIVE.findall(text)):
         return False
@@ -367,7 +339,7 @@ def _validate_paraphrase(source: str, text: str, kind: str, *, plain_language=Fa
     return True
 
 
-def _validate_response(raw, candidates, *, plain_language=False) -> dict:
+def _validate_response(raw, candidates) -> dict:
     if not isinstance(raw, dict) or set(raw) != {"paraphrases"}:
         return {}
     rows = raw.get("paraphrases")
@@ -394,14 +366,14 @@ def _validate_response(raw, candidates, *, plain_language=False) -> dict:
         if (row.get("source_quote") != candidate["source_text"]
                 or not isinstance(display, str)
                 or not _validate_paraphrase(
-                    candidate["source_text"], display, candidate["kind"], plain_language=plain_language
+                    candidate["source_text"], display, candidate["kind"]
                 )):
             continue
         output[ident] = display.strip()
     return output
 
 
-def generate_customer_claim_texts_with_status(question: str, presentation: dict, *, plain_language=False) -> dict:
+def generate_customer_claim_texts_with_status(question: str, presentation: dict) -> dict:
     """Generate validated source-bound wording and report why fallback was used.
 
     Diagnostic metadata contains no customer text, source excerpts, or signed
@@ -471,8 +443,6 @@ def generate_customer_claim_texts_with_status(question: str, presentation: dict,
             },
             "approved_claims": candidates,
         }
-        if plain_language:
-            payload["approved_phrase_equivalences"] = dict(_PLAIN_EQUIVALENCES)
         user_content = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         if len(user_content.encode("utf-8")) > MAX_PROMPT_BYTES:
             return finish("prompt_too_large")
@@ -507,11 +477,7 @@ def generate_customer_claim_texts_with_status(question: str, presentation: dict,
                 json={
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT + (
-                            " For an explicit simple-language request, you may replace a complete technical "
-                            "phrase with its exact approved equivalent in approved_phrase_equivalences. "
-                            "Do not add a causal explanation or use other synonyms."
-                            if plain_language else "")},
+                        {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_content},
                     ],
                     "format": schema,
@@ -540,7 +506,7 @@ def generate_customer_claim_texts_with_status(question: str, presentation: dict,
                 raw = json.loads(message)
             except (TypeError, ValueError):
                 return finish("invalid_model_json")
-            validated = _validate_response(raw, candidates, plain_language=plain_language)
+            validated = _validate_response(raw, candidates)
             if not validated:
                 return finish("rejected_by_source_validator")
             status = (

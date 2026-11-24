@@ -231,37 +231,11 @@ def _explanation_contract(interaction, session, asset, built, mode=None):
     }
     if built.get("multi_section"):
         presentation["view_mode"] = "focused"
-    display_by_citation = {}
-    if mode == "simpler":
-        from core.services.customer_answer_generation import (
-            generate_customer_claim_texts_with_status, plain_cause_wording, POSSIBLE_CAUSE_PREFIX,
-        )
-        with execution_stage("customer_qwen_generation", "Simplifying validated customer claims"):
-            generated = generate_customer_claim_texts_with_status(
-                interaction.question, presentation, plain_language=True)
-        report = generated["generation"]
-        emit_execution_event("customer_qwen_outcome", "Customer wording outcome", "info", metrics={
-            "generation_status": report["status"], "candidate_count": report["eligible_claims"],
-            "supported_count": report["accepted_claims"]})
-        for claim in presentation["supporting_claims"]:
-            ids = claim.get("evidence_ids") or []
-            if len(ids) != 1 or claim.get("kind") not in ("possible_cause", "information"):
-                continue
-            # If the local model is unavailable or its output is rejected, the
-            # same reviewed lexical equivalents provide a bounded fallback.
-            source = claim.get("source_text") or ""
-            wording = generated["texts"].get(claim.get("id")) or source
-            if wording.startswith(POSSIBLE_CAUSE_PREFIX):
-                wording = wording[len(POSSIBLE_CAUSE_PREFIX):]
-            if claim.get("kind") == "possible_cause":
-                wording = plain_cause_wording(wording)
-            display_by_citation[ids[0]] = wording
-            claim["text"] = wording
-    else:
-        emit_execution_event("customer_qwen_generation",
-                             "Exact cited source wording used for per-cause explanations", "skipped")
-    response = explanation_response(equipment.get("name") or "equipment", built, mode=mode,
-                                    display_by_citation=display_by_citation)
+    # Even when asked to simplify, preserve the exact cited technical wording.
+    # A simpler explanation is possible only if another authorized span supplies it.
+    emit_execution_event("customer_qwen_generation",
+                         "Strict source wording required for technical explanations", "skipped")
+    response = explanation_response(equipment.get("name") or "equipment", built, mode=mode)
     presentation["response"] = response
     return {
         "presentation": presentation, "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
