@@ -952,11 +952,16 @@ def extract_conversation_context(
 
     # Keep the first actual report, even if older than the bounded replay.
     ctx.turn_count = conv.messages.filter(sender_role="customer").count()
-    for msg in conv.messages.filter(sender_role="customer").order_by("created_at", "id").iterator():
-        reported = reported_customer_text(msg.message_text)
-        if is_problem_report(reported):
-            ctx.original_complaint = reported
-            break
+    prior_answers = []
+    for msg in conv.messages.order_by("created_at", "id").iterator():
+        if msg.sender_role == "assistant":
+            prior_answers = (prior_answers + [msg.message_text])[-max(1, max_history_turns):]
+        elif msg.sender_role == "customer":
+            request, _ = split_pasted_history(msg.message_text, prior_answers)
+            reported = reported_customer_text(request)
+            if is_problem_report(reported):
+                ctx.original_complaint = reported
+                break
     # Durable diagnostic state is rebuilt from the whole saved conversation (bounded),
     # so corrections, observations and answers survive long conversations; only the
     # wording context (history_turns) uses the short recent window.
@@ -971,12 +976,15 @@ def extract_conversation_context(
 
     # The current issue is established by the first problem report, in order.
     ctx.active_issue = ""
+    prior_answers = []
     for msg in recent_messages:
         text = msg.message_text.strip()
         if msg.sender_role == "customer":
-            _record_customer_evidence(ctx, text, last_assistant_suggested_actions)
+            request, _ = split_pasted_history(text, prior_answers)
+            _record_customer_evidence(ctx, request, last_assistant_suggested_actions)
 
         elif msg.sender_role == "assistant":
+            prior_answers = (prior_answers + [text])[-max(1, max_history_turns):]
             ctx.last_assistant_answer = text
             contract = msg.structured_contract or {}
             ctx.last_contract = contract
@@ -1003,10 +1011,10 @@ def extract_conversation_context(
                 if topics:
                     ctx.active_topics = topics
 
-    # Now evaluate current_input in relation to conversation state
+    # Separate pasted answers before live state mutation. The complete original
+    # input remains available to the caller for safety screening and storage.
+    clean_input, _ = split_pasted_history(clean_input, prior_answers)
     current_lower = clean_input.lower()
-
-    # Apply the same evidence attribution rules to the current message.
     _record_customer_evidence(ctx, clean_input, last_assistant_suggested_actions)
 
     # Determine if current_input is a follow-up query

@@ -49,6 +49,18 @@ from core.services.customer_diagnostic import (
 logger = logging.getLogger(__name__)
 
 
+def customer_answer_citations(contract):
+    """History references reflect displayed claims, not unused retrieval hits."""
+    presentation = contract.get("presentation") or {}
+    citations = presentation.get("citations") if presentation else contract.get("citations")
+    citations = citations or []
+    segments = (presentation.get("response") or {}).get("segments")
+    if isinstance(segments, list):
+        ids = {cid for segment in segments for cid in segment.get("citation_ids", [])}
+        return [c for c in citations if c.get("id") in ids]
+    return citations
+
+
 def _compose_conversational_reply(contract, turn_text, conv_context, cause_reference, asset, tenant):
     """Add a natural, cited reply built only from the already-validated claims.
 
@@ -1107,13 +1119,11 @@ def _process_customer_diagnostic_turn(
                 "customer_citation_assembly",
                 "Assembling source references for the customer answer",
             ):
-                assembled_citations = (
-                    presentation.get("citations", [])
-                    or contract.get("citations", [])
-                    or rag_res.get("references", [])
-                    or []
-                )
-                supported_claims = presentation.get("supporting_claims", []) or []
+                assembled_citations = customer_answer_citations(contract)
+                response = presentation.get("response") or {}
+                supported_claims = response.get("displayed_claims")
+                if not isinstance(supported_claims, list):
+                    supported_claims = presentation.get("supporting_claims", []) or []
             emit_execution_event(
                 "customer_evidence_summary",
                 "Customer answer evidence summary",
@@ -1127,6 +1137,11 @@ def _process_customer_diagnostic_turn(
                 record_customer_action_presentation(session, contract.get("customer_safe_actions", []), tenant)
 
             contract["conversation_uuid"] = str(conv.conversation_uuid)
+            # Persist the validated customer-facing answer, never the preliminary
+            # extraction. Historical citation records follow what was displayed.
+            interaction.answer = contract["answer"]
+            interaction.source_refs = assembled_citations
+            interaction.save(update_fields=["answer", "source_refs"])
 
             # Enrich past resolution references with full ServiceCall details for backward compatibility
             past_res_call_ids = [
@@ -1168,7 +1183,7 @@ def _process_customer_diagnostic_turn(
                 sender_role="assistant",
                 message_text=contract["answer"],
                 structured_contract=contract,
-                source_refs=rag_res.get("references", []),
+                source_refs=assembled_citations,
             )
 
             conv.updated_at = timezone.now()

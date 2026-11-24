@@ -601,3 +601,23 @@ class SplitACLiveTranscriptRegressionTests(GatewayTestBase):
         self.assertIn("weak airflow", state.reported_symptoms)
         self.assertIn("cooling", state.active_issue.casefold())
         self.assertNotIn("water leak", state.active_issue.casefold())
+
+
+class PastedAnswerAttributionTests(TestCase):
+    def test_pasted_assistant_causes_are_not_customer_reports(self):
+        tenant = Tenant.objects.create(name="Pasted history synthetic", slug="pasted-history-synthetic")
+        customer = Customer.objects.create(tenant=tenant, name="Test customer")
+        conv = CustomerConversation.objects.create(tenant=tenant, customer=customer, status="ACTIVE")
+        for role, message in (("customer", "Poor cooling."),
+                              ("assistant", "Possible causes:\n- Water leakage. [1]\n- Noise. [2]")):
+            CustomerMessage.objects.create(tenant=tenant, conversation=conv,
+                                           sender_role=role, message_text=message)
+        message = "- Water leakage. [1]\n- Noise. [2]\nExplain these causes."
+        before = extract_conversation_context(conv, message)
+        self.assertNotIn("water leak", before.reported_symptoms)
+        self.assertNotIn("noise", before.reported_symptoms)
+        CustomerMessage.objects.create(tenant=tenant, conversation=conv, sender_role="customer",
+                                       message_text=message)
+        after = extract_conversation_context(conv, "")
+        self.assertEqual(before.reported_symptoms, after.reported_symptoms)
+        self.assertEqual(before.active_issue, after.active_issue)

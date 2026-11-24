@@ -44,3 +44,20 @@ class CustomerRagHandoffTests(SimpleTestCase):
             self.assertEqual(intact.call_count, 2)
             self.assertEqual(intact_customer_candidates(chunks, tenant=tenant, staff_mode=True), chunks)
             self.assertEqual(intact.call_count, 2)
+
+
+class CanonicalCustomerCitationTests(SimpleTestCase):
+    def test_saved_references_match_visible_answer(self):
+        from core.services.customer_conversation import customer_answer_citations
+        first, second = {"id": "s1"}, {"id": "s2"}
+        contract = {"citations": [first, second], "presentation": {
+            "citations": [first, second], "response": {
+                "segments": [{"kind": "claim", "citation_ids": ["s2"]}]}}}
+        self.assertEqual(customer_answer_citations(contract), [second])
+        contract["presentation"]["response"]["segments"] = [{"kind": "text", "citation_ids": []}]
+        self.assertEqual(customer_answer_citations(contract), [])
+
+    def test_empty_authorized_presentation_does_not_restore_legacy_refs(self):
+        from core.services.customer_conversation import customer_answer_citations
+        self.assertEqual(customer_answer_citations({"citations": [{"id": "s1"}],
+            "presentation": {"response_type": "INSUFFICIENT_EVIDENCE", "citations": []}}), [])

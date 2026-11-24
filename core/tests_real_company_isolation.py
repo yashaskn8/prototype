@@ -199,6 +199,22 @@ class RealCompanyDataIsolationTests(TestCase):
     # 2. Customer real-data mode never returns synthetic manuals
     # -----------------------------------------------------------------------
     def test_02_customer_real_mode_never_returns_synthetic_manuals(self):
+        # Verified provenance must be backed by an intact original attachment.
+        import hashlib
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        media = TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        root_override = override_settings(MEDIA_ROOT=media.name)
+        root_override.enable()
+        self.addCleanup(root_override.disable)
+        original = self.real_chunk.text.encode("utf-8")
+        path = Path(media.name) / "synthetic-test-manual.txt"
+        path.write_bytes(original)
+        self.real_doc.source_type = "file"
+        self.real_doc.file.name = path.name
+        self.real_doc.checksum_sha256 = hashlib.sha256(original).hexdigest()
+        self.real_doc.save(update_fields=["source_type", "file", "checksum_sha256"])
         results = retrieve(
             tenant=self.real_tenant,
             question="Indoor fan motor does not start",
@@ -214,6 +230,13 @@ class RealCompanyDataIsolationTests(TestCase):
             self.assertEqual(r.document_id, self.real_doc.id)
             self.assertNotIn("Synthetic", r.title)
             self.assertNotEqual(r.document_id, self.demo_doc.id)
+
+        path.write_bytes(b"modified original")
+        self.assertEqual(list(retrieve(
+            tenant=self.real_tenant, question="Indoor fan motor does not start",
+            asset=self.real_asset, customer=self.real_customer, include_confidential=False,
+            top_k=5, min_score=0.0, staff_mode=False,
+        )), [])
 
     # -----------------------------------------------------------------------
     # 3. Real RAG never retrieves dummy Chroma vectors
