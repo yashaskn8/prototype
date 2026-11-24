@@ -771,9 +771,6 @@ def build_structured_diagnostic_contract(
         retrieved_references,
         conversation_context=conversation_context,
         original_question=original_question,
-        # Customer-facing technical claims must retain the approved source
-        # wording. The experimental Qwen paraphraser is not a serving authority.
-        generate_with_local_model=False,
         evidence_blocked=evidence_blocked,
         evidence_question=evidence_question,
     )

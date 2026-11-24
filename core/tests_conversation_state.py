@@ -588,7 +588,8 @@ class SplitACLiveTranscriptRegressionTests(GatewayTestBase):
         self.assertIn(selected.casefold(), detail["answer"].casefold())
         simpler, _ = self.ask(uuid, "Explain it in simple words")
         self.assertEqual(listed_causes(simpler)[0]["source_text"], selected)
-        self.assertIn(selected.casefold(), simpler["answer"].casefold())
+        from core.services.customer_answer_generation import plain_cause_wording
+        self.assertIn(plain_cause_wording(selected).casefold(), simpler["answer"].casefold())
         self.assert_citations_resolve(simpler)
         weak, _ = self.ask(uuid, "The airflow is also very weak")
         self.assertIn("airflow", weak["answer"].casefold())

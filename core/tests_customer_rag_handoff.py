@@ -129,24 +129,16 @@ class ProductionServingPlanTests(SimpleTestCase):
 
 
 class PlainLanguageAndSemanticIntentTests(SimpleTestCase):
-    def test_simplification_keeps_original_technical_wording(self):
-        from core.services.cause_explanations import explanation_response
+    def test_plain_language_keeps_source_meaning_without_new_mechanisms(self):
+        from core.services.customer_answer_generation import plain_cause_wording, _validate_paraphrase
         source = "Restricted airflow or blocked outdoor unit clearance."
-        built = {"explanations": [{"cause": source, "cause_citation_ids": ["s1"],
-            "status": "insufficient_evidence", "evidence": [], "notes": []}],
-            "citations": [{"id": "s1"}]}
-        result = explanation_response("Equipment", built, mode="simpler")
-        self.assertIn(source, result["text"])
-        self.assertIn("[1]", result["text"])
-        self.assertNotIn("limited air movement", result["text"].casefold())
-
-    def test_customer_contract_disables_technical_paraphrasing(self):
-        from core.services.customer_diagnostic import build_structured_diagnostic_contract
-        interaction = SimpleNamespace(asset=None, question="What causes poor cooling?")
-        with patch("core.services.customer_answer.build_customer_answer") as builder:
-            build_structured_diagnostic_contract(interaction=interaction, session=None,
-                raw_answer="", retrieved_references=[])
-        self.assertIs(builder.call_args.kwargs["generate_with_local_model"], False)
+        wording = plain_cause_wording(source)
+        self.assertEqual(wording, "Limited air movement or something blocking the space around the outdoor unit.")
+        self.assertTrue(_validate_paraphrase(source, "Possible cause: " + wording, "possible_cause",
+                                             plain_language=True))
+        self.assertFalse(_validate_paraphrase(source, "Possible cause: " + wording + " The compressor has failed.",
+                                              "possible_cause", plain_language=True))
+        self.assertFalse(_validate_paraphrase(source, "Possible cause: " + wording, "possible_cause"))
 
     def test_semantic_model_cannot_create_an_intent_or_query(self):
         from core.services.customer_semantic_intent import validate_route
