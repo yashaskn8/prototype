@@ -632,7 +632,8 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
     if (is_problem_report(value) and _specific_symptoms(value)
             and not _specific_symptoms(ctx.active_issue)):
         ctx.answers_pending_question = False
-        _set_issue(ctx, value)
+        shifted = topic_shift_query(value)
+        _set_issue(ctx, shifted if shifted and _names_problem(shifted) else value)
         return
     reply = (is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
              or is_observation_statement(value, ctx))
