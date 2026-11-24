@@ -996,7 +996,7 @@ LEGACY_GENERIC_NO_EVIDENCE = ("There is insufficient evidence to establish a saf
 
 def no_documentation_message(asset) -> str:
     name = getattr(asset, "name", None) or "this equipment"
-    return (f"I don't have approved documentation for the {name}, so I can't suggest causes or repair steps. "
+    return (f"I don't have enough reliable information for the {name}, so I can't suggest causes or repair steps. "
             "If you note what it is doing, when it happens and any code shown, a technician can take it from "
             "there. No service request has been created.")
 
@@ -1004,7 +1004,7 @@ def no_documentation_message(asset) -> str:
 def technician_only_message(asset) -> str:
     """The documents cover this, but only as work for a qualified technician."""
     name = getattr(asset, "name", None) or "this equipment"
-    return (f"That's covered in the {name} documentation as work for a qualified technician, so I can't take "
+    return (f"That work on the {name} requires a qualified technician, so I can't take "
             "you through the steps. A technician carries it out during service or maintenance; I can prepare a "
             "service request if you'd like.")
 
@@ -1663,8 +1663,8 @@ def build_customer_answer(
         "session_id": str(session.session_id) if session else None,
         "session_status": session.status if session else "ACTIVE", "session_version": session.version if session else 1,
         "asset": presentation["equipment"], "summary": (
-            "Documented information from the approved manual." if facts and not causes
-            else "Possible causes from documentation; diagnosis unconfirmed.") if normal else message,
+            "Information about your equipment." if facts and not causes
+            else "Possible causes; diagnosis unconfirmed.") if normal else message,
         "answer": answer, "citations": citations, "references": citations,
         "documented_cause_sections": cause_sections,
         "customer_safe_actions": actions, "check_first": [], "technician_only_actions": [],

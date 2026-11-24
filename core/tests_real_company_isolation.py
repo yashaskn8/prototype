@@ -638,7 +638,8 @@ class RealCompanyDataIsolationTests(TestCase):
         # Must not fabricate customer steps
         # Plain-language abstention: no documentation, no causes or steps offered.
         answer = res.data["answer"].lower()
-        self.assertIn("don't have approved documentation", answer)
+        self.assertIn("don't have enough reliable information", answer)
+        self.assertNotIn("documentation", answer)
         self.assertIn("can't suggest causes or repair steps", answer)
         self.assertNotIn("insufficient evidence", answer)
 

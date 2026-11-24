@@ -23,10 +23,10 @@ from django.conf import settings
 
 MAX_EXPLANATIONS_PER_CAUSE = 1
 RESPONSE_LIMIT_TEXT = "There may be more to say about this one; ask me about it on its own."
-GAP_TEXT = "The manual lists this as a possible cause but doesn't explain it any further."
-NOTES_LEAD = "What the manual does say for this:"
-UNVERIFIED_TEXT = "One previously listed cause could not be re-verified in the currently authorized manuals."
-LIMITATION = "These are documented possibilities, not a confirmed diagnosis of your unit."
+GAP_TEXT = "This is a possible cause, but I don't have enough information to explain it further."
+NOTES_LEAD = "One important point to keep in mind:"
+UNVERIFIED_TEXT = "I can no longer verify one of the earlier possibilities, so I won't repeat it."
+LIMITATION = "These are possible causes, not a confirmed diagnosis of your unit."
 
 _EXTRA_STOP = frozenset(
     "possible cause causes documented unit module equipment system outdoor indoor when after during "
@@ -299,11 +299,15 @@ def explanation_response(equipment: str, built: Dict[str, Any], mode=None) -> Di
     """Composed reply: each cause, then its cited explanation or an explicit gap."""
     from .customer_response_composer import _segment, render_text
     explained = [e for e in built.get("explanations") or [] if e.get("cause")]
-    lead = ("In simple terms, the manual identifies this as a possible cause:"
+    lead = ("The possible cause we're discussing is:"
             if mode == "simpler" and len(explained) == 1 else
             "Here's what I have on this cause:" if len(explained) == 1
             else "Here's what I have on each of these causes:")
     segments = [_segment("text", lead)]
+    # When none of several causes has further detail, say so once rather
+    # than repeating the same limitation after every item.
+    shared_gap = len(explained) > 1 and all(
+        e["status"] == "insufficient_evidence" and not e.get("notes") for e in explained)
     for item in built["explanations"]:
         if item["status"] == "unverified":
             segments.append(_segment("text", UNVERIFIED_TEXT))
@@ -313,13 +317,16 @@ def explanation_response(equipment: str, built: Dict[str, Any], mode=None) -> Di
             for evidence in item["evidence"]:
                 segments.append(_segment("claim", evidence["text"], evidence["citation_ids"]))
         else:
-            segments.append(_segment("text",
-                                     RESPONSE_LIMIT_TEXT if item["status"] == "response_limit"
-                                     else GAP_TEXT))
+            if not shared_gap:
+                segments.append(_segment("text",
+                                         RESPONSE_LIMIT_TEXT if item["status"] == "response_limit"
+                                         else GAP_TEXT))
             if item.get("notes"):
                 segments.append(_segment("text", NOTES_LEAD))
                 for note in item["notes"]:
                     segments.append(_segment("claim", note["text"], note["citation_ids"]))
+    if shared_gap:
+        segments.append(_segment("text", "I don't have enough information to explain these causes further."))
     if built.get("omitted"):
         segments.append(_segment("text", f"{built['omitted']} more listed cause(s) were not expanded here; "
                                          "ask about them by number."))

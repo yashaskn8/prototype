@@ -275,7 +275,7 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             segments = [_segment("text", lead)]
             displayed_notes = []
             if notes:
-                segments.append(_segment("text", "What the manual does say:"))
+                segments.append(_segment("text", "One important point to keep in mind:"))
                 for note in notes:
                     segments.append(_segment("claim", _claim_body(note), note.get("evidence_ids")))
                     displayed_notes.append(_displayed(note))
@@ -421,8 +421,8 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
     from .customer_answer import MAX_SECTION_CLAIMS
     if style == "symptom_causes" and len(causes) >= MAX_SECTION_CLAIMS:
         # Lists are capped; say so instead of implying the list is complete.
-        segments.append(_segment("text", f"I've listed the first {len(causes)} documented possibilities; the manuals "
-                                         "may describe more. Tell me the specific symptom to narrow it down."))
+        segments.append(_segment("text", f"I've listed the first {len(causes)} possible causes; there may be "
+                                         "others. Tell me the specific symptom to narrow it down."))
     question_text = language.get("question")
     if not question_text and style == "symptom_causes" and len(causes) > 1:
         question_text = "Do any of these match what you are seeing?"

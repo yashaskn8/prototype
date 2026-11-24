@@ -61,3 +61,17 @@ class CanonicalCustomerCitationTests(SimpleTestCase):
         from core.services.customer_conversation import customer_answer_citations
         self.assertEqual(customer_answer_citations({"citations": [{"id": "s1"}],
             "presentation": {"response_type": "INSUFFICIENT_EVIDENCE", "citations": []}}), [])
+
+
+class CustomerLanguageTests(SimpleTestCase):
+    def test_missing_details_are_expressed_once_without_manual_jargon(self):
+        from core.services.cause_explanations import explanation_response
+        items = [{"cause": "Example cause " + str(n), "cause_citation_ids": ["s" + str(n)],
+                  "status": "insufficient_evidence", "evidence": [], "notes": []}
+                 for n in (1, 2, 3)]
+        result = explanation_response("Equipment", {"explanations": items,
+            "citations": [{"id": "s" + str(n)} for n in (1, 2, 3)]})
+        self.assertEqual(result["text"].count("don't have enough information"), 1)
+        self.assertNotIn("manual", result["text"].casefold())
+        self.assertEqual(len([s for s in result["segments"] if s["kind"] == "list_item"]), 3)
+        self.assertIn("[3]", result["text"])
