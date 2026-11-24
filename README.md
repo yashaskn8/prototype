@@ -1,5 +1,7 @@
 # Servy RAG
 
+**Company integration:** [Backend handover](docs/SERVY_BACKEND_HANDOVER.md) · [OpenAPI specification](docs/api/servy-portal-api.openapi.yaml)
+
 ## Architecture
 
 Servy answers customer equipment questions from the approved manuals of one selected

@@ -175,3 +175,24 @@ class ExplanationContractRegressionTests(SimpleTestCase):
                 self.assertIn("don't have enough information", contract["answer"])
                 self.assertIn("limited air movement" if mode == "simpler" else source.casefold(),
                               contract["answer"].casefold())
+
+
+class TechnicianHandoverEvidenceRegressionTests(SimpleTestCase):
+    def test_handover_does_not_label_unused_evidence_as_displayed(self):
+        from core.services.conversation_ticket import _citations_from
+        first = {"id": "s1", "title": "Shown source", "heading": "Cooling"}
+        second = {"id": "s2", "title": "Unused source", "heading": "Other section"}
+        message = SimpleNamespace(source_refs=[first, second], structured_contract={
+            "citations": [first, second], "presentation": {
+                "citations": [first, second], "response": {
+                    "segments": [{"kind": "claim", "text": "Example", "citation_ids": ["s1"]}]}}})
+        self.assertEqual(_citations_from(message), [("Shown source", "Cooling")])
+        message.structured_contract["presentation"]["response"]["segments"] = [
+            {"kind": "text", "text": "No verified answer", "citation_ids": []}]
+        self.assertEqual(_citations_from(message), [])
+
+    def test_legacy_handover_preserves_authorized_saved_reference(self):
+        from core.services.conversation_ticket import _citations_from
+        message = SimpleNamespace(structured_contract={}, source_refs=[
+            {"title": "Saved source", "heading": "Cooling"}])
+        self.assertEqual(_citations_from(message), [("Saved source", "Cooling")])

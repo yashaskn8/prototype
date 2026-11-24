@@ -239,7 +239,7 @@ paths:
               properties:
                 message: {type: string, maxLength: 4000}
       responses:
-        "200": {description: "Turn completed", content: {application/json: {schema: {$ref: \"#/components/schemas/TurnResult\"}}}}
+        "200": {description: "Turn completed", content: {application/json: {schema: {$ref: "#/components/schemas/TurnResult"}}}}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
@@ -274,7 +274,8 @@ paths:
     get:
       summary: Linked ticket, or a read-only preview of the ticket that would be created
       responses:
-        "200": {description: "{ticket: Ticket} or {ticket: null, detail, preview{complaint, description, sections, message_count, missing_fields, can_create}}"}
+        "200":
+          description: Linked ticket or read-only preview. Staff may see description and sections; customers see only complaint, message_count, missing_fields and can_create. If no preview can be built, preview is null with preview_detail.
         "404": {$ref: "#/components/responses/NotFound"}
     post:
       summary: Create the service ticket for this conversation (explicit confirmation required; never automatic)
@@ -309,7 +310,7 @@ paths:
       summary: One ticket (resolution_text only once resolved or closed)
       parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
       responses:
-        "200": {description: "Ticket detail", content: {application/json: {schema: {$ref: \"#/components/schemas/Ticket\"}}}}
+        "200": {description: "Ticket detail", content: {application/json: {schema: {$ref: "#/components/schemas/Ticket"}}}}
         "404": {$ref: "#/components/responses/NotFound"}
   /customer-support/source/:
     get:
