@@ -112,6 +112,44 @@ class PortalApiTests(GatewayTestBase):
         self.assertEqual(self.client_for(self.key).get(
             f"{BASE}/conversations/00000000-0000-0000-0000-000000000000/").status_code, 404)
 
+    def test_deleted_conversation_cannot_be_hydrated_or_resumed(self):
+        uuid = self.start()
+        client = self.client_for(self.key)
+        path = f"{BASE}/conversations/{uuid}/"
+        result = client.post(path + "messages/", {"message": "Hi"}, format="json")
+        self.assertEqual(result.status_code, 200, result.content[:300])
+        old = CustomerConversation.objects.get(conversation_uuid=uuid)
+        session_id = str(old.current_diagnostic_session.session_id)
+        count = old.messages.count()
+        self.assertEqual(client.delete(path).status_code, 204)
+        self.assertEqual(client.delete(path).status_code, 204)
+        old.refresh_from_db()
+        self.assertIsNotNone(old.customer_deleted_at)
+        self.assertEqual(old.messages.count(), count)
+        history = client.get(f"{BASE}/conversations/?asset_id={self.asset.id}")
+        self.assertNotIn(uuid, [c["conversation_uuid"] for c in history.json()["conversations"]])
+        for suffix in ("", "messages/"):
+            self.assertEqual(client.get(path + suffix).status_code, 404)
+        for suffix in ("messages/", "messages-stream/"):
+            self.assertEqual(client.post(path + suffix, {"message": "Hi"}, format="json").status_code, 404)
+        context = client.get(f"{BASE}/context/?asset_id={self.asset.id}")
+        self.assertEqual(context.status_code, 200, context.content[:300])
+        self.assertIsNone(context.json()["active_conversation"])
+        self.assertIsNone(context.json()["active_session"])
+        payload = {"site_id": self.asset.site_id, "asset_id": self.asset.id, "question": "Hi"}
+        for stale in ({"conversation_uuid": uuid}, {"session_id": session_id}):
+            rejected = client.post(f"{BASE}/query/", {**payload, **stale}, format="json")
+            self.assertIn(rejected.status_code, (400, 403, 404), rejected.content[:300])
+        new = client.post(f"{BASE}/query/", payload, format="json")
+        self.assertEqual(new.status_code, 200, new.content[:300])
+        new_uuid = new.json()["conversation_uuid"]
+        self.assertNotEqual(new_uuid, uuid)
+        self.assertEqual(old.messages.count(), count)
+        self.assertNotEqual(
+            CustomerConversation.objects.get(conversation_uuid=new_uuid).current_diagnostic_session_id,
+            old.current_diagnostic_session_id,
+        )
+
     # -- messages ---------------------------------------------------------------
     def test_message_turn_is_idempotent_and_ordered(self):
         uuid = self.start()

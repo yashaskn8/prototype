@@ -36,9 +36,22 @@ export function mergeSavedThreads(current, saved, deletedUuids = new Set()) {
   const deleted = deletedUuids instanceof Set ? deletedUuids : new Set(deletedUuids || []);
   const visibleCurrent = (Array.isArray(current) ? current : [])
     .filter(item => !item?.conversationUuid || !deleted.has(item.conversationUuid));
-  const visibleSaved = (Array.isArray(saved) ? saved : [])
-    .filter(item => item?.conversationUuid && !deleted.has(item.conversationUuid));
-  const savedUuids = new Set(visibleSaved.map(item => item.conversationUuid));
+  const existingByUuid = new Map();
+  for (const item of visibleCurrent) {
+    if (item.conversationUuid && !existingByUuid.has(item.conversationUuid)) {
+      existingByUuid.set(item.conversationUuid, item);
+    }
+  }
+  const byUuid = new Map();
+  for (const item of Array.isArray(saved) ? saved : []) {
+    if (item?.conversationUuid && !deleted.has(item.conversationUuid)) {
+      const existing = existingByUuid.get(item.conversationUuid);
+      // Preserve the local ID used by active selection and transcript caches.
+      byUuid.set(item.conversationUuid, existing ? { ...item, id: existing.id } : item);
+    }
+  }
+  const visibleSaved = [...byUuid.values()];
+  const savedUuids = new Set(byUuid.keys());
   return [
     ...visibleCurrent.filter(item => !item.conversationUuid || !savedUuids.has(item.conversationUuid)),
     ...visibleSaved,
@@ -46,5 +59,7 @@ export function mergeSavedThreads(current, saved, deletedUuids = new Set()) {
 }
 
 export function removeDemoThread(current, threadId) {
-  return (Array.isArray(current) ? current : []).filter(item => item?.id !== threadId);
+  const list = Array.isArray(current) ? current : [];
+  const uuid = list.find(item => item?.id === threadId)?.conversationUuid;
+  return list.filter(item => item?.id !== threadId && (!uuid || item?.conversationUuid !== uuid));
 }

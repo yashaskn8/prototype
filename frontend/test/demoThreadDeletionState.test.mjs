@@ -71,3 +71,20 @@ test('removing one chat does not affect another asset or draft', () => {
 
   assert.deepEqual(remaining, [{ id: 'asset-2-draft', assetId: '2', title: 'New chat' }]);
 });
+
+test('refresh keeps the active local chat identity for the same server UUID', () => {
+  const local = { ...saved('chat-1'), id: 'local-thread-1' };
+  const result = mergeSavedThreads([local], [saved('chat-1', 'Updated')]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, 'local-thread-1');
+  assert.equal(result[0].title, 'Updated');
+});
+
+test('delete removes all aliases of a saved conversation UUID', () => {
+  const result = removeDemoThread([
+    { ...saved('chat-1'), id: 'local-thread-1' },
+    saved('chat-1'),
+    saved('chat-2'),
+  ], 'local-thread-1');
+  assert.deepEqual(result, [saved('chat-2')]);
+});

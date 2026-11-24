@@ -235,10 +235,20 @@ def _explanation_contract(interaction, session, asset, built):
     }
 
 
+def _require_live_conversation_locked(conv):
+    """Serialize final turn writes against a customer soft-delete."""
+    if not CustomerConversation.objects.select_for_update().filter(
+        pk=conv.pk, tenant_id=conv.tenant_id, customer_id=conv.customer_id,
+        customer_deleted_at__isnull=True,
+    ).exists():
+        raise ValidationError("Conversation not found or access denied.")
+
+
 def _persist_direct_reply(*, tenant, customer, user, site, asset, conv, session, turn_text,
                           idem_record, contract, source_refs=None):
     """Store one customer and one assistant message for a turn answered without ask_rag."""
     with transaction.atomic():
+        _require_live_conversation_locked(conv)
         user_msg = CustomerMessage.objects.create(
             tenant=tenant, conversation=conv, sender_role="customer", message_text=turn_text)
         contract["conversation_uuid"] = str(conv.conversation_uuid)
@@ -320,11 +330,16 @@ def _process_customer_diagnostic_turn(
 
     # 2. Conversation & Session Identity Resolution (P0-4)
     conv: Optional[CustomerConversation] = None
+    if session_id and CustomerConversation.objects.filter(
+        tenant=tenant, customer=customer, customer_deleted_at__isnull=False,
+        current_diagnostic_session__session_id=session_id,
+    ).exists():
+        raise ValidationError("Conversation not found or access denied.")
     if conversation_uuid:
         try:
             conv = CustomerConversation.objects.select_related(
                 "customer", "site", "asset", "current_diagnostic_session"
-            ).get(tenant=tenant, conversation_uuid=conversation_uuid)
+            ).get(tenant=tenant, conversation_uuid=conversation_uuid, customer_deleted_at__isnull=True)
         except CustomerConversation.DoesNotExist:
             raise ValidationError("Conversation not found or access denied.")
 
@@ -366,7 +381,8 @@ def _process_customer_diagnostic_turn(
             if session_id:
                 conv = (
                     CustomerConversation.objects.filter(
-                        tenant=tenant, customer=customer, asset=asset, current_diagnostic_session__session_id=session_id
+                        tenant=tenant, customer=customer, asset=asset, current_diagnostic_session__session_id=session_id,
+                        customer_deleted_at__isnull=True
                     )
                     .order_by("-updated_at")
                     .first()
@@ -374,7 +390,8 @@ def _process_customer_diagnostic_turn(
             if not conv:
                 conv = (
                     CustomerConversation.objects.filter(
-                        tenant=tenant, customer=customer, asset=asset, status__in=["ACTIVE", "WAITING_INPUT", "ESCALATED"]
+                        tenant=tenant, customer=customer, asset=asset, status__in=["ACTIVE", "WAITING_INPUT", "ESCALATED"],
+                        customer_deleted_at__isnull=True
                     )
                     .order_by("-updated_at")
                     .first()
@@ -427,6 +444,7 @@ def _process_customer_diagnostic_turn(
     if idempotency_key:
         clean_key = str(idempotency_key).strip()
         with transaction.atomic():
+            _require_live_conversation_locked(conv)
             idem, created = CustomerTurnIdempotency.objects.select_for_update().get_or_create(
                 tenant=tenant,
                 customer=customer,
@@ -570,6 +588,7 @@ def _process_customer_diagnostic_turn(
                 "skipped",
             )
             with transaction.atomic():
+                _require_live_conversation_locked(conv)
                 user_msg = CustomerMessage.objects.create(
                     tenant=tenant,
                     conversation=conv,
@@ -803,6 +822,7 @@ def _process_customer_diagnostic_turn(
                 listed = []
         if listed:
             with transaction.atomic():
+                _require_live_conversation_locked(conv)
                 interaction = CustomerInteraction.objects.create(
                     tenant=tenant, created_by=user, customer=customer, site=site, asset=asset,
                     conversation=conv, question=request_text or turn_text, answer="", source_refs=[])
@@ -882,6 +902,7 @@ def _process_customer_diagnostic_turn(
                 "skipped",
             )
             with transaction.atomic():
+                _require_live_conversation_locked(conv)
                 user_msg = CustomerMessage.objects.create(
                     tenant=tenant,
                     conversation=conv,
@@ -1002,6 +1023,7 @@ def _process_customer_diagnostic_turn(
             )
 
         with transaction.atomic():
+            _require_live_conversation_locked(conv)
             user_msg = CustomerMessage.objects.create(
                 tenant=tenant,
                 conversation=conv,

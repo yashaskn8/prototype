@@ -521,14 +521,18 @@ class CustomerSupportContextView(APIView):
                 "id", "name", "asset_code", "site_id", "model_number", "product__name"
             ))
 
-        # Check for active resumable diagnostic session
+        # Deleted conversations and their diagnostic sessions are not resumable.
         active_session_data = None
         asset_id_param = request.query_params.get("asset_id")
+        deleted_session_ids = CustomerConversation.objects.filter(
+            tenant=tenant, customer=customer, customer_deleted_at__isnull=False,
+            current_diagnostic_session__isnull=False,
+        ).values("current_diagnostic_session_id")
         session_qs = DiagnosticSession.objects.filter(
             tenant=tenant,
             customer=customer,
             status__in=["ACTIVE", "WAITING_INPUT", "WAITING_VERIFY", "NO_PLAYBOOK_AVAILABLE"],
-        ).order_by("-updated_at")
+        ).exclude(pk__in=deleted_session_ids).order_by("-updated_at")
 
         if asset_id_param:
             session_qs = session_qs.filter(asset_id=asset_id_param)
@@ -542,6 +546,11 @@ class CustomerSupportContextView(APIView):
                     tenant=tenant,
                     customer=customer,
                     asset=active_session.asset,
+                ).filter(
+                    Q(conversation__isnull=True) | Q(
+                        conversation__customer_deleted_at__isnull=True,
+                        conversation__current_diagnostic_session=active_session,
+                    )
                 ).order_by("-created_at").first()
 
                 contract_data = None
@@ -570,6 +579,7 @@ class CustomerSupportContextView(APIView):
         if asset_id_param:
             active_conv = CustomerConversation.objects.filter(
                 tenant=tenant, customer=customer, asset_id=asset_id_param,
+                customer_deleted_at__isnull=True,
                 status__in=["ACTIVE", "WAITING_INPUT"],
             ).order_by("-updated_at", "-id").first()
         if active_conv:

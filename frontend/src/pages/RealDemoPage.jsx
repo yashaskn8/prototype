@@ -350,9 +350,16 @@ export function RealDemoPage() {
     // Invalidate pending conversation-open requests even when this row was inactive.
     requestRevision.current += 1;
     threadCache.current.delete(id);
-    const remaining = removeDemoThread(threadListRef.current, id);
+    const activeWasDeleted = threadListRef.current.some(item =>
+      item.id === activeThreadIdRef.current && (item.id === id || (uuid && item.conversationUuid === uuid)));
+    const remaining = removeDemoThread(threadListRef.current, id)
+      .filter(item => !uuid || item.conversationUuid !== uuid);
     replaceThreadList(remaining);
-    if (activeThreadIdRef.current === id) {
+    if (uuid) {
+      deletingThreadIdsRef.current.delete(id);
+      setDeletingThreadIds(previous => previous.filter(value => value !== id));
+    }
+    if (activeWasDeleted) {
       requestRevision.current += 1;
       requestStreamController.current?.abort();
       requestStreamController.current = null;
@@ -387,11 +394,6 @@ export function RealDemoPage() {
         createLocalEmptyChat(assetId);
       }
     }
-
-    if (uuid) {
-      deletingThreadIdsRef.current.delete(id);
-      setDeletingThreadIds(previous => previous.filter(value => value !== id));
-    }
   }
 
   useEffect(() => {
@@ -425,7 +427,9 @@ export function RealDemoPage() {
   async function ask(event, suggestedQuestion = null) {
     event?.preventDefault?.();
     const submittedQuestion = (suggestedQuestion ?? question).trim();
-    if (!submittedQuestion || busy || !token || !assetId) return;
+    if (!submittedQuestion || busy || !token || !assetId
+      || deletingThreadIdsRef.current.has(activeThreadIdRef.current)
+      || (continuation && deletedConversationUuids.current.has(continuation))) return;
     if (!isDemoAssetThreadBound(threads, activeThreadId, assetId)) {
       setError('Select the intended equipment and start a new chat before asking a question.');
       return;
