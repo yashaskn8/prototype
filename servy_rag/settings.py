@@ -372,10 +372,10 @@ SERVY_OLLAMA_TIMEOUT = int(os.getenv("SERVY_OLLAMA_TIMEOUT", "30"))
 # Customer-facing Qwen wording is a separate source-span-bound postprocessor.
 # It is disabled by default; the deterministic safety and citation builder stays authoritative.
 SERVY_CUSTOMER_ANSWER_GENERATION = os.getenv(
-# Experimental until a fresh real-model acceptance round verifies relevance and latency.
-SERVY_CUSTOMER_SEMANTIC_INTENT_ENABLED = os.getenv("SERVY_CUSTOMER_SEMANTIC_INTENT_ENABLED", "0") == "1"
     "SERVY_CUSTOMER_ANSWER_GENERATION", "disabled"
 ).lower().strip()
+# Experimental until a fresh real-model acceptance round verifies relevance and latency.
+SERVY_CUSTOMER_SEMANTIC_INTENT_ENABLED = os.getenv("SERVY_CUSTOMER_SEMANTIC_INTENT_ENABLED", "0") == "1"
 SERVY_CUSTOMER_GENERATION_URL = os.getenv(
     "SERVY_CUSTOMER_GENERATION_URL", "http://127.0.0.1:11434/api/chat"
 )

@@ -5,7 +5,7 @@ retrieval query. Direct safety, authorization and conversation-only routes
 remain authoritative. No model output can create a source or approve an action.
 """
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 
 @dataclass(frozen=True)
