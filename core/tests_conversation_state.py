@@ -492,3 +492,32 @@ class SummaryThroughGatewayTests(SplitACConversationTests):
         self.assertEqual(summary["response_type"], "CONVERSATION_SUMMARY")
         self.assertIn("NOISE IN THE MACHINE", summary["answer"])
         self.assertFalse((summary.get("presentation") or {}).get("citations"))
+
+
+class RagMemoryAttributionTests(SimpleTestCase):
+    def test_questions_do_not_create_reported_symptoms(self):
+        from core.services.conversation_context import _record_customer_evidence
+        ctx = ConversationContext(conversation_uuid="")
+        _record_customer_evidence(ctx, "Could a loud noise mean a fan fault?", [])
+        self.assertEqual(ctx.reported_symptoms, [])
+        self.assertEqual(ctx.customer_observations, [])
+        self.assertEqual(ctx.original_complaint, "")
+        self.assertEqual(ctx.active_issue, "")
+
+    def test_mixed_report_and_hypothetical_question(self):
+        from core.services.conversation_context import _record_customer_evidence
+        ctx = ConversationContext(conversation_uuid="")
+        _record_customer_evidence(ctx, "The AC is not cooling. Could water leakage explain it?", [])
+        self.assertIn("not cooling", ctx.reported_symptoms)
+        self.assertNotIn("water leak", ctx.reported_symptoms)
+        self.assertEqual(ctx.original_complaint, "The AC is not cooling.")
+        self.assertFalse(ctx.answers_pending_question)
+
+    def test_question_cannot_change_negative_observations(self):
+        from core.services.conversation_context import _record_customer_evidence
+        ctx = ConversationContext(conversation_uuid="")
+        _record_customer_evidence(ctx, "No water leak is visible.", [])
+        before = list(ctx.negative_observations)
+        self.assertIn("water leak", before)
+        _record_customer_evidence(ctx, "Why could water leak from the unit?", [])
+        self.assertEqual(ctx.negative_observations, before)

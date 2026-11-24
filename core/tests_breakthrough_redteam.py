@@ -378,6 +378,10 @@ class BreakthroughRedTeamTests(TestCase):
 
     def test_redteam_b_concurrent_in_flight_submission_rejected(self):
         """A concurrent in-flight request on the same idempotency key is rejected."""
+        conv = CustomerConversation.objects.create(
+            tenant=self.tenant_a, customer=self.cust_a1, site=self.site_a1,
+            asset=self.asset_a1, created_by=self.user_a1, title="In-flight Retry Test"
+        )
         idem_key = "concurrent-" + uuid.uuid4().hex
         question = "Flush peristaltic pump"
         payload_raw = f"{question}###{''}###{''}###{self.asset_a1.id}###{self.site_a1.id}"
@@ -386,6 +390,7 @@ class BreakthroughRedTeamTests(TestCase):
             tenant=self.tenant_a,
             customer=self.cust_a1,
             idempotency_key=idem_key,
+            conversation=conv,
             payload_fingerprint=fp,
             processing_status="PENDING",
         )
@@ -393,7 +398,7 @@ class BreakthroughRedTeamTests(TestCase):
             process_customer_diagnostic_turn(
                 tenant=self.tenant_a, customer=self.cust_a1, user=self.user_a1,
                 site=self.site_a1, asset=self.asset_a1, question=question,
-                idempotency_key=idem_key,
+                conversation_uuid=conv.conversation_uuid, idempotency_key=idem_key,
             )
         self.assertIn("being processed", str(ctx.exception).lower())
 
