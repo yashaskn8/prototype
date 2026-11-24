@@ -401,3 +401,50 @@ class LivePathRootCauseTests(SimpleTestCase):
             with self.subTest(text=text):
                 self.assertTrue((canonical_issue_question(text, ctx) or "").startswith("What can I safely check"))
         self.assertIsNone(canonical_issue_question("can you check the ticket status?", ctx))
+
+
+class LiveConversationIntentTests(SimpleTestCase):
+    """Intent classes behind the reported live conversation, tested with other wording."""
+
+    def test_a_vague_problem_is_clarified_until_a_symptom_is_known(self):
+        from core.services.conversation_context import is_vague_problem
+        empty = ConversationContext(conversation_uuid="")
+        for text in ("its not working", "my unit is acting up", "the ac has a problem", "something is wrong with it",
+                     "it stopped working"):
+            with self.subTest(text=text):
+                self.assertTrue(is_vague_problem(text, empty))
+        for text in ("the ac is not cooling", "it shows E4", "what is wrong with it?", "water is leaking"):
+            with self.subTest(text=text):
+                self.assertFalse(is_vague_problem(text, empty))
+        ctx, _ = _run(["The room is not getting cold."])
+        self.assertFalse(is_vague_problem("its not working", ctx))
+        ctx, _ = _run(["hi", "its not working", "poor cooling"])
+        self.assertEqual(ctx.active_issue, "poor cooling")
+
+    def test_next_step_questions_keep_the_section_being_discussed(self):
+        ctx, _ = _run(["hi", "it has stopped working"])
+        ctx.active_topics = ["water leakage"]
+        for text in ("what to do next?", "ok what now", "now what?", "how should i proceed", "wat do you suggest"):
+            with self.subTest(text=text):
+                self.assertEqual(canonical_issue_question(text, ctx),
+                                 "What can I safely check or observe for this: water leakage?")
+
+    def test_service_call_requests_in_natural_wording(self):
+        for text in ("can u create a call for me", "pls raise a complaint", "book an engineer visit",
+                     "log a service call please", "i want to register a complaint", "can you creat a tiket"):
+            with self.subTest(text=text):
+                self.assertEqual(conversation_intent(text), "ticket_help")
+        self.assertEqual(conversation_intent("did u log the call?"), "ticket_status")
+        self.assertIsNone(conversation_intent("the unit makes a clicking noise"))
+        self.assertTrue(_TECHNICIAN_DECISION.search("should I call a technician?"))
+
+    def test_requests_without_a_question_mark_are_not_symptom_reports(self):
+        for text in ("list the possible causes", "explain it simpler please", "tell me the next steps"):
+            with self.subTest(text=text):
+                self.assertFalse(is_problem_report(text))
+        ctx, trail = _run(["The unit is making a grinding noise.", "list the possible causes", "simpler please"])
+        self.assertEqual(trail[1:], ["-", "-"])
+        self.assertEqual(ctx.resolved_answers, [])
+        for text in ("my ac is not cooling please", "help my ac is leaking"):
+            with self.subTest(text=text):
+                self.assertTrue(is_problem_report(text))

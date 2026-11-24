@@ -833,10 +833,25 @@ def _process_customer_diagnostic_turn(
             "customer_clarification_screening",
             "Checking whether more symptom detail is needed",
         ):
+            # Not only the first message: "hi" then "its not working" is just as vague.
+            # Clarify whenever the customer states a problem without a symptom and no
+            # specific problem is known yet.
+            from core.services.conversation_context import is_vague_problem
+            from core.services.customer_response_composer import clarification_for_ambiguous
             if not conv_context.is_followup and conv_context.turn_count == 0:
                 is_vague, clarif_q, clarif_opts = check_for_vague_complaint(
                     clean_question, asset=asset
                 )
+            if not is_vague and is_vague_problem(clean_question, conv_context):
+                is_vague = True
+            if is_vague:
+                # Offer the symptoms this asset's own manuals cover, when there are any.
+                documented = clarification_for_ambiguous(
+                    clean_question, asset, tenant, customer=getattr(asset, "customer", None))
+                if documented:
+                    clarif_q, clarif_opts = documented["text"], documented["options"]
+                elif not clarif_q:
+                    is_vague, clarif_q, clarif_opts = check_for_vague_complaint("not working", asset=asset)
         if is_vague and not clean_clarification:
             emit_execution_event(
                 "customer_clarification_outcome",

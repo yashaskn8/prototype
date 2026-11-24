@@ -486,6 +486,22 @@ def names_other_equipment_type(question, asset):
     return bool(asked - own) and not (asked & own)
 
 
+# A manual sentence a customer may be shown as guidance, never as a step to perform:
+# a prohibition ("Do not repeatedly reset a tripping breaker.") or a statement of who
+# must do the work ("Electrical panel checks must be performed by a qualified person.").
+_SAFETY_NOTE = re.compile(
+    r"^\s*(?:do\s+not|don't|never)\b"
+    r"|\bmust\s+(?:only\s+)?be\s+(?:performed|carried\s+out|done|completed|checked|serviced|installed)\s+by\s+"
+    r"(?:a\s+|an\s+)?(?:qualified|authori[sz]ed|trained|licensed|certified)\b", re.I)
+
+
+def section_safety_notes(chunk):
+    """(text, start, end) of each safety note in one already-authorized chunk."""
+    for text, kind, start, end in source_claims(chunk.text):
+        if kind != "possible_cause" and _SAFETY_NOTE.search(text):
+            yield text, start, end
+
+
 def _source_warning(candidates, question, *, tenant, customer, asset):
     """Find a relevant warning in customer-authorized source chunks only."""
     from .retriever import _knowledge_candidates
@@ -1419,6 +1435,27 @@ def build_customer_answer(
             if target is facts:
                 target[-1]["disclosure"] = (
                     "maintenance_schedule" if _SCHEDULE_FACT.match(text) else "descriptive")
+    # "What can I safely check?" / "what to do next?": besides any customer check, the
+    # manual's prohibitions and who-must-do-it statements for the symptom being discussed
+    # ("Do not repeatedly reset a tripping breaker.") are the customer-safe guidance.
+    from .conversation_context import ISSUE_CHECKS_PREFIX
+    if str(raw_user_q).startswith(ISSUE_CHECKS_PREFIX) and evidence_chunks and not wrong_model:
+        note_sections = stated_sections or {r.heading for r in evidence_chunks
+                                            if heading_states_symptom(r.heading, asked_symptoms - {"generic_failure"})}
+        shown = {c.get("source_text") for c in facts}
+        for result in evidence_chunks:
+            if result.heading not in note_sections:
+                continue
+            for text, start, end in section_safety_notes(result.chunk):
+                if text in shown or sum(1 for c in facts if c.get("disclosure") == "safety_note") >= 2:
+                    continue
+                shown.add(text)
+                citation = _citation(result.chunk, start, end, asset=asset, customer=customer,
+                                     user_id=interaction.created_by_id, kind="information")
+                citation["id"] = f"s{len(citations)+1}"
+                citations.append(citation)
+                facts.append({"id": f"c{len(citations)}", "text": text, "source_text": text, "kind": "information",
+                              "evidence_ids": [citation["id"]], "disclosure": "safety_note"})
     # A factual question (timing, value, document content) is answered by the
     # documented facts that answer it. A cause that matched only by a shared
     # word ("filter") does not displace them; cause questions are unaffected.

@@ -23,7 +23,8 @@ from django.conf import settings
 
 MAX_EXPLANATIONS_PER_CAUSE = 1
 RESPONSE_LIMIT_TEXT = "There may be more to say about this one; ask me about it on its own."
-GAP_TEXT = "I couldn't find more detail on this cause in the information I searched."
+GAP_TEXT = "The manual lists this as a possible cause but doesn't explain it any further."
+NOTES_LEAD = "What the manual does say for this:"
 UNVERIFIED_TEXT = "One previously listed cause could not be re-verified in the currently authorized manuals."
 LIMITATION = "These are documented possibilities, not a confirmed diagnosis of your unit."
 
@@ -212,12 +213,38 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
             evidence.append({"text": text, "citation_ids": [evidence_id]})
         status = ("explained" if evidence else
                   "response_limit" if ranked and detail_budget == 0 else "insufficient_evidence")
+        notes = []
+        if status == "insufficient_evidence":
+            # No sentence explains the cause itself, but the manual may still say
+            # something that applies: a prohibition or who must do the work, in the
+            # cause's own section, or elsewhere when it names what the cause names
+            # ("loose terminals" for "loose connection").
+            from .customer_answer import section_safety_notes
+            found = []
+            for rank, (document_id, chunk_id, _score) in enumerate(chunks):
+                chunk = origin if chunk_id == origin.id else _authorized_chunk(
+                    tenant=tenant, customer=customer, asset=asset, document_id=document_id, chunk_id=chunk_id)
+                if chunk is None:
+                    continue
+                for text, start, end in section_safety_notes(chunk):
+                    shared = len(cause_keys & _content_keys(text))
+                    if _norm(text) in used_sentences or (chunk.id != origin.id and not shared):
+                        continue
+                    # Notes naming what the cause names first, then the cause's own section.
+                    found.append((-shared, rank, start, chunk, text, end))
+            for _shared, _rank, start, chunk, text, end in sorted(found, key=lambda f: f[:3])[:2]:
+                used_sentences.add(_norm(text))
+                note_id = cite(chunk, start, end, "information")
+                fact_claims.append({"id": f"c{len(citations)}", "text": text, "source_text": text,
+                                    "kind": "information", "disclosure": "safety_note",
+                                    "evidence_ids": [note_id]})
+                notes.append({"text": text, "citation_ids": [note_id]})
         if not evidence:
             gap = RESPONSE_LIMIT_TEXT if status == "response_limit" else GAP_TEXT
             gap_claims.append({"text": f"{gap} ({cause['source_text'].rstrip('.')})",
                                "kind": "uncertainty", "evidence_ids": []})
         explanations.append({"cause": cause["source_text"], "cause_citation_ids": [cause_id],
-                             "status": status, "evidence": evidence})
+                             "status": status, "evidence": evidence, "notes": notes})
 
     if not cause_claims:
         raise ValueError("No previously listed cause could be re-verified.")
@@ -286,6 +313,10 @@ def explanation_response(equipment: str, built: Dict[str, Any]) -> Dict[str, Any
             segments.append(_segment("text",
                                      RESPONSE_LIMIT_TEXT if item["status"] == "response_limit"
                                      else GAP_TEXT))
+            if item.get("notes"):
+                segments.append(_segment("text", NOTES_LEAD))
+                for note in item["notes"]:
+                    segments.append(_segment("claim", note["text"], note["citation_ids"]))
     if built.get("omitted"):
         segments.append(_segment("text", f"{built['omitted']} more listed cause(s) were not expanded here; "
                                          "ask about them by number."))

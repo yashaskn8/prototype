@@ -250,14 +250,26 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
 
     from .conversation_context import ISSUE_CHECKS_PREFIX
     if str(question).startswith(ISSUE_CHECKS_PREFIX) and not cause_reference:
+        # Keep only the manual's safety notes for this symptom (prohibitions, who must do
+        # the work); causes and other facts do not answer "what can I check / do next?".
+        notes = [f for f in facts if f.get("disclosure") == "safety_note"]
         causes, facts = [], []
         if not checks:
-            text = ("I don't have a customer-safe check to suggest for this from the information I have. "
-                    "The next step is for a technician to look at it. I can prepare a service request with "
-                    "what you've told me if you'd like.")
-            segments = [_segment("text", text)]
-            return {"text": text, "segments": segments, "style": "next_step", "composer": "deterministic",
-                    "displayed_claims": []}
+            lead = "I don't have a check you can safely do yourself for this from the information I have."
+            close = ("The next step is for a technician to look at it. I can prepare a service request with "
+                     "what you've told me if you'd like.")
+            segments = [_segment("text", lead)]
+            displayed_notes = []
+            if notes:
+                segments.append(_segment("text", "What the manual does say:"))
+                for note in notes:
+                    segments.append(_segment("claim", _claim_body(note), note.get("evidence_ids")))
+                    displayed_notes.append(_displayed(note))
+            segments.append(_segment("text", close))
+            citations = (contract.get("presentation") or {}).get("citations") or []
+            return {"text": render_text(segments, citations), "segments": segments, "style": "next_step",
+                    "composer": "deterministic", "displayed_claims": displayed_notes}
+        facts = notes
     if not (causes or facts or checks):
         return None
     displayed: List[Dict[str, Any]] = []
@@ -432,10 +444,11 @@ def clarification_for_ambiguous(question: str, asset, tenant, customer=None) -> 
     from .conversation_context import is_self_contained_question
     from .customer_answer import source_chunk
     from .retriever import _knowledge_candidates
-    from .conversation_context import extract_symptoms_from_text
+    from .conversation_context import extract_symptoms_from_text, generic_symptom
     # Only when the message names no specific symptom ("I need help with my AC",
-    # "it isn't working properly"); a specific symptom or a full question is answered.
-    specific = [s for s in extract_symptoms_from_text(question) if s != "not working"]
+    # "it isn't working properly", "it stopped working"); a specific symptom or a full
+    # question is answered.
+    specific = [s for s in extract_symptoms_from_text(question) if not generic_symptom(s)]
     value = " ".join(str(question or "").split())
     asks = value.endswith("?") or re.match(r"\s*(?:what|which|when|where|why|how|is|are|does|do|can|could|should)\b",
                                            value, re.I)

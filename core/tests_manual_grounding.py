@@ -9,6 +9,9 @@ TROUBLE = """1. SYMPTOM: UNIT DOES NOT START
 Possible causes:
 - Power supply unavailable or isolator switched off.
 - Breaker or protective device tripped.
+Initial checks:
+- Do not repeatedly reset a tripping breaker.
+- Electrical panel checks must be performed by a qualified person.
 
 4. SYMPTOM: WATER LEAKAGE
 Possible causes:
@@ -175,3 +178,43 @@ class ManualGroundingTests(GatewayTestBase):
         text = overview.get("answer", "").casefold()
         self.assertIn("breaker", text)
         self.assertIn("drain", text)
+
+    def test_live_vague_complaint_explanation_next_step_and_call_request(self):
+        """The reported live conversation: vague complaint after a greeting, an ordinal
+        explanation, a next-step question and an informal service-call request."""
+        from core.models import CustomerConversation
+        conv = self.create()
+        self.ask(conv, "hi")
+        vague, _ = self.ask(conv, "its not working")
+        self.assertEqual(vague.get("response_type"), "CLARIFICATION", vague.get("answer"))
+        self.assertIn("unit does not start", vague.get("answer", "").casefold())
+        # Sparse-only test retrieval needs the heading's words; the live check uses dense.
+        start, _ = self.ask(conv, "the unit does not start")
+        self.assertIn("breaker", start.get("answer", "").casefold())
+        explain, _ = self.ask(conv, "can you explain the second causes")
+        text = explain.get("answer", "").casefold()
+        self.assertIn("doesn't explain it any further", text)
+        self.assertIn("do not repeatedly reset", text)
+        nxt, _ = self.ask(conv, "what to do next?")
+        text = nxt.get("answer", "").casefold()
+        self.assertIn("qualified person", text)
+        self.assertNotIn("blocked drain", text)
+        call, _ = self.ask(conv, "can u create a call for me")
+        self.assertEqual(call.get("reason_code"), "TICKET_HELP", call.get("answer"))
+        self.assertFalse((call.get("presentation") or {}).get("citations"))
+        self.assertIsNone(CustomerConversation.objects.get(conversation_uuid=conv).linked_service_call_id)
+
+    def test_live_conversation_variants(self):
+        conv = self.create()
+        self.ask(conv, "hello")
+        vague, _ = self.ask(conv, "my unit is acting up")
+        self.assertEqual(vague.get("response_type"), "CLARIFICATION")
+        leak, _ = self.ask(conv, "water is leaking from it")
+        self.assertIn("blocked drain", leak.get("answer", "").casefold())
+        nxt, _ = self.ask(conv, "ok what now")
+        self.assertNotIn("breaker", nxt.get("answer", "").casefold())
+        ticket, _ = self.ask(conv, "pls raise a complaint")
+        self.assertEqual(ticket.get("reason_code"), "TICKET_HELP")
+        # A specific first complaint is answered directly, never clarified.
+        direct, _ = self.ask(self.create(), "water is dripping from the unit")
+        self.assertNotEqual(direct.get("response_type"), "CLARIFICATION")

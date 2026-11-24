@@ -483,7 +483,13 @@ _CHAT_SHORTHAND = tuple((re.compile(_SHORT.format(word), re.I), full) for word, 
     ("theres", "there's"), ("ive", "I've"), ("im", "I'm"), ("dont", "don't"), ("cant", "can't"),
     ("wont", "won't"), ("isnt", "isn't"), ("arent", "aren't"), ("wasnt", "wasn't"), ("hasnt", "hasn't"),
     ("havent", "haven't"), ("didnt", "didn't"), ("doesnt", "doesn't"),
+    ("wat", "what"), ("wht", "what"), ("nxt", "next"), ("tiket|tikt|ticet|tkt", "ticket"), ("creat", "create"),
 ))
+# "list the possible causes", "explain it simpler please", "create a call for me":
+# a request even without a question mark; it never reports a symptom.
+_REQUEST_START = re.compile(
+    r"^\W*(?:please\s+|kindly\s+)?(?:list|tell|give|show|explain|describe|summari[sz]e|recap|create|make|"
+    r"raise|book|log|open|register|lodge|arrange|send|suggest|recommend)\b", re.I)
 # "so whats the main issue then", "ok and is it safe": a discourse word before the question.
 _LEADING_FILLER = re.compile(
     r"^\W*(?:(?:so|ok(?:ay)?|and|but|well|then|right|alright|hmm+|um+|uh+|also|now|oh)\b[\s,.-]*)+", re.I)
@@ -499,6 +505,9 @@ def normalize_chat_text(text: str) -> str:
 def _is_question(value: str) -> bool:
     value = _LEADING_FILLER.sub("", normalize_chat_text(value))
     if value.rstrip().endswith("?"):
+        return True
+    if _REQUEST_START.match(value) or (re.search(r"\bplease\W*$", value, re.I)
+                                       and not extract_symptoms_from_text(value)):
         return True
     # "can't get it to start" is a statement, although "can" opens questions.
     return bool(_QUESTION_START.match(value)) and not re.match(r"\s*can['\u2019]t\b", value, re.I)
@@ -526,7 +535,7 @@ def is_observation_statement(text: str, ctx: "ConversationContext") -> bool:
     if (not value or _is_question(value) or len(value.split()) > 25
             or not (ctx.active_issue or ctx.active_topics)):
         return False
-    if is_explain_all_request(value) or _ORDINAL_REFERENCE.search(value):
+    if is_explain_all_request(value) or _ORDINAL_REFERENCE.search(value) or _BACK_TO_LAST_CAUSE.search(value):
         return False
     if _UNCERTAIN_OBSERVATION.search(value):
         return True
@@ -559,6 +568,17 @@ def is_reply_to_question(text: str, pending: Optional[str], active_issue: str = 
     new_symptoms = [s for s in extract_symptoms_from_text(value)
                     if not _code_symptom(s) and s not in known and s.split()[0] not in known]
     return not new_symptoms
+
+
+def generic_symptom(symptom: str) -> bool:
+    """"not working", "stopped working", "broken": a failure without a named symptom."""
+    from .term_matching import symptom_concepts
+    return symptom == "not working" or symptom_concepts(symptom) == {"generic_failure"}
+
+
+def _specific_symptoms(text: str) -> List[str]:
+    """Named symptoms only: not generic failures and not reported codes."""
+    return [s for s in extract_symptoms_from_text(text or "") if not _code_symptom(s) and not generic_symptom(s)]
 
 
 def _names_problem(text: str) -> bool:
@@ -604,6 +624,13 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
     # The first reported problem (e.g. the answer to "please describe the symptom")
     # becomes the current issue; it is not an acknowledgement-only reply.
     if not ctx.active_issue and is_problem_report(value):
+        ctx.answers_pending_question = False
+        _set_issue(ctx, value)
+        return
+    # "its not working" then (after "which of these is closest?") "poor cooling": the
+    # specific symptom replaces the generic issue instead of being a mere detail.
+    if (is_problem_report(value) and _specific_symptoms(value)
+            and not _specific_symptoms(ctx.active_issue)):
         ctx.answers_pending_question = False
         _set_issue(ctx, value)
         return
@@ -688,7 +715,9 @@ def conversation_summary_text(ctx: "ConversationContext", ticket_ref: Optional[s
     return "\n".join(lines)
 
 
-_TICKET_WORDS = r"(?:(?:service\s+|support\s+)?ticket|service\s+request|service\s+call|complaint|request|technician\s+visit)"
+# Customers say ticket, call, service call, complaint, request or visit for the same thing.
+_TICKET_WORDS = (r"(?:(?:service\s+|support\s+|repair\s+)?(?:ticket|call)|service\s+request|complain(?:t|ts)?|request|"
+                 r"(?:technician\s+|service\s+|engineer\s+)?visit)")
 _TICKET_STATUS = re.compile(
     r"\b(?:did|have|has)\s+(?:you|it|anyone)\s+(?:actually\s+|already\s+)?"
     r"(?:create|raise|open|log|file|submit|book|ma(?:k|d)e)\w*\s+(?:a|an|the|my)?\s*" + _TICKET_WORDS
@@ -702,8 +731,8 @@ _TICKET_CONTENTS = re.compile(
     + r"|\bwhat\b[^?.!]{0,30}\b(?:will|would|does)\s+the\s+(?:ticket|service\s+request|technician)\s+"
     r"(?:say|include|contain|see|get|receive|know|be\s+told)\b", re.I)
 _TICKET_HELP = re.compile(
-    r"\b(?:create|raise|open|log|file|submit|book|make|arrange|schedule)\s+(?:a|an|the|my)?\s*"
-    r"(?:new\s+)?" + _TICKET_WORDS
+    r"\b(?:create|raise|open|log|file|submit|book|make|arrange|schedule|register|lodge|place|generate|initiate|"
+    r"put\s+in)\s+(?:a|an|the|my|one)?\s*(?:new\s+)?" + _TICKET_WORDS
     + r"|\bhow\s+(?:do|can|should)\s+i\s+(?:create|raise|open|get|book|request|log)\s+(?:a|an)?\s*"
     r"(?:ticket|service\s+request|service\s+call|technician)\b"
     # A visit request: "can I get someone to come out", "send a technician".
@@ -1243,10 +1272,17 @@ _ROLE_REFERENCE = re.compile(
 _CHECK_REQUEST = re.compile(
     r"\b(?:observe|look\s+(?:at|for)|inspect|record|note\s+down|write\s+down|keep\s+track)\b"
     r"|\bwhat\s+(?:should|can|do)\s+i\s+do(?:\s+next|\s+now)?\b|\bnext\s+steps?\b"
+    # "what to do next?", "what now", "now what?", "how do I proceed", "what do you suggest"
+    r"|\bwhat\s+(?:to|shall\s+i|should\s+we|do\s+we|can\s+we)\s+do\b|\bwhat\s+(?:now|next)\b|\bnow\s+what\b"
+    r"|\bhow\s+(?:do|should|can)\s+i\s+proceed\b|\bwhat\s+(?:do|would|can)\s+you\s+(?:suggest|recommend|advise)\b"
+    r"|\bwhat\s+should\s+be\s+done\b"
     r"|\bhow\s+(?:do|can|would)\s+i\s+(?:know|tell|find\s+out|check)\b"
     # "What can I safely check myself?", "is there anything I can check?"
     r"|\b(?:what|anything|something)\s+(?:(?:can|could|should)\s+i|i\s+(?:can|could|should))\s+(?:safely\s+)?check\b"
     r"|\bsafely\s+check\b|\bcheck\s+(?:it\s+)?myself\b", re.I)
+_VAGUE_TROUBLE = re.compile(
+    r"\b(?:acting\s+up|playing\s+up|(?:has|having|got)\s+(?:a\s+|some\s+)?(?:problems?|issues?|trouble)|"
+    r"something(?:'s|\s+is)\s+wrong|not\s+(?:right|ok(?:ay)?|good)|faulty|broken|giving\s+trouble)\b", re.I)
 _MORE_CAUSES = re.compile(r"\b(?:other|else|more|additional|any\s+further)\b", re.I)
 
 
@@ -1263,14 +1299,39 @@ ISSUE_MORE_CAUSES_PREFIX = "What other possible causes are there for this:"
 ISSUE_CHECKS_PREFIX = "What can I safely check or observe for this:"
 
 
+def issue_subject(context: "ConversationContext") -> str:
+    """What the conversation is about now: the customer's issue, or, when that names no
+    specific symptom ("its not working"), the manual section they were just shown."""
+    issue = context.active_issue or ""
+    if not _specific_symptoms(issue) and context.active_topics:
+        return " / ".join(context.active_topics[:2])
+    return issue
+
+
 def canonical_issue_question(text: str, context: "ConversationContext") -> Optional[str]:
     """The current-issue form of a request that names no subject of its own."""
     if is_issue_cause_request(text, context):
         prefix = ISSUE_MORE_CAUSES_PREFIX if _MORE_CAUSES.search(text) else ISSUE_CAUSES_PREFIX
         return f"{prefix} {context.active_issue}?"
     if is_issue_check_request(text, context):
-        return f"{ISSUE_CHECKS_PREFIX} {context.active_issue}?"
+        return f"{ISSUE_CHECKS_PREFIX} {issue_subject(context)}?"
     return None
+
+
+def is_vague_problem(text: str, context: "ConversationContext") -> bool:
+    """A problem statement that names no symptom ("its not working", "my AC is acting up")
+    while no specific problem is known yet: clarify before retrieving anything."""
+    from .customer_diagnostic import VAGUE_PATTERNS
+    value = normalize_chat_text(text)
+    if not value or _is_question(value) or re.search(r"\b[A-Z]{1,3}[- ]?\d{1,3}\b", value):
+        return False
+    if (_specific_symptoms(context.active_issue) or _specific_symptoms(value)
+            or re.search(r"\b[A-Z]{1,3}[- ]?\d{1,3}\b", context.active_issue or "")):
+        return False
+    lowered = value.lower().strip(" .!")
+    return bool(any(re.match(p, lowered) for p in VAGUE_PATTERNS)
+                or any(generic_symptom(s) for s in extract_symptoms_from_text(value))
+                or _VAGUE_TROUBLE.search(value))
 
 
 def ordinal_beyond_list(text: str, context: "ConversationContext") -> Optional[List[Dict[str, str]]]:
