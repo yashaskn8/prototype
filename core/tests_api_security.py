@@ -291,8 +291,8 @@ class ApiSecurityAndPermissionsTests(TestCase):
         def flaky_create(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
-                # Simulate SQLite lock error on first attempt
-                raise OperationalError("database is locked")
+                # Simulate a MySQL lock-wait timeout on the first attempt
+                raise OperationalError(1205, "Lock wait timeout exceeded; try restarting transaction")
             return orig_create(*args, **kwargs)
 
         with patch.object(ServiceCall.objects, "create", side_effect=flaky_create):

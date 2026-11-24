@@ -14,9 +14,6 @@ _installed = False
 
 def is_test_database(settings_dict, vendor):
     name = str(settings_dict.get("NAME") or "")
-    if vendor == "sqlite":
-        # manage.py test uses an in-memory database; never a file such as db.sqlite3.
-        return name in ("", ":memory:") or "mode=memory" in name or name.startswith("file:memorydb")
     test_name = (settings_dict.get("TEST") or {}).get("NAME")
     return name.startswith("test_") or (bool(test_name) and name == test_name)
 

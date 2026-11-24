@@ -14,16 +14,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestDatabaseRecognitionTests(SimpleTestCase):
-    def test_company_and_file_databases_are_not_test_databases(self):
+    def test_company_and_development_databases_are_not_test_databases(self):
         self.assertFalse(is_test_database({"NAME": "servy"}, "mysql"))
         self.assertFalse(is_test_database({"NAME": "servy_test"}, "mysql"))
-        self.assertFalse(is_test_database({"NAME": str(ROOT / "db.sqlite3")}, "sqlite"))
+        self.assertFalse(is_test_database({"NAME": "servy_dev"}, "mysql"))
 
     def test_throwaway_test_databases_are_recognised(self):
         self.assertTrue(is_test_database({"NAME": "test_servy"}, "mysql"))
         self.assertTrue(is_test_database({"NAME": "test_servy_test"}, "mysql"))
-        self.assertTrue(is_test_database({"NAME": "file:memorydb_default?mode=memory&cache=shared"}, "sqlite"))
-        self.assertTrue(is_test_database({"NAME": ":memory:"}, "sqlite"))
+        self.assertTrue(is_test_database({"NAME": "test_servy_dev", "TEST": {"NAME": "test_servy_dev"}}, "mysql"))
 
     def test_classes_without_databases_are_not_checked(self):
         class NoDatabase(SimpleTestCase):
@@ -40,15 +39,13 @@ class GuardOutsideTestRunnerTests(SimpleTestCase):
     def test_testcase_outside_the_test_runner_is_refused_before_any_database_work(self):
         # Plain unittest (not manage.py test) would use the configured database itself.
         # The class performs no writes; the guard must stop it before setUpClass opens
-        # a transaction.
-        # SQLite is configurable only for test processes, so the probe presents as
-        # one, then points the connection at an ordinary (non-test) disposable file.
+        # a transaction. The probe points the connection at a non-test MySQL database
+        # name that does not exist, so even a failed guard could write nothing.
         code = (
-            "import os, sys, tempfile, unittest, django\n"
-            "sys.argv = ['manage.py', 'test']\n"
+            "import os, sys, unittest, django\n"
             "django.setup()\n"
             "from django.db import connections\n"
-            "connections['default'].settings_dict['NAME'] = os.path.join(tempfile.mkdtemp(), 'app.sqlite3')\n"
+            "connections['default'].settings_dict['NAME'] = 'servy_guard_probe_not_a_test_db'\n"
             "from django.test import TestCase\n"
             "class Probe(TestCase):\n"
             "    def test_probe(self):\n"
@@ -57,7 +54,7 @@ class GuardOutsideTestRunnerTests(SimpleTestCase):
             "print('ERRORS', len(result.errors))\n"
             "print('REFUSED', any('Refusing to run' in tb for _, tb in result.errors))\n"
         )
-        env = dict(os.environ, DJANGO_SETTINGS_MODULE="servy_rag.settings", SERVY_DB_ENGINE="sqlite3", DJANGO_DEBUG="1")
+        env = dict(os.environ, DJANGO_SETTINGS_MODULE="servy_rag.settings", DJANGO_DEBUG="1")
         out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=180)
         self.assertIn("ERRORS 1", out.stdout, out.stderr[-800:])
         self.assertIn("REFUSED True", out.stdout, out.stderr[-800:])
@@ -69,9 +66,6 @@ class GuardOutsideTestRunnerTests(SimpleTestCase):
             original = dict(connection.settings_dict)
             try:
                 connection.settings_dict["NAME"] = "servy"
-                vendor = connection.vendor
-                if vendor != "mysql":
-                    connection.settings_dict["NAME"] = str(ROOT / "db.sqlite3")
                 with self.assertRaisesRegex(ImproperlyConfigured, "Refusing to run .*manage.py test"):
                     check_test_databases(Probe)
             finally:

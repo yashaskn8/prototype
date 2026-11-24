@@ -5,7 +5,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load environment variables from .env if present (supporting both project root and workspace root).
 # IMPORTANT: override=False ensures explicit process-level environment variables
-# (e.g. SERVY_DB_ENGINE=sqlite3 set in the shell) are NEVER silently overwritten
+# (e.g. SERVY_MYSQL_ENV_FILE set in the shell) are NEVER silently overwritten
 # by values from .env files. This is critical for local test isolation.
 for _env_candidate in [BASE_DIR.parent / ".env", BASE_DIR / ".env"]:
     if _env_candidate.is_file():
@@ -165,24 +165,8 @@ if SERVY_DB_ENGINE == "mysql":
             },
         }
     }
-elif SERVY_DB_ENGINE == "sqlite3":
-    # Only for disposable automated tests: an in-memory database that never
-    # persists. SQLite is never a runtime database or fallback, and the legacy
-    # db.sqlite3 file (preserved, possibly unique company records) is never opened.
-    import sys as _db_sys
-    if len(_db_sys.argv) < 2 or _db_sys.argv[1] != "test":
-        raise RuntimeError("SQLite is allowed only for disposable test runs; Servy requires MySQL.")
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": ":memory:",
-            "OPTIONS": {"timeout": 20},
-            "TEST": {
-                "NAME": ":memory:",
-            },
-        }
-    }
 else:
+    # MySQL is the only database, for tests too (test_servy_dev / the CI test database).
     raise RuntimeError(f"Unsupported database engine '{SERVY_DB_ENGINE}'. Servy requires MySQL ('mysql').")
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -518,8 +502,7 @@ if _allowed_tenants_env:
 
 # Real company data isolation controls
 SERVY_CUSTOMER_DATA_MODE = os.getenv("SERVY_CUSTOMER_DATA_MODE", "verified_real_only")
-# Tickets, conversations, attachments and technician updates are official MySQL
-# records; there is no SQLite ticket workspace.
+# Tickets, conversations, attachments and technician updates are official MySQL records.
 STARLLY_REAL_TENANTS = ["skydream"]
 STARLLY_REAL_ORGANISATIONS = ["273"]
 SERVY_COMPANY_CHROMA_COLLECTION = "servy_company_bge_small_v1"

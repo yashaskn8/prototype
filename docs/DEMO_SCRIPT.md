@@ -34,7 +34,7 @@ Do not put access codes, credentials or private log contents into GitHub or pres
 
 Create/confirm a ticket through the customer demo UI. Open the technician inbox and verify that the asset, complaint description and conversation context match the customer session.
 
-The isolated customer/technician demo uses a dedicated local SQLite ticket workspace. The customer demo's company-data access is read-only; this local demo handoff does **not** write an official Servy MySQL `ServiceCall`.
+The isolated customer/technician demo stores tickets as `ServiceCall` records in the development database `servy_dev`. The customer demo's company-data access is read-only; this demo handoff never writes to the company database.
 
 ## Show the Network tab
 

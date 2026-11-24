@@ -11,7 +11,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("SERVY_DB_ENGINE", "sqlite3")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 
 import django
@@ -129,7 +128,7 @@ def main():
 
     source_docs = [p for p in provenance if p.local_object_type == "KnowledgeDocument"]
     summary = {
-        "sqlite_scope": "local snapshot; live MySQL provenance unverified",
+        "database_scope": "local snapshot; live MySQL provenance unverified",
         "database": {
             "documents_total": len(docs), "chunks_total": len(all_chunks),
             "documents_by_tenant": dict(Counter(d.tenant.slug for d in docs)),

@@ -92,7 +92,7 @@ def sign_off(approval_package_dir, bundle_dir, corpus_file, out_dir,
             "source_document_sha256": s["source_document_sha256"],
             "decision": "approved",
             "reviewer_id": reviewer_id,
-            "evidence_reference": f"{approval_reference} | SQLite Registry Match | Strict Source Isolation",
+            "evidence_reference": f"{approval_reference} | Document Registry Match | Strict Source Isolation",
             "review_timestamp_utc": datetime.now(timezone.utc).isoformat()
         })
 

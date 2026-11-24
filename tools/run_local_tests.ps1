@@ -1,15 +1,13 @@
 <#
 .SYNOPSIS
-    Servy local test runner — runs Django tests against an isolated SQLite in-memory database.
+    Servy local test runner - runs Django tests on the isolated MySQL test database.
 
 .DESCRIPTION
-    Executes the Django test suite using SQLite instead of MySQL.
-    This ensures tests can run locally without a MySQL server.
-
-    Process-level environment variables are set BEFORE Django initialization,
-    and the script verifies the resolved backend before proceeding.
-
-    No production database is contacted. No persistent state is modified.
+    Selects the isolated test account and database through SERVY_MYSQL_ENV_FILE
+    (.env.mysql.servy_dev_test -> test_servy_dev), verifies the resolved backend and
+    database name before anything runs, then runs the tests with --keepdb (the
+    restricted test account cannot create databases). MySQL is the only database
+    engine; no other database is contacted and no other database is modified.
 
 .PARAMETER TestLabel
     Django test label(s) to run. Defaults to "core".
@@ -18,14 +16,8 @@
     Django test verbosity level (0-3). Defaults to 2.
 
 .EXAMPLE
-    .\tools\run_local_tests.ps1
     .\tools\run_local_tests.ps1 -TestLabel "core.tests_identifiers_canonical"
-    .\tools\run_local_tests.ps1 -TestLabel "core" -Verbosity 1
-
-.NOTES
-    MySQL CI coverage is provided by .github/workflows/ci.yml and is NOT
-    replaced by this local SQLite runner. A green local run validates logic
-    compatibility; MySQL integration validation requires CI.
+    .\tools\run_local_tests.ps1 -TestLabel "core.tests_conversation_quality core.tests_manual_grounding" -Verbosity 1
 #>
 param(
     [string]$TestLabel = "core",
@@ -33,93 +25,63 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+$python = Join-Path $root ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) { $python = "python" }
 
 # ------------------------------------------------------------------
-# 1. Set isolated environment BEFORE Django touches anything
+# 1. Select the isolated MySQL test database BEFORE Django starts
 # ------------------------------------------------------------------
-$env:SERVY_DB_ENGINE = "sqlite3"
+$envFile = ".env.mysql.servy_dev_test"
+if (-not (Test-Path $envFile)) {
+    Write-Host "FATAL: $envFile not found. It must name the isolated test account and test_servy_dev." -ForegroundColor Red
+    exit 1
+}
+$env:SERVY_DB_ENGINE = "mysql"
+$env:SERVY_MYSQL_ENV_FILE = $envFile
 $env:DJANGO_DEBUG = "1"
 $env:DJANGO_SETTINGS_MODULE = "servy_rag.settings"
 
 Write-Host ""
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Servy Local Test Runner (SQLite Isolation Mode)" -ForegroundColor Cyan
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  SERVY_DB_ENGINE   = $env:SERVY_DB_ENGINE"
-Write-Host "  DJANGO_DEBUG      = $env:DJANGO_DEBUG"
-Write-Host "  Test label        = $TestLabel"
-Write-Host "  Verbosity         = $Verbosity"
+Write-Host "  Servy Local Test Runner (isolated MySQL test database)" -ForegroundColor Cyan
+Write-Host "  Test label: $TestLabel   Verbosity: $Verbosity"
 Write-Host ""
 
 # ------------------------------------------------------------------
-# 2. Verify the resolved Django database backend
+# 2. Verify the resolved backend and database name (no connection is opened)
 # ------------------------------------------------------------------
-Write-Host "[1/3] Verifying Django database backend..." -ForegroundColor Yellow
-
-$backendCheck = python -c @"
-import os, sys
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')
-import django; django.setup()
+Write-Host "[1/2] Verifying the resolved database..." -ForegroundColor Yellow
+$backendCheck = & $python -c @"
+import sys, django
+django.setup()
 from django.conf import settings
-engine = settings.DATABASES['default']['ENGINE']
-test_name = settings.DATABASES['default'].get('TEST', {}).get('NAME', 'N/A')
-print(f'ENGINE={engine}')
-print(f'TEST_DB={test_name}')
-if 'mysql' in engine:
-    print('ABORT: Resolved backend is MySQL. Refusing to proceed.')
+db = settings.DATABASES['default']
+name = db.get('NAME', '')
+print('ENGINE=' + db['ENGINE'])
+print('DATABASE=' + name)
+if 'mysql' not in db['ENGINE'] or name != 'test_servy_dev':
+    print('ABORT: tests run only on the isolated MySQL database test_servy_dev.')
     sys.exit(1)
-if 'sqlite' not in engine:
-    print(f'ABORT: Unexpected backend {engine}.')
-    sys.exit(1)
-print('OK: SQLite backend confirmed.')
+print('OK: isolated MySQL test database confirmed.')
 "@
-
 if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "FATAL: Backend verification failed. Aborting." -ForegroundColor Red
     Write-Host $backendCheck
+    Write-Host "FATAL: Database verification failed. Aborting." -ForegroundColor Red
     exit 1
 }
-
 Write-Host $backendCheck -ForegroundColor Green
-Write-Host ""
 
 # ------------------------------------------------------------------
-# 3. Run Django system check
+# 3. Run the tests
 # ------------------------------------------------------------------
-Write-Host "[2/3] Running Django system checks..." -ForegroundColor Yellow
-$prevErrorAction = $ErrorActionPreference
+Write-Host "[2/2] Running tests: $TestLabel" -ForegroundColor Yellow
 $ErrorActionPreference = "Continue"
-python manage.py check --settings=servy_rag.settings
-$checkExit = $LASTEXITCODE
-$ErrorActionPreference = $prevErrorAction
-if ($checkExit -ne 0) {
-    Write-Host "FATAL: Django system check failed." -ForegroundColor Red
-    exit 1
-}
-Write-Host "System checks passed." -ForegroundColor Green
-Write-Host ""
-
-# ------------------------------------------------------------------
-# 4. Run the test suite
-# ------------------------------------------------------------------
-Write-Host "[3/3] Running tests: $TestLabel (verbosity=$Verbosity)" -ForegroundColor Yellow
-Write-Host "----------------------------------------------------------------"
-$ErrorActionPreference = "Continue"
-python manage.py test $TestLabel -v $Verbosity --no-input
+& $python manage.py test @($TestLabel -split '\s+') -v $Verbosity --keepdb --noinput
 $exitCode = $LASTEXITCODE
-$ErrorActionPreference = $prevErrorAction
-
-Write-Host ""
-Write-Host "================================================================" -ForegroundColor Cyan
 if ($exitCode -eq 0) {
-    Write-Host "  LOCAL TESTS PASSED (SQLite isolation mode)" -ForegroundColor Green
-    Write-Host "  NOTE: This does NOT replace MySQL CI validation." -ForegroundColor Yellow
+    Write-Host "LOCAL TESTS PASSED (isolated MySQL test database)" -ForegroundColor Green
 } else {
-    Write-Host "  LOCAL TESTS FAILED (exit code: $exitCode)" -ForegroundColor Red
+    Write-Host "LOCAL TESTS FAILED (exit code: $exitCode)" -ForegroundColor Red
 }
-Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host ""
-
 exit $exitCode

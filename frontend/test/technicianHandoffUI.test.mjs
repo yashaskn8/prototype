@@ -32,7 +32,7 @@ test('technician inbox loads the authenticated backend without timer polling and
   assert.match(navigation, /show: isTechnician/);
   assert.match(navigation, /http:\/\/127\.0\.0\.1:5175\//);
 
-  // The SQLite "RAG Ticket Workspace" was retired: RAG tickets are official MySQL
+  // The local "RAG Ticket Workspace" was retired: RAG tickets are official MySQL
   // ServiceCalls in the Technician Inbox, and old workspace links open that inbox.
   assert.doesNotMatch(app, /TicketWorkspacePage/);
   assert.doesNotMatch(navigation, /rag-ticket-workspace/);

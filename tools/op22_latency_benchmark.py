@@ -7,7 +7,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("SERVY_DB_ENGINE", "sqlite3")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 import django
 django.setup()
@@ -58,7 +57,7 @@ for repeat in range(6):
 
 report = {
     "population": "six weakly supervised development queries repeated six times",
-    "measurement_scope": "warm offline retrieval: SQLite authorization/candidate query, MiniLM query encoding, in-memory vectors, lexical score for evidence ranker, feature ranking; excludes corpus encoding, Chroma I/O, LLM generation, network and citations",
+    "measurement_scope": "warm offline retrieval: database authorization/candidate query, MiniLM query encoding, in-memory vectors, lexical score for evidence ranker, feature ranking; excludes corpus encoding, Chroma I/O, LLM generation, network and citations",
     "model_and_corpus_loaded_rss_mib": round(rss_loaded / 1024**2, 2),
     "methods": {name: {"n": len(samples), "p50_ms": round(float(np.percentile(samples, 50)), 2),
                         "p95_ms": round(float(np.percentile(samples, 95)), 2)}

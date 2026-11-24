@@ -76,7 +76,6 @@ def main() -> None:
     parser.add_argument("--download-attachments", action="store_true")
     args = parser.parse_args()
     load_existing_env()
-    os.environ.setdefault("SERVY_DB_ENGINE", "sqlite3")
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
     import django
     django.setup()

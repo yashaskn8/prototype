@@ -51,7 +51,7 @@ recheck approval. Errors disclose no inaccessible excerpt. Responses use
 | `frontend/test/customerAnswerContract.test.mjs` | Malformed, oversized, misnumbered, fabricated-source and hazard-preservation checks. |
 | `frontend/test/customer-answer.html` | Synthetic browser harness entry point. |
 | `frontend/test/customer-answer-preview.jsx` | Synthetic fixtures for missing evidence, hazards, source failure, delay and equipment changes. |
-| `tools/run_customer_answer_checks.py` | Reproducible in-memory SQLite/new isolated Chroma test runner and failure ledger. |
+| `tools/run_local_tests.ps1` | Runs the customer-answer test modules on the isolated MySQL test database `test_servy_dev`. |
 | `tools/servy_answer_simulation.mjs` | 100,000 deterministic static assignments; no model calls or human-usability claims. |
 | `CUSTOMER_ANSWER_REDESIGN.md` | This implementation and validation report. |
 
@@ -134,7 +134,7 @@ rejects ordinary claims; it is covered by the five Node test groups as well.
 Reproduce from the repository root using installed dependencies:
 
 ```powershell
-.venv\Scripts\python.exe tools/run_customer_answer_checks.py
+.\tools\run_local_tests.ps1 -Verbosity 1 -TestLabel "core.tests_customer_answer core.tests_query_decomposition core.tests_customer_answer_redteam core.tests_serving_truth core.tests_customer_mutations core.tests_real_company_isolation core.tests_safety_authority core.tests_customer_rag_endtoend core.tests_llm_answer_ranking core.tests_customer_acceptance_scenarios core.tests_diagnostics core.tests_diagnostics_hardening"
 node --test frontend/test/customerAnswerContract.test.mjs
 node tools/servy_answer_simulation.mjs private_training_data/customer_answer_validation/simulation_new_run.json
 Set-Location frontend
@@ -143,7 +143,7 @@ npm run lint
 ```
 
 Use a new simulation output filename: reports are never overwritten. The backend
-runner uses only synthetic in-memory SQLite records, a new private Chroma
+tests use only synthetic records in the isolated MySQL test database, a new private Chroma
 directory, offline model flags and a fast test-only password hasher; authentication
 and authorization checks stay enabled. Existing cached models can be loaded.
 Missing collections in this isolated index exercise sparse fallback rather than

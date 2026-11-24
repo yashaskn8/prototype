@@ -319,8 +319,6 @@ class ConcurrentTicketCreationTests(TransactionTestCase):
         build_world(self)
 
     def test_concurrent_confirmations_create_exactly_one_call(self):
-        if connection.vendor == "sqlite":
-            self.skipTest("row locking needs a server database (MySQL)")
         from django.test import Client
         owner = Client()
         owner.force_login(self.user)

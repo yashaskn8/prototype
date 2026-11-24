@@ -1,7 +1,6 @@
 """MySQL-era backup, verification and restore for the Servy development stack.
 
-Replaces the SQLite-only tools/backup_all.py for the MySQL application. One
-backup directory (outside the repository) contains:
+One backup directory (outside the repository) contains:
 
   mysql/<database>.sql   consistent mysqldump (--single-transaction)
   chroma/                copy of the vector index directory

@@ -6,8 +6,8 @@ filtering, idempotency, and message immutability preservation.
 Run with:
     python -m tools.test_conversation_deletion
 
-These tests run against the real servy_dev MySQL database (not the test
-sqlite3), so they create and clean up their own records.
+These tests run against the real servy_dev MySQL database (not the throwaway
+test database), so they create and clean up their own records.
 """
 import os
 import sys
@@ -15,7 +15,7 @@ import unittest
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 
-# Force the real database (not the test override that uses sqlite3).
+# Use the real servy_dev database, not the throwaway test database.
 _real_run = "test" not in sys.argv
 if not _real_run:
     # Allow running under manage.py test by skipping the real-DB tests.

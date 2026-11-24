@@ -1,4 +1,4 @@
-"""Disposable SQLite/MySQL tests of read-only source mapping and DB uniqueness."""
+"""Disposable MySQL tests of read-only source mapping and DB uniqueness."""
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 

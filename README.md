@@ -62,8 +62,9 @@ constant time and maps it to one synthetic user. Both run only on the isolated `
 MySQL database (account `servy_dev_app`) and refuse any other database. Customer
 attachments (0–10 files, ≤ 25 MB each and in total; JPEG, PNG, GIF, WebP, PDF, text;
 content-validated) are stored as MySQL metadata plus files in an isolated media directory.
-Automated tests use `test_servy_dev` (account `servy_dev_test`) or in-memory SQLite, and a
-temporary ChromaDB directory.
+Automated tests use the isolated MySQL test database `test_servy_dev` (account `servy_dev_test`;
+run them with `tools/run_local_tests.ps1`) and a temporary ChromaDB directory. MySQL is the only
+relational database Servy supports, for runtime and tests.
 
 ## Commands
 

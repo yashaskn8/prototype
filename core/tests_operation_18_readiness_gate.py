@@ -19,7 +19,6 @@ from pathlib import Path
 from unittest import mock
 
 # Ensure Django is configured before any model imports
-os.environ.setdefault("SERVY_DB_ENGINE", "sqlite3")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 
 BASE_DIR = Path(__file__).resolve().parent.parent

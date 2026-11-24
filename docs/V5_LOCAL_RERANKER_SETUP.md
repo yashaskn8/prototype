@@ -128,9 +128,9 @@ To exercise the actual checkpoint through authorization, retrieval, RAG, and
 both Django API endpoints using disposable synthetic records, run:
 
 ```powershell
-$env:SERVY_DB_ENGINE = "sqlite3"
+$env:SERVY_MYSQL_ENV_FILE = ".env.mysql.servy_dev_test"
 $env:SERVY_TEST_REAL_V5 = "1"
-python manage.py test core.tests_v5_runtime -v 2
+python manage.py test core.tests_v5_runtime -v 2 --keepdb
 ```
 
 The real-weight test is skipped in CI when `SERVY_TEST_REAL_V5` is unset.

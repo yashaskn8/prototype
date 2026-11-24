@@ -3,12 +3,10 @@ tests_config_isolation.py — Regression tests for Operation 15A.
 
 Verifies:
   1. Process-level environment overrides .env values.
-  2. SQLite test mode does not initialize MySQL.
-  3. SQLite test mode uses a disposable in-memory database.
-  4. Invalid engine values fail clearly.
-  5. SQLite production-mode protections remain intact.
-  6. Tests do not silently select production credentials.
-  7. Secrets are never exposed in diagnostic output.
+  2. MySQL is the only database engine, for tests as well as runtime.
+  3. Any other engine value (including the retired sqlite3) fails clearly.
+  4. Tests do not silently select production credentials.
+  5. Secrets are never exposed in diagnostic output.
 
 These tests are designed to be self-contained and independent of
 the user's actual .env contents. They test the settings module's
@@ -38,25 +36,11 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
         import servy_rag.settings as s
         return s
 
-    def test_sqlite_engine_selected_when_env_says_sqlite(self):
-        """SERVY_DB_ENGINE=sqlite3 in process env must select SQLite backend."""
+    def test_tests_run_on_mysql(self):
+        """The test suite itself runs on MySQL; there is no other engine."""
         from django.conf import settings
-        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
-        engine = settings.DATABASES["default"]["ENGINE"]
-        if configured == "sqlite3":
-            self.assertIn("sqlite3", engine, f"Expected SQLite backend but got: {engine}")
-            self.assertNotIn("mysql", engine)
-        else:
-            self.assertIn("mysql", engine, f"Expected MySQL backend in CI but got: {engine}")
-
-    def test_sqlite_test_db_is_memory(self):
-        """SQLite test database must be :memory: for isolation."""
-        from django.conf import settings
-        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
-        if configured != "sqlite3":
-            self.skipTest("Skipped in MySQL CI environment (running with MySQL backend)")
-        test_name = settings.DATABASES["default"].get("TEST", {}).get("NAME")
-        self.assertEqual(test_name, ":memory:", f"SQLite test db should be :memory:, got: {test_name}")
+        self.assertEqual(getattr(settings, "SERVY_DB_ENGINE", None), "mysql")
+        self.assertIn("mysql", settings.DATABASES["default"]["ENGINE"])
 
     def test_debug_mode_reads_from_env(self):
         """DEBUG must be derived from DJANGO_DEBUG environment variable.
@@ -69,78 +53,35 @@ class SettingsEnvPrecedenceTests(unittest.TestCase):
         self.assertIn('os.getenv("DJANGO_DEBUG"', src,
                        "DEBUG must be derived from DJANGO_DEBUG env var")
 
-    def test_no_mysql_driver_imported_in_sqlite_mode(self):
-        """In SQLite mode, MySQLdb/pymysql should NOT be required."""
-        from django.conf import settings
-        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
-        if configured != "sqlite3":
-            self.skipTest("Skipped in MySQL CI environment")
-        engine = settings.DATABASES["default"]["ENGINE"]
-        self.assertNotIn("mysql", engine, "MySQL engine should not be active in sqlite3 mode")
-
-    def test_database_engine_setting_matches(self):
-        """SERVY_DB_ENGINE setting attribute must reflect the resolved engine."""
-        from django.conf import settings
-        db_engine = settings.DATABASES["default"]["ENGINE"]
-        configured = getattr(settings, "SERVY_DB_ENGINE", "mysql")
-        if "sqlite" in db_engine:
-            self.assertEqual(configured, "sqlite3")
-        else:
-            self.assertEqual(configured, "mysql")
-
-    def test_subprocess_sqlite_isolation(self):
-        """Verify in an isolated subprocess that SERVY_DB_ENGINE=sqlite3 selects SQLite."""
+    def test_retired_sqlite_engine_is_refused_even_for_test_runs(self):
+        """The retired sqlite3 engine is refused for every process, test runs included,
+        so no SQLite database file can ever be created by Django."""
         import subprocess
-        script = (
-            "import os, sys, django\n"
-            "sys.argv = ['manage.py', 'test']\n"
-            "os.environ['SERVY_DB_ENGINE'] = 'sqlite3'\n"
-            "os.environ['DJANGO_DEBUG'] = '1'\n"
-            "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')\n"
-            "django.setup()\n"
-            "from django.conf import settings\n"
-            "print('ENGINE=' + settings.DATABASES['default']['ENGINE'])\n"
-            "print('TEST_DB=' + str(settings.DATABASES['default'].get('TEST', {}).get('NAME')))\n"
-        )
-        res = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            cwd=str(Path(__file__).resolve().parent.parent),
-        )
-        self.assertEqual(res.returncode, 0, f"Subprocess failed: {res.stderr}")
-        self.assertIn("ENGINE=django.db.backends.sqlite3", res.stdout)
-        self.assertIn("TEST_DB=:memory:", res.stdout)
-
-    def test_sqlite_is_refused_outside_test_runs(self):
-        """SQLite is never a runtime database: runserver/migrate with sqlite3 must fail."""
-        import subprocess
-        script = (
-            "import os, sys, django\n"
-            "sys.argv = ['manage.py', 'runserver']\n"
-            "os.environ['SERVY_DB_ENGINE'] = 'sqlite3'\n"
-            "os.environ['DJANGO_DEBUG'] = '1'\n"
-            "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')\n"
-            "django.setup()\n"
-        )
-        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
-                             cwd=str(Path(__file__).resolve().parent.parent), timeout=120)
-        self.assertNotEqual(res.returncode, 0)
-        self.assertIn("SQLite is allowed only for disposable test runs", res.stderr)
+        for argv in ("test", "runserver", "migrate"):
+            with self.subTest(argv=argv):
+                script = (
+                    "import os, sys, django\n"
+                    f"sys.argv = ['manage.py', '{argv}']\n"
+                    "os.environ['SERVY_DB_ENGINE'] = 'sqlite3'\n"
+                    "os.environ['DJANGO_DEBUG'] = '1'\n"
+                    "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'servy_rag.settings')\n"
+                    "django.setup()\n"
+                )
+                res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                                     cwd=str(Path(__file__).resolve().parent.parent), timeout=120)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("Unsupported database engine 'sqlite3'", res.stderr)
 
 
 class SettingsProductionGuardTests(unittest.TestCase):
     """Verify production-mode safety guards are intact."""
 
-    def test_sqlite_rejected_in_production_mode(self):
-        """SQLite is rejected for every non-test process (production included) and never persists."""
+    def test_settings_define_no_sqlite_backend(self):
+        """Settings contain no SQLite backend or database file for any process."""
         settings_path = Path(__file__).resolve().parent.parent / "servy_rag" / "settings.py"
         src = settings_path.read_text(encoding="utf-8")
-        self.assertIn("SQLite is allowed only for disposable test runs", src)
-        self.assertIn('_db_sys.argv[1] != "test"', src)
-        sqlite_block = src[src.index('elif SERVY_DB_ENGINE == "sqlite3":'):src.index("Unsupported database engine")]
-        self.assertIn('"NAME": ":memory:"', sqlite_block)
-        self.assertNotIn("db.sqlite3\"", sqlite_block.replace("db.sqlite3 file", ""))
+        self.assertNotIn("django.db.backends.sqlite3", src)
+        self.assertNotIn("db.sqlite3", src)
 
     def test_invalid_engine_raises_runtime_error(self):
         """Unsupported SERVY_DB_ENGINE values must raise RuntimeError."""

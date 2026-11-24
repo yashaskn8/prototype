@@ -18,8 +18,7 @@ real deployment. Nothing here has been deployed.
 
 ## 2. Backup and restore (MySQL era)
 
-`tools/backup_all.py` is the retired SQLite-era script and does **not** back up MySQL. Use
-`tools/servy_mysql_backup.py`:
+Use `tools/servy_mysql_backup.py`:
 
 ```powershell
 # Backup (writes outside the repository; no .env or secrets are copied)

@@ -84,7 +84,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     load_existing_env()
-    os.environ.setdefault("SERVY_DB_ENGINE", "sqlite3")
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
     import django
     django.setup()

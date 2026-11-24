@@ -237,8 +237,8 @@ def technical_document(path):
     table(d, ["Store", "Holds", "Notes"], [
         ["MySQL 8.0 (authoritative)", "Tenants, users, memberships, API keys (hashes), customers, sites, assets, documents, chunks "
          "(text, headings), provenance, conversations, messages + structured contracts, idempotency records, tickets",
-         "Required at runtime; settings refuse any other engine. SQLite is allowed only as an in-memory database under "
-         "manage.py test; the legacy db.sqlite3 file is never opened."],
+         "The only relational database, for runtime and tests (test_servy_dev / CI test database); "
+         "settings refuse any other engine."],
         ["ChromaDB (local PersistentClient)", "BGE vectors per chunk with metadata stamps", "SERVY_CHROMA_PERSIST_DIR; derived "
          "from MySQL chunks and rebuildable; never authoritative for authorization"],
     ])

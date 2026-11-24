@@ -72,7 +72,7 @@ MiniLM has been retired (2026-11-14). BGE-small is the only document and query e
 - Customer: `tools/Start-ServyRealDemo.ps1` starts the customer demo on port 8002 and Vite on port 5175.
 - Technician: `tools/Start-ServyTechnicianDemo.ps1` starts the technician demo on port 8003 and Vite on port 5176.
 
-The customer real-data demo uses read-only company-data access. Its local ticket handoff is stored in a dedicated local SQLite workspace. The technician demo reads that workspace and does not connect to MySQL or write official Servy `ServiceCall` records.
+The customer real-data demo uses read-only company-data access. Its ticket handoff is stored as `ServiceCall` records in the isolated development database `servy_dev`, never in the company database; the technician demo's inbox lists those records.
 
 **Do not describe the 8002/8003 local demonstration handoff as an official MySQL service-call creation.** Use the standard Django/DRF conversation-ticket endpoint above for the Servy application-layer service-call flow.
 

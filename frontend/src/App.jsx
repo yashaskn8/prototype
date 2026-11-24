@@ -17,7 +17,7 @@ import { TechnicianInboxPage } from './pages/TechnicianInboxPage';
 import { TechnicianSecretPage } from './pages/TechnicianSecretPage';
 
 // Old "/technician/rag-tickets" bookmarks open the official Technician Inbox,
-// which lists the MySQL ServiceCalls that replaced the SQLite ticket workspace.
+// which lists the MySQL ServiceCalls that replaced the old local ticket workspace.
 const INBOX_LOCATIONS = ['/technician/inbox', '/technician/rag-tickets'];
 
 function isTechnicianInboxLocation() {

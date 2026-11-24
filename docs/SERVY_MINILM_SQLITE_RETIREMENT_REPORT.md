@@ -1,5 +1,9 @@
 # MiniLM retirement, SQLite migration and Qwen validation — final report
 
+> **Update 2026-11-23:** the legacy SQLite files described here were verified as synthetic/test data,
+> backed up and removed, and SQLite is no longer a Servy database engine (tests included).
+> See `docs/SERVY_LEGACY_SQLITE_REMOVAL.md`.
+
 Date: 2026-11-14. Local development only. Nothing committed, pushed or deployed.
 Phase 1 inventory: `docs/SERVY_MINILM_SQLITE_INVENTORY.md`.
 

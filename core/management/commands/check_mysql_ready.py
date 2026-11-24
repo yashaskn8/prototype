@@ -18,7 +18,7 @@ class Command(BaseCommand):
         if connection.vendor != "mysql":
             raise CommandError(
                 f"DATABASE ARCHITECTURE VIOLATION: Expected 'mysql' backend, but active connection vendor is '{connection.vendor}'. "
-                "Servy is architected MySQL-first. SQLite fallback is strictly prohibited in production."
+                "Servy requires MySQL; no other database engine is supported."
             )
 
         try:

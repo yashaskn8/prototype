@@ -18,11 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _settings_value(name, **env):
     child_env = {key: value for key, value in os.environ.items() if not key.startswith("SERVY_RETRIEVAL")}
-    child_env.update({"DJANGO_SETTINGS_MODULE": "servy_rag.settings", "SERVY_DB_ENGINE": "sqlite3",
-                      "DJANGO_DEBUG": "1", **env})
+    # The child inherits this test run's MySQL configuration; settings are only
+    # evaluated, no database connection is opened.
+    child_env.update({"DJANGO_SETTINGS_MODULE": "servy_rag.settings", "DJANGO_DEBUG": "1", **env})
     return subprocess.run(
         [sys.executable, "-c",
-         # SQLite is accepted only in test processes (in-memory, never persistent).
          "import sys; sys.argv = ['manage.py', 'test']; "
          "import django; from django.conf import settings; django.setup(); "
          f"print(settings.{name})"],

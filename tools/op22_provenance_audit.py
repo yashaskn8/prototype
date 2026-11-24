@@ -8,7 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-os.environ.setdefault("SERVY_DB_ENGINE", "sqlite3")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "servy_rag.settings")
 import django
 django.setup()

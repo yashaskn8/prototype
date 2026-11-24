@@ -1,5 +1,9 @@
 # MiniLM and application SQLite inventory (Phase 1, read-only)
 
+> **Update 2026-11-23:** the legacy SQLite files described here were verified as synthetic/test data,
+> backed up and removed, and SQLite is no longer a Servy database engine (tests included).
+> See `docs/SERVY_LEGACY_SQLITE_REMOVAL.md`.
+
 Date: 2026-11-14. Nothing was modified to produce this report. Chroma figures come
 from throwaway copies of `prototype/chroma_db` (production) and
 `%LOCALAPPDATA%\Servy\servy_dev_chroma` (development). SQLite files were opened

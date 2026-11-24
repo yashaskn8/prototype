@@ -21,10 +21,10 @@ class ServingTruthConfigTests(SimpleTestCase):
         import subprocess
         import sys
         from django.conf import settings
-        env = {**os.environ, "SERVY_SERVING_EMBEDDING_PROFILE": "minilm", "SERVY_DB_ENGINE": "sqlite3"}
+        # The child inherits this test run's MySQL configuration, so settings reach
+        # the embedding-profile check; no database connection is opened.
+        env = {**os.environ, "SERVY_SERVING_EMBEDDING_PROFILE": "minilm"}
         result = subprocess.run(
-            # A test process, so the in-memory SQLite test database is accepted
-            # and settings reach the embedding-profile check.
             [sys.executable, "-c", "import sys; sys.argv = ['manage.py', 'test']; "
              "import django, os; os.environ.setdefault('DJANGO_SETTINGS_MODULE', "
              "'servy_rag.settings'); django.setup()"],
