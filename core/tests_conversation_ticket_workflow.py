@@ -249,6 +249,20 @@ class ConversationTicketWorkflowTests(TestCase):
                          ("Test Contact", "+1 555 0100", "contact@example.invalid"))
         self.assertEqual(r.json()["ticket"]["servy_id"], call.servy_id)
 
+    def test_question_only_service_request_is_not_a_reported_fault(self):
+        uuid = self.start(self.split, "What can cause poor cooling?").json()["conversation_uuid"]
+        conv = CustomerConversation.objects.get(conversation_uuid=uuid)
+        built = build_conversation_ticket_description(conv)
+        self.assertEqual(built["complaint"], "Service requested; no specific symptom has been reported.")
+        self.assertNotIn("poor cooling", " ".join(built["sections"][SECTION_TITLES[2]]).casefold())
+        self.assertIn("What can cause poor cooling?", built["description"])
+        response = self.client.post(self.ticket_url(uuid), {"confirm_ticket_creation": True},
+                                    content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content[:400])
+        call = ServiceCall.objects.get(pk=response.json()["ticket"]["id"])
+        self.assertEqual(call.complaint_text, built["complaint"])
+        self.assertIn("1. Customer-reported problem", call.technician_notes)
+
     def test_repeated_ticket_requests_return_the_same_service_call(self):
         uuid = self.start(self.split, "Not cooling.").json()["conversation_uuid"]
         first = self.client.post(self.ticket_url(uuid), {"confirm_ticket_creation": True},

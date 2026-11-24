@@ -351,8 +351,10 @@ def extract_symptoms_from_text(text: str) -> List[str]:
         # "There's no water leaking" names the concept but negates it.
         # Negated when a negated phrase shares a word stem with the label
         # ("No water is leaking" negates "water leak").
+        if not label:
+            continue
         negated = any(word[:4] == other[:4] for word in label.split() if len(word) > 3 for other in negated_words)
-        if label and label not in found and not negated:
+        if label not in found and not negated:
             found.append(label)
     for label, pattern in _EXTRA_SYMPTOMS.items():
         match = pattern.search(text)
@@ -547,14 +549,18 @@ def is_observation_statement(text: str, ctx: "ConversationContext") -> bool:
     shifted = topic_shift_query(value)
     if shifted and _names_problem(shifted):
         return False
-    # Additive wording describes an additional observation of the same incident,
-    # not a replacement for the current complaint. Explicit corrections above
-    # still take precedence.
-    if re.search(r"\b(?:also|as well|in addition|on top of that)\b", value, re.I):
-        return True
     known = f"{ctx.active_issue} {' '.join(ctx.active_topics)}".lower()
     new = [s for s in extract_symptoms_from_text(value)
            if not _code_symptom(s) and s not in known and s.split()[0] not in known]
+    # An additional airflow observation can refine cooling, but a separate
+    # symptom (e.g. dripping water after noise) is a new report even if the
+    # customer says "also". Keep both issues so a later retraction restores
+    # the earlier problem instead of withdrawing it.
+    from .term_matching import symptom_concepts
+    if (new and set(new) <= {"weak airflow"}
+            and "poor_cooling" in symptom_concepts(ctx.active_issue)
+            and re.search(r"\b(?:also|as well|in addition|on top of that)\b", value, re.I)):
+        return True
     return not new
 
 

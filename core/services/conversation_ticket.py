@@ -69,10 +69,13 @@ def _citations_from(message):
     """(title, heading) pairs the assistant cited, from the saved contract and references."""
     contract = _contract(message)
     pairs = []
-    sources = list(contract.get("citations") or [])
     presentation = contract.get("presentation") if isinstance(contract.get("presentation"), dict) else {}
-    sources += list(presentation.get("citations") or [])
-    sources += list(message.source_refs or []) if isinstance(message.source_refs, list) else []
+    segments = (presentation.get("response") or {}).get("segments")
+    if isinstance(segments, list):
+        from .customer_conversation import customer_answer_citations
+        sources = customer_answer_citations(contract)
+    else:
+        sources = list(presentation.get("citations") or contract.get("citations") or message.source_refs or [])
     for ref in sources:
         if not isinstance(ref, dict) or ref.get("source_kind") == "past_resolution":
             continue
@@ -90,7 +93,7 @@ def build_conversation_ticket_description(conversation):
     ValueError when the conversation has no customer-reported text.
     """
     messages = list(conversation.messages.order_by("created_at", "id"))
-    from .conversation_context import extract_conversation_context, reported_customer_text
+    from .conversation_context import extract_conversation_context, reported_customer_text, is_greeting
     state = extract_conversation_context(conversation, "")
     customer_messages = [m for m in messages if m.sender_role == "customer" and _clean(m.message_text)]
     # Legacy free-text reports may not match a known equipment symptom. Keep
@@ -99,12 +102,18 @@ def build_conversation_ticket_description(conversation):
     fallback = next((reported_customer_text(m.message_text) for m in customer_messages
                      if reported_customer_text(m.message_text)), "")
     complaint = _clean(state.original_complaint or fallback)
-    if not complaint:
-        raise ValueError("A customer-reported issue is required before creating a service ticket.")
+    question_only = not complaint
+    if question_only:
+        if not any(not is_greeting(m.message_text) for m in customer_messages):
+            raise ValueError("A customer-reported issue is required before creating a service ticket.")
+        # A customer can explicitly request a technician without asserting a
+        # particular fault. Keep the questions in the transcript, not as a
+        # reported symptom or as a synthesized technical diagnosis.
+        complaint = "Service requested; no specific symptom has been reported."
     assistant_messages = [m for m in messages if m.sender_role == "assistant"]
 
     sections = {title: [] for title in SECTION_TITLES}
-    sections[SECTION_TITLES[0]].append(complaint if state.original_complaint else
+    sections[SECTION_TITLES[0]].append(complaint if state.original_complaint or question_only else
                                       f"Unclassified customer statement: {complaint}")
     # A later correction is recorded from the same state used by the assistant.
     active = _clean(state.active_issue or "")

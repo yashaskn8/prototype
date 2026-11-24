@@ -374,7 +374,8 @@ class AuditFindingRegressionTests(SimpleTestCase):
     def test_r18_capped_cause_list_is_disclosed(self):
         claims = [_cause(f"c{i}", f"Documented cause number {i}.", COOLING if i % 2 else NOISE) for i in range(1, 13)]
         text = compose_response(_contract(claims), "What are the possible causes?")["text"]
-        self.assertIn("may describe more", text)
+        self.assertIn("there may be others", text)
+        self.assertIn("first 12", text)
 
 
 class TechnicianAdviceWordingTests(SimpleTestCase):

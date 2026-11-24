@@ -154,3 +154,24 @@ class PlainLanguageAndSemanticIntentTests(SimpleTestCase):
         request = "Can I open the electrical panel to check this?"
         plan = plan_technical_turn(request, context)
         self.assertEqual(plan.evidence_question, request)
+
+
+class ExplanationContractRegressionTests(SimpleTestCase):
+    def test_explanation_contract_returns_cited_answer_in_both_modes(self):
+        from core.services.customer_conversation import _explanation_contract
+        from django.test import override_settings
+        source = "Restricted airflow or blocked outdoor unit clearance."
+        for mode in (None, "simpler"):
+            with self.subTest(mode=mode), override_settings(SERVY_CUSTOMER_ANSWER_GENERATION="disabled"):
+                built = {"sections": [], "citations": [{"id": "s1"}],
+                         "supporting_claims": [{"id": "c1", "kind": "possible_cause",
+                             "text": source, "source_text": source, "evidence_ids": ["s1"]}],
+                         "explanations": [{"cause": source, "cause_citation_ids": ["s1"],
+                             "status": "insufficient_evidence", "evidence": [], "notes": []}]}
+                contract = _explanation_contract(SimpleNamespace(id=1, question="Explain it"), None,
+                    SimpleNamespace(id=1, name="Equipment", model_number=""), built, mode=mode)
+                self.assertEqual(contract["response_type"], "DIAGNOSTIC_GUIDANCE")
+                self.assertIn("[1]", contract["answer"])
+                self.assertIn("don't have enough information", contract["answer"])
+                self.assertIn("limited air movement" if mode == "simpler" else source.casefold(),
+                              contract["answer"].casefold())

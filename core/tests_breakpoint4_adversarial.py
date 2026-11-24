@@ -327,6 +327,21 @@ class Breakpoint4AdversarialRedTeamTests(TestCase):
 
     # 9. Missing model triggering sparse fallback
     def test_09_missing_model_triggers_sparse_fallback_gracefully(self):
+        # Use a real test attachment, not just registered document metadata.
+        # The original-file integrity gate must stay active during fallback.
+        from tempfile import TemporaryDirectory
+        media = TemporaryDirectory()
+        self.addCleanup(media.cleanup)
+        root_override = override_settings(MEDIA_ROOT=media.name)
+        root_override.enable()
+        self.addCleanup(root_override.disable)
+        original = self.real_chunk.text.encode("utf-8")
+        path = Path(media.name) / "synthetic-fallback-manual.txt"
+        path.write_bytes(original)
+        self.real_doc.source_type = "file"
+        self.real_doc.file.name = path.name
+        self.real_doc.checksum_sha256 = hashlib.sha256(original).hexdigest()
+        self.real_doc.save(update_fields=["source_type", "file", "checksum_sha256"])
         with patch("core.services.retriever._dense_score_candidates", side_effect=Exception("Model unavailable")):
             results = retrieve(
                 tenant=self.real_tenant,

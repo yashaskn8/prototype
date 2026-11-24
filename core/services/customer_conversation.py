@@ -219,6 +219,7 @@ def _technician_decision_contract(asset, session, ticketed=False):
 
 def _explanation_contract(interaction, session, asset, built, mode=None):
     from core.services.cause_explanations import explanation_response
+    from core.services.rag_execution_log import emit_execution_event, execution_stage
     equipment = {"id": asset.id, "name": asset.name, "model_number": asset.model_number} if asset else {}
     presentation = {
         "schema_version": "customer-answer-v1", "response_type": "DIAGNOSTIC_GUIDANCE",
