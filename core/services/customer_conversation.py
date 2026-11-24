@@ -1005,39 +1005,14 @@ def _process_customer_diagnostic_turn(
 
         # Pasted earlier answers are context, not the request: guards, intent and
         # retrieval use the customer's own words; the stored message stays verbatim.
-        routed_text = request_text if (quoted_items and request_text) else turn_text
-        retrieval_query = contextualize_customer_query(routed_text, conv_context, asset=asset)
-        # "Explain the second cause." refers to the previous answer's listed causes:
-        # search for that one cause in its own manual section.
-        from core.services.conversation_context import focus_presentation_on_cause, resolve_cause_reference
-        cause_reference = resolve_cause_reference(routed_text, conv_context)
-        # A correction or explicit topic change ("Sorry, I meant ice, not water")
-        # is answered for the new subject; the stored message keeps the exact words.
-        from core.services.conversation_context import topic_shift_query
-        answer_question = (topic_shift_query(routed_text) if conv_context.is_followup and not cause_reference
-                           else None) or routed_text
-        # A cause request without its own subject is about the current issue: answer
-        # it as "what are the possible causes of <issue>?" (retrieval and claims).
-        from core.services.conversation_context import canonical_issue_question
-        canonical = None if cause_reference else canonical_issue_question(routed_text, conv_context)
-        if canonical:
-            answer_question = canonical
-            retrieval_query = "; ".join(p for p in (
-                getattr(asset, "name", ""), " ".join(conv_context.active_topics[:2]), conv_context.active_issue,
-                "customer-safe checks and observations" if "check or observe" in canonical else "possible causes")
-                if p)[:450]
-        if cause_reference:
-            selected = cause_reference["selected"]
-            retrieval_query = f"{selected['heading']}: {selected['source_text']}".strip(": ")
-        if not retrieval_query:
-            combined_query = f"{clean_question} (User clarification: {clean_clarification})" if clean_clarification else clean_question
-            retrieval_query = combined_query or turn_text
-
-        # Evidence validation is scoped by the customer's resolved request,
-        # not by the search string (which can include asset metadata and history).
-        from core.services.customer_answer import customer_evidence_question
-        evidence_question = customer_evidence_question(
-            answer_question, conv_context, cause_reference)
+        from core.services.customer_turn_plan import plan_technical_turn
+        from core.services.conversation_context import focus_presentation_on_cause
+        routed_text = request_text if request_text else turn_text
+        plan = plan_technical_turn(routed_text, conv_context, asset)
+        cause_reference = plan.cause_reference
+        answer_question = plan.answer_question
+        retrieval_query = plan.retrieval_question or turn_text
+        evidence_question = plan.evidence_question
 
         with execution_stage(
             "customer_rag_execution",
@@ -1052,6 +1027,7 @@ def _process_customer_diagnostic_turn(
                 customer=customer,
                 include_confidential=False,
                 staff_mode=False,
+                retrieval_only=True,
             )
 
         with transaction.atomic():
@@ -1109,6 +1085,17 @@ def _process_customer_diagnostic_turn(
             if cause_reference:
                 focus_presentation_on_cause(contract, cause_reference)
             _compose_conversational_reply(contract, answer_question, conv_context, cause_reference, asset, tenant)
+            from core.services.customer_turn_plan import final_response_is_valid
+            if not final_response_is_valid(contract, plan):
+                # Never fall back to an unfiltered report after a relevance or
+                # displayed-claim failure. The stored reply is also fail closed.
+                emit_execution_event("customer_final_validation", "Response failed final claim or intent validation", "failed")
+                contract = _summary_contract(session,
+                    "I don't have enough reliable information to answer that accurately. "
+                    "An authorized technician can help confirm the issue.",
+                    response_type="CONVERSATION_REPLY", reason_code="FINAL_RESPONSE_NOT_VALIDATED")
+            else:
+                emit_execution_event("customer_final_validation", "Final response claim and intent validation", "info")
             from core.services.followup_suggestions import suggest
             asked = [t.get("text") or "" for t in conv_context.history_turns if t.get("role") == "customer"]
             contract["suggested_follow_ups"] = suggest(contract, asked + [turn_text])

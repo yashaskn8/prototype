@@ -1003,6 +1003,20 @@ def _qwen_dense_first_merge(dense_results, sparse_results):
 # Main retrieve function
 # ---------------------------------------------------------------------------
 
+def apply_document_diversity(ranked, max_per_source, top_k):
+    """Apply source cap to ranked candidates, preserving their final order."""
+    selected, counts = [], {}
+    for candidate in ranked:
+        key = (candidate.source_kind, candidate.document_id or candidate.service_call_id or candidate.source_id)
+        if candidate.source_kind == "knowledge_document" and counts.get(key, 0) >= max_per_source:
+            continue
+        selected.append(candidate)
+        counts[key] = counts.get(key, 0) + 1
+        if len(selected) >= top_k:
+            break
+    return selected
+
+
 def intact_customer_candidates(candidates, *, tenant, staff_mode):
     """Exclude invalid originals before ranking, not only at citation time.
 
@@ -1407,14 +1421,18 @@ def retrieve(
         import hashlib
         norm_text = " ".join((item.text or "").strip().lower().split())
         content_digest = hashlib.sha256(norm_text.encode("utf-8")).hexdigest()
-        digest_key = content_digest
+        # Identical wording under different symptom headings carries different
+        # applicability. Keep those distinctions for evidence validation.
+        digest_key = (content_digest, " ".join(str(item.heading or "").casefold().split()))
         if digest_key in seen_content_hashes:
             continue
 
         source_key = (item.source_kind, item.document_id or item.service_call_id or item.source_id)
         if item.source_kind == "past_resolution" and per_source.get(source_key, 0) >= 2:
             continue
-        if item.source_kind == "knowledge_document" and per_source.get(source_key, 0) >= max_per_source:
+        # The learned ranker must see the best authorized candidates before
+        # applying document diversity. Keep the old staff cap for compatibility.
+        if staff_mode and item.source_kind == "knowledge_document" and per_source.get(source_key, 0) >= max_per_source:
             continue
 
         selected.append(item)
@@ -1442,6 +1460,7 @@ def retrieve(
             if value
         )
 
+    rank_limit = top_k if staff_mode else len(selected)
     with execution_stage(
         "v5_reranking",
         "Reranking authorized passages for technical relevance",
@@ -1450,12 +1469,12 @@ def retrieve(
             from core.ml.reranker import rerank_candidates
             if experimental_section_rerank_enabled:
                 selected = rerank_candidates(
-                    evidence_text, selected, top_k=top_k,
+                    evidence_text, selected, top_k=rank_limit,
                     context_aware=True, asset_context=asset_context,
                 )
             else:
                 # Preserve the exact production/default invocation and candidate text.
-                selected = rerank_candidates(evidence_text, selected, top_k=top_k)
+                selected = rerank_candidates(evidence_text, selected, top_k=rank_limit)
         except Exception as exc:
             # Required-model deployments must not silently serve baseline results.
             if getattr(settings, "SERVY_RERANKER_REQUIRED", False):
@@ -1465,7 +1484,7 @@ def retrieve(
                 "v5_reranking", "Passage reranker", "skipped",
                 error_type=type(exc).__name__,
             )
-            selected = selected[:top_k]
+            selected = selected[:rank_limit]
 
     experimental_section_rerank_applied = False
     if experimental_section_rerank_enabled and selected:
@@ -1489,6 +1508,8 @@ def retrieve(
                 )
                 selected = before_experiment
 
+    if not staff_mode:
+        selected = apply_document_diversity(selected, max_per_source, top_k)
     if len(selected) > top_k:
         selected = selected[:top_k]
 

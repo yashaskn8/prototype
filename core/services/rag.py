@@ -83,6 +83,7 @@ def ask_rag(
     top_k: int | None = None,
     conversation_context=None,
     original_question=None,
+    retrieval_only=False,
 ):
     question = (question or "").strip()[:4000]
     display_question = (original_question or question).strip()[:4000]
@@ -168,19 +169,25 @@ def ask_rag(
     )
     from .llm import INSUFFICIENT_EVIDENCE_MESSAGE
 
-    with execution_stage(
-        "answer_generation",
-        "Preparing the evidence-grounded recommendation",
-    ):
-        answer, engine = generate_answer(
-            question,
-            asset,
-            results,
-            service_call=service_call,
-            conversation_context=conversation_context,
-            original_question=display_question,
-            allow_generation=bool(staff_mode),
-        )
+    if retrieval_only and not staff_mode:
+        # The customer contract is the sole answer authority. Do not perform a
+        # second extraction or mark preliminary passages as supporting claims.
+        answer, engine = "", "retrieval-only"
+        emit_execution_event("answer_generation", "Delegated to validated customer answer builder", "skipped")
+    else:
+        with execution_stage(
+            "answer_generation",
+            "Preparing the evidence-grounded recommendation",
+        ):
+            answer, engine = generate_answer(
+                question,
+                asset,
+                results,
+                service_call=service_call,
+                conversation_context=conversation_context,
+                original_question=display_question,
+                allow_generation=bool(staff_mode),
+            )
     emit_execution_event(
         "answer_engine", "Answer generation outcome", "info",
         metrics={"answer_engine": str(engine)[:80]},
@@ -233,7 +240,7 @@ def ask_rag(
         },
     )
 
-    if is_abstention:
+    if is_abstention or (retrieval_only and not staff_mode):
         refs = []
         context_passages = []
     else:
@@ -253,7 +260,7 @@ def ask_rag(
         ),
         "retrieved_candidates": all_retrieved_candidates,
         "context_passages": context_passages,
-        "claim_supporting_passages": [] if is_abstention else claim_supporting_passages,
+        "claim_supporting_passages": [] if is_abstention or (retrieval_only and not staff_mode) else claim_supporting_passages,
         "cited_passages": refs,
         # Every retrieved, authorized passage. The customer answer builder validates
         # its own claims from these when the legacy extractive step abstains.

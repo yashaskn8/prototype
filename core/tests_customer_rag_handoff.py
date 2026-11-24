@@ -75,3 +75,54 @@ class CustomerLanguageTests(SimpleTestCase):
         self.assertNotIn("manual", result["text"].casefold())
         self.assertEqual(len([s for s in result["segments"] if s["kind"] == "list_item"]), 3)
         self.assertIn("[3]", result["text"])
+
+
+class ProductionServingPlanTests(SimpleTestCase):
+    def test_match_plan_does_not_inherit_generic_complaint(self):
+        from core.services.conversation_context import ConversationContext
+        from core.services.customer_turn_plan import plan_technical_turn
+        context = ConversationContext(conversation_uuid="", active_issue="poor cooling",
+            original_complaint="My AC is not working properly", is_followup=True,
+            active_observations=["The airflow is also very weak", "There is no water leakage"])
+        plan = plan_technical_turn("Which of the possible causes matches my problem?", context)
+        self.assertEqual(plan.intent, "match_causes")
+        self.assertIn("poor cooling", plan.retrieval_question)
+        self.assertIn("airflow", plan.retrieval_question)
+        self.assertNotIn("water leakage", plan.retrieval_question)
+        self.assertNotIn("not working", plan.retrieval_question)
+
+    def test_document_cap_applies_to_ranked_order(self):
+        from core.services.retriever import apply_document_diversity
+        def row(doc):
+            return SimpleNamespace(source_kind="knowledge_document", document_id=doc)
+        ranked = [row(1), row(1), row(2)]
+        self.assertEqual(apply_document_diversity(ranked, 1, 2), [ranked[0], ranked[2]])
+
+    def test_retrieval_only_preserves_candidates_without_legacy_answer(self):
+        from core.services.rag import ask_rag
+        from core.services.retriever import RetrievedResultList
+        with patch("core.services.rag.retrieve", return_value=RetrievedResultList()), \
+             patch("core.services.rag.generate_answer") as legacy, \
+             patch("core.services.customer_isolation.is_real_tenant", return_value=False):
+            result = ask_rag(tenant=SimpleNamespace(id=1), question="poor cooling", asset=None,
+                             retrieval_only=True)
+        legacy.assert_not_called()
+        self.assertEqual(result["engine"], "retrieval-only")
+        self.assertEqual(result["references"], [])
+
+    def test_final_gate_rejects_uncited_and_unrelated_causes(self):
+        from core.services.customer_turn_plan import TechnicalTurnPlan, final_response_is_valid
+        plan = TechnicalTurnPlan("which cause", "poor cooling", "poor cooling",
+                                 "poor cooling", "match_causes")
+        claim = {"kind": "possible_cause", "text": "Dirty filter.", "source_text": "Dirty filter.",
+                 "source_heading": "3. SYMPTOM: POOR COOLING", "evidence_ids": ["s1"]}
+        segment = {"kind": "list_item", "text": "Dirty filter.", "citation_ids": ["s1"]}
+        contract = {"response_type": "DIAGNOSTIC_GUIDANCE", "presentation": {
+            "citations": [{"id": "s1"}], "supporting_claims": [claim],
+            "response": {"segments": [segment]}}}
+        self.assertTrue(final_response_is_valid(contract, plan))
+        claim["source_heading"] = "4. SYMPTOM: WATER LEAKAGE"
+        self.assertFalse(final_response_is_valid(contract, plan))
+        claim["source_heading"] = "3. SYMPTOM: POOR COOLING"
+        segment["citation_ids"] = []
+        self.assertFalse(final_response_is_valid(contract, plan))
