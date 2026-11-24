@@ -234,6 +234,8 @@ class ConversationContext:
     original_complaint: str = ""
     reported_symptoms: List[str] = field(default_factory=list)
     customer_observations: List[str] = field(default_factory=list)
+    # Verbatim factual clauses, distinct from questions and requests.
+    reported_statements: List[str] = field(default_factory=list)
     suggested_checks: List[str] = field(default_factory=list)
     completed_checks: List[str] = field(default_factory=list)
     pending_question: Optional[str] = None
@@ -595,6 +597,48 @@ _RETRACTION = re.compile(
     r"|\bnot\s+(?:the|my|this|our)\s+(?:ac|a/c|aircon|air\s*con|unit|system|equipment|module|machine)\b", re.I)
 
 
+def reported_statement_text(text: str) -> str:
+    """Separate customer assertions from questions, requests and speculation.
+
+    Keep the original transcript separately. A symptom mentioned only in a
+    question must not become a reported observation.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(str(text or "").split()))
+    return " ".join(
+        s for s in sentences if s and not is_greeting(s) and not _is_question(s)
+        and not is_summary_request(s) and not conversation_intent(s)
+        and not re.match(r"^\s*(?:maybe|perhaps|suppose|what if|could be|might be|possibly)\b", s, re.I)
+    )
+
+
+def record_customer_turn(ctx: "ConversationContext", text: str, suggested_actions: List[str]) -> None:
+    """The shared replay/update path for persisted and current customer turns."""
+    statement = reported_statement_text(text)
+    if statement:
+        if statement not in ctx.reported_statements:
+            ctx.reported_statements.append(statement)
+        if not ctx.original_complaint and is_problem_report(statement):
+            ctx.original_complaint = statement
+        _track_customer_turn(ctx, statement)
+        for sym in extract_symptoms_from_text(statement):
+            if sym not in ctx.reported_symptoms:
+                ctx.reported_symptoms.append(sym)
+        if any(k in statement.lower() for k in ("weak", "slow", "loud", "noise", "hot", "cold", "leak", "stopped", "blinking")):
+            observation = _clean_phrase(statement)
+            if observation and observation not in ctx.customer_observations:
+                ctx.customer_observations.append(observation)
+        for completed in _confirmed_checks(statement, suggested_actions):
+            if completed not in ctx.completed_checks:
+                ctx.completed_checks.append(completed)
+    else:
+        ctx.answers_pending_question = False
+        ctx.just_retracted = ""
+    if text.strip() and not is_greeting(text):
+        # A pending question is scoped to the next substantive customer turn,
+        # not every later statement before another assistant response.
+        ctx.pending_question = None
+
+
 def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
     """Update the active issue, negative observations and answered questions."""
     value = " ".join(str(text or "").split())
@@ -635,11 +679,11 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
         shifted = topic_shift_query(value)
         _set_issue(ctx, shifted if shifted and _names_problem(shifted) else value)
         return
-    reply = (is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
-             or is_observation_statement(value, ctx))
+    answers_question = is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
+    reply = answers_question or is_observation_statement(value, ctx)
     ctx.answers_pending_question = reply
     if reply:
-        ctx.resolved_answers.append({"question": ctx.pending_question or "", "answer": value})
+        ctx.resolved_answers.append({"question": (ctx.pending_question or "") if answers_question else "", "answer": value})
         return
     shifted = topic_shift_query(value)
     if shifted and not _names_problem(shifted):
@@ -891,29 +935,17 @@ def extract_conversation_context(
     )
 
     if not conv:
-        ctx.original_complaint = clean_input
-        ctx.reported_symptoms = extract_symptoms_from_text(clean_input)
+        record_customer_turn(ctx, clean_input, [])
         return ctx
 
     # Limit the database query rather than loading an unbounded transcript.
     ctx.turn_count = conv.messages.filter(sender_role="customer").count()
-    # The complaint is the first substantive customer message; a greeting is not one.
-    early = [m for m in conv.messages.filter(sender_role="customer").order_by("created_at", "id")[:20]
-             if not is_greeting(m.message_text)]
-    first_customer_msg = next((m for m in early if is_problem_report(m.message_text)),
-                              early[0] if early else None)
-    if not first_customer_msg:
-        ctx.original_complaint = "" if is_greeting(clean_input) else clean_input
-        ctx.reported_symptoms = extract_symptoms_from_text(clean_input)
-        return ctx
-    ctx.original_complaint = first_customer_msg.message_text.strip()
-    if not is_problem_report(ctx.original_complaint) and _is_question(ctx.original_complaint):
-        # A question ("what is inspected during routine maintenance?") is not a
-        # complaint; it must not become the issue or the "symptoms" of later turns.
-        ctx.original_complaint = ""
-    for sym in extract_symptoms_from_text(ctx.original_complaint):
-        if sym not in ctx.reported_symptoms:
-            ctx.reported_symptoms.append(sym)
+    # Preserve the initial actual complaint even if it predates the replay window.
+    for msg in conv.messages.filter(sender_role="customer").order_by("created_at", "id").iterator():
+        statement = reported_statement_text(msg.message_text)
+        if is_problem_report(statement):
+            ctx.original_complaint = statement
+            break
     # Durable diagnostic state is rebuilt from the whole saved conversation (bounded),
     # so corrections, observations and answers survive long conversations; only the
     # wording context (history_turns) uses the short recent window.
@@ -931,21 +963,7 @@ def extract_conversation_context(
     for msg in recent_messages:
         text = msg.message_text.strip()
         if msg.sender_role == "customer":
-            _track_customer_turn(ctx, text)
-            # Extract symptoms mentioned in customer message
-            for sym in extract_symptoms_from_text(text):
-                if sym not in ctx.reported_symptoms:
-                    ctx.reported_symptoms.append(sym)
-
-            # Check if customer stated an observation
-            if any(k in text.lower() for k in ("weak", "slow", "loud", "noise", "hot", "cold", "leak", "stopped", "blinking")):
-                clean_obs = _clean_phrase(text)
-                if clean_obs and clean_obs not in ctx.customer_observations:
-                    ctx.customer_observations.append(clean_obs)
-
-            for completed in _confirmed_checks(text, last_assistant_suggested_actions):
-                if completed not in ctx.completed_checks:
-                    ctx.completed_checks.append(completed)
+            record_customer_turn(ctx, text, last_assistant_suggested_actions)
 
         elif msg.sender_role == "assistant":
             ctx.last_assistant_answer = text
@@ -977,16 +995,11 @@ def extract_conversation_context(
     # Now evaluate current_input in relation to conversation state
     current_lower = clean_input.lower()
 
-    # This message has not been persisted yet; classify it explicitly.
-    for completed in _confirmed_checks(clean_input, last_assistant_suggested_actions):
-        if completed not in ctx.completed_checks:
-            ctx.completed_checks.append(completed)
-
-    # Did current_input add new symptoms?
-    for sym in extract_symptoms_from_text(clean_input):
-        if sym not in ctx.reported_symptoms:
-            ctx.reported_symptoms.append(sym)
-    _track_customer_turn(ctx, clean_input)
+    # Use exactly the same attribution rules as the persisted transcript.
+    if clean_input:
+        record_customer_turn(ctx, clean_input, last_assistant_suggested_actions)
+    else:
+        ctx.answers_pending_question = False
 
     # Determine if current_input is a follow-up query
     is_followup = False

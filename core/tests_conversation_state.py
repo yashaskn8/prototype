@@ -492,3 +492,45 @@ class SummaryThroughGatewayTests(SplitACConversationTests):
         self.assertEqual(summary["response_type"], "CONVERSATION_SUMMARY")
         self.assertIn("NOISE IN THE MACHINE", summary["answer"])
         self.assertFalse((summary.get("presentation") or {}).get("citations"))
+
+
+class SharedAttributionRegressionTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Attribution synthetic", slug="attribution-synthetic")
+        self.customer = Customer.objects.create(tenant=self.tenant, name="Test customer")
+        self.conv = CustomerConversation.objects.create(tenant=self.tenant, customer=self.customer, status="ACTIVE")
+
+    def say(self, role, text, contract=None):
+        CustomerMessage.objects.create(tenant=self.tenant, conversation=self.conv,
+                                       sender_role=role, message_text=text,
+                                       structured_contract=contract or {})
+
+    def test_questions_do_not_become_observations_or_ticket_complaint(self):
+        from core.services.conversation_ticket import build_conversation_ticket_description, SECTION_TITLES
+        self.say("customer", "Can you help me with my AC?")
+        self.say("customer", "Could water be leaking from the unit?")
+        self.say("customer", "The AC is not cooling.")
+        self.say("assistant", "Is there any noise?", {"clarification_question": "Is there any noise?"})
+        self.say("customer", "What causes a loud noise?")
+        self.say("customer", "Can you create a call for me?")
+        context = extract_conversation_context(self.conv, "")
+        self.assertEqual(context.original_complaint, "The AC is not cooling.")
+        self.assertNotIn("noise", context.reported_symptoms)
+        self.assertNotIn("water leak", context.reported_symptoms)
+        self.assertFalse(any("loud noise" in item for item in context.customer_observations))
+        built = build_conversation_ticket_description(self.conv)
+        self.assertEqual(built["complaint"], "The AC is not cooling.")
+        self.assertFalse(any("loud noise" in item for item in built["sections"][SECTION_TITLES[2]]))
+        self.assertIn("What causes a loud noise?", built["description"])
+        self.assertFalse(any("create a call" in item for item in built["sections"][SECTION_TITLES[4]]))
+
+    def test_current_and_persisted_turns_use_same_attribution(self):
+        self.say("customer", "The AC is not cooling.")
+        current = "There is no water leak. Could a fan fault explain this?"
+        before = extract_conversation_context(self.conv, current)
+        self.say("customer", current)
+        after = extract_conversation_context(self.conv, "")
+        self.assertEqual(before.reported_symptoms, after.reported_symptoms)
+        self.assertEqual(before.negative_observations, after.negative_observations)
+        self.assertIn("water leak", after.negative_observations)
+        self.assertNotIn("fan fault", after.reported_symptoms)
