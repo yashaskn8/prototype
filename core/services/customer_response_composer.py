@@ -176,6 +176,22 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
     followup_subject = None
     all_shown_lead = None
     replying = bool(getattr(context, "answers_pending_question", False)) and not cause_reference
+    from .conversation_context import ISSUE_MATCH_PREFIX, extract_symptoms_from_text
+    matching_issue = str(question).startswith(ISSUE_MATCH_PREFIX)
+    matched_observations = False
+    if matching_issue and causes:
+        # Prioritize only cited causes sharing terms with affirmative observations
+        # of the current incident. A shared term is not proof of causation.
+        subjects = set()
+        for observation in getattr(context, "active_observations", []) or []:
+            for symptom in extract_symptoms_from_text(observation):
+                if symptom not in ("not working", "poor cooling"):
+                    subjects.update(_terms(symptom))
+        relevant = [c for c in causes if subjects & _terms(c.get("source_text"))]
+        if relevant:
+            causes = relevant
+            matched_observations = True
+        facts, checks = [], []
 
     if cause_reference and causes:
         # Only the cause the customer pointed at, plus checks from its own section.
@@ -215,7 +231,7 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             causes = related
         if not (causes or facts or checks):
             return compose_reply_acknowledgement(context, equipment)
-    elif getattr(context, "is_followup", False):
+    elif getattr(context, "is_followup", False) and not matching_issue:
         # A broad equipment-failure question is not a component follow-up.
         # Filtering on its generic words ("causes", "not work") can silently
         # reduce an authorized multi-section overview to one matching fault.
@@ -365,6 +381,9 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
             segments.append(_segment("text", language["opening"]))
         if subject_lead:
             segments.append(_segment("text", subject_lead))
+        elif matching_issue:
+            segments.append(_segment("text", "Given what you've described, these possibilities are worth checking with a technician:" if matched_observations else
+                                     "These are the possible causes for the problem you've described, but your observations don't establish which applies:"))
         elif len(labels) == 1 and labels[0]:
             segments.append(_segment("text", (
                 f"One possible cause of {labels[0]} on the {equipment} is:" if len(causes) == 1 else
@@ -424,7 +443,7 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
         segments.append(_segment("text", f"I've listed the first {len(causes)} possible causes; there may be "
                                          "others. Tell me the specific symptom to narrow it down."))
     question_text = language.get("question")
-    if not question_text and style == "symptom_causes" and len(causes) > 1:
+    if not question_text and style == "symptom_causes" and len(causes) > 1 and not matching_issue:
         question_text = "Do any of these match what you are seeing?"
     if question_text:
         segments.append(_segment("question", question_text))

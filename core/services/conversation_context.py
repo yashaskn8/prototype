@@ -249,6 +249,7 @@ class ConversationContext:
     # Manual section labels of the claims last shown to the customer
     # ("noise or vibration"): the subject a short reply refers to.
     active_topics: List[str] = field(default_factory=list)
+    active_observations: List[str] = field(default_factory=list)
     negative_observations: List[str] = field(default_factory=list)
     # (question, answer) pairs: what the customer told us in reply to our questions.
     resolved_answers: List[Dict[str, str]] = field(default_factory=list)
@@ -667,6 +668,7 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
         ctx.just_retracted = ctx.active_issue
         ctx.active_issue = ctx.issue_history.pop() if ctx.issue_history else ""
         ctx.active_topics = []
+        ctx.active_observations = []
         return
     if _is_question(value):
         ctx.answers_pending_question = False
@@ -696,6 +698,8 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
     ctx.answers_pending_question = reply
     if reply:
         ctx.resolved_answers.append({"question": (ctx.pending_question or "") if answers_question else "", "answer": value})
+        if value not in ctx.active_observations:
+            ctx.active_observations.append(value)
         return
     shifted = topic_shift_query(value)
     if shifted and not _names_problem(shifted):
@@ -726,6 +730,7 @@ def _set_issue(ctx: "ConversationContext", value: str) -> None:
         ctx.issue_history.append(ctx.active_issue)
     ctx.active_issue = issue
     ctx.active_topics = []
+    ctx.active_observations = []
 
 
 MAX_STATE_MESSAGES = 400
@@ -758,11 +763,13 @@ def conversation_summary_text(ctx: "ConversationContext", ticket_ref: Optional[s
         lines.append(f'- The current problem, as you last described it: "{ctx.active_issue.strip()}"')
     for withdrawn in ctx.retracted_issues:
         lines.append(f'- You said this isn\'t coming from the {equipment}: "{withdrawn}"')
-    details = [pair["answer"].rstrip(" .") for pair in ctx.resolved_answers[-8:]]
-    if details:
-        lines.append("- Details you added: " + "; ".join(f'"{d}"' for d in details))
-    if ctx.negative_observations:
-        lines.append(f"- You said there is no: {', '.join(ctx.negative_observations)}")
+    details = list(dict.fromkeys(pair["answer"].rstrip(" .") for pair in ctx.resolved_answers[-8:]))
+    for detail in details:
+        lines.append(f'- {detail}.')
+    represented = {symptom for detail in details for symptom in extract_negated_observations(detail)}
+    remaining = [symptom for symptom in ctx.negative_observations if symptom not in represented]
+    if remaining:
+        lines.append(f"- Symptoms you reported as absent: {', '.join(remaining)}.")
     if ctx.completed_checks:
         lines.append(f"- You told me you already checked: {', '.join(ctx.completed_checks)}")
     if len(lines) == 1:
@@ -1279,7 +1286,7 @@ def is_issue_cause_request(text: str, context: "ConversationContext") -> bool:
                 and not [s for s in extract_symptoms_from_text(value) if not _code_symptom(s)])
 
 
-_REFERS_BACK = re.compile(r"\b(?:this|that|these|those|it|everything|what\s+i(?:'ve|\s+have)?\s+(?:told|said|reported))\b", re.I)
+_REFERS_BACK = re.compile(r"\b(?:this|that|these|those|it|everything|(?:my|our)\s+(?:problem|issue|symptoms?|observations?)|what\s+i(?:'ve|\s+have)?\s+(?:told|said|reported))\b", re.I)
 
 
 def names_own_subject(value: str) -> bool:
@@ -1324,6 +1331,10 @@ def is_issue_check_request(text: str, context: "ConversationContext") -> bool:
                 and not [s for s in extract_symptoms_from_text(value) if not _code_symptom(s)])
 
 
+ISSUE_MATCH_PREFIX = "Which possible causes match the reported problem:"
+_CAUSE_MATCH_REQUEST = re.compile(
+    r"\b(?:match(?:es|ing)?|fits?|consistent\s+with|most\s+likely|best\s+match)\b"
+    r"|\b(?:based\s+on|given)\s+what\s+i(?:'ve|\s+have)?\s+(?:told|said|reported)\b", re.I)
 ISSUE_CAUSES_PREFIX = "What are the possible causes of this:"
 ISSUE_MORE_CAUSES_PREFIX = "What other possible causes are there for this:"
 ISSUE_CHECKS_PREFIX = "What can I safely check or observe for this:"
@@ -1341,7 +1352,8 @@ def issue_subject(context: "ConversationContext") -> str:
 def canonical_issue_question(text: str, context: "ConversationContext") -> Optional[str]:
     """The current-issue form of a request that names no subject of its own."""
     if is_issue_cause_request(text, context):
-        prefix = ISSUE_MORE_CAUSES_PREFIX if _MORE_CAUSES.search(text) else ISSUE_CAUSES_PREFIX
+        prefix = (ISSUE_MATCH_PREFIX if _CAUSE_MATCH_REQUEST.search(text)
+                  else ISSUE_MORE_CAUSES_PREFIX if _MORE_CAUSES.search(text) else ISSUE_CAUSES_PREFIX)
         return f"{prefix} {context.active_issue}?"
     if is_issue_check_request(text, context):
         return f"{ISSUE_CHECKS_PREFIX} {issue_subject(context)}?"

@@ -79,7 +79,7 @@ function AnswerContent({ presentation, assetId, loadSource = url => api.get(url)
   }
   return <section className="customer-answer" aria-label="Equipment guidance">
     {data.hazard && <div className="customer-answer-hazard" role="alert"><strong>Immediate safety warning</strong><p>{data.hazard.message}</p></div>}
-    {data.message && <p role="status">{data.message}{!data.sections.length && data.citations.map((citation, index) =>
+    {data.message && <p role="status" style={{ whiteSpace: 'pre-line' }}>{data.message}{!data.sections.length && data.citations.map((citation, index) =>
       <button type="button" className="customer-answer-citation" key={citation.id}
         title={`Open source ${index + 1}`}
         aria-label={`Source ${index + 1}: ${citation.title}${citation.heading ? `, ${citation.heading}` : ''}`}

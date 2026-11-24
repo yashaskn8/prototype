@@ -870,9 +870,7 @@ def _process_customer_diagnostic_turn(
         if (negated and not _is_question(request_text)
                 and not extract_symptoms_from_text(request_text)
                 and not query_is_control_abuse(request_text) and not _question_guard(request_text)):
-            message = "Thanks, I've noted what you reported: " + request_text.rstrip(" .!") + "."
-            if conv_context.active_issue:
-                message += " I'll keep the reported problem in focus rather than treating the absent symptom as a new fault."
+            message = "Thanks, I've noted that: " + request_text[:1].lower() + request_text[1:].rstrip(" .!") + "."
             for stage in ("customer_rag_execution", "customer_evidence_validation", "customer_qwen_generation"):
                 emit_execution_event(stage, "Negative observation recorded; no new manual claim", "skipped")
             return _persist_direct_reply(

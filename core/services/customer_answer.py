@@ -1108,8 +1108,11 @@ def build_customer_answer(
         getattr(conversation_context, "original_complaint", "")
         if conversation_context is not None else ""
     )
+    from .conversation_context import ISSUE_MATCH_PREFIX
+    matching_current_issue = str(raw_user_q).startswith(ISSUE_MATCH_PREFIX)
     generic_cause_overview = bool(
-        _GENERIC_CAUSE_REQUEST.search(raw_user_q)
+        not matching_current_issue
+        and _GENERIC_CAUSE_REQUEST.search(raw_user_q)
         and not _SPECIFIC_FAULT_QUERY.search(raw_user_q)
         and (
             is_generic_cause_overview(raw_user_q)
@@ -1259,6 +1262,10 @@ def build_customer_answer(
                         target = causes
                     else:
                         if stated_sections and result.heading not in stated_sections:
+                            continue
+                        if matching_current_issue and not (
+                                heading_states_symptom(result.heading, asked_symptoms - {"generic_failure"})
+                                or question_states_heading(stated_text, result.heading)):
                             continue
                         # A cause that shares no word with the question is
                         # relevant only through its section. Sharing some heading

@@ -601,6 +601,12 @@ class SplitACLiveTranscriptRegressionTests(GatewayTestBase):
         self.assertIn("weak airflow", state.reported_symptoms)
         self.assertIn("cooling", state.active_issue.casefold())
         self.assertNotIn("water leak", state.active_issue.casefold())
+        matched, _ = self.ask(uuid, "Which of the possible causes matches my problem?")
+        self.assertEqual(matched["response_type"], "DIAGNOSTIC_GUIDANCE", matched["answer"])
+        self.assertIn("airflow", matched["answer"].casefold())
+        for unrelated in ("condensate drain", "breaker", "mounting fastener"):
+            self.assertNotIn(unrelated, matched["answer"].casefold())
+        self.assert_citations_resolve(matched)
 
 
 class PastedAnswerAttributionTests(TestCase):
