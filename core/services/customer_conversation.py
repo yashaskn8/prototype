@@ -754,14 +754,11 @@ def _process_customer_diagnostic_turn(
         if beyond or other_equipment:
             name = getattr(asset, "name", None) or "this equipment"
             if beyond:
-                label = beyond[0]["heading"]
-                label = re.sub(r"^\s*\d+[.)]\s*(?:symptom|fault)?\s*:?\s*", "", label, flags=re.I).strip().lower()
-                listed_text = "; ".join(c["source_text"].rstrip(".") for c in beyond)
-                message = (f"I only listed {len(beyond)} possible cause{'s' if len(beyond) != 1 else ''}"
-                           + (f" for {label}" if label else "") + f": {listed_text}. "
-                           "Would you like me to go through it in more detail?" if len(beyond) == 1 else
-                           f"I only listed {len(beyond)} possible causes" + (f" for {label}" if label else "")
-                           + f": {listed_text}.")
+                # This is a conversational reply, not a new authorized evidence
+                # disclosure. Never repeat stored manual text without revalidation.
+                count = len(beyond)
+                message = (f"I previously listed {count} possible cause{'s' if count != 1 else ''}. "
+                           "That number is outside the list. You can ask me to explain one of the listed causes.")
                 reason = "ORDINAL_BEYOND_LIST"
             else:
                 message = (f"The information I have is for the {name} only, and it doesn't cover other types of "
@@ -951,7 +948,7 @@ def _process_customer_diagnostic_turn(
             }
 
         # 6. Grounded RAG Retrieval & Safe Response Construction
-        from core.services.rag import ask_rag
+        from core.services.rag import ask_rag, customer_evidence_candidates
 
         # Pasted earlier answers are context, not the request: guards, intent and
         # retrieval use the customer's own words; the stored message stays verbatim.
@@ -982,6 +979,12 @@ def _process_customer_diagnostic_turn(
         if not retrieval_query:
             combined_query = f"{clean_question} (User clarification: {clean_clarification})" if clean_clarification else clean_question
             retrieval_query = combined_query or turn_text
+
+        # Evidence validation is scoped by the customer's resolved request,
+        # not by the search string (which can include asset metadata and history).
+        from core.services.customer_answer import customer_evidence_question
+        evidence_question = customer_evidence_question(
+            answer_question, conv_context, cause_reference)
 
         with execution_stage(
             "customer_rag_execution",
@@ -1043,12 +1046,10 @@ def _process_customer_diagnostic_turn(
                     raw_answer=rag_res.get("answer", ""),
                     # The builder re-authorizes and validates every passage itself; it
                     # is not limited to what the legacy extractive step chose to cite.
-                    retrieved_references=(
-                        rag_res.get("references") or (
-                            [] if rag_res.get("reason_code") == NO_AUTHORIZED_ORIGINAL_DOCUMENTATION
-                            else rag_res.get("retrieved_passages", []))),
+                    retrieved_references=customer_evidence_candidates(rag_res),
                     conversation_context=conv_context,
                     original_question=answer_question,
+                    evidence_question=evidence_question,
                     evidence_blocked=rag_res.get("reason_code") == NO_AUTHORIZED_ORIGINAL_DOCUMENTATION,
                 )
             if cause_reference:

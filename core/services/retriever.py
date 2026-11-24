@@ -1003,6 +1003,28 @@ def _qwen_dense_first_merge(dense_results, sparse_results):
 # Main retrieve function
 # ---------------------------------------------------------------------------
 
+def intact_customer_candidates(candidates, *, tenant, staff_mode):
+    """Exclude invalid originals before ranking, not only at citation time.
+
+    Cache integrity decisions by document for this retrieval only. Citation
+    construction independently revalidates each source.
+    """
+    from .customer_isolation import (
+        get_customer_data_mode, is_real_tenant, original_attachment_is_intact,
+    )
+    if staff_mode or get_customer_data_mode() != "verified_real_only" or not is_real_tenant(tenant):
+        return candidates
+    decisions = {}
+    eligible = []
+    for chunk in candidates:
+        doc = chunk.document
+        if doc.id not in decisions:
+            decisions[doc.id] = original_attachment_is_intact(doc)
+        if decisions[doc.id]:
+            eligible.append(chunk)
+    return eligible
+
+
 def retrieve(
     tenant,
     question,
@@ -1088,6 +1110,7 @@ def retrieve(
             allow_failed=True, query_doc_ids=query_doc_ids,
             staff_mode=staff_mode,
         ))
+        candidates = intact_customer_candidates(candidates, tenant=tenant, staff_mode=staff_mode)
     emit_execution_event(
         "document_scope_summary", "Authorized document scope", "info",
         metrics={

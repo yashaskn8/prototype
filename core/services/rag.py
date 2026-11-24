@@ -56,6 +56,21 @@ def original_documentation_permits(*, tenant, customer, asset) -> bool:
     return has_authorized_original_documentation(tenant=tenant, customer=customer, asset=asset)
 
 
+def customer_evidence_candidates(result):
+    """Pass the full ranked candidate set to the independent claim validator.
+
+    A legacy citation subset is not the retrieval candidate universe. Preserve
+    explicit empty candidate lists and fail closed for guarded requests.
+    Older callers that do not expose the candidate field may supply references.
+    """
+    if (result.get("reason_code") == NO_AUTHORIZED_ORIGINAL_DOCUMENTATION
+            or result.get("engine") == "policy-guard"):
+        return []
+    if "retrieved_passages" in result:
+        return result["retrieved_passages"] or []
+    return result.get("references") or []
+
+
 def ask_rag(
     *,
     tenant,

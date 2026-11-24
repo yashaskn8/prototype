@@ -1036,9 +1036,22 @@ def limitation_message(asset, conversation_context=None, question: str = "") -> 
     return " ".join(parts)
 
 
+def customer_evidence_question(question, context=None, cause_reference=None):
+    """Resolve validation scope without importing incidental search-query terms."""
+    if cause_reference and cause_reference.get("selected"):
+        selected = cause_reference["selected"]
+        return f"{selected.get('heading', '')}: {selected.get('source_text', '')}".strip(": ")
+    if getattr(context, "answers_pending_question", False):
+        subject = getattr(context, "active_issue", "") or ""
+        if subject:
+            return f"{question}; {subject}"
+    return question
+
+
 def build_customer_answer(
     interaction, session, references, conversation_context=None,
     original_question=None, generate_with_local_model=True, evidence_blocked=False,
+    evidence_question=None,
 ):
     # evidence_blocked: the original-document integrity gate refused this turn.
     # No path below (fact lookup, generic cause scan) may reintroduce claims.
@@ -1053,8 +1066,9 @@ def build_customer_answer(
         heading_states_symptom, match_keys, question_states_heading, stem, symptom_concepts,
     )
     asset, customer, tenant = interaction.asset, interaction.customer, interaction.tenant
-    question = interaction.question or ""
-    raw_user_q = original_question or question
+    retrieval_question = interaction.question or ""
+    raw_user_q = original_question or retrieval_question
+    question = evidence_question if evidence_question is not None else retrieval_question
     candidates = []
     seen = set()
     for ref in (references or [])[:300]:
@@ -1074,14 +1088,16 @@ def build_customer_answer(
                 customer_action_authorized=False, exact_identifier_match=False))
         except (NotFound, ValueError, TypeError):
             continue
-    guard = _question_guard(raw_user_q) or _question_guard(question)
+    guard = (_question_guard(raw_user_q) or _question_guard(retrieval_question)
+             or _question_guard(question))
     if guard:
         return _guarded_customer_response(interaction, session, candidates, guard)
     explicit_model = re.search(r"\bmodel\s+([a-z0-9]+[-][a-z0-9-]+)", question, re.I)
     wrong_model = explicit_model and asset and explicit_model[1].casefold() != (asset.model_number or "").casefold()
     wrong_model = wrong_model or names_other_equipment_type(raw_user_q, asset)
-    fact_family = _document_fact_family(question)
-    if fact_family and not evidence_blocked and not wrong_model and not query_is_control_abuse(question):
+    fact_family = _document_fact_family(raw_user_q)
+    if (fact_family and not evidence_blocked and not wrong_model
+            and not query_is_control_abuse(retrieval_question) and not query_is_control_abuse(question)):
         fact_answer = _document_fact_response(interaction, session, fact_family)
         if fact_answer:
             return fact_answer
@@ -1179,7 +1195,8 @@ def build_customer_answer(
     # Question-relevant sentences withheld only because they are technician-only
     # work: the answer then says so instead of implying the manuals are silent.
     withheld_relevant = 0
-    if evidence_chunks and (sufficient or generic_cause_overview) and not wrong_model and not query_is_control_abuse(question):
+    if (evidence_chunks and (sufficient or generic_cause_overview) and not wrong_model
+            and not query_is_control_abuse(retrieval_question) and not query_is_control_abuse(question)):
         # A question about a named document ("What does the VRF installation guide
         # cover?") is answered from its purpose section.
         about_document = bool(_DOCUMENT_QUESTION.search(raw_user_q) or (
