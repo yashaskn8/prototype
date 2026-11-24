@@ -140,6 +140,25 @@ class PortalApiTests(GatewayTestBase):
         history = client.get(f"{BASE}/conversations/{uuid}/messages/").json()["messages"]
         self.assertEqual([m["sender_role"] for m in history], ["customer", "assistant"])
 
+    def test_idempotency_key_cannot_replay_into_another_conversation(self):
+        first_uuid, second_uuid = self.start(), self.start()
+        self.assertNotEqual(first_uuid, second_uuid)
+        client = self.client_for(self.key)
+        body = {"message": "Hi"}
+        first = client.post(f"{BASE}/conversations/{first_uuid}/messages/", body,
+                            format="json", HTTP_X_IDEMPOTENCY_KEY="portal-incident-bound")
+        self.assertEqual(first.status_code, 200, first.content[:300])
+        collision = client.post(f"{BASE}/conversations/{second_uuid}/messages/", body,
+                                format="json", HTTP_X_IDEMPOTENCY_KEY="portal-incident-bound")
+        self.assertEqual(collision.status_code, 400)
+        self.assertFalse(CustomerMessage.objects.filter(
+            conversation__conversation_uuid=second_uuid).exists())
+        replay = client.post(f"{BASE}/conversations/{first_uuid}/messages/", body,
+                             format="json", HTTP_X_IDEMPOTENCY_KEY="portal-incident-bound")
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json()["assistant_message"]["id"],
+                         first.json()["assistant_message"]["id"])
+
     def test_invalid_payloads_are_rejected(self):
         uuid = self.start()
         client = self.client_for(self.key)

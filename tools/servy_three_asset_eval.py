@@ -110,8 +110,8 @@ def parse_sse(text):
 
 def turn(base, code, conv, message):
     key = f"eval-{uuid.uuid4()}"
+    started = time.monotonic()
     for attempt in range(60):
-        started = time.monotonic()
         status, body = request(base, f"/demo-api/customer-support/conversations/{conv}/messages-stream/",
                                code, "POST", {"message": message}, {"X-Idempotency-Key": key})
         latency = round(time.monotonic() - started, 2)
@@ -127,17 +127,25 @@ def turn(base, code, conv, message):
         if status != 200:
             return {"http_status": status, "error": body[:500], "latency_s": latency}
         events = parse_sse(body)
-        result = next((p for n, p in events if n == "result"), None)
-        error = next((p for n, p in events if n == "error"), None)
-        if result is None:
-            return {"http_status": status, "error": error, "latency_s": latency}
+        results = [p for n, p in events if n == "result"]
+        if len(results) != 1 or not isinstance(results[0], dict) or any(n == "error" for n, _ in events):
+            return {"http_status": status, "error": "Missing, malformed or conflicting terminal event",
+                    "latency_s": latency}
+        result = results[0]
         contract = (result.get("assistant_message") or {}).get("structured_contract") or result.get("contract") or {}
         presentation = contract.get("presentation") or {}
         response = presentation.get("response") or {}
+        # Evaluate the customer-visible content, not hidden candidate claims.
+        # Keep the original contract answer separately for consistency review.
+        segments = response.get("segments") or []
+        answer = ("\n".join(str(s.get("text") or "") for s in segments if isinstance(s, dict))
+                  if response else presentation.get("message") or contract.get("answer") or "")
         return {
             "http_status": status, "latency_s": latency,
             "response_type": contract.get("response_type"), "reason_code": contract.get("reason_code"),
-            "answer": contract.get("answer") or presentation.get("message") or "",
+            "answer": answer,
+            "contract_answer": contract.get("answer"),
+            "presentation_segments": segments,
             "outcome": contract.get("outcome"),
             "stages": {p.get("stage"): p.get("status") for n, p in events if n == "log" and isinstance(p, dict)},
             "citation_headings": [(c.get("id"), c.get("title"), c.get("heading")) for c in presentation.get("citations") or []],
@@ -145,7 +153,14 @@ def turn(base, code, conv, message):
                                  for c in response.get("displayed_claims") or []],
             "style": response.get("style"),
         }
-    return {"http_status": 503, "error": "busy after retries"}
+    return {"http_status": 503, "error": "busy after retries",
+            "latency_s": round(time.monotonic() - started, 2)}
+
+
+def complete_answer(result):
+    return (result.get("http_status") == 200 and not result.get("error")
+            and isinstance(result.get("response_type"), str) and bool(result["response_type"].strip())
+            and isinstance(result.get("answer"), str) and bool(result["answer"].strip()))
 
 
 def check(expect, result):
@@ -153,10 +168,13 @@ def check(expect, result):
 
     status: PASS, FAIL, or BLOCKED (transport/infrastructure: no complete answer).
     """
-    if result.get("http_status") != 200 or not result.get("response_type"):
+    if not complete_answer(result):
         return "BLOCKED", [f"no complete answer (HTTP {result.get('http_status')}: {str(result.get('error'))[:80]})"]
     expect = expect or {}
-    answer = (result.get("answer") or "").casefold()
+    if not any(expect.get(key) for key in ("types", "headings_any", "headings_none",
+                                           "answer_any", "answer_none", "no_citations")):
+        return "BLOCKED", ["No meaningful written machine-check expectation"]
+    answer = result["answer"].casefold()
     headings = [str(h or "").casefold() for _, _, h in result.get("citation_headings") or []]
     reasons = []
     if expect.get("types") and result["response_type"] not in expect["types"]:
@@ -176,26 +194,54 @@ def check(expect, result):
     return ("FAIL" if reasons else "PASS"), reasons
 
 
+def run_sequence(base, code, asset, specs, *, graded):
+    """Account for every planned turn, even if setup or a prerequisite fails."""
+    conv = None
+    blocker = None
+    if not asset:
+        blocker = "asset not in this customer's inventory"
+    else:
+        try:
+            status, body = request(base, "/demo-api/customer-support/conversations/", code,
+                                   "POST", {"asset_id": asset["id"]})
+            if status in (200, 201):
+                conv = json.loads(body).get("conversation_uuid")
+            if not conv:
+                blocker = f"conversation setup failed (HTTP {status})"
+        except (OSError, ValueError, TypeError, AttributeError):
+            blocker = "conversation setup did not return a valid response"
+    turns = []
+    for number, spec in enumerate(specs, 1):
+        if blocker:
+            result = {"http_status": None, "error": blocker}
+        else:
+            try:
+                result = turn(base, code, conv, spec["q"])
+            except (OSError, ValueError, TypeError, AttributeError):
+                result = {"http_status": None, "error": "transport or invalid response"}
+        if graded:
+            verdict, reasons = check(spec.get("expect"), result)
+        else:
+            verdict = "UNSCORED" if complete_answer(result) else "BLOCKED"
+            reasons = [] if verdict == "UNSCORED" else ["no complete answer"]
+        turns.append({"n": number, "question": spec["q"], "expect": spec.get("expect"),
+                      "verdict": verdict, "reasons": reasons, **result})
+        print(f"#{number} {verdict} {result.get('response_type')} {result.get('latency_s')}s", flush=True)
+        # A missing/invalid turn makes the context of all subsequent turns uncertain.
+        if not complete_answer(result) and blocker is None:
+            blocker = f"prerequisite turn {number} did not return a complete answer"
+    return conv, turns
+
+
 def run_dataset(base, code, assets, dataset_path):
     """Conversations from a dataset file: [{"id", "asset", "turns": [{"q", "expect"}]}]."""
     data = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
     results = []
     for conv_spec in data["conversations"]:
-        asset = assets.get(conv_spec["asset"])
-        if not asset:
-            results.append({"id": conv_spec["id"], "blocked": "asset not in this customer's inventory"})
-            continue
-        status, body = request(base, "/demo-api/customer-support/conversations/", code, "POST", {"asset_id": asset["id"]})
-        conv = json.loads(body)["conversation_uuid"]
-        turns = []
-        for number, spec in enumerate(conv_spec["turns"], 1):
-            result = turn(base, code, conv, spec["q"])
-            verdict, reasons = check(spec.get("expect"), result)
-            turns.append({"n": number, "question": spec["q"], "expect": spec.get("expect"),
-                          "verdict": verdict, "reasons": reasons, **result})
-            print(f"{conv_spec['id']} #{number} {verdict} {result.get('response_type')} {result.get('latency_s')}s",
-                  flush=True)
-        results.append({"id": conv_spec["id"], "asset": conv_spec["asset"], "conversation_uuid": conv, "turns": turns})
+        conv, turns = run_sequence(base, code, assets.get(conv_spec["asset"]),
+                                   conv_spec["turns"], graded=True)
+        results.append({"id": conv_spec["id"], "asset": conv_spec["asset"],
+                        "conversation_uuid": conv, "turns": turns})
     return results
 
 
@@ -229,29 +275,27 @@ def main():
         path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         print(f"summary {report['summary']}")
         print(f"written {path}")
+        if not verdicts or report["summary"]["FAIL"] or report["summary"]["BLOCKED"]:
+            raise SystemExit(1)
         return
     for asset_name, questions in SCRIPTS.items():
         if args.only and asset_name != args.only:
             continue
         asset = assets.get(asset_name)
-        if not asset:
-            report["assets"][asset_name] = {"blocked": "asset not in this customer's inventory"}
-            continue
-        status, body = request(args.base, "/demo-api/customer-support/conversations/", code, "POST",
-                               {"asset_id": asset["id"]})
-        conv = json.loads(body)["conversation_uuid"]
-        turns = []
-        for number, question in enumerate(questions, 1):
-            result = turn(args.base, code, conv, question)
-            turns.append({"n": number, "question": question, **result})
-            print(f"{asset_name} #{number} {result.get('response_type')} {result.get('latency_s')}s", flush=True)
-        report["assets"][asset_name] = {"asset_id": asset["id"], "asset_code": asset.get("asset_code"),
+        conv, turns = run_sequence(args.base, code, asset,
+                                   [{"q": question} for question in questions], graded=False)
+        report["assets"][asset_name] = {"asset_id": asset.get("id") if asset else None,
+                                        "asset_code": asset.get("asset_code") if asset else None,
                                         "conversation_uuid": conv, "turns": turns}
+    verdicts = [t["verdict"] for a in report["assets"].values() for t in a["turns"]]
+    report["summary"] = {v: verdicts.count(v) for v in ("UNSCORED", "BLOCKED")}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"three_asset_eval_{datetime.now():%Y%m%d_%H%M%S}.json"
     path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     print(f"written {path}")
+    if not verdicts or report["summary"]["BLOCKED"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

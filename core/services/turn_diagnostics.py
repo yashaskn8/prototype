@@ -140,7 +140,8 @@ def build_outcome(events: List[dict], contract: Dict[str, Any], deadline=None) -
         mode = "grounded_generated" if generation_applied else "grounded_extractive"
         status = "degraded" if degraded_reasons else "success"
         reason = ",".join(degraded_reasons) or None
-    elif response_type in ("GREETING", "CLARIFICATION", "TECHNICIAN_HANDOFF"):
+    elif response_type in ("GREETING", "CLARIFICATION", "TECHNICIAN_HANDOFF",
+                           "CONVERSATION_REPLY", "CONVERSATION_SUMMARY"):
         status, mode, reason = "conversational", "no_technical_claims", None
     else:
         status, mode = "insufficient_evidence", "no_validated_evidence"

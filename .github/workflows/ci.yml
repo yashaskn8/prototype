@@ -60,6 +60,9 @@ jobs:
           python -m pip install --upgrade pip --disable-pip-version-check
           pip install --prefer-binary --disable-pip-version-check -r requirements.txt
 
+      - name: Three-asset evaluation harness integrity tests (no network)
+        run: python -m unittest tools.test_servy_three_asset_eval -v
+
       - name: RAG Latency Profiler Helper Tests (no network)
         run: python -m unittest tools.test_servy_latency_profile -v
 

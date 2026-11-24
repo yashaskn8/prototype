@@ -438,6 +438,10 @@ def _process_customer_diagnostic_turn(
                 },
             )
             if not created:
+                # A customer can have multiple incidents for the same asset. A
+                # retry must never replay or rebind another incident's turn.
+                if idem.conversation_id != conv.id:
+                    raise ValidationError("Idempotency key belongs to a different conversation.")
                 if idem.payload_fingerprint != canonical_fingerprint:
                     raise ValidationError("Idempotency key collision with different request payload.")
 

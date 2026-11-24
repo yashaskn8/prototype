@@ -195,6 +195,14 @@ class QwenDeadlineTests(SimpleTestCase):
 
 
 class OutcomeTests(SimpleTestCase):
+    def test_conversation_only_replies_are_not_evidence_failures(self):
+        for response_type in ("GREETING", "CLARIFICATION", "TECHNICIAN_HANDOFF",
+                              "CONVERSATION_REPLY", "CONVERSATION_SUMMARY"):
+            with self.subTest(response_type=response_type):
+                result = build_outcome([], {"response_type": response_type})
+                self.assertEqual(result["status"], "conversational")
+                self.assertIsNone(result["fallback_reason"])
+
     def _contract(self, response_type="DIAGNOSTIC_GUIDANCE", citations=True):
         return {"response_type": response_type, "retrieval_backend": "hybrid", "reranker_model": "servy_v5_bge_verified",
                 "presentation": {"response_type": response_type,
