@@ -90,20 +90,24 @@ def build_conversation_ticket_description(conversation):
     ValueError when the conversation has no customer-reported text.
     """
     messages = list(conversation.messages.order_by("created_at", "id"))
-    from .conversation_context import extract_conversation_context, is_greeting
-    # Greetings, thanks and sign-offs are not reported problems.
-    customer_messages = [m for m in messages if m.sender_role == "customer"
-                         and _clean(m.message_text) and not is_greeting(m.message_text)]
-    if not customer_messages:
+    from .conversation_context import extract_conversation_context, reported_customer_text
+    state = extract_conversation_context(conversation, "")
+    customer_messages = [m for m in messages if m.sender_role == "customer" and _clean(m.message_text)]
+    # Legacy free-text reports may not match a known equipment symptom. Keep
+    # such statements as unclassified text rather than turning a request into
+    # a complaint. Never discard the original transcript.
+    fallback = next((reported_customer_text(m.message_text) for m in customer_messages
+                     if reported_customer_text(m.message_text)), "")
+    complaint = _clean(state.original_complaint or fallback)
+    if not complaint:
         raise ValueError("A customer-reported issue is required before creating a service ticket.")
     assistant_messages = [m for m in messages if m.sender_role == "assistant"]
 
     sections = {title: [] for title in SECTION_TITLES}
-    complaint = _clean(customer_messages[0].message_text)
-    sections[SECTION_TITLES[0]].append(complaint)
-    # A later correction or newly reported problem is recorded as the current
-    # problem; the original statement is kept, never rewritten.
-    active = _clean(extract_conversation_context(conversation, "").active_issue or "")
+    sections[SECTION_TITLES[0]].append(complaint if state.original_complaint else
+                                      f"Unclassified customer statement: {complaint}")
+    # A later correction is recorded from the same state used by the assistant.
+    active = _clean(state.active_issue or "")
     if active and active.casefold() != complaint.casefold():
         sections[SECTION_TITLES[0]].append(f"Current problem (later customer statement): {active}")
 
@@ -120,21 +124,20 @@ def build_conversation_ticket_description(conversation):
     if conversation.site_id:
         sections[SECTION_TITLES[1]].append(f"Site: {conversation.site.name}")
 
-    for index, message in enumerate(customer_messages, start=1):
-        sections[SECTION_TITLES[2]].append(f"[{index}] {_clean(message.message_text)} (customer-reported, not independently verified)")
+    sections[SECTION_TITLES[2]] = (
+        [f"{statement} (customer statement, not independently verified)" for statement in state.reported_statements]
+        or ["No classified customer observations."]
+    )
+    sections[SECTION_TITLES[2]] += [f"Reported absent: {item}" for item in state.negative_observations]
+    sections[SECTION_TITLES[2]] += [f"Withdrawn report: {item}" for item in state.retracted_issues]
 
-    asked, answered_after = [], []
-    for position, message in enumerate(messages):
-        if message.sender_role != "assistant":
-            continue
-        for question in _questions_from(message):
-            asked.append(question)
-            reply = next((m for m in messages[position + 1:] if m.sender_role == "customer"), None)
-            answered_after.append((question, reply))
+    asked = [q for message in assistant_messages for q in _questions_from(message)]
     sections[SECTION_TITLES[3]] = [f"Q: {q}" for q in dict.fromkeys(asked)] or ["No clarifying questions were asked."]
-    responses = [f"Re: {q} -> {_clean(r.message_text)}" for q, r in answered_after if r is not None]
-    later = [_clean(m.message_text) for m in customer_messages[1:]]
-    sections[SECTION_TITLES[4]] = responses or ([f"{t}" for t in later] or ["No follow-up responses from the customer."])
+    pairs = [pair for pair in state.resolved_answers if pair.get("question")]
+    sections[SECTION_TITLES[4]] = (
+        [f"Possible reply to: {pair['question']} -> {pair['answer']}" for pair in pairs]
+        or ["No attributed replies to clarifying questions."]
+    )
 
     actions = []
     for message in assistant_messages:
@@ -157,8 +160,8 @@ def build_conversation_ticket_description(conversation):
     last_contract = _contract(assistant_messages[-1]) if assistant_messages else {}
     if last_contract.get("response_type") in _UNANSWERED_TYPES:
         unresolved.append(f"Last assistant response: {last_contract.get('response_type')} (no source-backed answer).")
-    open_questions = [q for q, r in answered_after if r is None]
-    unresolved += [f"Unanswered question: {q}" for q in dict.fromkeys(open_questions)]
+    matched = {pair["question"] for pair in pairs}
+    unresolved += [f"Unanswered question: {q}" for q in dict.fromkeys(asked) if q not in matched]
     sections[SECTION_TITLES[7]] = unresolved
 
     investigate = ["No diagnosis has been confirmed. Verify the customer-reported symptoms on site."]
@@ -174,6 +177,8 @@ def build_conversation_ticket_description(conversation):
         lines.append("")
         lines.append(title)
         lines += [f"- {item}" for item in sections[title]]
+    lines += ["", "Verbatim customer transcript (not classified as observations)"]
+    lines += [f"- {m.message_text}" for m in customer_messages]
     return {"complaint": complaint, "description": "\n".join(lines), "sections": sections,
             "message_count": len(messages)}
 

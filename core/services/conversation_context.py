@@ -234,6 +234,8 @@ class ConversationContext:
     original_complaint: str = ""
     reported_symptoms: List[str] = field(default_factory=list)
     customer_observations: List[str] = field(default_factory=list)
+    # Verbatim factual clauses, distinct from questions and requests.
+    reported_statements: List[str] = field(default_factory=list)
     suggested_checks: List[str] = field(default_factory=list)
     completed_checks: List[str] = field(default_factory=list)
     pending_question: Optional[str] = None
@@ -612,9 +614,13 @@ def _record_customer_evidence(ctx: "ConversationContext", text: str, suggested_a
     """Use identical evidence attribution for saved messages and the live turn."""
     reported = reported_customer_text(text)
     if not reported:
+        if text.strip() and not is_greeting(text):
+            ctx.pending_question = None
         ctx.answers_pending_question = False
         ctx.just_retracted = ""
         return
+    if reported not in ctx.reported_statements:
+        ctx.reported_statements.append(reported)
     if not ctx.original_complaint and is_problem_report(reported):
         ctx.original_complaint = reported
     _track_customer_turn(ctx, reported)
@@ -631,6 +637,8 @@ def _record_customer_evidence(ctx: "ConversationContext", text: str, suggested_a
     # A mixed report/question should be answered, not routed as an acknowledgement.
     if reported != " ".join(str(text or "").split()) and _is_question(text):
         ctx.answers_pending_question = False
+    if text.strip() and not is_greeting(text):
+        ctx.pending_question = None
 
 
 def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
@@ -676,11 +684,11 @@ def _track_customer_turn(ctx: "ConversationContext", text: str) -> None:
         shifted = topic_shift_query(value)
         _set_issue(ctx, shifted if shifted and _names_problem(shifted) else value)
         return
-    reply = (is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
-             or is_observation_statement(value, ctx))
+    answers_question = is_reply_to_question(value, ctx.pending_question, ctx.active_issue)
+    reply = answers_question or is_observation_statement(value, ctx)
     ctx.answers_pending_question = reply
     if reply:
-        ctx.resolved_answers.append({"question": ctx.pending_question or "", "answer": value})
+        ctx.resolved_answers.append({"question": (ctx.pending_question or "") if answers_question else "", "answer": value})
         return
     shifted = topic_shift_query(value)
     if shifted and not _names_problem(shifted):
