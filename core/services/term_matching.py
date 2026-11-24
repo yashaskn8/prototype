@@ -37,14 +37,45 @@ def stem(word: str) -> str:
     return w
 
 
+# Calendar words that name the same interval ("yearly" service = "Annually").
+# A plural carries a count ("every 6 months", "two years") and is a different
+# interval, so only the singular shares the key.
+_INTERVAL_KEYS = {"yearly": "@year", "annual": "@year", "annually": "@year", "year": "@year",
+                  "quarter": "@quarter", "quarterly": "@quarter",
+                  "month": "@month", "monthly": "@month",
+                  "week": "@week", "weekly": "@week"}
+_DERIVATIONAL = ("ations", "ation", "ions", "ion", "ements", "ement")
+
+
+def roots(word: str) -> set:
+    """Derivational roots so a verb meets its noun: vibrates/vibration share
+    "vibrat", inspect/inspection "inspect", install/installation "install".
+    Every applicable suffix strip is kept; roots shorter than 5 letters are
+    dropped so unrelated short words (station/state) never meet."""
+    w = stem(word)
+    found = set()
+    for suffix in _DERIVATIONAL:
+        if w.endswith(suffix):
+            found.add(w[: -len(suffix)])
+    if w.endswith("e"):
+        found.add(w[:-1])
+    found.add(w)
+    return {r for r in found if len(r) >= 5}
+
+
 def match_keys(words) -> set:
-    """Comparable keys for a set of words: each word and its folded form."""
+    """Comparable keys for a set of words: each word, its folded form, its
+    derivational root and, for calendar words, a shared interval key."""
     keys = set()
     for word in words or ():
         w = str(word).casefold()
         if w:
             keys.add(w)
             keys.add(stem(w))
+            if len(w) >= 5 and not any(ch.isdigit() for ch in w):
+                keys |= roots(w)
+            if w in _INTERVAL_KEYS:
+                keys.add(_INTERVAL_KEYS[w])
     return keys
 
 
@@ -62,7 +93,11 @@ SYMPTOM_CONCEPTS = {
             r"(?:(?:getting|becoming|staying|feeling|get|become|stay|feel|"
             r"making (?:it|the room))\s+)?(?:cold|cool|cooler|colder)\b"
             r"|\b(?:not|isn'?t|doesn'?t|no|poor|weak|insufficient|reduced)\s+cooling\b"
-            r"|\b(?:not|isn'?t|doesn'?t|won'?t)\s+cool(?:ing)?\b", re.I),
+            r"|\b(?:not|isn'?t|doesn'?t|won'?t)\s+cool(?:ing)?\b"
+            # "it blows air but the room stays warm", "blowing warm air"
+            r"|\b(?:room|rooms|house|home|office|space|place)\s+(?:still\s+)?(?:stays?|remains?|is|are|feels?|keeps?)"
+            r"\s+(?:still\s+|getting\s+|too\s+|so\s+)?(?:warm|hot)\b"
+            r"|\bblow\w*\s+(?:out\s+)?(?:warm|hot)\s+air\b", re.I),
         re.compile(r"\b(?:poor|not|no|weak|insufficient|reduced)\s+cooling\b", re.I),
     ),
     "uneven_temperature": (
@@ -87,9 +122,55 @@ SYMPTOM_CONCEPTS = {
             r"\b(?:lost|losing|lose|loses|dropped|no)\s+(?:the\s+|their\s+|its\s+)?"
             r"(?:connection|communication|link)\b"
             r"|\b(?:not|no longer|stopped|can'?t|cannot)\s+(?:communicat\w+|connect\w*)\b"
-            r"|\b(?:communication|connection)\s+(?:fault|loss|lost|error|failure|problem)\b",
+            r"|\b(?:communication|connection)\s+(?:fault|loss|lost|error|failure|problem)\b"
+            # "two indoor units keep dropping off the network", "units go offline"
+            r"|\b(?:drop\w*|fall\w*|go\w*|went|kick\w*)\s+off\s+(?:the\s+)?(?:network|bus|line|controller)\b"
+            r"|\boffline\b"
+            r"|\b(?:units?|controllers?|modules?|they|it)\s+(?:keeps?\s+|kept\s+)?disconnect(?:s|ed|ing)\b",
             re.I),
         re.compile(r"\bcommunication\b", re.I),
+    ),
+    "noise_vibration": (
+        re.compile(r"\b(?:nois\w*|vibrat\w*|rattl\w*|squeal\w*|grind\w*|click\w*|knock\w*|buzz\w*|clank\w*)\b", re.I),
+        re.compile(r"\b(?:noise|vibration)\b", re.I),
+    ),
+    "weak_airflow": (
+        re.compile(
+            r"\b(?:weak|low|poor|reduced|little|hardly\s+any)\s+(?:air\s*flow|air)\b"
+            r"|\bair\s*(?:flow)?\b[^.?!,;]{0,60}\b(?:weak|low|reduced|poor|barely)\b", re.I),
+        re.compile(r"\bair\s*flow\b", re.I),
+    ),
+    "low_capacity": (
+        re.compile(r"\b(?:low|poor|reduced|lost|insufficient)\s+(?:cooling\s+)?capacity\b"
+                   r"|\bcapacity\b[^.?!]{0,20}\b(?:low|poor|reduced|dropp\w*)\b", re.I),
+        re.compile(r"\bcapacity\b", re.I),
+    ),
+    # "Could high pressure be involved?" names the HIGH-PRESSURE section; the word
+    # "pressure" alone ("what pressure should it run at?") names no fault.
+    "high_pressure": (
+        re.compile(r"\b(?:high|excessive|too\s+high)[-\s]+(?:head\s+)?pressure\b|\bhead\s+pressure\b|\bhp\s+(?:fault|alarm|trip)\b", re.I),
+        re.compile(r"\bhigh[-\s]?pressure\b", re.I),
+    ),
+    "low_pressure": (
+        re.compile(r"\b(?:low|too\s+low)[-\s]+(?:suction\s+)?pressure\b|\blp\s+(?:fault|alarm|trip)\b", re.I),
+        re.compile(r"\blow[-\s]?pressure\b", re.I),
+    ),
+    "compressor_fault": (
+        re.compile(r"\b(?:compressor|inverter)\b[^.?!]{0,30}\b(?:trip\w*|fault\w*|fail\w*|stop\w*|shut\w*|"
+                   r"alarm\w*|error\w*|cut\w*\s+out|won'?t\s+start|not\s+start\w*)\b", re.I),
+        re.compile(r"\b(?:compressor|inverter)\b", re.I),
+    ),
+    "fan_fault": (
+        re.compile(r"\bfans?\b[^.?!]{0,30}\b(?:not\s+(?:spinning|turning|running|working|moving)|"
+                   r"isn'?t\s+(?:spinning|turning|running|working|moving)|stopped|fail\w*|fault\w*|stuck)\b", re.I),
+        re.compile(r"\bfan\b", re.I),
+    ),
+    # "My AC won't turn on", "it doesn't start", "no power at all": the DOES NOT START symptom.
+    "no_start": (
+        re.compile(r"\b(?:won'?t|wont|doesn'?t|does\s+not|will\s+not|can'?t|cannot)\s+(?:turn|switch|power)\s+on\b"
+                   r"|\b(?:won'?t|wont|doesn'?t|does\s+not|will\s+not|didn'?t|did\s+not)\s+start\b"
+                   r"|\bnot\s+(?:starting|turning\s+on|powering\s+on|switching\s+on)\b|\bno\s+power\b", re.I),
+        re.compile(r"\b(?:does\s+not|doesn'?t|not|fails?\s+to)\s+start\b|\bno\s+power\b", re.I),
     ),
     # A generic equipment failure ("not working", "stopped working") does not
     # name one symptom.  It matches any operational-failure heading so the
@@ -152,6 +233,16 @@ def _same_word(a: str, b: str) -> bool:
     return len(short) >= 4 and long_.startswith(short)      # leak / leakage
 
 
+_NEGATED_HEADING = re.compile(r"\b(?:not|no|fails?)\b")
+
+
+def _question_negates(question: str, words) -> bool:
+    """True when the question negates one of the words ("doesn't start", "not starting")."""
+    stems = "|".join(re.escape(w[:5]) + r"\w*" for w in words)
+    return bool(re.search(r"(?:\bnot|n'?t|\bno|\bnever|\bwont|\bfail\w*)\s+(?:\w+\s+){0,3}?(?:" + stems + r")\b",
+                          str(question or ""), re.I))
+
+
 def question_states_heading(question: str, heading: str) -> bool:
     """True when the question names the symptom a section heading names.
 
@@ -165,11 +256,21 @@ def question_states_heading(question: str, heading: str) -> bool:
     text = re.sub(r"^\s*\d+[.)]\s*", "", text)
     text = re.sub(r"^symptom\s*:\s*", "", text)
     asked = set(re.findall(r"[a-z0-9]+", str(question or "").casefold()))
+    negated_words = []
     for alternative in re.split(r"\s+or\s+", text):
         words = [w for w in re.findall(r"[a-z0-9]+", alternative)
                  if len(w) >= 3 and w not in _HEADING_LABELS and w not in _OPTIONAL_DEGREE]
+        if _NEGATED_HEADING.search(alternative):
+            # "UNIT DOES NOT START" is stated only by a negated "start" ("doesn't
+            # start", "isn't starting"), never by "the AC does start".
+            negated_words += words
+            if words and _question_negates(question, words):
+                return True
+            continue
         if words and all(any(_same_word(w, q) for q in asked) for w in words):
             return True
+    if negated_words and not _question_negates(question, negated_words):
+        return False
     try:
         from core.ml.conditional_rerank import _extract_symptom_keys, _heading_matches_symptom
         # "pressure" alone carries no polarity and is decided above.

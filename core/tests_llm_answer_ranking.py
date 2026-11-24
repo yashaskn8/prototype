@@ -63,8 +63,11 @@ class LLMAnswerRankingTests(TestCase):
         refs_section = answer.split("VERIFIED REFERENCES")[1]
         c1_idx = refs_section.find("VRF Alarm Guide")
         c2_idx = refs_section.find("General Maintenance")
-        self.assertTrue(c1_idx != -1 and c2_idx != -1)
-        self.assertLess(c1_idx, c2_idx, "Chunk 1 must appear before Chunk 2 in VERIFIED REFERENCES")
+        self.assertNotEqual(c1_idx, -1)
+        # Chunk 2 shares only generic words ("issue", "problem") with the question, so it
+        # need not be cited at all; if it is, it must come after the ranked Chunk 1.
+        if c2_idx != -1:
+            self.assertLess(c1_idx, c2_idx, "Chunk 1 must appear before Chunk 2 in VERIFIED REFERENCES")
 
     def test_abstention_on_unsupported_identifier(self):
         """If query asks about an identifier missing from retrieved sources, answer must abstain."""

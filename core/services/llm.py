@@ -417,6 +417,12 @@ def extract_technical_numbers(text: str) -> set:
 
 
 
+_HOW_OFTEN_QUESTION = re.compile(
+    r"\bhow\s+(?:often|frequently)\b|\b(?:maintenance|service|servicing|inspection)\s+"
+    r"(?:intervals?|schedules?|frequency)\b", re.I)
+_INTERVAL_SECTION_HEADING = re.compile(r"\b(?:intervals?|schedules?|frequency)\b", re.I)
+
+
 def evaluate_chunk_claim_support(
     chunk,
     terms: set,
@@ -543,10 +549,16 @@ def evaluate_chunk_claim_support(
 
     # Shared component terms do not substantiate a different, specific fault.
     # Require matching qualifiers for detailed inverter/communications failures.
-    fault_qualifiers = {"inverter", "communication", "communications", "comms",
-                        "network", "drive", "protocol", "modbus"}
-    asked_qualifiers = set(re.findall(r"[a-z]{4,}", (q_text or "").casefold())) & fault_qualifiers
-    if len(asked_qualifiers) >= 2 and len(asked_qualifiers & chunk_words) < 2:
+    # Qualifiers are counted by fault family: "network" and "communication" name the
+    # same fault, so a communication section answers "units dropping off the network"
+    # once the conversation adds its "communication fault" label.
+    fault_families = {"inverter": "drive", "drive": "drive",
+                      "communication": "comm", "communications": "comm", "comms": "comm",
+                      "network": "comm", "protocol": "comm", "modbus": "comm"}
+    q_words = set(re.findall(r"[a-z]{4,}", (q_text or "").casefold()))
+    asked_families = {fault_families[w] for w in q_words if w in fault_families}
+    covered_families = {fault_families[w] for w in chunk_words if w in fault_families}
+    if len(asked_families) >= 2 and len(asked_families & covered_families) < 2:
         return False, "FAULT_QUALIFIER_MISMATCH"
 
     # A customer paraphrase of a symptom ("the room is not getting cold") is
@@ -555,6 +567,12 @@ def evaluate_chunk_claim_support(
     # evidence, and identifier/quantity checks above have already run.
     if q_text and heading_states_symptom(getattr(chunk, "heading", ""), symptom_concepts(q_text)):
         return True, f"PARAPHRASED_SYMPTOM_HEADING: {getattr(chunk, 'heading', '')}"
+    # Likewise "how often should it be serviced?" is supported by a section whose own
+    # heading names the maintenance intervals; the answer stage discloses only the
+    # schedule entries that answer the asked interval.
+    if (q_text and _HOW_OFTEN_QUESTION.search(q_text)
+            and _INTERVAL_SECTION_HEADING.search(str(getattr(chunk, "heading", "") or ""))):
+        return True, f"INTERVAL_SECTION_HEADING: {getattr(chunk, 'heading', '')}"
 
     # 3. Content Terms Overlap Check:
     matched_terms = {t for t in terms if (_stem_variants(t) | match_keys([t])) & chunk_words}

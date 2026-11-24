@@ -170,3 +170,234 @@ class FollowUpReferenceTests(SimpleTestCase):
         text = compose_response(contract, "What other possible causes are there for this: not cooling?", ctx)["text"]
         self.assertIn("Blocked outdoor unit", text)
         self.assertNotIn("Dirty filter", text)
+
+
+class TermFoldingTests(SimpleTestCase):
+    """R1: one shared matcher; verbs meet their nouns, calendar words meet each other."""
+
+    def test_derivational_and_interval_keys(self):
+        from core.services.term_matching import match_keys
+        for asked, documented in (("vibrates", "vibration"), ("inspected", "inspection"), ("installs", "installation"),
+                                  ("yearly", "annually"), ("quarter", "quarterly"), ("month", "monthly")):
+            with self.subTest(asked=asked):
+                self.assertTrue(match_keys([asked]) & match_keys([documented]))
+        for a, b in (("vibrant", "vibration"), ("station", "state"), ("yearly", "monthly")):
+            with self.subTest(a=a):
+                self.assertFalse(match_keys([a]) & match_keys([b]))
+        # A plural carries a count: "every 6 months" is not "Monthly", "two years" is not
+        # "Annually", so the plural never carries the shared interval key.
+        for plural, key in (("months", "@month"), ("years", "@year"), ("quarters", "@quarter"), ("weeks", "@week")):
+            with self.subTest(plural=plural):
+                self.assertNotIn(key, match_keys([plural]))
+                self.assertIn(key, match_keys([plural[:-1]]))
+
+    def test_schedule_intervals_compare_by_length(self):
+        # R1b: "every six months" is not "Monthly"; "every 3 months" is "Quarterly".
+        from core.services.customer_answer import stated_intervals
+        self.assertEqual(stated_intervals("what is done every six months?"), stated_intervals("Every 6 months: x"))
+        self.assertEqual(stated_intervals("what happens every 3 months"), stated_intervals("Quarterly: x"))
+        self.assertEqual(stated_intervals("what happens once a year?"), stated_intervals("Annually: x"))
+        self.assertFalse(stated_intervals("every six months") & stated_intervals("Monthly: inspect filters"))
+        self.assertEqual(stated_intervals("how often should filters be checked?"), set())
+        self.assertEqual(stated_intervals("is every room affected?"), set())
+
+    def test_timing_questions(self):
+        from core.services.customer_answer import _FREQUENCY_QUESTION
+        for text in ("what is checked every quarter?", "what happens once a year?", "how often is it serviced?"):
+            self.assertTrue(_FREQUENCY_QUESTION.search(text), text)
+        self.assertFalse(_FREQUENCY_QUESTION.search("is every room affected?"))
+
+
+class EscalationGuidanceTests(SimpleTestCase):
+    def test_prohibitions_are_not_unsafe_instructions(self):
+        from core.services.customer_answer import _NEGATED_DIRECTIVE, _UNSAFE_DIRECTIVE
+        safe = "Escalate repeated faults or a burnt smell. Do not repeatedly reset a fault without diagnosing its cause."
+        self.assertFalse(_UNSAFE_DIRECTIVE.search(_NEGATED_DIRECTIVE.sub(" ", safe)))
+        unsafe = "Escalate if needed, then reset the controller and open the panel."
+        self.assertTrue(_UNSAFE_DIRECTIVE.search(_NEGATED_DIRECTIVE.sub(" ", unsafe)))
+
+    def test_escalation_needs_an_escalation_question(self):
+        # R3a: the customer's own words must ask when to stop or escalate; sharing a
+        # word with an escalation sentence ("breaker", "tripping") is not enough.
+        from core.services.customer_answer import _ESCALATION_QUESTION
+        for text in ("what are the warning signs that i should stop using it", "when should a problem be escalated?",
+                     "is it safe to keep using it?", "should i keep resetting the breaker?",
+                     "when should I stop using the AC?", "is this dangerous?"):
+            with self.subTest(text=text):
+                self.assertTrue(_ESCALATION_QUESTION.search(text))
+        for text in ("What about the second one?", "Breaker or protective device tripped",
+                     "Can you explain which of those are mentioned in the manual?", "why does the breaker trip?",
+                     "the fan stopped", "how often should filters be checked?"):
+            with self.subTest(text=text):
+                self.assertFalse(_ESCALATION_QUESTION.search(text))
+
+
+class HoldoutRootCauseTests(SimpleTestCase):
+    """Root causes found by the sealed holdout, tested with different wording."""
+
+    def test_chat_shorthand_reaches_the_intent_and_question_rules(self):
+        from core.services.conversation_context import _is_question, normalize_chat_text
+        self.assertEqual(conversation_intent("have u raised a ticket yet?"), "ticket_status")
+        self.assertEqual(conversation_intent("what does the engineer receive"), "ticket_contents")
+        self.assertEqual(conversation_intent("ok so whats the real problem"), "assessment")
+        self.assertTrue(_is_question("well whats wrong with it"))
+        # Statements stay statements; refrigerant names and part names are untouched.
+        self.assertFalse(_is_question("cant get it to start"))
+        self.assertFalse(is_problem_report("whats wrong with it"))
+        self.assertEqual(normalize_chat_text("R-32 in the U-bend"), "R-32 in the U-bend")
+
+    def test_certainty_visit_and_relation_intents(self):
+        self.assertEqual(conversation_intent("has anything been confirmed yet?"), "certainty")
+        self.assertEqual(conversation_intent("are all of these confirmed causes?"), "certainty")
+        self.assertIsNone(conversation_intent("is the drain confirmed clear"))
+        for text in ("could someone come and check it?", "send a technician please", "i need someone to look at it"):
+            with self.subTest(text=text):
+                self.assertEqual(conversation_intent(text), "ticket_help")
+        self.assertIsNone(conversation_intent("I have someone coming tomorrow"))
+        self.assertTrue(_TECHNICIAN_DECISION.search("Do you think I should get a technician?"))
+        self.assertEqual(conversation_intent("is the rattling connected to the leaking issue?"), "relation")
+        self.assertIsNone(conversation_intent("Is that the same as a communication fault?"))
+
+    def test_subjectless_cause_and_note_requests_use_the_current_issue(self):
+        ctx, _ = _run(["The indoor units keep losing connection."])
+        for text in ("what's going on with it?", "what could be going on here"):
+            with self.subTest(text=text):
+                self.assertTrue((canonical_issue_question(text, ctx) or "").startswith("What are the possible causes"))
+        self.assertTrue((canonical_issue_question("what should I write down for the installer?", ctx) or "")
+                        .startswith("What can I safely check"))
+        self.assertFalse(names_own_subject("what should I record for the technician"))
+        self.assertTrue(names_own_subject("what are the causes of a fan fault"))
+
+    def test_a_correction_without_a_new_problem_refines_the_issue(self):
+        ctx, trail = _run(["The indoor units keep losing connection.",
+                           "Correction: it's just the one unit on the second floor."])
+        self.assertEqual(trail, ["issue", "obs"])
+        self.assertIn("losing connection", ctx.active_issue)
+        ctx, trail = _run(["The indoor units keep losing connection.",
+                           "Correction: water is leaking from it, it's not losing connection."])
+        self.assertEqual(trail[-1], "issue")
+
+    def test_a_withdrawn_problem_restores_the_earlier_one(self):
+        ctx, _ = _run(["The airflow in two rooms is weak.", "Also there's water dripping near it.",
+                       "Sorry, the water is coming from the roof, not from the unit."])
+        self.assertEqual(ctx.active_issue, "The airflow in two rooms is weak")
+        self.assertEqual(ctx.retracted_issues, ["there's water dripping near it"])
+        self.assertTrue(ctx.just_retracted)
+        ctx, _ = _run(["The unit is making a rattling noise.", "The noise is from the outdoor unit, not the indoor unit."])
+        self.assertEqual(ctx.retracted_issues, [])
+
+    def test_conversation_requests_are_not_details_and_set_aside_words_are_dropped(self):
+        ctx, _ = _run(["The unit is making a grinding noise.", "sum up what i've said", "pls make a ticket"])
+        self.assertEqual(ctx.resolved_answers, [])
+        ctx, _ = _run(["It is not cooling.", "ok forget that, now there's a rattling noise"])
+        self.assertEqual(ctx.active_issue, "there's a rattling noise")
+        self.assertEqual(ctx.issue_history, ["It is not cooling"])
+
+    def test_symptom_wording_found_missing(self):
+        for text, label in (("the fan runs but the office stays hot", "poor cooling"),
+                            ("half the indoor units went offline", "communication fault"),
+                            ("the air coming out of the ceiling vents upstairs is weak", "weak airflow")):
+            with self.subTest(text=text):
+                self.assertIn(label, extract_symptoms_from_text(text))
+        for text in ("the living room is fine", "I disconnected the power", "water drops off the coil"):
+            with self.subTest(text=text):
+                self.assertNotIn("communication fault", extract_symptoms_from_text(text))
+                self.assertNotIn("poor cooling", extract_symptoms_from_text(text))
+
+    def test_pressure_faults_are_named_concepts(self):
+        # R10: "high pressure" names the HIGH-PRESSURE section; "pressure" alone names no fault.
+        from core.services.term_matching import heading_states_symptom, symptom_concepts
+        for text in ("could high pressure be involved?", "the module shows a high-pressure alarm",
+                     "is the head pressure too high?"):
+            with self.subTest(text=text):
+                self.assertIn("high_pressure", symptom_concepts(text))
+        self.assertIn("low_pressure", symptom_concepts("we keep getting a low pressure trip"))
+        for text in ("what pressure should the system be tested at?", "what refrigerant pressure should it run at?"):
+            with self.subTest(text=text):
+                self.assertFalse({"high_pressure", "low_pressure"} & symptom_concepts(text))
+        self.assertTrue(heading_states_symptom("3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT", {"high_pressure"}))
+        self.assertFalse(heading_states_symptom("4. LOW-PRESSURE OR CAPACITY FAULT", {"high_pressure"}))
+
+
+class EvaluationRoundTwelveTests(SimpleTestCase):
+    """R12: classifier gaps found by the manual-coverage set, with different wording."""
+
+    def test_value_questions_phrased_with_should(self):
+        from core.services.customer_answer import _VALUE_QUESTION
+        for text in ("what voltage should the supply be?", "what pressure must it be charged to?",
+                     "what airflow should this unit deliver?"):
+            with self.subTest(text=text):
+                self.assertTrue(_VALUE_QUESTION.search(text))
+        self.assertFalse(_VALUE_QUESTION.search("what airflow problem should I expect?"))
+
+    def test_role_questions_accept_one_shared_term_only_for_performed_by_statements(self):
+        from core.services.customer_answer import _ROLE_QUESTION, _required_overlap
+        self.assertTrue(_ROLE_QUESTION.search("who can service this unit?"))
+        self.assertFalse(_ROLE_QUESTION.search("who makes this unit?"))
+        self.assertEqual(_required_overlap(True, "Servicing must be carried out by qualified technicians."), 1)
+        self.assertEqual(_required_overlap(True, "Check the filters monthly."), 2)
+        self.assertEqual(_required_overlap(False, "Servicing must be carried out by qualified technicians."), 2)
+
+    def test_does_not_start_is_its_own_symptom(self):
+        from core.services.term_matching import heading_states_symptom, symptom_concepts
+        for text in ("it won't switch on", "the unit does not start", "there's no power at all"):
+            with self.subTest(text=text):
+                self.assertIn("no_start", symptom_concepts(text))
+        self.assertNotIn("no_start", symptom_concepts("The AC does start, but it isn't cooling properly."))
+        self.assertTrue(heading_states_symptom("2. SYMPTOM: UNIT DOES NOT START", {"no_start"}))
+        self.assertFalse(heading_states_symptom("3. SYMPTOM: POOR COOLING", {"no_start"}))
+
+    def test_a_negated_heading_needs_a_negated_question(self):
+        # R13: "UNIT DOES NOT START" is not stated by "the AC does start" or "when I start it".
+        from core.services.term_matching import question_states_heading
+        heading = "2. SYMPTOM: UNIT DOES NOT START"
+        for text in ("The AC does start, but it isn't cooling properly.", "It happens only when I start it.",
+                     "issue: the unit starts fine but is noisy"):
+            with self.subTest(text=text):
+                self.assertFalse(question_states_heading(text, heading))
+        for text in ("it isn't starting", "my unit won't start", "the AC does not start at all"):
+            with self.subTest(text=text):
+                self.assertTrue(question_states_heading(text, heading))
+        self.assertTrue(question_states_heading("the module shows a high pressure alarm",
+                                                "3. HIGH-PRESSURE OR HEAT-EXCHANGE FAULT"))
+
+
+class LivePathRootCauseTests(SimpleTestCase):
+    """R14: defects found by replaying the live customer path, tested with other wording."""
+
+    def test_a_question_is_never_a_completed_check(self):
+        from core.services.conversation_context import _confirmed_checks
+        self.assertEqual(_confirmed_checks("what is inspected during the annual service?", []), [])
+        self.assertEqual(_confirmed_checks("Have the filters been cleaned?", []), [])
+        self.assertTrue(_confirmed_checks("I already cleaned the filter", []))
+        # A statement beside a question still reports the check.
+        self.assertTrue(_confirmed_checks("I checked that already. What next?", ["Inspect the air filter"]))
+
+    def test_a_self_contained_question_gets_no_filler_context(self):
+        from core.services.conversation_context import contextualize_customer_query
+        ctx = ConversationContext(conversation_uuid="", asset_name="VRF Outdoor Module")
+        ctx.is_followup, ctx.turn_count = True, 1
+        query = contextualize_customer_query("when should a fault be escalated?", ctx)
+        self.assertNotIn("troubleshooting", query)
+        self.assertNotIn("symptoms:", query)
+
+    def test_fault_qualifiers_are_counted_by_family(self):
+        from core.services.llm import evaluate_chunk_claim_support
+        comm = SimpleNamespace(text="Possible causes: communication cable damage or incorrect topology.",
+                               heading="2. COMMUNICATION OR ADDRESSING FAULT")
+        ok, reason = evaluate_chunk_claim_support(
+            comm, {"network", "communication", "cable"}, set(), set(),
+            q_text="units dropping off the network; symptoms: communication fault cable")
+        self.assertNotEqual(reason, "FAULT_QUALIFIER_MISMATCH")
+        _ok, reason = evaluate_chunk_claim_support(
+            comm, {"inverter", "communication", "cable"}, set(), set(),
+            q_text="inverter drive communication fault cable")
+        self.assertEqual(reason, "FAULT_QUALIFIER_MISMATCH")
+
+    def test_self_check_questions_use_the_current_issue(self):
+        # R15: "what can I safely check myself?" is a check request about the current issue.
+        ctx, _ = _run(["The unit won't switch on."])
+        for text in ("what can I safely check myself?", "is there anything I could check?", "can I check it myself?"):
+            with self.subTest(text=text):
+                self.assertTrue((canonical_issue_question(text, ctx) or "").startswith("What can I safely check"))
+        self.assertIsNone(canonical_issue_question("can you check the ticket status?", ctx))

@@ -249,4 +249,7 @@ def ask_rag(
         "context_passages": context_passages,
         "claim_supporting_passages": [] if is_abstention else claim_supporting_passages,
         "cited_passages": refs,
+        # Every retrieved, authorized passage. The customer answer builder validates
+        # its own claims from these when the legacy extractive step abstains.
+        "retrieved_passages": all_retrieved_candidates,
     }

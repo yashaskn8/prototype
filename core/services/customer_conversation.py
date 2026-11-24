@@ -664,7 +664,8 @@ def _process_customer_diagnostic_turn(
 
         # Direct service-handoff questions are decisions, not new fault-diagnosis
         # requests. Do not route them through old cause retrieval or invent citations.
-        if _TECHNICIAN_DECISION.search(turn_text):
+        from core.services.conversation_context import normalize_chat_text
+        if _TECHNICIAN_DECISION.search(normalize_chat_text(turn_text)):
             from core.services.rag_execution_log import emit_execution_event
             for stage in ("customer_rag_execution", "customer_evidence_validation",
                           "customer_qwen_generation"):
@@ -727,6 +728,20 @@ def _process_customer_diagnostic_turn(
                 session=session, turn_text=turn_text, idem_record=idem_record,
                 contract=_summary_contract(session, conversation_intent_reply(intent, conv_context, ticket),
                                            response_type="CONVERSATION_REPLY", reason_code=intent.upper()))
+
+        # A withdrawn problem ("the water is from a window, not the AC") is
+        # acknowledged from conversation state; the earlier problem is current again.
+        if getattr(conv_context, "just_retracted", ""):
+            from core.services.conversation_context import retraction_reply
+            for stage, label in (("customer_rag_execution", "Manual retrieval skipped: problem withdrawn"),
+                                 ("customer_evidence_validation", "No technical claim in this reply"),
+                                 ("customer_qwen_generation", "Local Qwen generation skipped")):
+                emit_execution_event(stage, label, "skipped")
+            return _persist_direct_reply(
+                tenant=tenant, customer=customer, user=user, site=site, asset=asset, conv=conv,
+                session=session, turn_text=turn_text, idem_record=idem_record,
+                contract=_summary_contract(session, retraction_reply(conv_context),
+                                           response_type="CONVERSATION_REPLY", reason_code="ISSUE_RETRACTED"))
 
         from core.services.conversation_context import ordinal_beyond_list
         from core.services.customer_answer import asks_about_other_equipment
@@ -1007,7 +1022,12 @@ def _process_customer_diagnostic_turn(
                     interaction=interaction,
                     session=session,
                     raw_answer=rag_res.get("answer", ""),
-                    retrieved_references=rag_res.get("references", []),
+                    # The builder re-authorizes and validates every passage itself; it
+                    # is not limited to what the legacy extractive step chose to cite.
+                    retrieved_references=(
+                        rag_res.get("references") or (
+                            [] if rag_res.get("reason_code") == NO_AUTHORIZED_ORIGINAL_DOCUMENTATION
+                            else rag_res.get("retrieved_passages", []))),
                     conversation_context=conv_context,
                     original_question=answer_question,
                     evidence_blocked=rag_res.get("reason_code") == NO_AUTHORIZED_ORIGINAL_DOCUMENTATION,

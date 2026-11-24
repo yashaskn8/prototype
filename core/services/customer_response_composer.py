@@ -208,10 +208,14 @@ def compose_response(contract: Dict[str, Any], question: str, context=None,
         from .customer_answer import is_generic_cause_overview
         from .conversation_context import is_explain_all_request
         original = getattr(context, "original_complaint", "")
-        from .conversation_context import _CAUSE_REQUEST, ISSUE_CAUSES_PREFIX
+        from .conversation_context import _CAUSE_REQUEST, _MAINTENANCE_TIMING, ISSUE_CAUSES_PREFIX
+        # "How often does it need a service?": the answer stage already chose the
+        # schedule entries for the asked interval (or the whole schedule); filtering
+        # them on the word "service" would keep only one line.
         broad_request = (is_generic_cause_overview(question) or is_explain_all_request(question)
                          or str(question).startswith(ISSUE_CAUSES_PREFIX)
                          or bool(_CAUSE_REQUEST.search(str(question)))
+                         or bool(_MAINTENANCE_TIMING.search(str(question)))
                          or bool(original and is_generic_cause_overview(f"{question} {original}")))
         # "Any other causes?" asks for what hasn't been shown yet.
         if re.search(r"\b(?:other|else|more|additional)\b", str(question), re.I):

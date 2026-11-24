@@ -148,11 +148,63 @@ def turn(base, code, conv, message):
     return {"http_status": 503, "error": "busy after retries"}
 
 
+def check(expect, result):
+    """Machine check of one turn against its written expectation. Returns (status, reasons).
+
+    status: PASS, FAIL, or BLOCKED (transport/infrastructure: no complete answer).
+    """
+    if result.get("http_status") != 200 or not result.get("response_type"):
+        return "BLOCKED", [f"no complete answer (HTTP {result.get('http_status')}: {str(result.get('error'))[:80]})"]
+    expect = expect or {}
+    answer = (result.get("answer") or "").casefold()
+    headings = [str(h or "").casefold() for _, _, h in result.get("citation_headings") or []]
+    reasons = []
+    if expect.get("types") and result["response_type"] not in expect["types"]:
+        reasons.append(f"type {result['response_type']} not in {expect['types']}")
+    if expect.get("headings_any") and not any(any(x.casefold() in h for h in headings) for x in expect["headings_any"]):
+        reasons.append(f"no cited section matching {expect['headings_any']}")
+    for x in expect.get("headings_none") or []:
+        if any(x.casefold() in h for h in headings):
+            reasons.append(f"cited forbidden section '{x}'")
+    if expect.get("answer_any") and not any(x.casefold() in answer for x in expect["answer_any"]):
+        reasons.append(f"answer lacks any of {expect['answer_any']}")
+    for x in expect.get("answer_none") or []:
+        if x.casefold() in answer:
+            reasons.append(f"answer contains forbidden '{x}'")
+    if expect.get("no_citations") and headings:
+        reasons.append("unexpected citations")
+    return ("FAIL" if reasons else "PASS"), reasons
+
+
+def run_dataset(base, code, assets, dataset_path):
+    """Conversations from a dataset file: [{"id", "asset", "turns": [{"q", "expect"}]}]."""
+    data = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
+    results = []
+    for conv_spec in data["conversations"]:
+        asset = assets.get(conv_spec["asset"])
+        if not asset:
+            results.append({"id": conv_spec["id"], "blocked": "asset not in this customer's inventory"})
+            continue
+        status, body = request(base, "/demo-api/customer-support/conversations/", code, "POST", {"asset_id": asset["id"]})
+        conv = json.loads(body)["conversation_uuid"]
+        turns = []
+        for number, spec in enumerate(conv_spec["turns"], 1):
+            result = turn(base, code, conv, spec["q"])
+            verdict, reasons = check(spec.get("expect"), result)
+            turns.append({"n": number, "question": spec["q"], "expect": spec.get("expect"),
+                          "verdict": verdict, "reasons": reasons, **result})
+            print(f"{conv_spec['id']} #{number} {verdict} {result.get('response_type')} {result.get('latency_s')}s",
+                  flush=True)
+        results.append({"id": conv_spec["id"], "asset": conv_spec["asset"], "conversation_uuid": conv, "turns": turns})
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://127.0.0.1:5175")
     parser.add_argument("--out", required=True)
     parser.add_argument("--only", help="equipment name to run (default: all three)")
+    parser.add_argument("--dataset", help="run conversations from this dataset file instead of the fixed scripts")
     args = parser.parse_args()
     code = Path(os.environ["SERVY_DEMO_ACCESS_FILE"]).read_text(encoding="utf-8").strip()
     status, body = request(args.base, "/demo-api/inventory/", code)
@@ -164,6 +216,20 @@ def main():
     assets = {a.get("name"): a for a in inventory.get("assets") or []}
     _, health = request(args.base, "/demo-api/health/", code)
     report = {"started": datetime.now().isoformat(timespec="seconds"), "health": json.loads(health), "assets": {}}
+    if args.dataset:
+        import hashlib
+        report["dataset"] = Path(args.dataset).name
+        report["dataset_sha256"] = hashlib.sha256(Path(args.dataset).read_bytes()).hexdigest()
+        report["conversations"] = run_dataset(args.base, code, assets, args.dataset)
+        verdicts = [t["verdict"] for c in report["conversations"] for t in c.get("turns", [])]
+        report["summary"] = {v: verdicts.count(v) for v in ("PASS", "FAIL", "BLOCKED")}
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / f"dataset_{Path(args.dataset).stem}_{datetime.now():%Y%m%d_%H%M%S}.json"
+        path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(f"summary {report['summary']}")
+        print(f"written {path}")
+        return
     for asset_name, questions in SCRIPTS.items():
         if args.only and asset_name != args.only:
             continue

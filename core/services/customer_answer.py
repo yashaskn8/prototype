@@ -155,7 +155,7 @@ _GENERIC_CAUSE_HEADING = re.compile(
 )
 
 
-# Portable (MySQL 8 / SQLite) prefilter for _GENERIC_CAUSE_HEADING; the Python
+# MySQL 8 prefilter for _GENERIC_CAUSE_HEADING; the Python
 # pattern is still applied to every returned chunk.
 _GENERIC_CAUSE_HEADING_SQL = r"(fault|symptom|failure|troubleshoot|not working|does not start|not starting|does not run)"
 GENERIC_SCAN_LIMIT = 600
@@ -271,6 +271,10 @@ _VALUE_QUESTION = re.compile(
     r"(?:pressure|voltage|current|amperage|capacity|temperature|rating|size|setting|value|weight|"
     r"dimensions?|tonnage|airflow|flow rate|clearance|torque|speed|charge|specification|"
     r"length|distance|height)s?\b"
+    # "What airflow should a 5 ton unit deliver?", "What pressure should it be tested at?"
+    r"|\b(?:what|which)\s+(?:[a-z0-9/-]+\s+){0,2}?(?:pressure|voltage|current|amperage|capacity|temperature|"
+    r"rating|size|setting|value|weight|tonnage|airflow|flow rate|clearance|torque|speed|charge|length|distance|"
+    r"height)s?\s+(?:should|must|does|do|will|would|can)\b"
     r"|\bhow (?:much|many)\b", re.I)
 # A customer reporting a fault or symptom rather than asking a factual question.
 _SYMPTOM_REPORT = re.compile(
@@ -280,6 +284,7 @@ _SYMPTOM_REPORT = re.compile(
 _FREQUENCY_QUESTION = re.compile(
     r"\b(?:how (?:often|frequently|regularly|many times)|"
     r"when (?:is|are|should|do|does|must)|every\s+\d+|intervals?|schedules?|"
+    r"(?:every|each|once\s+a|per)\s+(?:day|week|month|quarter|year)|"
     r"frequency|periodic\w*|monthly|quarterly|annual\w*|yearly)\b", re.I)
 # An instruction is not only a sentence that starts with a verb: "During
 # brazing, use ..." is one too. Any clause-initial directive disqualifies.
@@ -873,10 +878,89 @@ _FRONT_MATTER_HEADING = re.compile(
     r"revision\s+history|references?|definitions?)\s*$", re.I)
 _METADATA_LINE = re.compile(
     r"^\s*(?:asset|document(?:\s+id)?|revision|status|date|prepared\s+by|approved\s+by|version)\s*:", re.I)
+_EXPLICIT_TIMING = re.compile(
+    r"\b(?:how\s+(?:often|frequently)|frequen\w*|intervals?|schedules?|periodic\w*|every|each|daily|weekly|"
+    r"monthly|quarterly|annual\w*|yearly)\b", re.I)
+_INTERVAL_HEADING = re.compile(r"\b(?:intervals?|schedules?|frequency)\b", re.I)
+_SCHEDULE_GENERIC_WORDS = frozenset({
+    "how", "often", "frequently", "when", "should", "must", "does", "need", "needs", "needed", "required", "get",
+    "have", "service", "serviced", "servicing", "maintenance", "maintained", "maintain", "done", "checked", "check",
+    "inspected", "regularly", "unit", "system", "equipment", "aircon", "the", "this", "that", "our", "you", "can",
+    "would", "recommended", "recommend", "what", "is", "are"})
+_ROLE_QUESTION = re.compile(
+    r"\bwho\s+(?:is\s+(?:allowed|qualified|authori[sz]ed|permitted|supposed)|can|may|should|must)\b", re.I)
+_PERFORMED_BY = re.compile(
+    r"\b(?:must|should|shall|is\s+to|are\s+to)\s+be\s+(?:performed|carried\s+out|done|completed|installed|"
+    r"serviced|commissioned|handled)\s+by\b", re.I)
+
+
+def _required_overlap(asks_role: bool, sentence: str) -> int:
+    """Distinct question terms a plain statement must share to answer the question.
+    A "who may do X" question shares only X with "X must be performed by ..."."""
+    return 1 if asks_role and _PERFORMED_BY.search(sentence) else 2
+
+
+_DOCUMENT_WORD = re.compile(r"\b(?:checklist|guide|manual|document|reference|procedure)s?\b", re.I)
 _DOCUMENT_QUESTION = re.compile(
     r"\b(?:what\s+is\s+(?:this|the)\s+(?:document|manual|guide)|purpose\s+of\s+(?:this|the)\s+"
     r"(?:document|manual|guide)|which\s+(?:document|manual)|what\s+does\s+(?:this|the)\s+(?:document|manual)\s+cover)\b",
     re.I)
+
+
+# Intervals as (unit, count): "every six months" -> ("m", 6), "Quarterly" -> ("m", 3),
+# "Annually"/"every year" -> ("m", 12), "weekly" -> ("w", 1). Months, quarters and
+# years share one unit so "every 3 months" meets "Quarterly".
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+                 "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "a": 1, "an": 1}
+_INTERVAL_UNITS = {"day": ("d", 1), "week": ("w", 1), "month": ("m", 1), "quarter": ("m", 3), "year": ("m", 12)}
+_INTERVAL_ADVERBS = {"daily": ("d", 1), "weekly": ("w", 1), "fortnightly": ("w", 2), "monthly": ("m", 1),
+                     "quarterly": ("m", 3), "half-yearly": ("m", 6), "half yearly": ("m", 6), "halfyearly": ("m", 6),
+                     "semi-annual": ("m", 6), "semi-annually": ("m", 6), "semiannual": ("m", 6),
+                     "biannual": ("m", 6), "bi-annual": ("m", 6), "biannually": ("m", 6),
+                     "annual": ("m", 12), "annually": ("m", 12), "yearly": ("m", 12)}
+_COUNTED_INTERVAL = re.compile(
+    r"\b(?:(?:every|each|per|once\s+(?:a|an|every))\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve)[-\s]+(day|week|month|quarter|year)s?\b"
+    r"|\b(?:every|each|per|once\s+(?:a|an|every))\s+()(day|week|month|quarter|year)\b", re.I)
+_ADVERB_INTERVAL = re.compile(r"\b(" + "|".join(sorted(map(re.escape, _INTERVAL_ADVERBS), key=len, reverse=True))
+                              + r")\b", re.I)
+
+
+def stated_intervals(text: str) -> set:
+    found = set()
+    for m in _COUNTED_INTERVAL.finditer(str(text or "")):
+        count, unit = (m.group(1), m.group(2)) if m.group(2) else ("1", m.group(4))
+        n = int(count) if count.isdigit() else _NUMBER_WORDS.get(count.casefold(), 1)
+        base, size = _INTERVAL_UNITS[unit.casefold()]
+        found.add((base, n * size))
+    for m in _ADVERB_INTERVAL.finditer(str(text or "")):
+        found.add(_INTERVAL_ADVERBS[m.group(1).casefold()])
+    return found
+
+
+_ESCALATION_HEADING = re.compile(r"\b(?:warning\s+signs?|requiring\s+escalation|escalat\w*)\b", re.I)
+# The customer's own words ask when to stop, escalate or worry; sharing a word
+# with an escalation sentence ("breaker", "tripping") is not that question.
+_ESCALATION_QUESTION = re.compile(
+    r"\b(?:warning\s+signs?|danger\w*|unsafe|emergenc\w*|serious|escalat\w*|"
+    r"safe\s+to\s+(?:use|run|keep|continue|operate)|"
+    r"stop\s+(?:using|running|operating|the\s+(?:unit|ac|system))|"
+    r"keep\s+(?:using|running|operating|resetting)|"
+    r"when\s+(?:should|must|do)\s+(?:i|we)\s+(?:call|contact|stop|worry|escalate))\b", re.I)
+# The only directions in such a sentence are to escalate, stop or switch off.
+_SAFE_ESCALATION = re.compile(r"\b(?:escalate|stop\s+(?:operation|using|the\s+unit)|switch\s+off|contact)\b", re.I)
+_UNSAFE_DIRECTIVE = re.compile(r"\b(?:open|remove|disassemble|adjust|reset|bypass|measure|tighten|recharge|charge)\b",
+                               re.I)
+# A procedure step ("Inspect evaporator and condenser coils.") from a checklist,
+# installation or commissioning section: work for a qualified technician.
+_PROCEDURE_LINE = re.compile(
+    r"\s*(?:isolate|inspect|check|clean|measure|verify|confirm|replace|tighten|test|perform|review|calculate|"
+    r"install|connect|position|secure|lift|seal|support|evacuate|pressure-test|charge|flush|mount|route|"
+    r"complete|start|record)\b", re.I)
+# "Do not repeatedly reset a fault" prohibits the action; it is not an instruction.
+_NEGATED_DIRECTIVE = re.compile(r"\b(?:do\s+not|don't|never|must\s+not)\s+(?:\w+\s+){0,2}?"
+                                r"(?:open|remove|disassemble|adjust|reset|bypass|measure|tighten|recharge|charge)\w*\b",
+                                re.I)
 
 
 # Former generic refusal text (kept so tools can recognise answers stored before
@@ -890,6 +974,14 @@ def no_documentation_message(asset) -> str:
     return (f"I don't have approved documentation for the {name}, so I can't suggest causes or repair steps. "
             "If you note what it is doing, when it happens and any code shown, a technician can take it from "
             "there. No service request has been created.")
+
+
+def technician_only_message(asset) -> str:
+    """The documents cover this, but only as work for a qualified technician."""
+    name = getattr(asset, "name", None) or "this equipment"
+    return (f"That's covered in the {name} documentation as work for a qualified technician, so I can't take "
+            "you through the steps. A technician carries it out during service or maintenance; I can prepare a "
+            "service request if you'd like.")
 
 
 def limitation_message(asset, conversation_context=None, question: str = "") -> str:
@@ -1002,14 +1094,39 @@ def build_customer_answer(
     # ("what cuases this", "how ofen") as well as from the raw text.
     intent_text = f"{raw_user_q} {normalize_domain_terms(raw_user_q)}"
     asked_symptoms = symptom_concepts(intent_text) | symptom_concepts(question)
+    customer_words = f"{intent_text} {getattr(conversation_context, 'active_issue', '') or ''}"
+    if symptom_concepts(customer_words) - {"generic_failure"}:
+        # A symptom the customer named, now or as the current issue ("my AC won't
+        # turn on"), is what they described; the generic failure would widen the
+        # answer to every symptom section. Only the customer's words count: the
+        # retrieval query also carries the labels of sections shown earlier
+        # ("unit does not start poor cooling").
+        asked_symptoms = asked_symptoms - {"generic_failure"}
     wants_facts = not _CAUSE_QUESTION.search(intent_text)
     wants_cause_details = bool(
         _CAUSE_EXPLANATION_REQUEST.search(raw_user_q)
     )
     asks_frequency = bool(_FREQUENCY_QUESTION.search(intent_text))
+    # "When should a problem be escalated?" asks for conditions, not timing: an
+    # escalation question is a timing question only when it names an interval.
+    asks_escalation = bool(_ESCALATION_QUESTION.search(intent_text))
+    if asks_escalation and not _EXPLICIT_TIMING.search(intent_text):
+        asks_frequency = False
+    asked_intervals = stated_intervals(intent_text)
+    # A timing question in which the customer names no symptom and asks for no cause
+    # ("the compressor trips every 5 minutes" names one and keeps its causes).
+    timing_only = bool(asks_frequency and not _CAUSE_QUESTION.search(intent_text)
+                       and not (symptom_concepts(intent_text) - {"generic_failure"}))
+    # A timing question about the equipment as a whole, naming no item to check.
+    generic_schedule_question = asks_frequency and not (
+        match_keys(set(re.findall(r"[a-z0-9_-]{3,}", intent_text.casefold())) - _STOPWORDS)
+        - match_keys(_SCHEDULE_GENERIC_WORDS))
+    # "Who is allowed to install this unit?" is answered by "... must be performed by ...".
+    asks_role = bool(_ROLE_QUESTION.search(intent_text))
     # A multi-part question ("what causes X, and how often should Y be done?")
-    # explicitly asks for a documented schedule as well as causes.
-    wants_facts = wants_facts or asks_frequency
+    # explicitly asks for a documented schedule as well as causes; an escalation
+    # question asks for the documented warning conditions.
+    wants_facts = wants_facts or asks_frequency or asks_escalation
     asks_value = bool(_VALUE_QUESTION.search(intent_text)) and not _CAUSE_QUESTION.search(intent_text)
     asks_document_purpose = bool(_DOCUMENT_PURPOSE_QUESTION.search(intent_text))
     # A reported fault ("the module shows a high-pressure alarm", "water is leaking")
@@ -1034,13 +1151,27 @@ def build_customer_answer(
         h for h in symptom_sections
         if heading_states_symptom(h, asked_symptoms) or question_states_heading(stated_text, h)}
     eligible = []
+    # Question-relevant sentences withheld only because they are technician-only
+    # work: the answer then says so instead of implying the manuals are silent.
+    withheld_relevant = 0
     if evidence_chunks and (sufficient or generic_cause_overview) and not wrong_model and not query_is_control_abuse(question):
-        about_document = bool(_DOCUMENT_QUESTION.search(raw_user_q))
+        # A question about a named document ("What does the VRF installation guide
+        # cover?") is answered from its purpose section.
+        about_document = bool(_DOCUMENT_QUESTION.search(raw_user_q) or (
+            asks_document_purpose and _DOCUMENT_WORD.search(raw_user_q)))
         for result in evidence_chunks:
-            if not about_document and _FRONT_MATTER_HEADING.match(str(result.heading or "")):
-                # A document's purpose/overview/metadata section describes the document,
-                # not the equipment problem; it is never shown as a troubleshooting answer.
+            if (not about_document and not asks_frequency
+                    and _FRONT_MATTER_HEADING.match(str(result.heading or ""))):
+                # A document's purpose/overview section describes the document, not the
+                # equipment problem; it never answers a symptom, cause or next-step
+                # question. A timing question may use a purpose statement that itself
+                # answers it ("Frequency should be based on ..."); the sentence checks
+                # below still apply.
                 continue
+            # "How often should it be serviced?" names no item: the whole documented
+            # schedule in an interval section answers it (schedule entries only).
+            whole_schedule = bool(generic_schedule_question
+                                  and _INTERVAL_HEADING.search(str(result.heading or "")))
             for text, kind, start, end in source_claims(result.text):
                 if not about_document and _METADATA_LINE.match(text):
                     continue
@@ -1052,9 +1183,13 @@ def build_customer_answer(
                     and kind == "possible_cause"
                     and _GENERIC_CAUSE_HEADING.search(result.heading or "")
                 )
+                # A section whose symptom the question names ("could high pressure be
+                # involved?" names HIGH-PRESSURE ... FAULT) is relevant even when the
+                # heading's compound words ("high-pressure") are written apart.
                 if (not sentence_overlap and not term_keys & match_keys(heading_words)
                         and not heading_states_symptom(result.heading, asked_symptoms)
-                        and not generic_section_cause):
+                        and result.heading not in stated_sections
+                        and not generic_section_cause and not whole_schedule):
                     continue
                 span_context = f"{result.heading or ''} {text}"
                 if codes and not codes.issubset(extract_error_codes(span_context)):
@@ -1071,6 +1206,10 @@ def build_customer_answer(
                     if not _descriptive_cause(text):
                         continue
                     if asks_value and not wants_cause_details:
+                        continue
+                    if timing_only and not wants_cause_details:
+                        # "How often should I get it serviced?" is answered from the
+                        # schedule; the background issue's causes are not the answer.
                         continue
                     if generic_section_cause:
                         # The customer asked for a broad overview, not a
@@ -1101,12 +1240,15 @@ def build_customer_answer(
                     # A value question is answered only by a documented value.
                     if asks_value and not wants_cause_details:
                         continue
+                    # A timing question is not about the current fault's notes.
+                    if timing_only and result.heading in symptom_sections:
+                        continue
                     if (stated_sections and result.heading in symptom_sections
                             and result.heading not in stated_sections):
                         continue
                     if (not (sentence_overlap - generic_keys)
                             and not ((term_keys & match_keys(heading_words)) - generic_keys)
-                            and not heading_states_symptom(result.heading, asked_symptoms)):
+                            and not heading_states_symptom(result.heading, asked_symptoms - {"generic_failure"})):
                         continue
                     target, kind = observations, "observation"
                 elif level == "CUSTOMER_APPROVED" and _approved_source_action(text, result.chunk, asset, tenant):
@@ -1120,6 +1262,11 @@ def build_customer_answer(
                     # heading share at least two. Restricted, directive or
                     # unclassifiable sentences are never disclosed.
                     disclosure = customer_safe_fact(text, level)
+                    if (not disclosure and _ESCALATION_HEADING.search(str(result.heading or ""))
+                            and _ESCALATION_QUESTION.search(intent_text)
+                            and _SAFE_ESCALATION.search(text)
+                            and not _UNSAFE_DIRECTIVE.search(_NEGATED_DIRECTIVE.sub(" ", text))):
+                        disclosure = "escalation_guidance"
                     if (not disclosure and asks_document_purpose
                             and document_purpose_statement(text, level, result.heading)):
                         disclosure = "descriptive"
@@ -1141,7 +1288,7 @@ def build_customer_answer(
                             part_words = set(
                                 re.findall(r"[a-z0-9_-]{3,}", part.casefold())) - _STOPWORDS
                             part_overlap = term_keys & match_keys(part_words)
-                            if (len({stem(w) for w in part_overlap}) < 2
+                            if (len({stem(w) for w in part_overlap}) < _required_overlap(asks_role, part)
                                     or (asks_frequency and not re.search(
                                         r"\b(?:frequency|intervals?|schedules?)\b", part, re.I))):
                                 continue
@@ -1150,15 +1297,34 @@ def build_customer_answer(
                                 "text": part, "start": part_start, "end": part_end,
                                 "result": result,
                             })
+                        # A relevant checklist/procedure line withheld as technician work.
+                        if ((sentence_overlap - generic_keys)
+                                and (level in _RESTRICTED_LEVELS or _PROCEDURE_LINE.match(text))):
+                            withheld_relevant += 1
                         continue
-                    if not sentence_overlap:
+                    if disclosure == "escalation_guidance":
+                        # Relevant when the question shares a term with the sentence
+                        # or names the section ("warning signs", "escalate").
+                        if not (sentence_overlap or (term_keys & match_keys(heading_words)) - generic_keys):
+                            continue
+                        target = facts
+                        eligible.append({"order": len(eligible), "target": target, "kind": "information",
+                                         "text": text, "start": start, "end": end, "result": result})
+                        continue
+                    if not sentence_overlap and not (whole_schedule and disclosure == "maintenance_schedule"):
                         continue
                     if disclosure == "maintenance_schedule":
-                        # A schedule entry answers only a question about timing.
+                        # A schedule entry answers only a question about timing, and
+                        # only for the interval asked ("every six months" is not
+                        # "Monthly"; "every 3 months" is "Quarterly").
                         if (not asks_frequency
-                                or len(term_keys & match_keys(words | heading_words)) < 2):
+                                or (len(term_keys & match_keys(words | heading_words)) < 2
+                                    and not whole_schedule)):
                             continue
-                    elif (len({stem(w) for w in sentence_overlap}) < 2
+                        line_intervals = stated_intervals(text)
+                        if asked_intervals and line_intervals and not asked_intervals & line_intervals:
+                            continue
+                    elif (len({stem(w) for w in sentence_overlap}) < _required_overlap(asks_role, text)
                           or (asks_frequency and not re.search(
                               r"\b(?:frequency|intervals?|schedules?)\b", text, re.I))):
                         # A plain statement must itself share two distinct
@@ -1170,6 +1336,8 @@ def build_customer_answer(
                         continue
                     target = facts
                 else:
+                    if (sentence_overlap - generic_keys) and level in _RESTRICTED_LEVELS:
+                        withheld_relevant += 1
                     continue
                 # Candidates are ranked for relevance to this question below,
                 # then capped; the cap must not keep an earlier but less
@@ -1285,7 +1453,10 @@ def build_customer_answer(
         message = no_documentation_message(asset)
     else:
         reason_code = None
-        message = limitation_message(asset, conversation_context, raw_user_q)
+        message = (technician_only_message(asset) if withheld_relevant and not normal
+                   else limitation_message(asset, conversation_context, raw_user_q))
+        if withheld_relevant and not normal:
+            reason_code = "TECHNICIAN_ONLY_EVIDENCE"
     sections = []
     if normal:
         observation_topics = [re.sub(

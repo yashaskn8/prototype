@@ -112,6 +112,15 @@ REQUIREMENT_TERMS = frozenset({
     "component", "components", "replacement", "replacements",
     "documented", "undocumented",
 })
+# Words that say a question is about some difficulty without naming what it is
+# ("when should a problem be escalated?"). Requiring them in a passage made the
+# escalation section fail while a section that happened to say "problem" passed.
+# "fault" is kept: manual sections are named by it. Permission words only shape the
+# question ("who is allowed to install it?"); the answer says "must be performed by".
+GENERIC_INQUIRY_TERMS = frozenset({
+    "problem", "problems", "issue", "issues", "trouble", "troubles", "thing", "things",
+    "something", "anything", "allowed", "permitted", "authorised", "authorized",
+})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{3,}")
 
@@ -125,7 +134,7 @@ def grounding_terms(question, stopwords, normalize=None):
     text = normalize(question or "") if normalize else (question or "")
     raw = {w.lower() for w in _TOKEN.findall(text)}
     base = raw - set(stopwords)
-    content = base - INSTRUCTION_TERMS - REQUIREMENT_TERMS
+    content = base - INSTRUCTION_TERMS - REQUIREMENT_TERMS - GENERIC_INQUIRY_TERMS
     return content or base or raw
 
 

@@ -134,9 +134,12 @@ class StatementSentenceAnswerTests(unittest.TestCase):
                     if claim["kind"] != "safety_warning":
                         self.assertFalse(INSTRUCTION.match(claim["source_text"]),
                                          claim["source_text"])
+                # The cited warning itself may name what it forbids ("Do not bypass
+                # safety interlocks ..."); every other disclosed text may not.
+                warnings = {c["text"] for c in r.claims if c["kind"] == "safety_warning"}
                 self.assertFalse(re.search(
                     r"pressure-test|evacuate|charge the refrigerant|brazing|interlock",
-                    " ".join(r.texts), re.I), r.texts)
+                    " ".join(t for t in r.texts if t not in warnings), re.I), r.texts)
 
 
 if __name__ == "__main__":
