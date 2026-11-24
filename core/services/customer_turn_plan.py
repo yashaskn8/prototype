@@ -23,12 +23,26 @@ def plan_technical_turn(request, context, asset=None):
         contextualize_customer_query, canonical_issue_question, resolve_cause_reference,
         topic_shift_query, ISSUE_CHECKS_PREFIX, ISSUE_MATCH_PREFIX, extract_symptoms_from_text,
     )
-    from .customer_answer import customer_evidence_question
+    from .customer_answer import customer_evidence_question, _question_guard
+    from .content_safety import query_is_control_abuse
+    # Rewriting cannot erase a refusal, permission or other safety-sensitive
+    # request. The original text also goes to the retriever's policy guard.
+    if query_is_control_abuse(request) or _question_guard(request):
+        return TechnicalTurnPlan(request, request, request, request, "technical")
     reference = resolve_cause_reference(request, context)
     answer = (topic_shift_query(request) if context.is_followup and not reference else None) or request
     retrieval = contextualize_customer_query(request, context, asset=asset)
     canonical = None if reference else canonical_issue_question(request, context)
     intent = "technical"
+    if not canonical and not reference:
+        # Experimental model-assisted routing only for unresolved, dependent
+        # requests. The model selects an enum; it never writes retrieval text.
+        from .customer_semantic_intent import resolve_ambiguous_intent
+        route = resolve_ambiguous_intent(request, context)
+        prefixes = {"causes": "What are the possible causes of this:",
+                    "match_causes": ISSUE_MATCH_PREFIX, "next_step": ISSUE_CHECKS_PREFIX}
+        if route in prefixes:
+            canonical = f"{prefixes[route]} {context.active_issue}?"
     if canonical:
         answer = canonical
         intent = ("next_step" if canonical.startswith(ISSUE_CHECKS_PREFIX) else

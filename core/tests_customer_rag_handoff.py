@@ -126,3 +126,31 @@ class ProductionServingPlanTests(SimpleTestCase):
         claim["source_heading"] = "3. SYMPTOM: POOR COOLING"
         segment["citation_ids"] = []
         self.assertFalse(final_response_is_valid(contract, plan))
+
+
+class PlainLanguageAndSemanticIntentTests(SimpleTestCase):
+    def test_plain_language_keeps_source_meaning_without_new_mechanisms(self):
+        from core.services.customer_answer_generation import plain_cause_wording, _validate_paraphrase
+        source = "Restricted airflow or blocked outdoor unit clearance."
+        wording = plain_cause_wording(source)
+        self.assertEqual(wording, "Limited air movement or something blocking the space around the outdoor unit.")
+        self.assertTrue(_validate_paraphrase(source, "Possible cause: " + wording, "possible_cause",
+                                             plain_language=True))
+        self.assertFalse(_validate_paraphrase(source, "Possible cause: " + wording + " The compressor has failed.",
+                                              "possible_cause", plain_language=True))
+        self.assertFalse(_validate_paraphrase(source, "Possible cause: " + wording, "possible_cause"))
+
+    def test_semantic_model_cannot_create_an_intent_or_query(self):
+        from core.services.customer_semantic_intent import validate_route
+        self.assertEqual(validate_route({"intent": "next_step"}), "next_step")
+        for value in ({"intent": "repair"}, {"intent": "causes", "query": "invented"},
+                      {"intent": []}, "next_step"):
+            self.assertEqual(validate_route(value), "unknown")
+
+    def test_request_guard_survives_planning(self):
+        from core.services.conversation_context import ConversationContext
+        from core.services.customer_turn_plan import plan_technical_turn
+        context = ConversationContext(conversation_uuid="", active_issue="poor cooling", is_followup=True)
+        request = "Can I open the electrical panel to check this?"
+        plan = plan_technical_turn(request, context)
+        self.assertEqual(plan.evidence_question, request)

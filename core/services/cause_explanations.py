@@ -295,9 +295,10 @@ def explain_causes(*, interaction, causes: List[Dict[str, Any]],
             "multi_section": multi_section}
 
 
-def explanation_response(equipment: str, built: Dict[str, Any], mode=None) -> Dict[str, Any]:
+def explanation_response(equipment: str, built: Dict[str, Any], mode=None, display_by_citation=None) -> Dict[str, Any]:
     """Composed reply: each cause, then its cited explanation or an explicit gap."""
     from .customer_response_composer import _segment, render_text
+    display_by_citation = display_by_citation or {}
     explained = [e for e in built.get("explanations") or [] if e.get("cause")]
     lead = ("The possible cause we're discussing is:"
             if mode == "simpler" and len(explained) == 1 else
@@ -312,10 +313,12 @@ def explanation_response(equipment: str, built: Dict[str, Any], mode=None) -> Di
         if item["status"] == "unverified":
             segments.append(_segment("text", UNVERIFIED_TEXT))
             continue
-        segments.append(_segment("list_item", item["cause"], item["cause_citation_ids"]))
+        wording = display_by_citation.get(item["cause_citation_ids"][0], item["cause"])
+        segments.append(_segment("list_item", wording, item["cause_citation_ids"]))
         if item["evidence"]:
             for evidence in item["evidence"]:
-                segments.append(_segment("claim", evidence["text"], evidence["citation_ids"]))
+                wording = display_by_citation.get(evidence["citation_ids"][0], evidence["text"])
+                segments.append(_segment("claim", wording, evidence["citation_ids"]))
         else:
             if not shared_gap:
                 segments.append(_segment("text",

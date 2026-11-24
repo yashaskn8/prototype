@@ -231,7 +231,37 @@ def _explanation_contract(interaction, session, asset, built, mode=None):
     }
     if built.get("multi_section"):
         presentation["view_mode"] = "focused"
-    response = explanation_response(equipment.get("name") or "equipment", built, mode=mode)
+    display_by_citation = {}
+    if mode == "simpler":
+        from core.services.customer_answer_generation import (
+            generate_customer_claim_texts_with_status, plain_cause_wording, POSSIBLE_CAUSE_PREFIX,
+        )
+        with execution_stage("customer_qwen_generation", "Simplifying validated customer claims"):
+            generated = generate_customer_claim_texts_with_status(
+                interaction.question, presentation, plain_language=True)
+        report = generated["generation"]
+        emit_execution_event("customer_qwen_outcome", "Customer wording outcome", "info", metrics={
+            "generation_status": report["status"], "candidate_count": report["eligible_claims"],
+            "supported_count": report["accepted_claims"]})
+        for claim in presentation["supporting_claims"]:
+            ids = claim.get("evidence_ids") or []
+            if len(ids) != 1 or claim.get("kind") not in ("possible_cause", "information"):
+                continue
+            # If the local model is unavailable or its output is rejected, the
+            # same reviewed lexical equivalents provide a bounded fallback.
+            source = claim.get("source_text") or ""
+            wording = generated["texts"].get(claim.get("id")) or source
+            if wording.startswith(POSSIBLE_CAUSE_PREFIX):
+                wording = wording[len(POSSIBLE_CAUSE_PREFIX):]
+            if claim.get("kind") == "possible_cause":
+                wording = plain_cause_wording(wording)
+            display_by_citation[ids[0]] = wording
+            claim["text"] = wording
+    else:
+        emit_execution_event("customer_qwen_generation",
+                             "Exact cited source wording used for per-cause explanations", "skipped")
+    response = explanation_response(equipment.get("name") or "equipment", built, mode=mode,
+                                    display_by_citation=display_by_citation)
     presentation["response"] = response
     return {
         "presentation": presentation, "response_mode": "ANSWER_WITH_VERIFIED_EVIDENCE",
@@ -846,9 +876,6 @@ def _process_customer_diagnostic_turn(
                 except ValueError:
                     built = None
                 if built is not None:
-                    emit_execution_event("customer_qwen_generation",
-                                         "Exact cited source wording used for per-cause explanations",
-                                         "skipped")
                     contract = _explanation_contract(interaction, session, asset, built,
                                                      mode=selected_reference.get("mode") if wants_selected_explained else None)
                     interaction.answer = contract["answer"]
@@ -1021,7 +1048,7 @@ def _process_customer_diagnostic_turn(
             rag_res = ask_rag(
                 tenant=tenant,
                 question=retrieval_query,
-                original_question=answer_question,
+                original_question=turn_text,
                 conversation_context=conv_context,
                 asset=asset,
                 customer=customer,
@@ -1093,7 +1120,7 @@ def _process_customer_diagnostic_turn(
                 contract = _summary_contract(session,
                     "I don't have enough reliable information to answer that accurately. "
                     "An authorized technician can help confirm the issue.",
-                    response_type="CONVERSATION_REPLY", reason_code="FINAL_RESPONSE_NOT_VALIDATED")
+                    response_type="INSUFFICIENT_EVIDENCE", reason_code="FINAL_RESPONSE_NOT_VALIDATED")
             else:
                 emit_execution_event("customer_final_validation", "Final response claim and intent validation", "info")
             from core.services.followup_suggestions import suggest
